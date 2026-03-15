@@ -15,6 +15,9 @@ mod starlark_policy;
 #[cfg(test)]
 mod policy_tests;
 
+#[cfg(test)]
+mod policy_proptest;
+
 pub use starlark_policy::StarlarkPolicy;
 
 use std::collections::HashMap;
@@ -262,24 +265,24 @@ def evaluate(action, identity, agent, command="", path=""):
         let verdict = policy.evaluate("tool:file_write", &ctx);
         match verdict {
             PolicyVerdict::Deny(reason) => {
-                assert!(reason.contains("Policy files are read-only for Lucien"), "got: {reason}");
+                assert!(reason.contains("Protected file"), "got: {reason}");
             }
             other => panic!("Expected Deny, got Allow={}", matches!(other, PolicyVerdict::Allow)),
         }
     }
 
+    /// Non-protected paths for Lucien now return Allow (not Review).
+    /// The new model only blocks the 5 specific PROTECTED_FILES.
     #[test]
-    fn lucien_other_file_write_is_review() {
+    fn lucien_non_protected_file_write_is_allow() {
         let policy = load_example_policy();
         let ctx = PolicyContext::new("lucien", "nzc", "tool:file_write")
             .with_path("/etc/nonzeroclaw/workspace/notes.md");
         let verdict = policy.evaluate("tool:file_write", &ctx);
-        match verdict {
-            PolicyVerdict::Review(reason) => {
-                assert!(reason.contains("Lucien"), "got: {reason}");
-            }
-            other => panic!("Expected Review, got Allow={}", matches!(other, PolicyVerdict::Allow)),
-        }
+        assert!(
+            matches!(verdict, PolicyVerdict::Allow),
+            "Expected Allow for lucien writing to non-protected path, got non-Allow"
+        );
     }
 
     #[test]
