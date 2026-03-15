@@ -1,0 +1,11 @@
+[package]
+name = "clash"
+version = "0.1.0"
+edition = "2021"
+description = "NonZeroClaw — Clash policy trait contracts and Starlark evaluation engine"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+starlark = "0.13"
+tracing = { version = "0.1", default-features = false }
