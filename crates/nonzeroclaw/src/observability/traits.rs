@@ -40,7 +40,15 @@ pub enum ObserverEvent {
         cost_usd: Option<f64>,
     },
     /// A tool call is about to be executed.
-    ToolCallStart { tool: String },
+    ///
+    /// `arguments` mirrors the optional field added in zeroclawlabs 0.4 for
+    /// upstream compat. NZC callers always pass `None`; the field is reserved
+    /// for future use (e.g., tracing tool argument payloads).
+    ToolCallStart {
+        tool: String,
+        /// Optional serialized arguments string (zeroclawlabs 0.4 compat).
+        arguments: Option<String>,
+    },
     /// A tool call has completed with a success/failure outcome.
     ToolCall {
         tool: String,

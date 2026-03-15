@@ -1,3 +1,10 @@
+// PASSTHROUGH CANDIDATE: zeroclawlabs::memory
+//
+// Zero diff vs upstream zeroclaw 0.4 as of 2026-03-15 — no NZC-specific
+// changes. Ready for re-export once trait-alignment pattern is established
+// via the observability module.
+// See crates/nonzeroclaw/HYBRID-ARCHITECTURE.md
+
 pub mod backend;
 pub mod chunker;
 pub mod cli;

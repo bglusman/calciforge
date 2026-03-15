@@ -1,3 +1,9 @@
+// PASSTHROUGH CANDIDATE: zeroclawlabs::runtime
+//
+// Zero diff vs upstream zeroclaw 0.4 as of 2026-03-15 — no NZC-specific
+// changes. Ready for re-export once trait-alignment pattern is established.
+// See crates/nonzeroclaw/HYBRID-ARCHITECTURE.md
+
 pub mod docker;
 pub mod native;
 pub mod traits;
