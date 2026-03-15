@@ -12,6 +12,10 @@ categories = ["command-line-utilities", "api-bindings"]
 rust-version = "1.87"
 
 [dependencies]
+# Upstream zeroclawlabs — used for passthrough modules we don't modify
+# Optional for now so it doesn't break the build; activate once we wire passthrough modules.
+zeroclawlabs = { version = "0.4", optional = true, default-features = false }
+
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"

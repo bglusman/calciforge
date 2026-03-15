@@ -4251,6 +4251,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "nanohtml2text"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ec1bc47d34ae756616f387c11fd0595f86f2cc7e6473bde9e3ded30cb902a1"
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4459,6 +4465,7 @@ dependencies = [
  "webpki-roots 1.0.6",
  "which",
  "wiremock",
+ "zeroclawlabs",
 ]
 
 [[package]]
@@ -6614,6 +6621,16 @@ dependencies = [
  "indexmap",
  "itoa",
  "ryu",
+ "serde_core",
+]
+
+[[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
  "serde_core",
 ]
 
@@ -9301,6 +9318,71 @@ dependencies = [
  "tokio-test",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "zeroclawlabs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffa7e459d96461aaba02ad121249b907998bd5ea594a603238f1b46a32fa277c"
+dependencies = [
+ "anyhow",
+ "async-imap",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "clap_complete",
+ "console",
+ "cron",
+ "dialoguer",
+ "directories",
+ "futures-util",
+ "glob",
+ "hex",
+ "hmac",
+ "hostname",
+ "http-body-util",
+ "image",
+ "lettre",
+ "libc",
+ "mail-parser",
+ "mime_guess",
+ "nanohtml2text",
+ "parking_lot",
+ "portable-atomic",
+ "rand 0.10.0",
+ "regex",
+ "reqwest 0.12.28",
+ "ring",
+ "rusqlite",
+ "rust-embed",
+ "rustls",
+ "rustls-pki-types",
+ "schemars",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "sha2",
+ "shellexpand",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-tungstenite 0.28.0",
+ "tokio-util",
+ "toml 1.0.6+spec-1.1.0",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+ "uuid",
+ "webpki-roots 1.0.6",
+ "which",
 ]
 
 [[package]]
