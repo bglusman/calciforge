@@ -453,7 +453,22 @@ fn identity_unknown_user_with_rm_rf_gets_review() {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 7. File-write restrictions
+//
+// Policy model (as of new file-specific protection):
+//   - Lucien is ONLY blocked from writing to PROTECTED_FILES (5 specific paths).
+//   - All other paths → Allow for Lucien (no path-prefix restriction).
+//   - Research identities (renee, david) → Review for any file write.
+//   - All other identities (brian, etc.) → Allow for any file write.
+//
+// PROTECTED_FILES for Lucien:
+//   "/etc/nonzeroclaw/workspace/.clash/policy.star"
+//   "/etc/nonzeroclaw/config.toml"
+//   "/etc/nonzeroclaw-david/workspace/.clash/policy.star"
+//   "/etc/nonzeroclaw-david/config.toml"
+//   "/usr/local/bin/nonzeroclaw"
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ── Lucien: PROTECTED_FILES must be denied ────────────────────────────────
 
 #[test]
 fn file_write_lucien_policy_file_is_denied() {
@@ -462,18 +477,118 @@ fn file_write_lucien_policy_file_is_denied() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/.clash/policy.star"),
     );
-    assert_deny(verdict, "lucien writing to policy.star → deny");
+    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw/workspace/.clash/policy.star → deny");
 }
 
 #[test]
-fn file_write_lucien_config_toml_is_review() {
+fn file_write_lucien_nzc_config_toml_is_denied() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/etc/nonzeroclaw/config.toml"),
+    );
+    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw/config.toml → deny");
+}
+
+#[test]
+fn file_write_lucien_david_policy_star_is_denied() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/etc/nonzeroclaw-david/workspace/.clash/policy.star"),
+    );
+    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw-david/workspace/.clash/policy.star → deny");
+}
+
+#[test]
+fn file_write_lucien_david_config_toml_is_denied() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/etc/nonzeroclaw-david/config.toml"),
+    );
+    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw-david/config.toml → deny");
+}
+
+#[test]
+fn file_write_lucien_binary_is_denied() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/usr/local/bin/nonzeroclaw"),
+    );
+    assert_deny(verdict, "lucien writing to /usr/local/bin/nonzeroclaw → deny");
+}
+
+// ── Lucien: non-protected paths must be allowed ───────────────────────────
+
+#[test]
+fn file_write_lucien_tmp_is_allowed() {
+    // Old model: /tmp/ was in safe_prefixes → Allow. New model: still Allow (not protected).
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/tmp/foo"),
+    );
+    assert_allow(verdict, "lucien writing to /tmp/foo → allow (not in PROTECTED_FILES)");
+}
+
+#[test]
+fn file_write_lucien_workspace_config_toml_is_allowed() {
+    // /etc/nonzeroclaw/workspace/config.toml is NOT in PROTECTED_FILES.
+    // (The protected one is /etc/nonzeroclaw/config.toml without /workspace/)
+    // Old model: this was Review (path-based). New model: Allow (not protected).
     let policy = nzc_policy();
     let verdict = policy.evaluate(
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/config.toml"),
     );
-    assert_review(verdict, "lucien writing to config.toml → review");
+    assert_allow(verdict, "lucien writing to /etc/nonzeroclaw/workspace/config.toml → allow (not protected)");
 }
+
+#[test]
+fn file_write_lucien_srv_data_is_allowed() {
+    // Old model: /srv/data/foo was Review (not in safe_prefixes). New model: Allow.
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/srv/data/foo"),
+    );
+    assert_allow(verdict, "lucien writing to /srv/data/foo → allow (not in PROTECTED_FILES)");
+}
+
+#[test]
+fn file_write_lucien_opt_is_allowed() {
+    // Old model: /opt/something was Review (not in safe_prefixes). New model: Allow.
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/opt/something"),
+    );
+    assert_allow(verdict, "lucien writing to /opt/something → allow (not in PROTECTED_FILES)");
+}
+
+#[test]
+fn file_write_lucien_workspace_memory_is_allowed() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/MEMORY.md"),
+    );
+    assert_allow(verdict, "lucien writing to /etc/nonzeroclaw/workspace/MEMORY.md → allow (not protected)");
+}
+
+#[test]
+fn file_write_lucien_home_file_is_allowed() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("lucien", "/home/brian/foo.txt"),
+    );
+    assert_allow(verdict, "lucien writing to /home/brian/foo.txt → allow (not protected)");
+}
+
+// ── Other identities: brian unrestricted, renee → review ─────────────────
 
 #[test]
 fn file_write_brian_tmp_is_allowed() {
@@ -486,6 +601,17 @@ fn file_write_brian_tmp_is_allowed() {
 }
 
 #[test]
+fn file_write_brian_nzc_config_toml_is_allowed() {
+    // brian is not lucien — no file-write restrictions apply.
+    let policy = nzc_policy();
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("brian", "/etc/nonzeroclaw/config.toml"),
+    );
+    assert_allow(verdict, "brian writing to /etc/nonzeroclaw/config.toml → allow (brian is not restricted)");
+}
+
+#[test]
 fn file_write_renee_tmp_is_review() {
     let policy = nzc_policy();
     let verdict = policy.evaluate(
@@ -493,17 +619,6 @@ fn file_write_renee_tmp_is_review() {
         &file_write_ctx("renee", "/tmp/foo"),
     );
     assert_review(verdict, "renee (research) writing to /tmp/foo → review");
-}
-
-#[test]
-fn file_write_lucien_clash_dir_any_file_is_denied() {
-    let policy = nzc_policy();
-    // Any file inside .clash/ directory
-    let verdict = policy.evaluate(
-        "tool:file_write",
-        &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/.clash/anything.star"),
-    );
-    assert_deny(verdict, "lucien writing to .clash/anything.star → deny");
 }
 
 #[test]

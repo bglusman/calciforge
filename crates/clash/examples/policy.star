@@ -107,12 +107,21 @@ def evaluate(action, identity, agent, command="", path=""):
 
     # ── File write: Lucien-specific restrictions ───────────────────────────
     # Lucien is the infrastructure guardian on .210. Policy files live on
-    # Librarian (.229) and are deployed via the monorepo. Lucien must never
-    # be able to self-modify the policy that governs him.
+    # Librarian (.229) and are deployed via the monorepo.
+    # Lucien must never self-modify the specific files that govern him.
+    # He is NOT path-restricted otherwise — only specific files are protected.
     if action == "tool:file_write" and identity == "lucien":
-        if ".clash/" in path or path.endswith(".clash"):
-            return "deny:Policy files are read-only for Lucien — edit on Librarian (.229)"
-        return "review:File write by Lucien requires approval"
+        PROTECTED_FILES = [
+            "/etc/nonzeroclaw/workspace/.clash/policy.star",
+            "/etc/nonzeroclaw/config.toml",
+            "/etc/nonzeroclaw-david/workspace/.clash/policy.star",
+            "/etc/nonzeroclaw-david/config.toml",
+            "/usr/local/bin/nonzeroclaw",
+        ]
+        for protected in PROTECTED_FILES:
+            if path == protected or path.endswith(protected):
+                return "deny:Protected file — Lucien cannot modify: " + path
+        return "allow"
 
     # ── File write: research profile must review ───────────────────────────
     if action == "tool:file_write" and identity in RESEARCH_IDENTITIES:

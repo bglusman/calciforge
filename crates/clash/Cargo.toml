@@ -9,3 +9,6 @@ license = "MIT"
 anyhow = "1.0"
 starlark = "0.13"
 tracing = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+proptest = "1"
