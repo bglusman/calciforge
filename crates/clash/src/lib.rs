@@ -16,6 +16,9 @@ mod starlark_policy;
 mod policy_tests;
 
 #[cfg(test)]
+mod adversarial_tests;
+
+#[cfg(test)]
 mod policy_proptest;
 
 pub use starlark_policy::StarlarkPolicy;
