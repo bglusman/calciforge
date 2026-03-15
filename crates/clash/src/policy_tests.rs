@@ -264,6 +264,38 @@ fn allow_ls() {
     assert_allow(verdict, "ls /tmp");
 }
 
+/// ls / must be Allow — is_root_wipe() only fires for known destructive commands.
+#[test]
+fn allow_ls_root() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "ls /"));
+    assert_allow(verdict, "ls / (root listing is safe, not a root wipe)");
+}
+
+/// cat / must be Allow — reading root dir is safe.
+#[test]
+fn allow_cat_root() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "cat /"));
+    assert_allow(verdict, "cat / (reading root dir is safe)");
+}
+
+/// df / must be Allow — disk usage query is read-only.
+#[test]
+fn allow_df_root() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "df /"));
+    assert_allow(verdict, "df / (disk usage query is safe)");
+}
+
+/// rm / (no flags, no -rf) targets root — still a root wipe attempt, must Deny.
+#[test]
+fn deny_rm_bare_root() {
+    let policy = nzc_policy();
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "rm /"));
+    assert_deny(verdict, "rm / (bare rm targeting root is still a wipe attempt)");
+}
+
 #[test]
 fn allow_cat_etc_hosts() {
     let policy = nzc_policy();
@@ -714,12 +746,15 @@ fn test_safe_commands_allowed_for_admin() {
     let policy = nzc_policy();
     let safe_cmds = &[
         "ls /etc",
+        "ls /",
         "cat /etc/hosts",
+        "cat /",
+        "df -h",
+        "df /",
         "systemctl status nonzeroclaw",
         "git status",
         "echo hello",
         "pwd",
-        "df -h",
         "ps aux",
     ];
 
