@@ -1,14 +1,9 @@
-# NZC Clash Policy — safety rules for all identities
+# NZC Clash Base Policy — command and action enforcement, no identity branching.
 #
-# Profiles:
-#   research  (renee, david)          — read-only shell, no file writes without review
-#   admin     (brian, lucien, max,    — full shell access; lucien has extra file-write
-#              nonzeroclaw)             restrictions to protect policy files
-#   system    (librarian, custodian)  — full access; policy edits authoritative here
-
-RESEARCH_IDENTITIES = ["renee", "david"]
-ADMIN_IDENTITIES = ["brian", "lucien", "max", "nonzeroclaw"]
-SYSTEM_IDENTITIES = ["librarian", "custodian"]
+# Identity-specific restrictions live in profiles/{identity}.star.
+# Base policy runs first; profiles can only add restrictions (never loosen).
+#
+# Identities with NO profile file (brian, max, nonzeroclaw, etc.) get base policy only.
 
 # Commands that are ALWAYS denied — no exceptions, no approval path.
 # NOTE: Use specific-enough patterns to avoid false positives.
@@ -38,14 +33,6 @@ REVIEW_PATTERNS = [
     "pvremove",             # LVM physical volume remove
     "cryptsetup luksFormat", # LUKS format (destroys data)
     "truncate -s 0",        # truncate file to zero
-]
-
-# Read-only shell commands allowed for research profile
-RESEARCH_ALLOWED_COMMANDS = [
-    "ls", "cat", "grep", "find", "echo", "pwd", "wc", "head", "tail",
-    "date", "curl", "wget", "df", "du", "ps", "free", "uname", "which",
-    "hostname", "whoami", "id", "env", "stat", "file", "sort", "uniq",
-    "cut", "tr", "awk", "sed", "jq", "python3", "diff", "md5sum", "sha256sum",
 ]
 
 def normalize(cmd):
@@ -110,34 +97,6 @@ def evaluate(action, identity, agent, command="", path=""):
         # Review gate — blocked pending human approval
         if command_matches_any(command, REVIEW_PATTERNS):
             return "review:Command requires approval: " + command[:80]
-
-        # Research profile: restrict to read-only commands
-        if identity in RESEARCH_IDENTITIES:
-            cmd_first = first_word(command)
-            if cmd_first not in RESEARCH_ALLOWED_COMMANDS:
-                return "deny:Shell command not permitted for " + identity + " profile: " + cmd_first
-
-    # ── File write: Lucien-specific restrictions ───────────────────────────
-    # Lucien is the infrastructure guardian on .210. Policy files live on
-    # Librarian (.229) and are deployed via the monorepo.
-    # Lucien must never self-modify the specific files that govern him.
-    # He is NOT path-restricted otherwise — only specific files are protected.
-    if action == "tool:file_write" and identity == "lucien":
-        PROTECTED_FILES = [
-            "/etc/nonzeroclaw/workspace/.clash/policy.star",
-            "/etc/nonzeroclaw/config.toml",
-            "/etc/nonzeroclaw-david/workspace/.clash/policy.star",
-            "/etc/nonzeroclaw-david/config.toml",
-            "/usr/local/bin/nonzeroclaw",
-        ]
-        for protected in PROTECTED_FILES:
-            if path == protected or path.endswith(protected):
-                return "deny:Protected file — Lucien cannot modify: " + path
-        return "allow"
-
-    # ── File write: research profile must review ───────────────────────────
-    if action == "tool:file_write" and identity in RESEARCH_IDENTITIES:
-        return "review:File write requires approval for " + identity
 
     # ── Allow everything else ──────────────────────────────────────────────
     return "allow"

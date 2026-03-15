@@ -249,12 +249,12 @@ def evaluate(action, identity, agent, command="", path=""):
 
     // ── Lucien-specific policy tests ─────────────────────────────────────
 
-    /// Load the real example policy.star so we're testing actual deployed logic,
-    /// not a hand-written inline stub.
+    /// Load the real example policy.star with profile chain so we're testing actual deployed logic,
+    /// not a hand-written inline stub. Uses load_with_profiles() so profiles/ dir is enabled.
     fn load_example_policy() -> StarlarkPolicy {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("examples/policy.star");
-        StarlarkPolicy::load(path)
+        StarlarkPolicy::load_with_profiles(path)
     }
 
     #[test]
