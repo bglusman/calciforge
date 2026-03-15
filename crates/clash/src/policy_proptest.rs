@@ -140,16 +140,16 @@ proptest! {
 // ─────────────────────────────────────────────────────────────────────────────
 // Property 5: Safe read-only commands always Allow for all identities
 //
-// NOTE: The policy's is_root_wipe() checks for any token equal to "/" or "/*"
-// at any position in a command — not just after "rm -rf". This means `ls /`
-// triggers the root-wipe deny path, which is a known conservative policy
-// behavior (the policy prefers false positives over false negatives for "/" args).
-// We exclude bare "/" and "/*" from the args to test the invariant cleanly.
+// NOTE: is_root_wipe() now only fires for known destructive commands (rm, shred,
+// dd, wipe, srm). Read-only commands like ls, cat, df are NOT destructive, so
+// `ls /` and `cat /` correctly return Allow even with bare "/" as an argument.
+// We can now include "/" and "/*" in the proptest args safely.
 // ─────────────────────────────────────────────────────────────────────────────
 
 proptest! {
-    /// Safe read-only command bases (`ls`, `cat`, etc.) with random non-root args
-    /// must always return Allow for admin identities.
+    /// Safe read-only command bases (`ls`, `cat`, etc.) with random args (including
+    /// bare "/" — now safe since is_root_wipe() requires destructive commands) must
+    /// always return Allow for admin identities.
     #[test]
     fn prop_safe_commands_always_allow(
         // Only admin identities — research is separately gated by RESEARCH_ALLOWED_COMMANDS
@@ -159,9 +159,9 @@ proptest! {
             Just("max"),
             Just("nonzeroclaw"),
         ],
-        // Exclude bare "/" and "/*" which trigger is_root_wipe() conservatively.
-        // Use paths with at least one sub-component (e.g. /tmp, /etc/hosts).
-        args in "[a-zA-Z0-9._-]{0,20}",
+        // Now includes paths like "/" since is_root_wipe() is narrowed to destructive
+        // commands only. ls /, cat /, df / are all Allow.
+        args in "[a-zA-Z0-9._/-]{0,20}",
     ) {
         let safe_cmds = ["ls", "cat", "grep", "find", "echo", "pwd", "hostname"];
         for cmd_base in &safe_cmds {

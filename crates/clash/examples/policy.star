@@ -63,16 +63,28 @@ def command_matches_any(cmd, patterns):
             return True
     return False
 
+WIPE_COMMANDS = ["rm", "shred", "dd", "wipe", "srm"]
+
 def is_root_wipe(cmd):
-    """Detect rm targeting the root filesystem specifically (not just any absolute path)."""
+    """Detect commands targeting the root filesystem specifically.
+    Only fires for known destructive commands — not read-only commands like ls, cat, df.
+    """
     cmd_stripped = cmd.strip()
-    # Match: rm -rf / or rm -rf /* (with nothing else after the slash)
-    # but NOT rm -rf /tmp/foo or rm -rf /var/log/something
     parts = cmd_stripped.split()
+    if not parts:
+        return False
+
+    # Only destructive commands can be root wipes
+    base = parts[0].split("/")[-1].lower()  # basename, lowercase
+    if base not in WIPE_COMMANDS:
+        return False
+
+    # Check if any argument is exactly / or /*
     for i, part in enumerate(parts):
-        if part in ["/", "/*"] and i > 0:
+        if i == 0:
+            continue  # skip the command itself
+        if part in ["/", "/*"]:
             return True
-        # Also catch quoted variants like rm -rf "/"
         if part in ['"/\"', "'/'"]:
             return True
     return False
