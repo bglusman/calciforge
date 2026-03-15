@@ -177,6 +177,10 @@ libc = "0.2"
 
 [features]
 default = []
+# Passthrough modules re-exported from the upstream zeroclawlabs crate.
+# Enable to pull upstream fixes for non-vendored modules via `cargo update`.
+# See HYBRID-ARCHITECTURE.md for the full passthrough plan.
+zeroclawlabs = ["dep:zeroclawlabs"]
 hardware = ["nusb", "tokio-serial"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]

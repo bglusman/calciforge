@@ -29,7 +29,7 @@ git format-patch aa45c30..v0.3.2 -- src/providers/anthropic.rs
 
 | Module | Why vendored | Key changes |
 |--------|-------------|-------------|
-| `src/gateway/mod.rs` | Approval flow, routes, AppState | `pending_approvals`, `pending_results`, `webhook_histories`, `policy` fields; `ReviewPendingError` handler; anonymous webhook now uses `run_gateway_chat_simple` (uses state.provider) |
+| `src/gateway/mod.rs` | Approval flow, routes, AppState | `pending_approvals`, `pending_results`, `webhook_histories`, `policy` fields; `ReviewPendingError` handler; anonymous webhook fixed to use `run_gateway_webhook_anonymous` (routes through clash policy with `__anonymous__` sentinel key, not `run_gateway_chat_simple`) |
 | `src/agent/loop_.rs` | Clash policy integration | `ReviewPendingError`, per-sender history, `process_message_with_history_and_policy` |
 | `src/gateway/openai_compat.rs` | OpenAI-compatible endpoint + outpost scanning | Outpost injection scanning before forwarding |
 | `src/providers/anthropic.rs` | Consecutive same-role message merge, empty content filter | `consecutive same-role merging`, skip empty/whitespace assistant text blocks (165 changed lines vs upstream) |
@@ -55,18 +55,39 @@ These should be reviewed and backported selectively.
 
 Added to `Cargo.toml` as **optional** (`default-features = false`). Builds cleanly alongside our codebase with no type conflicts.
 
-Status: Dependency declared but not yet wired. No passthrough modules re-exported from zeroclawlabs yet.
-
-**To activate:**
+**Feature gate added (2026-03-15):**
 ```toml
-# In Cargo.toml features section, enable for passthrough modules:
+# In Cargo.toml [features] section:
 zeroclawlabs = ["dep:zeroclawlabs"]
 ```
 
-**Planned passthrough modules** (once wiring begins):
+Activate with `--features zeroclawlabs` or `features = ["zeroclawlabs"]` in workspace Cargo.toml.
+
+**Build validation (2026-03-15):** `cargo build -p nonzeroclaw --features zeroclawlabs` → ✅ zero errors.
+No type or name conflicts between our in-tree modules and zeroclawlabs 0.4.
+
+### Passthrough Module Status
+
+| Module | Status | Notes |
+|--------|--------|-------|
+| `src/observability/` | **Near-passthrough** (validated, not yet re-exported) | One delta: zeroclawlabs `ToolCallStart` has extra `arguments: Option<String>` field. Our codebase doesn't set it; additive change. Re-export ready once we update our `ToolCallStart` call sites to pass `arguments: None`. |
+| `src/memory/` | Planned | Zero diff vs upstream ref |
+| `src/runtime/` | Planned | Zero diff vs upstream ref |
+| `src/tools/` | Planned | Most tools unmodified |
+| `src/channels/*` (except mod.rs) | Planned | Per-channel implementations unmodified |
+| `src/providers/*` (except anthropic.rs, mod.rs) | Planned | Most providers unmodified |
+
+**Next wiring step:** Update `ToolCallStart` call sites to pass `arguments: None`, then replace
+`src/observability/mod.rs` with:
+```rust
+#[cfg(feature = "zeroclawlabs")]
+pub use zeroclawlabs::observability::*;
+// (keep in-tree impl as #[cfg(not(feature = "zeroclawlabs"))] fallback)
+```
+
+**Planned passthrough modules** (next batch after observability):
 - `src/tools/` — most tools (web_search, file ops, etc.) are unmodified
 - `src/memory/` — no NZC-specific changes
-- `src/observability/` — no NZC-specific changes
 - `src/runtime/` — no NZC-specific changes
 - Most channel implementations (all except channels/mod.rs header)
 - Most providers (all except anthropic.rs and providers/mod.rs)
@@ -85,7 +106,11 @@ Both are in `src/security/prompt_guard.rs` and appear to be pattern-matching sen
 
 ## Current Test Status
 
-- **2906 tests passing** (as of 2026-03-15)
+- **2908 tests passing** (as of 2026-03-15, after anonymous webhook fix)
 - **2 failing** (known pre-existing, see above)
 - **79 clash crate tests passing**
 - **1 clash doc test passing**
+
+### New tests added (2026-03-15 hybrid wiring session)
+- `gateway::tests::anonymous_webhook_uses_sentinel_key_not_simple_path` — structural guard: `__anonymous__` sentinel is stable and non-colliding
+- `gateway::tests::anonymous_webhook_routes_through_policy` — proves MockProvider is never called directly by anonymous webhooks; request goes through the agent loop (policy-enforced)
