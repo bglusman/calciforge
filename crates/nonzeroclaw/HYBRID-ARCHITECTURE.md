@@ -70,22 +70,35 @@ No type or name conflicts between our in-tree modules and zeroclawlabs 0.4.
 
 | Module | Status | Notes |
 |--------|--------|-------|
-| `src/observability/` | **Near-passthrough** (validated, not yet re-exported) | One delta: zeroclawlabs `ToolCallStart` has extra `arguments: Option<String>` field. Our codebase doesn't set it; additive change. Re-export ready once we update our `ToolCallStart` call sites to pass `arguments: None`. |
-| `src/memory/` | Planned | Zero diff vs upstream ref |
-| `src/runtime/` | Planned | Zero diff vs upstream ref |
+| `src/observability/` | **Passthrough candidate** (structurally aligned, not yet re-exported) | `ToolCallStart` now has `arguments: Option<String>` field matching zeroclaw 0.4. All call sites updated (`arguments: None`). Full re-export blocked by trait-alignment requirement: local impls need to implement `zeroclaw::observability::Observer`. Annotated in mod.rs. |
+| `src/memory/` | **Passthrough candidate** | Zero diff vs upstream ref. Annotated in mod.rs. |
+| `src/runtime/` | **Passthrough candidate** | Zero diff vs upstream ref. Annotated in mod.rs. |
 | `src/tools/` | Planned | Most tools unmodified |
 | `src/channels/*` (except mod.rs) | Planned | Per-channel implementations unmodified |
 | `src/providers/*` (except anthropic.rs, mod.rs) | Planned | Most providers unmodified |
 
-**Next wiring step:** Update `ToolCallStart` call sites to pass `arguments: None`, then replace
-`src/observability/mod.rs` with:
+**Next wiring step (full trait alignment for observability):**
+
+The `pub use zeroclaw::observability::*` re-export requires our in-tree observers
+to implement the upstream trait. The pattern:
+
 ```rust
+// In noop.rs, log.rs, prometheus.rs, etc.:
 #[cfg(feature = "zeroclawlabs")]
-pub use zeroclawlabs::observability::*;
-// (keep in-tree impl as #[cfg(not(feature = "zeroclawlabs"))] fallback)
+impl zeroclaw::observability::Observer for NoopObserver { ... }
+#[cfg(not(feature = "zeroclawlabs"))]
+impl crate::observability::traits::Observer for NoopObserver { ... }
 ```
 
-**Planned passthrough modules** (next batch after observability):
+Or alternatively, add a blanket impl:
+```rust
+// If zeroclaw::observability::Observer and our local Observer have identical signatures,
+// impl<T: crate::observability::Observer> zeroclaw::observability::Observer for T { ... }
+```
+
+This is ~50 lines of boilerplate per observer (4-5 observers). Worthwhile once pattern is confirmed clean.
+
+**Planned passthrough modules** (next batch after observability trait alignment):
 - `src/tools/` — most tools (web_search, file ops, etc.) are unmodified
 - `src/memory/` — no NZC-specific changes
 - `src/runtime/` — no NZC-specific changes
@@ -114,3 +127,10 @@ Both are in `src/security/prompt_guard.rs` and appear to be pattern-matching sen
 ### New tests added (2026-03-15 hybrid wiring session)
 - `gateway::tests::anonymous_webhook_uses_sentinel_key_not_simple_path` — structural guard: `__anonymous__` sentinel is stable and non-colliding
 - `gateway::tests::anonymous_webhook_routes_through_policy` — proves MockProvider is never called directly by anonymous webhooks; request goes through the agent loop (policy-enforced)
+
+### Changes (2026-03-15 passthrough annotation session)
+- `ObserverEvent::ToolCallStart` — added `arguments: Option<String>` field to match zeroclaw 0.4 struct layout
+- All `ToolCallStart` construction sites updated with `arguments: None`
+- All `ToolCallStart` pattern match sites updated to use `{ tool, .. }` (ignores extra fields)
+- `memory/mod.rs`, `runtime/mod.rs`, `observability/mod.rs` — annotated as PASSTHROUGH CANDIDATE
+- HYBRID-ARCHITECTURE.md — updated with trait-alignment path for full observability re-export
