@@ -674,7 +674,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     // Load from <workspace>/.clash/policy.star; falls back to PermissivePolicy.
     let policy: Arc<dyn ClashPolicy> = {
         let policy_path = config.workspace_dir.join(".clash").join("policy.star");
-        Arc::new(clash::StarlarkPolicy::load(policy_path))
+        Arc::new(clash::StarlarkPolicy::load_with_profiles(policy_path))
     };
 
     let state = AppState {

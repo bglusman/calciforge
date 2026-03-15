@@ -13,6 +13,16 @@
 //!     return "allow"
 //! ```
 //!
+//! # Profile chain evaluation
+//!
+//! `load_with_profiles()` enables per-identity profile evaluation:
+//!
+//! 1. Base `policy.star` runs first. If Deny/Review → return immediately.
+//! 2. If Allow, check if `profiles/{identity}.star` exists → run it.
+//! 3. Final verdict = most restrictive of (base, profile).
+//!
+//! Profiles can ONLY add restrictions. They cannot override a base Deny to Allow.
+//!
 //! # Thread safety
 //!
 //! The compiled Starlark module is frozen after loading, making its values
@@ -32,11 +42,15 @@ use crate::{ClashPolicy, PolicyContext, PolicyVerdict};
 
 /// Starlark-backed policy engine.
 ///
-/// Constructed via [`StarlarkPolicy::load`] or [`StarlarkPolicy::from_source`].
+/// Constructed via [`StarlarkPolicy::load`], [`StarlarkPolicy::load_with_profiles`],
+/// or [`StarlarkPolicy::from_source`].
 /// Falls back to permissive (allow all) when the policy file is missing or
 /// fails to compile.
 pub struct StarlarkPolicy {
     inner: Inner,
+    /// Directory containing per-identity profile `.star` files.
+    /// When set, `ClashPolicy::evaluate` will chain base policy → profile policy.
+    profiles_dir: Option<PathBuf>,
 }
 
 enum Inner {
@@ -63,7 +77,7 @@ impl StarlarkPolicy {
                 path = %path.display(),
                 "clash: policy file not found — falling back to permissive mode"
             );
-            return Self { inner: Inner::Permissive };
+            return Self { inner: Inner::Permissive, profiles_dir: None };
         }
 
         let source = match std::fs::read_to_string(&path) {
@@ -74,12 +88,33 @@ impl StarlarkPolicy {
                     error = %e,
                     "clash: failed to read policy file — falling back to permissive mode"
                 );
-                return Self { inner: Inner::Permissive };
+                return Self { inner: Inner::Permissive, profiles_dir: None };
             }
         };
 
         let filename = path.to_string_lossy().into_owned();
         Self::from_source(&filename, &source)
+    }
+
+    /// Load a base policy and enable per-identity profile chain evaluation.
+    ///
+    /// Profile files live at `{policy_dir}/profiles/{identity}.star`.
+    /// Identities with no profile file run base policy only.
+    ///
+    /// # Chain evaluation
+    ///
+    /// 1. Base policy runs first → if Deny/Review, return immediately.
+    /// 2. If Allow, look up `profiles/{identity}.star`.
+    /// 3. If found, run the profile → return its verdict.
+    /// 4. Profile can only add restrictions (Deny/Review). It cannot loosen Allow.
+    pub fn load_with_profiles(policy_path: PathBuf) -> Self {
+        let profiles_dir = policy_path
+            .parent()
+            .map(|p| p.join("profiles"));
+
+        let mut policy = Self::load(policy_path);
+        policy.profiles_dir = profiles_dir;
+        policy
     }
 
     /// Build a policy from a Starlark source string.
@@ -88,14 +123,14 @@ impl StarlarkPolicy {
     /// Falls back to permissive if the source fails to parse or compile.
     pub fn from_source(filename: &str, source: &str) -> Self {
         match Self::compile(filename, source) {
-            Ok(inner) => Self { inner },
+            Ok(inner) => Self { inner, profiles_dir: None },
             Err(e) => {
                 tracing::error!(
                     filename = %filename,
                     error = %e,
                     "clash: policy compilation failed — falling back to permissive mode"
                 );
-                Self { inner: Inner::Permissive }
+                Self { inner: Inner::Permissive, profiles_dir: None }
             }
         }
     }
@@ -167,6 +202,54 @@ impl StarlarkPolicy {
         }
     }
 
+    /// Evaluate base policy only (no profile chain).
+    ///
+    /// This is the raw evaluation without profile lookup. Used internally
+    /// by `evaluate_for_identity` and for profile policy objects (which don't
+    /// themselves have a `profiles_dir`).
+    fn evaluate_base(&self, action: &str, context: &PolicyContext) -> PolicyVerdict {
+        match &self.inner {
+            Inner::Permissive => PolicyVerdict::Allow,
+            Inner::Loaded { evaluate_fn, .. } => {
+                self.call_evaluate(evaluate_fn, action, context)
+            }
+        }
+    }
+
+    /// Evaluate with profile chain: base first, then identity profile if exists.
+    ///
+    /// Profile can only add restrictions (Deny/Review), never loosen Allow.
+    ///
+    /// If no `profiles_dir` is set, falls back to base evaluation only.
+    pub fn evaluate_for_identity(&self, action: &str, context: &PolicyContext) -> PolicyVerdict {
+        let base_verdict = self.evaluate_base(action, context);
+
+        // If base already denied or requested review, profile can't change that
+        match &base_verdict {
+            PolicyVerdict::Deny(_) | PolicyVerdict::Review(_) => return base_verdict,
+            PolicyVerdict::Allow => {}
+        }
+
+        // Base allowed — check if there's a profile for this identity
+        if let Some(profiles_dir) = &self.profiles_dir {
+            let profile_path = profiles_dir.join(format!("{}.star", context.identity));
+            if profile_path.exists() {
+                let profile = StarlarkPolicy::load(profile_path.clone());
+                let profile_verdict = profile.evaluate_base(action, context);
+                // Profile can only add restrictions — return its verdict (Deny/Review/Allow)
+                // Since base already returned Allow, the profile verdict is the final answer.
+                tracing::debug!(
+                    identity = %context.identity,
+                    profile = %profile_path.display(),
+                    "clash: profile evaluated for identity"
+                );
+                return profile_verdict;
+            }
+        }
+
+        base_verdict  // No profile, return base Allow
+    }
+
     /// Parse a verdict string into a [`PolicyVerdict`].
     ///
     /// Accepted formats:
@@ -199,12 +282,7 @@ impl StarlarkPolicy {
 
 impl ClashPolicy for StarlarkPolicy {
     fn evaluate(&self, action: &str, context: &PolicyContext) -> PolicyVerdict {
-        match &self.inner {
-            Inner::Permissive => PolicyVerdict::Allow,
-            Inner::Loaded { evaluate_fn, .. } => {
-                self.call_evaluate(evaluate_fn, action, context)
-            }
-        }
+        self.evaluate_for_identity(action, context)
     }
 }
 
