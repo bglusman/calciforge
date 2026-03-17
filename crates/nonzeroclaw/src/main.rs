@@ -734,6 +734,27 @@ async fn main() -> Result<()> {
     // All other commands need config loaded first
     let mut config = Config::load_or_init().await?;
     config.apply_env_overrides();
+
+    // Validate alloy configuration at startup (fail fast)
+    if let Some(ref provider) = config.default_provider {
+        let runtime_opts = providers::ProviderRuntimeOptions {
+            auth_profile_override: None,
+            zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
+            secrets_encrypt: config.secrets.encrypt,
+            reasoning_enabled: config.runtime.reasoning_enabled,
+            alloy_aliases: config.alloy_aliases.clone(),
+        };
+        if let Err(e) = providers::alloy::validate_alloy_config(
+            provider,
+            config.api_key.as_deref(),
+            &runtime_opts,
+            &config.alloy_aliases,
+        ) {
+            eprintln!("Error: Invalid alloy configuration: {e}");
+            std::process::exit(1);
+        }
+    }
+
     observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
     if config.security.otp.enabled {
         let config_dir = config
