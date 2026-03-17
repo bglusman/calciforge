@@ -57,11 +57,22 @@ impl ResponseMessage {
 struct NativeChatRequest {
     model: String,
     messages: Vec<NativeMessage>,
-    temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<NativeToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+}
+
+/// Check if a model is a GPT-5 series model that has special requirements:
+/// - Only supports temperature=1.0 (or omit it)
+/// - Uses max_completion_tokens instead of max_tokens
+fn is_gpt5_model(model: &str) -> bool {
+    let model_lower = model.to_lowercase();
+    model_lower.contains("gpt-5") || model_lower.starts_with("gpt-5")
 }
 
 #[derive(Debug, Serialize)]
@@ -361,10 +372,27 @@ impl Provider for OpenAiProvider {
         })?;
 
         let tools = Self::convert_tools(request.tools);
+        
+        // GPT-5 models have special requirements:
+        // - Only support temperature=1.0 (so we omit it unless it's exactly 1.0)
+        // - Use max_completion_tokens instead of max_tokens
+        let is_gpt5 = is_gpt5_model(model);
+        let temperature_opt = if is_gpt5 {
+            // GPT-5 only supports temperature=1.0, so omit if not default
+            if (temperature - 1.0).abs() < f64::EPSILON {
+                Some(temperature)
+            } else {
+                None // Omit temperature for GPT-5 when not default
+            }
+        } else {
+            Some(temperature)
+        };
+        
         let native_request = NativeChatRequest {
             model: model.to_string(),
             messages: Self::convert_messages(request.messages),
-            temperature,
+            temperature: temperature_opt,
+            max_completion_tokens: None, // Could be added to request struct in future
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
         };
