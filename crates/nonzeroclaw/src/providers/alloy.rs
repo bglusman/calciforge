@@ -230,7 +230,7 @@ pub fn create_alloy_provider(
     options: &super::ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
     let specs = AlloyProvider::parse_model_string(model)?;
-    
+
     if specs.len() < 2 {
         anyhow::bail!(
             "Alloy provider requires at least 2 constituent providers, got {}",
@@ -247,11 +247,86 @@ pub fn create_alloy_provider(
             api_key,
             options,
         )?;
-        
+
         providers.push((provider_name, model_override, provider));
     }
 
     Ok(Box::new(AlloyProvider::new(providers)))
+}
+
+/// Resolve an alloy alias from the config map.
+/// Returns the resolved alloy spec (with "alloy:" prefix) or the original input.
+pub fn resolve_alloy_alias<'a>(
+    provider: &'a str,
+    aliases: &'a std::collections::HashMap<String, String>,
+) -> &'a str {
+    // Only resolve if it doesn't already start with "alloy:"
+    if provider.starts_with("alloy:") || !aliases.contains_key(provider) {
+        return provider;
+    }
+    // Return the aliased value
+    aliases.get(provider).map(|s| s.as_str()).unwrap_or(provider)
+}
+
+/// Validate an alloy configuration at startup.
+/// This creates all constituent providers to ensure they work.
+pub fn validate_alloy_config(
+    provider: &str,
+    api_key: Option<&str>,
+    options: &super::ProviderRuntimeOptions,
+    aliases: &std::collections::HashMap<String, String>,
+) -> anyhow::Result<()> {
+    let resolved = resolve_alloy_alias(provider, aliases);
+
+    // If not an alloy after alias resolution, nothing to validate here
+    if !resolved.starts_with("alloy:") {
+        return Ok(());
+    }
+
+    tracing::info!(provider = provider, resolved = resolved, "Validating alloy configuration");
+
+    let specs = AlloyProvider::parse_model_string(resolved)?;
+
+    if specs.len() < 2 {
+        anyhow::bail!(
+            "Alloy provider '{}' requires at least 2 constituent providers, got {}",
+            provider,
+            specs.len()
+        );
+    }
+
+    // Try to create each constituent provider to validate
+    let mut errors = Vec::new();
+    for (provider_name, model_override) in &specs {
+        match super::create_provider_with_options(provider_name, api_key, options) {
+            Ok(_) => {
+                tracing::info!(
+                    provider = provider_name,
+                    model = model_override.as_deref().unwrap_or("default"),
+                    "Alloy constituent validated"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    provider = provider_name,
+                    error = %e,
+                    "Alloy constituent validation failed"
+                );
+                errors.push(format!("{}: {}", provider_name, e));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "Alloy '{}' validation failed for constituents: {}",
+            provider,
+            errors.join(", ")
+        );
+    }
+
+    tracing::info!(provider = provider, constituents = specs.len(), "Alloy configuration validated successfully");
+    Ok(())
 }
 
 #[cfg(test)]

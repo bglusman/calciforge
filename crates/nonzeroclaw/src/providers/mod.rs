@@ -17,6 +17,7 @@
 //! in [`create_provider_with_url`]. See `AGENTS.md` §7.1 for the full change playbook.
 
 pub mod alloy;
+pub use alloy::{create_alloy_provider, validate_alloy_config};
 pub mod anthropic;
 pub mod bedrock;
 pub mod compatible;
@@ -676,6 +677,7 @@ pub struct ProviderRuntimeOptions {
     pub zeroclaw_dir: Option<PathBuf>,
     pub secrets_encrypt: bool,
     pub reasoning_enabled: Option<bool>,
+    pub alloy_aliases: std::collections::HashMap<String, String>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -685,6 +687,7 @@ impl Default for ProviderRuntimeOptions {
             zeroclaw_dir: None,
             secrets_encrypt: true,
             reasoning_enabled: None,
+            alloy_aliases: std::collections::HashMap::new(),
         }
     }
 }
@@ -943,6 +946,19 @@ fn create_provider_with_url_and_options(
     api_url: Option<&str>,
     options: &ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
+    // Handle alloy provider first (before credential resolution)
+    if name.starts_with("alloy:") {
+        return alloy::create_alloy_provider(name, api_key, options);
+    }
+
+    // Handle alloy aliases (e.g., "my-alloy" -> "alloy:provider1,provider2")
+    // Note: aliases are resolved at the call site with config, but we check here too
+    if let Some(aliased) = options.alloy_aliases.get(name) {
+        if aliased.starts_with("alloy:") {
+            return alloy::create_alloy_provider(aliased, api_key, options);
+        }
+    }
+
     let qwen_oauth_context = is_qwen_oauth_alias(name).then(|| resolve_qwen_oauth_context(api_key));
 
     // Resolve credential and break static-analysis taint chain from the

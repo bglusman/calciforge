@@ -193,6 +193,10 @@ pub struct Config {
     #[serde(default)]
     pub peripherals: PeripheralsConfig,
 
+    /// Named alloy aliases — reusable multi-provider mixes (`[alloy_aliases]`).
+    #[serde(default)]
+    pub alloy_aliases: std::collections::HashMap<String, String>,
+
     /// Delegate agent configurations for multi-agent workflows.
     #[serde(default)]
     pub agents: HashMap<String, DelegateAgentConfig>,
