@@ -16,6 +16,7 @@
 //! To add a new provider, implement [`Provider`] in a new submodule and register it
 //! in [`create_provider_with_url`]. See `AGENTS.md` §7.1 for the full change playbook.
 
+pub mod alloy;
 pub mod anthropic;
 pub mod bedrock;
 pub mod compatible;
@@ -917,6 +918,9 @@ pub fn create_provider_with_options(
     match name {
         "openai-codex" | "openai_codex" | "codex" => {
             Ok(Box::new(openai_codex::OpenAiCodexProvider::new(options)))
+        }
+        name if name.starts_with("alloy:") => {
+            alloy::create_alloy_provider(name, api_key, options)
         }
         _ => create_provider_with_url_and_options(name, api_key, None, options),
     }
