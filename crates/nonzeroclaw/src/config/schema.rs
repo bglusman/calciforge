@@ -3482,6 +3482,7 @@ impl Default for Config {
             default_provider: Some("openrouter".to_string()),
             default_model: Some("anthropic/claude-sonnet-4.6".to_string()),
             default_temperature: 0.7,
+            alloy_aliases: HashMap::new(),
             observability: ObservabilityConfig::default(),
             autonomy: AutonomyConfig::default(),
             security: SecurityConfig::default(),
