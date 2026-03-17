@@ -399,7 +399,7 @@ Every subsystem is a **trait** — swap implementations with a config change, ze
 
 | Subsystem | Trait | Ships with | Extend |
 |-----------|-------|------------|--------|
-| **AI Models** | `Provider` | Provider catalog via `zeroclaw providers` (built-ins + aliases, plus custom endpoints) | `custom:https://your-api.com` (OpenAI-compatible) or `anthropic-custom:https://your-api.com` |
+| **AI Models** | `Provider` | Provider catalog via `zeroclaw providers` (built-ins + aliases, plus custom endpoints); **Agent Alloys** for multi-model mixing | `custom:https://your-api.com` (OpenAI-compatible) or `anthropic-custom:https://your-api.com` |
 | **Channels** | `Channel` | CLI, Telegram, Discord, Slack, Mattermost, iMessage, Matrix, Signal, WhatsApp, Linq, Email, IRC, Lark, DingTalk, QQ, Nostr, Webhook | Any messaging API |
 | **Memory** | `Memory` | SQLite hybrid search, PostgreSQL backend (configurable storage provider), Lucid bridge, Markdown files, explicit `none` backend, snapshot/hydrate, optional response cache | Any persistence backend |
 | **Tools** | `Tool` | shell/file/memory, cron/schedule, git, pushover, browser, http_request, screenshot/image_info, composio (opt-in), delegate, hardware tools | Any capability |
@@ -418,6 +418,30 @@ Every subsystem is a **trait** — swap implementations with a config change, ze
 - 🚧 Planned, not implemented yet: WASM / edge runtimes
 
 When an unsupported `runtime.kind` is configured, ZeroClaw now exits with a clear error instead of silently falling back to native.
+
+### Agent Alloys (Multi-Provider Mixing)
+
+Combine multiple LLMs into a single "alloy" provider that randomly selects a model per turn. Inspired by [XBOW's research](https://xbow.com/blog/alloy-agents/).
+
+**Why alloys?** Different models excel at different tasks. By mixing providers, you get the best of each — Sonnet's reasoning, Gemini's creativity, etc. — automatically.
+
+**Usage:**
+```toml
+default_provider = "alloy:anthropic/claude-sonnet-4,google/gemini-2.5-pro"
+```
+
+**Format:**
+- `alloy:provider1,provider2` — equal random mix
+- `alloy:provider1/model1,provider2/model2` — specific models
+- `alloy:anthropic/claude-3-5-sonnet,google,openai/gpt-4` — mixed with defaults
+
+**How it works:**
+- Each chat turn randomly selects a provider from the alloy
+- All models share the same conversation thread (history)
+- Each model thinks it wrote the previous assistant messages
+- Selection is deterministic per message (no stateful RNG)
+
+**Future:** Weighted selection and strategy modes (alternate, adaptive) coming in Phase 2.
 
 ### Memory System (Full-Stack Search Engine)
 
@@ -631,6 +655,12 @@ default_temperature = 0.7
 
 # Custom Anthropic-compatible endpoint
 # default_provider = "anthropic-custom:https://your-api.com"
+
+# Agent Alloys — combine multiple providers per turn
+# Inspired by XBOW: https://xbow.com/blog/alloy-agents/
+# Format: alloy:provider1/model1,provider2/model2
+# Each turn randomly selects a provider; conversation history is shared.
+# default_provider = "alloy:anthropic/claude-sonnet-4,google/gemini-2.5-pro"
 
 [memory]
 backend = "sqlite"             # "sqlite", "lucid", "postgres", "markdown", "none"
