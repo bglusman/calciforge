@@ -415,8 +415,21 @@ impl CommandHandler {
             .active_agent_for(identity_id)
             .unwrap_or_else(|| "none".to_string());
 
+        // Get model/provider info for the active agent
+        let model_info = self.config.agents.get(&active_agent)
+            .map(|agent| {
+                let model = agent.model.as_deref().unwrap_or("default");
+                let provider = &agent.kind;
+                if provider.contains("alloy") || model.contains("alloy") {
+                    format!("\n  provider: {provider} (alloy)\n  model: {model}")
+                } else {
+                    format!("\n  provider: {provider}\n  model: {model}")
+                }
+            })
+            .unwrap_or_default();
+
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -580,8 +593,21 @@ impl CommandHandler {
             .map(|r| r.default_agent.as_str())
             .unwrap_or("none");
 
+        // Get model/provider info for the default agent
+        let model_info = self.config.agents.get(default_agent)
+            .map(|agent| {
+                let model = agent.model.as_deref().unwrap_or("default");
+                let provider = &agent.kind;
+                if provider.contains("alloy") || model.contains("alloy") {
+                    format!("\n  provider: {provider} (alloy)\n  model: {model}")
+                } else {
+                    format!("\n  provider: {provider}\n  model: {model}")
+                }
+            })
+            .unwrap_or_default();
+
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
         )
     }
 
