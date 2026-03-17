@@ -3020,6 +3020,7 @@ pub async fn run(
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
         reasoning_enabled: config.runtime.reasoning_enabled,
+        alloy_aliases: config.alloy_aliases.clone(),
     };
 
     let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
@@ -3484,6 +3485,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
         reasoning_enabled: config.runtime.reasoning_enabled,
+        alloy_aliases: config.alloy_aliases.clone(),
     };
     let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
         provider_name,
@@ -3686,6 +3688,7 @@ pub async fn process_message_with_history_and_policy(
         auth_profile_override: None,
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
+        alloy_aliases: config.alloy_aliases.clone(),
         reasoning_enabled: config.runtime.reasoning_enabled,
     };
     let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(

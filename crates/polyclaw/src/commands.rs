@@ -416,7 +416,8 @@ impl CommandHandler {
             .unwrap_or_else(|| "none".to_string());
 
         // Get model/provider info for the active agent
-        let model_info = self.config.agents.get(&active_agent)
+        let model_info = self.config.agents.iter()
+            .find(|a| a.id == active_agent)
             .map(|agent| {
                 let model = agent.model.as_deref().unwrap_or("default");
                 let provider = &agent.kind;
@@ -594,7 +595,8 @@ impl CommandHandler {
             .unwrap_or("none");
 
         // Get model/provider info for the default agent
-        let model_info = self.config.agents.get(default_agent)
+        let model_info = self.config.agents.iter()
+            .find(|a| a.id == default_agent)
             .map(|agent| {
                 let model = agent.model.as_deref().unwrap_or("default");
                 let provider = &agent.kind;
