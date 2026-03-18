@@ -3,8 +3,8 @@
 //! ## Architecture
 //!
 //! 1. Connect to Matrix homeserver using the access token from `access_token_file`
-//! 2. Join / verify the configured `room_id`
-//! 3. Listen for `m.room.message` events from `allowed_users`
+//! 2. Listen for invites from `allowed_users` and auto-accept DM invites
+//! 3. Listen for `m.room.message` events from `allowed_users` in any room (DMs + configured room)
 //! 4. Route each message to the active agent via `Router::dispatch()`
 //! 5. Send the agent's response back to the room as a `m.room.message`
 //!
@@ -16,6 +16,12 @@
 //! `matrix` channel alias (e.g. `{ channel = "matrix", id = "@brian:matrix.org" }`).
 //! If no identity alias is found, the Matrix user ID itself is used as the
 //! identity key (for routing / context isolation).
+//!
+//! ## DM Support
+//!
+//! The channel auto-accepts invites from allowed users, enabling 1:1 DMs.
+//! Messages are processed in any room where the sender is in the allowlist.
+//! The optional `room_id` config can still be used for explicit room-based routing.
 
 #[cfg(not(feature = "channel-matrix"))]
 pub async fn run(
@@ -50,6 +56,7 @@ mod inner {
         authentication::matrix::MatrixSession,
         config::SyncSettings,
         ruma::{
+            events::room::member::{MembershipState, StrippedRoomMemberEvent},
             events::room::message::{
                 MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
             },
@@ -95,6 +102,14 @@ mod inner {
             return true;
         }
         allowed_users.iter().any(|u| u.eq_ignore_ascii_case(sender))
+    }
+
+    /// Check if a room is a DM (direct message) with only 2 members
+    async fn is_dm_room(room: &Room) -> bool {
+        match room.members(matrix_sdk::RoomMemberships::ACTIVE).await {
+            Ok(members) => members.len() == 2,
+            Err(_) => false,
+        }
     }
 
     fn cache_event_id(
@@ -228,16 +243,20 @@ mod inner {
         device_id: &str,
         store_dir: Option<std::path::PathBuf>,
     ) -> Result<MatrixSdkClient> {
+        info!("Matrix: building client with store...");
         let mut builder = MatrixSdkClient::builder().homeserver_url(homeserver);
 
         if let Some(dir) = store_dir {
+            info!(store_dir = %dir.display(), "Matrix: creating sqlite store dir");
             tokio::fs::create_dir_all(&dir).await.with_context(|| {
                 format!("Matrix: failed to create sqlite store dir at {}", dir.display())
             })?;
             builder = builder.sqlite_store(&dir, None);
         }
 
+        info!("Matrix: building client...");
         let client = builder.build().await?;
+        info!("Matrix: client built");
 
         let uid: OwnedUserId = user_id
             .parse()
@@ -254,7 +273,9 @@ mod inner {
             },
         };
 
+        info!("Matrix: restoring session...");
         client.restore_session(session).await?;
+        info!("Matrix: session restored");
         Ok(client)
     }
 
@@ -295,11 +316,11 @@ mod inner {
             .as_deref()
             .context("Matrix channel missing `access_token_file` in config")?;
 
-        let room_id_config = channel
+        // room_id is now optional — if provided, we verify access; if not, we rely on DMs only
+        let room_id_config: Option<String> = channel
             .room_id
             .as_deref()
-            .context("Matrix channel missing `room_id` in config")?
-            .to_string();
+            .map(|s| s.to_string());
 
         let allowed_users: Vec<String> = channel
             .allowed_users
@@ -307,6 +328,10 @@ mod inner {
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty())
             .collect();
+
+        if allowed_users.is_empty() {
+            anyhow::bail!("Matrix channel requires at least one allowed_user for security");
+        }
 
         // Read access token from file
         let access_token = std::fs::read_to_string(expand_tilde(token_file))
@@ -319,22 +344,30 @@ mod inner {
         let auth_header = format!("Bearer {}", access_token);
         let http = reqwest::Client::new();
 
-        // --- Resolve room ID (alias → canonical) ---
-        let room_id_str = resolve_room_id(&homeserver, &room_id_config, &http, &auth_header)
-            .await
-            .with_context(|| format!("Matrix: failed to resolve room '{room_id_config}'"))?;
+        // --- Resolve room ID if provided (alias → canonical) ---
+        let target_room: Option<OwnedRoomId> = if let Some(ref room_cfg) = room_id_config {
+            let room_id_str = resolve_room_id(&homeserver, room_cfg, &http, &auth_header)
+                .await
+                .with_context(|| format!("Matrix: failed to resolve room '{room_cfg}'"))?;
 
-        info!(room_id = %room_id_str, "Matrix room resolved");
+            info!(room_id = %room_id_str, "Matrix room resolved");
 
-        // --- Verify room accessibility ---
-        ensure_room_accessible(&homeserver, &room_id_str, &http, &auth_header)
-            .await
-            .with_context(|| format!("Matrix: room '{room_id_str}' not accessible"))?;
+            // --- Verify room accessibility ---
+            ensure_room_accessible(&homeserver, &room_id_str, &http, &auth_header)
+                .await
+                .with_context(|| format!("Matrix: room '{room_id_str}' not accessible"))?;
 
-        let is_encrypted = check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
-        if is_encrypted {
-            info!(room_id = %room_id_str, "Matrix room is encrypted — E2EE enabled via matrix-sdk");
-        }
+            let is_encrypted = check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
+            if is_encrypted {
+                info!(room_id = %room_id_str, "Matrix room is encrypted — E2EE enabled via matrix-sdk");
+            }
+
+            Some(room_id_str.parse()
+                .with_context(|| format!("Matrix: invalid room ID '{room_id_str}'"))?)
+        } else {
+            info!("Matrix: no room_id configured — operating in DM-only mode");
+            None
+        };
 
         // --- Whoami ---
         let (my_user_id_str, my_device_id_opt) =
@@ -346,11 +379,13 @@ mod inner {
 
         // --- Build matrix-sdk client ---
         // Store E2EE keys in ~/.polyclaw/state/matrix/
+        info!("Matrix: preparing store directory...");
         let store_dir = {
             let home = home::home_dir();
             home.map(|h| h.join(".polyclaw").join("state").join("matrix"))
         };
 
+        info!(store_dir = ?store_dir, "Matrix: building matrix-sdk client...");
         let client = build_matrix_client(
             &homeserver,
             &access_token,
@@ -360,8 +395,10 @@ mod inner {
         )
         .await
         .context("Matrix: failed to build matrix-sdk client")?;
+        info!("Matrix: client ready");
 
         // Log E2EE device status
+        info!("Matrix: checking device status...");
         match client.encryption().get_own_device().await {
             Ok(Some(device)) => {
                 if device.is_verified() {
@@ -369,8 +406,7 @@ mod inner {
                 } else {
                     warn!(
                         device_id = %my_device_id,
-                        "Matrix device is NOT verified. Messages may be flagged as unverified \
-                         until you verify this device from a trusted session."
+                        "Matrix device is NOT verified. Messages may be flagged as unverified"
                     );
                 }
             }
@@ -379,19 +415,18 @@ mod inner {
         }
 
         // Initial sync to mark existing messages as seen (don't process backlog)
+        info!("Matrix: performing initial sync...");
         let _ = client.sync_once(SyncSettings::new()).await;
+        info!("Matrix: initial sync complete");
 
         info!(
-            room_id = %room_id_str,
+            target_room = ?target_room.as_ref().map(|r| r.as_str()),
             user_id = %my_user_id_str,
             allowed_users = ?allowed_users,
-            "Matrix channel listening"
+            "Matrix channel listening (DMs + target room)"
         );
 
-        // --- Register event handler ---
-        let target_room: OwnedRoomId = room_id_str
-            .parse()
-            .with_context(|| format!("Matrix: invalid room ID '{room_id_str}'"))?;
+        // --- Register event handlers ---
         let my_user_id: OwnedUserId = my_user_id_str
             .parse()
             .with_context(|| format!("Matrix: invalid user_id '{my_user_id_str}'"))?;
@@ -414,6 +449,35 @@ mod inner {
         let my_user_id_h = my_user_id.clone();
         let client_h = client.clone();
 
+        // --- Invite handler: auto-accept DMs from allowed users ---
+        let allowed_users_invite = allowed_users.clone();
+        let my_user_id_invite = my_user_id.clone();
+        client.add_event_handler(
+            move |event: StrippedRoomMemberEvent, room: Room| {
+                let allowed_users = allowed_users_invite.clone();
+                let my_user_id = my_user_id_invite.clone();
+                async move {
+                    // Only process invites to us
+                    if event.state_key != my_user_id {
+                        return;
+                    }
+                    if event.content.membership != MembershipState::Invite {
+                        return;
+                    }
+                    let sender = event.sender.to_string();
+                    if !is_sender_allowed(&allowed_users, &sender) {
+                        debug!(sender = %sender, "Matrix: ignoring invite from non-allowed user");
+                        return;
+                    }
+                    info!(sender = %sender, room_id = %room.room_id(), "Matrix: auto-accepting invite from allowed user");
+                    if let Err(e) = room.join().await {
+                        warn!(error = %e, "Matrix: failed to join room after invite");
+                    }
+                }
+            }
+        );
+
+        // --- Message handler: process messages from allowed users in any room ---
         client.add_event_handler(
             move |event: OriginalSyncRoomMessageEvent, room: Room| {
                 let config = config_h.clone();
@@ -424,24 +488,37 @@ mod inner {
                 let dedup = Arc::clone(&dedup_h);
                 let target_room = target_room_h.clone();
                 let my_user_id = my_user_id_h.clone();
-                let client = client_h.clone();
 
                 async move {
-                    // Only handle events in our target room
-                    if room.room_id().as_str() != target_room.as_str() {
-                        return;
-                    }
+                    // Log all incoming message events for debugging
+                    info!(sender = %event.sender, room_id = %room.room_id(), msg_type = ?event.content.msgtype, "Matrix: received message event");
 
                     // Ignore our own messages
                     if event.sender == my_user_id {
+                        debug!("Matrix: ignoring own message");
                         return;
                     }
 
                     let sender = event.sender.to_string();
 
-                    // Allowlist check
+                    // Allowlist check — if not allowed, drop immediately
                     if !is_sender_allowed(&allowed_users, &sender) {
-                        debug!(sender = %sender, "Matrix: dropping message from non-allowed user");
+                        info!(sender = %sender, allowed = ?allowed_users, "Matrix: dropping message from non-allowed user");
+                        return;
+                    }
+
+                    // Determine if we should process this message:
+                    // 1. It's in the configured target room (if any), OR
+                    // 2. It's a DM (2-member room)
+                    let in_target_room = target_room.as_ref()
+                        .map(|tr| room.room_id().as_str() == tr.as_str())
+                        .unwrap_or(false);
+                    let is_dm = is_dm_room(&room).await;
+
+                    info!(room_id = %room.room_id(), in_target_room, is_dm, "Matrix: processing message");
+
+                    if !in_target_room && !is_dm {
+                        info!(room_id = %room.room_id(), "Matrix: ignoring message in non-target, non-DM room");
                         return;
                     }
 
@@ -501,7 +578,7 @@ mod inner {
 
                     // !status — post-auth identity command
                     if CommandHandler::is_status_command(&body) {
-                        let reply = cmd_handler.cmd_status_for_identity(&identity_id);
+                        let reply = cmd_handler.cmd_status_for_identity(&identity_id).await;
                         let room = room.clone();
                         tokio::spawn(async move {
                             if let Err(e) = room

@@ -724,6 +724,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             post(openai_compat::handle_chat_completions),
         )
         .route("/v1/models", get(openai_compat::handle_list_models))
+        .route("/v1/status", get(handle_runtime_status))
         .with_state(state.clone())
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE));
 
@@ -797,6 +798,58 @@ async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
         "paired": state.pairing.is_paired(),
         "runtime": crate::health::snapshot_json(),
     });
+    Json(body)
+}
+
+/// GET /v1/status — runtime model/provider status for PolyClaw !status
+///
+/// Returns the current default provider, model, and alloy constituents
+/// (if applicable). This is used by PolyClaw adapters to show accurate
+/// runtime state without asking the LLM who it thinks it is.
+async fn handle_runtime_status(State(state): State<AppState>) -> impl IntoResponse {
+    let config = state.config.lock();
+
+    // Get default provider (may be an alloy alias)
+    let default_provider = config
+        .default_provider
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Get default model
+    let default_model = config
+        .default_model
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Check if provider is an alloy alias and resolve constituents
+    let alloy_constituents = if let Some(alloy_spec) = config.alloy_aliases.get(&default_provider) {
+        // Parse alloy spec: "alloy:provider1/model1,provider2/model2"
+        alloy_spec
+            .strip_prefix("alloy:")
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|part| {
+                        let part = part.trim();
+                        if let Some((provider, model)) = part.split_once('/') {
+                            Some((provider.to_string(), model.to_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v: &Vec<(String, String)>| !v.is_empty())
+    } else {
+        None
+    };
+
+    let body = serde_json::json!({
+        "default_provider": default_provider,
+        "default_model": default_model,
+        "alloy_constituents": alloy_constituents,
+        "alloy_aliases": config.alloy_aliases,
+    });
+
     Json(body)
 }
 

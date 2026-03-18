@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use super::{AdapterError, AgentAdapter, DispatchContext};
+use super::{AdapterError, AgentAdapter, DispatchContext, RuntimeStatus};
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -35,6 +35,9 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    /// Temperature for sampling (0.0-2.0). Default 1.0 for GPT-5 compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -141,6 +144,7 @@ impl AgentAdapter for OpenClawHttpAdapter {
                 content: msg.to_string(),
             }],
             stream: true,
+            temperature: Some(1.0), // GPT-5 requires temperature=1.0
         };
 
         info!(endpoint = %url, model = %self.model, "openclaw-http dispatch (streaming)");
@@ -446,6 +450,49 @@ impl AgentAdapter for NzcHttpAdapter {
 
     fn kind(&self) -> &'static str {
         "nzc-http"
+    }
+
+    /// Query NZC runtime status via GET /v1/status endpoint.
+    ///
+    /// Returns runtime provider/model info including alloy constituents.
+    /// Returns None if NZC doesn't support the endpoint (backward compatible).
+    async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
+        let url = format!("{}/v1/status", self.endpoint.trim_end_matches('/'));
+
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        #[derive(Deserialize)]
+        struct NzcStatusResponse {
+            default_provider: String,
+            default_model: String,
+            alloy_constituents: Option<Vec<(String, String)>>,
+        }
+
+        let status: NzcStatusResponse = resp.json().await.ok()?;
+
+        // Check if this is an alloy by looking at constituents
+        let is_alloy = status.alloy_constituents.is_some();
+
+        Some(RuntimeStatus {
+            provider: if is_alloy {
+                "alloy".to_string()
+            } else {
+                status.default_provider.clone()
+            },
+            model: status.default_provider, // This is the alias name (e.g., "fast-alloy")
+            alloy_constituents: status.alloy_constituents,
+            last_selected: None, // NZC could add this later
+        })
     }
 }
 

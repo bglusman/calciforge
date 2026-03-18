@@ -353,7 +353,7 @@ impl WhatsAppChannel {
 
         // !status — post-auth command
         if CommandHandler::is_status_command(&text) {
-            let reply = self.command_handler.cmd_status_for_identity(&identity.id);
+            let reply = self.command_handler.cmd_status_for_identity(&identity.id).await;
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {

@@ -452,10 +452,23 @@ impl Provider for OpenAiProvider {
             )
         };
 
+        // GPT-5 models have special requirements for temperature
+        let is_gpt5 = is_gpt5_model(model);
+        let temperature_opt = if is_gpt5 {
+            if (temperature - 1.0).abs() < f64::EPSILON {
+                Some(temperature)
+            } else {
+                None // Omit temperature for GPT-5 when not default
+            }
+        } else {
+            Some(temperature)
+        };
+
         let native_request = NativeChatRequest {
             model: model.to_string(),
             messages: Self::convert_messages(messages),
-            temperature,
+            temperature: temperature_opt,
+            max_completion_tokens: None,
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
         };

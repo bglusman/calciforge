@@ -14,7 +14,12 @@ channel-matrix = ["dep:matrix-sdk"]
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "net"] }
+
+# Crypto (for Signal channel)
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 # Matrix
 matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }

@@ -86,7 +86,12 @@ async fn main() -> Result<()> {
         .iter()
         .any(|c| c.kind == "whatsapp" && c.enabled);
 
-    if !has_telegram && !has_matrix && !has_whatsapp {
+    let has_signal = config
+        .channels
+        .iter()
+        .any(|c| c.kind == "signal" && c.enabled);
+
+    if !has_telegram && !has_matrix && !has_whatsapp && !has_signal {
         error!("no enabled channels found in config — nothing to do");
         std::process::exit(1);
     }
@@ -141,10 +146,27 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (tg_result, mx_result, wa_result) = tokio::join!(telegram_fut, matrix_fut, whatsapp_fut);
+    let signal_fut = async {
+        if has_signal {
+            info!("starting Signal channel (webhook receiver)");
+            channels::signal::run(
+                config.clone(),
+                router.clone(),
+                command_handler.clone(),
+                context_store.clone(),
+            )
+            .await
+            .context("Signal channel error")
+        } else {
+            Ok(())
+        }
+    };
+
+    let (tg_result, mx_result, wa_result, sig_result) = tokio::join!(telegram_fut, matrix_fut, whatsapp_fut, signal_fut);
     tg_result?;
     mx_result?;
     wa_result?;
+    sig_result?;
 
     Ok(())
 }
