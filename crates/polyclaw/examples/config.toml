@@ -1,0 +1,193 @@
+# Example PolyClaw Configuration with ACP Support
+# Copy to ~/.polyclaw/config.toml and customize
+
+version = 2
+
+[polyclaw]
+log_level = "info"
+bind_address = "127.0.0.1:8080"
+
+[polyclaw.outpost]
+enabled = true
+url = "http://127.0.0.1:9800"
+
+# ============================================================================
+# Identity Registry - Who can use PolyClaw
+# ============================================================================
+
+[[identities]]
+id = "brian"
+display_name = "Contributor"
+aliases = [
+  { channel = "signal", id = "+15555550001" },
+  { channel = "telegram", id = "15555550001" },
+  { channel = "matrix", id = "@user:example.com" },
+]
+role = "owner"
+
+[[identities]]
+id = "david"
+display_name = "David"
+aliases = [
+  { channel = "telegram", id = "15555550002" },
+]
+role = "user"
+
+# ============================================================================
+# Agent Registry - ACP and Other Adapters
+# ============================================================================
+
+# Claude Code via ACP (stdio transport)
+[[agents]]
+id = "claude-code"
+kind = "acp"
+transport = "stdio"
+command = "claude-code"
+args = ["--adapter", "acp"]
+timeout_secs = 300
+
+[agents.registry]
+display_name = "Claude Code"
+description = "Anthropic's Claude Code via ACP protocol"
+specialties = ["coding", "refactoring", "architecture", "debugging", "testing"]
+access = ["filesystem", "git", "shell"]
+primary_channels = ["signal", "telegram"]
+
+# OpenAI Codex via ACP (stdio transport)
+[[agents]]
+id = "codex"
+kind = "acp"
+transport = "stdio"
+command = "codex"
+args = ["serve", "--acp"]
+working_dir = "/home/user/projects"
+env = { "OPENAI_API_KEY" = "${OPENAI_API_KEY}" }
+timeout_secs = 120
+
+[agents.registry]
+display_name = "OpenAI Codex"
+description = "OpenAI Codex coding agent via ACP"
+specialties = ["coding", "typescript", "python", "javascript"]
+access = ["filesystem", "git"]
+primary_channels = ["telegram"]
+
+# OpenCode via ACP (stdio transport)
+[[agents]]
+id = "opencode"
+kind = "acp"
+transport = "stdio"
+command = "opencode"
+args = ["--acp-mode"]
+timeout_secs = 180
+
+[agents.registry]
+display_name = "OpenCode"
+description = "OpenCode AI coding assistant"
+specialties = ["coding", "general"]
+access = ["filesystem"]
+
+# Local ACP server via HTTP
+[[agents]]
+id = "local-acp"
+kind = "acp"
+transport = "http"
+endpoint = "http://localhost:8765"
+api_key = "${LOCAL_ACP_KEY}"
+timeout_secs = 60
+
+[agents.registry]
+display_name = "Local ACP Server"
+description = "Local ACP agent running as HTTP service"
+specialties = ["custom", "experimental"]
+access = ["filesystem", "network"]
+
+# ACP agent via Unix socket
+[[agents]]
+id = "socket-agent"
+kind = "acp"
+transport = "unix"
+socket_path = "/run/acp/agent.sock"
+timeout_secs = 60
+
+[agents.registry]
+display_name = "Socket Agent"
+description = "ACP agent via Unix domain socket"
+specialties = ["system", "infrastructure"]
+access = ["system"]
+
+# ============================================================================
+# Routing Rules - Who uses which agents
+# ============================================================================
+
+[[routing]]
+identity = "brian"
+default_agent = "claude-code"
+allowed_agents = ["claude-code", "codex", "opencode", "local-acp"]
+
+[[routing]]
+identity = "david"
+default_agent = "codex"
+allowed_agents = ["codex", "opencode"]
+
+# ============================================================================
+# Permission Policy
+# ============================================================================
+
+[permissions]
+default = "deny"
+
+[[permissions.rules]]
+identity = "brian"
+effect = "allow"
+capabilities = ["message", "command", "agent_switch", "polyclaw_admin"]
+
+[[permissions.rules]]
+identity = "david"
+effect = "allow"
+capabilities = ["message", "command"]
+
+# ============================================================================
+# Channel Configuration
+# ============================================================================
+
+[[channels]]
+kind = "telegram"
+bot_token_file = "~/.polyclaw/secrets/telegram-token"
+enabled = true
+
+[[channels]]
+kind = "matrix"
+homeserver = "https://matrix-client.matrix.org"
+user_id = "@librarian-assistant:matrix.org"
+token_file = "~/.polyclaw/secrets/matrix-token"
+refresh_token_file = "~/.polyclaw/secrets/matrix-refresh-token"
+token_ttl_seconds = 14400
+enabled = true
+
+[[channels]]
+kind = "signal"
+phone_number = "+15555550001"
+enabled = true
+
+# ============================================================================
+# Subagent Configuration
+# ============================================================================
+
+[subagents]
+blocker_escalation = true
+checkin_interval_seconds = 300
+max_silent_retries = 2
+delegation_enabled = true
+
+# ============================================================================
+# Memory Configuration
+# ============================================================================
+
+[memory]
+pre_read_hook = "embedding"
+embedding_model = "local/nomic-embed-text"
+embedding_top_k = 5
+embedding_threshold = 0.75
+post_write_hook = "heuristic"
+store = "sqlite"
+store_path = "~/.polyclaw/memory/store.db"
