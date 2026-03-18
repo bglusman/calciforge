@@ -21,11 +21,13 @@ use async_trait::async_trait;
 use std::fmt;
 
 pub mod acp;
+pub mod acpx;
 pub mod cli;
 pub mod openclaw;
 pub mod zeroclaw;
 
 pub use acp::AcpAdapter;
+pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
 pub use openclaw::{NzcHttpAdapter, OpenClawHttpAdapter};
 pub use zeroclaw::ZeroClawAdapter;
@@ -220,6 +222,17 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.args.clone(),
                 agent.env.clone().unwrap_or_default(),
                 agent.model.clone(),
+                agent.timeout_ms,
+            )))
+        }
+        "acpx" => {
+            let agent_name = agent.command.clone().ok_or_else(|| {
+                format!("agent '{}': kind='acpx' requires command (agent name)", agent.id)
+            })?;
+            Ok(Box::new(AcpxAdapter::new(
+                agent_name,
+                agent.args.clone(),
+                agent.env.clone(),
                 agent.timeout_ms,
             )))
         }
