@@ -576,6 +576,26 @@ mod inner {
                         return;
                     }
 
+                    // Unknown !command handling
+                    if CommandHandler::is_command(&body)
+                        && !CommandHandler::is_status_command(&body)
+                        && !CommandHandler::is_switch_command(&body)
+                        && !CommandHandler::is_default_command(&body)
+                        && !CommandHandler::is_sessions_command(&body)
+                    {
+                        let reply = cmd_handler.unknown_command(&body);
+                        let room = room.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = room
+                                .send(RoomMessageEventContent::text_plain(&reply))
+                                .await
+                            {
+                                warn!(error = %e, "Matrix: failed to send unknown-command reply");
+                            }
+                        });
+                        return;
+                    }
+
                     // !status — post-auth identity command
                     if CommandHandler::is_status_command(&body) {
                         let reply = cmd_handler.cmd_status_for_identity(&identity_id).await;
@@ -601,6 +621,21 @@ mod inner {
                                 .await
                             {
                                 warn!(error = %e, "Matrix: failed to send switch reply");
+                            }
+                        });
+                        return;
+                    }
+
+                    // !sessions — list ACP sessions for an agent
+                    if CommandHandler::is_sessions_command(&body) {
+                        let reply = cmd_handler.handle_sessions(&body, &identity_id).await;
+                        let room = room.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = room
+                                .send(RoomMessageEventContent::text_plain(&reply))
+                                .await
+                            {
+                                warn!(error = %e, "Matrix: failed to send sessions reply");
                             }
                         });
                         return;
