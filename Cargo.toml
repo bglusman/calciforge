@@ -1,7 +1,5 @@
 [workspace]
 
-matrix-sdk = { path = "vendor/matrix-sdk" }
-
 members = [
     "crates/polyclaw",
     "crates/nonzeroclaw",
@@ -69,4 +67,4 @@ strip = true
 panic = "abort"
 
 [patch.crates-io]
-matrix-sdk = { path = "vendor/matrix-sdk" }
+matrix-sdk = { git = "https://github.com/upstream-fork/matrix-rust-sdk" }

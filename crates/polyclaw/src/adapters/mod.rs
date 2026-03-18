@@ -212,10 +212,16 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "acp" => {
+            let command = agent.command.clone().ok_or_else(|| {
+                format!("agent '{}': kind='acp' requires command", agent.id)
+            })?;
             Ok(Box::new(AcpAdapter::new(
-                agent.id.clone(),
-                agent.clone(),
-            ).map_err(|e| format!("agent '{}': failed to create ACP adapter: {}", agent.id, e))?))
+                command,
+                agent.args.clone(),
+                agent.env.clone().unwrap_or_default(),
+                agent.model.clone(),
+                agent.timeout_ms,
+            )))
         }
         other => Err(format!("unknown agent kind: '{}'", other)),
     }
@@ -349,6 +355,52 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().expect("should be Err");
         assert!(err.contains("api_key"), "got: {}", err);
+    }
+
+    fn acp_agent() -> AgentConfig {
+        AgentConfig {
+            id: "test-acp".to_string(),
+            kind: "acp".to_string(),
+            endpoint: String::new(),
+            timeout_ms: Some(60000),
+            model: Some("claude-sonnet-4-5".to_string()),
+            auth_token: None,
+            api_key: None,
+            command: Some("claude".to_string()),
+            args: Some(vec!["--acp".to_string()]),
+            env: None,
+            registry: None,
+            aliases: vec!["cc".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_build_acp_adapter() {
+        let agent = acp_agent();
+        let adapter = build_adapter(&agent).expect("should build acp adapter");
+        assert_eq!(adapter.kind(), "acp");
+    }
+
+    #[test]
+    fn test_build_acp_missing_command_returns_error() {
+        let agent = AgentConfig {
+            id: "acp-no-cmd".to_string(),
+            kind: "acp".to_string(),
+            endpoint: String::new(),
+            timeout_ms: None,
+            model: None,
+            auth_token: None,
+            api_key: None,
+            command: None, // missing!
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+        let result = build_adapter(&agent);
+        assert!(result.is_err());
+        let err = result.err().expect("should be Err");
+        assert!(err.contains("command"), "got: {}", err);
     }
 
     #[test]
