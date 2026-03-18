@@ -364,6 +364,19 @@ impl SignalChannel {
             return;
         }
 
+        // Unknown !command handling
+        if self.command_handler.is_command(&text) && !CommandHandler::is_status_command(&text) && !CommandHandler::is_switch_command(&text) && !CommandHandler::is_default_command(&text) && !CommandHandler::is_sessions_command(&text) {
+            let reply = self.command_handler.unknown_command(&text);
+            let channel = self.clone();
+            let from_owned = from.clone();
+            tokio::spawn(async move {
+                if let Err(e) = channel.send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply).await {
+                    warn!(from = %from_owned, error = %e, "failed to send unknown-command reply");
+                }
+            });
+            return;
+        }
+
         // !status — post-auth command
         if CommandHandler::is_status_command(&text) {
             let reply = self.command_handler.cmd_status_for_identity(&identity.id).await;
