@@ -134,19 +134,32 @@ impl CommandHandler {
         let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
 
         match cmd.as_str() {
-            "!help"    => Some(self.cmd_help()),
+            "!help"     => Some(self.cmd_help()),
+            "!commands" => Some(self.cmd_help()),
             // !status needs auth — return None so the caller resolves identity first.
-            "!status"  => None,
-            "!agents"  => Some(self.cmd_agents()),
-            "!metrics" => Some(self.cmd_metrics()),
-            "!ping"    => Some("pong".to_string()),
+            "!status"   => None,
+            "!agents"   => Some(self.cmd_agents()),
+            "!metrics"  => Some(self.cmd_metrics()),
+            "!ping"     => Some("pong".to_string()),
+            // !sessions needs auth — return None so caller resolves identity first.
+            "!sessions" => None,
             // !switch needs auth — return None here so the caller can do auth
             // first, then call handle_switch().
-            "!switch"  => None,
+            "!switch"   => None,
             // !default needs auth — switches back to the configured default agent.
-            "!default" => None,
+            "!default"  => None,
             _ => None, // Unknown !command — fall through to agent
         }
+    }
+
+    /// Returns `true` if the text is a `!sessions` command (case-insensitive).
+    ///
+    /// Use this AFTER auth to decide whether to call [`handle_sessions`] instead of
+    /// routing to the agent.
+    pub fn is_sessions_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        cmd == "!sessions"
     }
 
     /// Returns `true` if the text is a `!switch` command (case-insensitive).
@@ -191,6 +204,25 @@ impl CommandHandler {
         let trimmed = text.trim();
         let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
         cmd == "!deny"
+    }
+
+    /// Return true if the text starts with '!' (a command).
+    pub fn is_command(text: &str) -> bool {
+        text.trim().starts_with('!')
+    }
+
+    /// Respond to unknown commands with a helpful message.
+    pub fn unknown_command(&self, text: &str) -> String {
+        let cmd = text
+            .trim()
+            .splitn(2, ' ')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        format!(
+            "⚠️ Unknown command: {}\n\nUse !help or !commands to see available commands.",
+            cmd
+        )
     }
 
     /// Handle a command that may require async work (approve/deny).
@@ -468,28 +500,33 @@ impl CommandHandler {
         )
     }
 
-    /// Handle a `!switch <agent>` command for an authenticated identity.
+    /// Handle a `!switch <agent> [session]` command for an authenticated identity.
     ///
     /// Validates the requested agent against the identity's `allowed_agents`,
     /// updates the active-agent map, and returns a confirmation message.
+    /// For acpx-type agents, an optional session name can be specified.
     ///
     /// Returns an error string (to be sent back to the user) on any validation
     /// failure — never panics.
     pub fn handle_switch(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        // Parse the agent argument (everything after "!switch ")
-        let agent_arg = trimmed
+        // Parse arguments after "!switch"
+        let args: Vec<&str> = trimmed
             .splitn(2, ' ')
             .nth(1)
             .unwrap_or("")
             .trim()
-            .to_string();
+            .split_whitespace()
+            .collect();
 
-        if agent_arg.is_empty() {
+        if args.is_empty() {
             return format!(
-                "Usage: !switch <agent>\n\nUse !agents to see available agents."
+                "Usage: !switch <agent> [session]\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents."
             );
         }
+
+        let agent_arg = args[0].to_string();
+        let session_arg = args.get(1).map(|s| s.to_string());
 
         // Look up the routing rule for this identity.
         let routing_rule = match self.config.routing.iter().find(|r| r.identity == identity_id) {
@@ -535,14 +572,25 @@ impl CommandHandler {
             }
             Some(agent_id) => {
                 // Look up display name from registry metadata (if any).
-                let display_name = self
-                    .config
-                    .agents
-                    .iter()
-                    .find(|a| a.id == agent_id)
+                let agent_cfg = self.config.agents.iter().find(|a| a.id == agent_id);
+                let display_name = agent_cfg
                     .and_then(|a| a.registry.as_ref())
                     .and_then(|r| r.display_name.as_deref())
                     .unwrap_or(agent_id);
+
+                // Check if this is an acpx agent and session was specified
+                let is_acpx = agent_cfg.map(|a| a.kind == "acpx").unwrap_or(false);
+                let session_info = if is_acpx {
+                    if let Some(session) = session_arg {
+                        format!(" (session: {})", session)
+                    } else {
+                        " (default session)".to_string()
+                    }
+                } else if session_arg.is_some() {
+                    " (note: session parameter ignored for non-acpx agents)".to_string()
+                } else {
+                    String::new()
+                };
 
                 // Update per-identity active agent and persist to disk.
                 {
@@ -552,11 +600,135 @@ impl CommandHandler {
                 }
 
                 format!(
-                    "✅ Switched to {}. Your messages will now route to {}.",
-                    display_name, agent_id
+                    "✅ Switched to {}{}. Your messages will now route to {}.",
+                    display_name, session_info, agent_id
                 )
             }
         }
+    }
+
+    /// Handle a `!sessions` command for an authenticated identity.
+    ///
+    /// Lists ACP sessions for the specified agent (for acpx-type agents).
+    /// Returns a message listing available sessions or an error.
+    pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
+        let trimmed = text.trim();
+        // Parse the agent argument (everything after "!sessions ")
+        let agent_arg = trimmed
+            .splitn(2, ' ')
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        if agent_arg.is_empty() {
+            return format!(
+                "Usage: !sessions <agent>\n\nLists available ACP sessions for an agent.\nUse !agents to see available agents."
+            );
+        }
+
+        // Look up the routing rule for this identity.
+        let routing_rule = match self.config.routing.iter().find(|r| r.identity == identity_id) {
+            Some(r) => r,
+            None => {
+                return "⚠️ No routing rule found for your identity.".to_string();
+            }
+        };
+
+        // Determine which agents this identity is allowed to use.
+        let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
+            self.config.agents.iter().map(|a| a.id.as_str()).collect()
+        } else {
+            routing_rule.allowed_agents.iter().map(|s| s.as_str()).collect()
+        };
+
+        // Find the matched agent (case-insensitive, checking aliases).
+        let matched_agent = allowed.iter().find(|&&a| {
+            if a.eq_ignore_ascii_case(&agent_arg) {
+                return true;
+            }
+            if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
+                return agent_cfg
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
+            }
+            false
+        }).copied();
+
+        let agent_id = match matched_agent {
+            None => {
+                let valid = allowed.join(", ");
+                return format!(
+                    "⚠️ Agent '{}' is not available to you.\n\nValid agents: {}",
+                    agent_arg, valid
+                );
+            }
+            Some(id) => id,
+        };
+
+        // Get agent config to check if it's an acpx agent.
+        let agent_cfg = match self.config.agents.iter().find(|a| a.id == agent_id) {
+            Some(cfg) => cfg,
+            None => return format!("⚠️ Agent '{}' not found in configuration.", agent_id),
+        };
+
+        if agent_cfg.kind != "acpx" {
+            return format!(
+                "ℹ️ Agent '{}' ({}) does not support session listing.\nOnly 'acpx' type agents support sessions.",
+                agent_id, agent_cfg.kind
+            );
+        }
+
+        // List sessions using acpx.
+        let agent_name = agent_cfg.command.as_deref().unwrap_or(&agent_id);
+        match self.list_acpx_sessions(agent_name).await {
+            Ok(sessions) if sessions.is_empty() => {
+                format!(
+                    "ℹ️ No active sessions for '{}'.\n\nUse !switch {} to create a new session.",
+                    agent_id, agent_id
+                )
+            }
+            Ok(sessions) => {
+                let session_list = sessions.join("\n  - ");
+                format!(
+                    "🗂️  Active sessions for '{}':\n  - {}\n\nUse !switch {} <session> to attach to a specific session.",
+                    agent_id, session_list, agent_id
+                )
+            }
+            Err(e) => {
+                format!(
+                    "⚠️ Failed to list sessions for '{}': {}\n\nMake sure acpx is installed and the agent is properly configured.",
+                    agent_id, e
+                )
+            }
+        }
+    }
+
+    /// List ACPX sessions for an agent using the acpx CLI.
+    async fn list_acpx_sessions(&self, agent_name: &str) -> Result<Vec<String>, String> {
+        let output = tokio::process::Command::new("acpx")
+            .arg(agent_name)
+            .arg("sessions")
+            .arg("list")
+            .current_dir("/tmp")
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run acpx: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("acpx error: {}", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let sessions: Vec<String> = stdout
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with("No sessions"))
+            .map(|s| s.to_string())
+            .collect();
+
+        Ok(sessions)
     }
 
     /// Handle a `!default` command for an authenticated identity.
@@ -588,12 +760,13 @@ impl CommandHandler {
     fn cmd_help(&self) -> String {
         [
             "PolyClaw v2 — available commands:",
-            "  !help    — show this help",
+            "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
             "  !agents  — list configured agents with endpoints",
+            "  !sessions <agent> — list ACP sessions for an agent (requires auth)",
             "  !metrics — messages routed, average latency",
             "  !ping    — connectivity check (replies: pong)",
-            "  !switch <agent> — switch active agent (requires auth)",
+            "  !switch <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
