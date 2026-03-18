@@ -20,10 +20,12 @@
 use async_trait::async_trait;
 use std::fmt;
 
+pub mod acp;
 pub mod cli;
 pub mod openclaw;
 pub mod zeroclaw;
 
+pub use acp::AcpAdapter;
 pub use cli::CliAdapter;
 pub use openclaw::{NzcHttpAdapter, OpenClawHttpAdapter};
 pub use zeroclaw::ZeroClawAdapter;
@@ -208,6 +210,12 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.env.clone().unwrap_or_default(),
                 agent.timeout_ms,
             )))
+        }
+        "acp" => {
+            Ok(Box::new(AcpAdapter::new(
+                agent.id.clone(),
+                agent.clone(),
+            ).map_err(|e| format!("agent '{}': failed to create ACP adapter: {}", agent.id, e))?))
         }
         other => Err(format!("unknown agent kind: '{}'", other)),
     }
