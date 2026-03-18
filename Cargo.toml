@@ -1,7 +1,5 @@
 [workspace]
 
-matrix-sdk = { path = "vendor/matrix-sdk" }
-
 members = [
     "crates/polyclaw",
     "crates/nonzeroclaw",
@@ -68,5 +66,5 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
-[patch.crates-io]
-matrix-sdk = { path = "vendor/matrix-sdk" }
+# [patch.crates-io]
+# matrix-sdk = { path = "vendor/matrix-sdk" }

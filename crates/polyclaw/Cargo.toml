@@ -42,6 +42,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Async trait support
 async-trait = "0.1"
 
+# ACP (Agent Client Protocol) - for coding agent integration
+sacp = "6"
+sacp-tokio = "6"
+tokio-util = { version = "0.7", features = ["compat"] }
+
 # Home directory expansion
 home = "0.5"
 

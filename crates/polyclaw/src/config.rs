@@ -314,6 +314,16 @@ args = ["run", "-m", "{message}"]
 timeout_ms = 60000
 env = { "LLM_BACKEND" = "openai_compatible", "LLM_MODEL" = "kimi-k2.5" }
 
+[[agents]]
+id = "claude-code"
+kind = "acp"
+command = "claude"
+args = ["--acp"]
+model = "claude-sonnet-4-5"
+timeout_ms = 300000
+aliases = ["cc", "claude"]
+registry = { display_name = "Claude Code", specialties = ["coding", "refactoring"] }
+
 [[routing]]
 identity = "brian"
 default_agent = "librarian"
@@ -340,7 +350,7 @@ post_write_hook = "none"
         assert_eq!(cfg.identities.len(), 2);
         assert_eq!(cfg.identities[0].id, "brian");
         assert_eq!(cfg.identities[1].id, "david");
-        assert_eq!(cfg.agents.len(), 3); // librarian + zeroclaw + ironclaw
+        assert_eq!(cfg.agents.len(), 4); // librarian + zeroclaw + ironclaw + claude-code
         assert_eq!(cfg.agents[0].id, "librarian");
         assert_eq!(cfg.agents[0].endpoint, "http://10.0.0.20:18789");
         assert_eq!(cfg.agents[0].timeout_ms, Some(120000));
@@ -501,6 +511,24 @@ inject_depth = 0
         // zeroclaw agent has no aliases field — should default to empty
         let zc = cfg.agents.iter().find(|a| a.id == "zeroclaw").expect("zeroclaw missing");
         assert!(zc.aliases.is_empty(), "missing aliases field should default to empty vec");
+    }
+
+    #[test]
+    fn test_acp_agent_parses() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cc = cfg.agents.iter().find(|a| a.id == "claude-code").expect("claude-code agent missing");
+        assert_eq!(cc.kind, "acp");
+        assert_eq!(cc.command.as_deref(), Some("claude"));
+        assert_eq!(
+            cc.args.as_deref(),
+            Some(&["--acp".to_string()][..])
+        );
+        assert_eq!(cc.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(cc.timeout_ms, Some(300000));
+        assert_eq!(cc.aliases, vec!["cc".to_string(), "claude".to_string()]);
+        let reg = cc.registry.as_ref().expect("registry should be present");
+        assert_eq!(reg.display_name.as_deref(), Some("Claude Code"));
+        assert!(reg.specialties.contains(&"coding".to_string()));
     }
 
     #[test]
