@@ -365,7 +365,7 @@ impl SignalChannel {
         }
 
         // Unknown !command handling
-        if self.command_handler.is_command(&text) && !CommandHandler::is_status_command(&text) && !CommandHandler::is_switch_command(&text) && !CommandHandler::is_default_command(&text) && !CommandHandler::is_sessions_command(&text) {
+        if CommandHandler::is_command(&text) && !CommandHandler::is_status_command(&text) && !CommandHandler::is_switch_command(&text) && !CommandHandler::is_default_command(&text) && !CommandHandler::is_sessions_command(&text) {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
             let from_owned = from.clone();

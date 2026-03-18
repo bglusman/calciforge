@@ -170,10 +170,26 @@ fn handle_message_nonblocking(
         return;
     }
 
+    if CommandHandler::is_command(&text)
+        && !CommandHandler::is_status_command(&text)
+        && !CommandHandler::is_switch_command(&text)
+        && !CommandHandler::is_default_command(&text)
+        && !CommandHandler::is_sessions_command(&text)
+    {
+        let reply = command_handler.unknown_command(&text);
+        let bot2 = bot.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bot2.send_message(chat_id, &reply).await {
+                warn!(chat_id = %chat_id, error = %e, "failed to send unknown-command reply");
+            }
+        });
+        return;
+    }
+
     // If the text looks like a !command but wasn't handled as a pre-auth
     // local command and it is NOT a post-auth command (status/switch/default/sessions),
     // reply with a helpful unknown-command message rather than routing it to an agent.
-    if command_handler.is_command(&text)
+    if CommandHandler::is_command(&text)
         && !CommandHandler::is_status_command(&text)
         && !CommandHandler::is_switch_command(&text)
         && !CommandHandler::is_default_command(&text)
