@@ -121,10 +121,11 @@ pub struct RoutingRule {
 
 /// A channel entry (`[[channels]]`).
 ///
-/// Supports `kind = "telegram"`, `kind = "matrix"`, and `kind = "whatsapp"`.
+/// Supports `kind = "telegram"`, `kind = "matrix"`, `kind = "whatsapp"`, and `kind = "signal"`.
 /// For Telegram: set `bot_token_file`.
 /// For Matrix: set `homeserver`, `access_token_file`, `room_id`, and optionally `allowed_users`.
 /// For WhatsApp: set `nzc_endpoint`, `nzc_auth_token`, `webhook_listen`, and `allowed_numbers`.
+/// For Signal: set `nzc_endpoint`, `nzc_auth_token`, `webhook_listen`, and `allowed_numbers` (same fields as WhatsApp).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelConfig {
     pub kind: String,
@@ -150,9 +151,9 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub allowed_users: Vec<String>,
 
-    // --- WhatsApp-specific fields ---
+    // --- WhatsApp/Signal-specific fields (shared) ---
 
-    /// NZC (NonZeroClaw) / OpenClaw gateway endpoint that owns the WA Web session.
+    /// NZC (NonZeroClaw) / OpenClaw gateway endpoint that owns the WA Web or Signal session.
     /// PolyClaw will POST reply messages to `{nzc_endpoint}/tools/invoke`.
     /// Example: `"http://127.0.0.1:18789"` (local OpenClaw) or
     ///          `"http://10.0.0.10:18789"` (remote Lucien/NZC instance).
@@ -175,7 +176,7 @@ pub struct ChannelConfig {
 
     /// Allowed sender phone numbers in E.164 format, e.g. `["+15555550001"]`.
     /// Use `"*"` to allow any number (not recommended).
-    /// Must correspond to identity aliases with `channel = "whatsapp"`.
+    /// Must correspond to identity aliases with `channel = "whatsapp"` or `channel = "signal"`.
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
 }

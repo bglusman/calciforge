@@ -1,0 +1,48 @@
+# Signal Channel Configuration Example for PolyClaw
+#
+# Add this to your ~/.polyclaw/config.toml to enable Signal support.
+# Signal uses the same webhook receiver pattern as WhatsApp.
+
+[[channels]]
+kind = "signal"
+enabled = true
+
+# OpenClaw gateway endpoint that owns the Signal session
+# This is where PolyClaw will POST replies via /tools/invoke
+nzc_endpoint = "http://127.0.0.1:18789"
+
+# Bearer token for the OpenClaw gateway
+nzc_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+
+# HTTP address to listen on for incoming webhooks from OpenClaw
+# Default: 0.0.0.0:18796
+webhook_listen = "0.0.0.0:18796"
+
+# URL path for incoming webhooks
+# Default: /webhooks/signal
+webhook_path = "/webhooks/signal"
+
+# Optional: HMAC-SHA256 secret for webhook signature verification
+# webhook_secret = "your-shared-secret"
+
+# Allowed sender phone numbers in E.164 format
+# Must match identity aliases with channel = "signal"
+allowed_numbers = ["+15555550001"]
+
+# -----------------------------------------------------------------------------
+# Corresponding identity configuration example:
+# -----------------------------------------------------------------------------
+
+[[identities]]
+id = "brian"
+display_name = "Brian"
+role = "admin"
+aliases = [
+    { channel = "signal", id = "+15555550001" },
+    { channel = "telegram", id = "12345678" },
+]
+
+[[routing]]
+identity = "brian"
+default_agent = "librarian"
+allowed_agents = ["librarian", "max", "qwen"]

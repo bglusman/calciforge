@@ -330,7 +330,17 @@ pub async fn handle_chat_completions(
         .model
         .clone()
         .unwrap_or_else(|| state.model.clone());
-    let temperature = req.temperature;
+    
+    // Use config's default_temperature if request didn't specify (or used default)
+    let temperature = {
+        let cfg = state.config.lock();
+        if (req.temperature - 0.7).abs() < f64::EPSILON {
+            // Request used the hardcoded default, use config value instead
+            cfg.default_temperature
+        } else {
+            req.temperature
+        }
+    };
 
     // ── Route: streaming vs non-streaming ──────────────────────────────
     if req.stream {

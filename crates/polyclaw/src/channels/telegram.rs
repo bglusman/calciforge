@@ -174,9 +174,11 @@ fn handle_message_nonblocking(
     // per-identity active agent (respects !switch overrides).
     if CommandHandler::is_status_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !status command");
-        let reply = command_handler.cmd_status_for_identity(&identity.id);
         let bot2 = bot.clone();
+        let identity_id = identity.id.clone();
+        let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
+            let reply = command_handler2.cmd_status_for_identity(&identity_id).await;
             if let Err(e) = bot2.send_message(chat_id, &reply).await {
                 warn!(chat_id = %chat_id, error = %e, "failed to send status reply");
             }
@@ -452,7 +454,7 @@ async fn handle_message(
     // per-identity active agent (respects !switch overrides).
     if CommandHandler::is_status_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !status command");
-        let reply = command_handler.cmd_status_for_identity(&identity.id);
+        let reply = command_handler.cmd_status_for_identity(&identity.id).await;
         if let Err(e) = bot.send_message(chat_id, &reply).await {
             warn!(chat_id = %chat_id, error = %e, "failed to send status reply");
         }
@@ -802,14 +804,14 @@ mod tests {
         assert!(handler.handle("what is the weather?").is_none());
     }
 
-    #[test]
-    fn test_status_command_is_post_auth() {
-        // cmd_status_for_identity() is a plain synchronous fn — no futures, no await.
+    #[tokio::test]
+    async fn test_status_command_is_post_auth() {
+        // cmd_status_for_identity() is now async — it queries the adapter for runtime status.
         // Verify it returns a non-empty, identity-aware String.
         let config = Arc::new(make_test_config());
         let handler = CommandHandler::new(config);
 
-        let reply = handler.cmd_status_for_identity("brian");
+        let reply = handler.cmd_status_for_identity("brian").await;
         assert!(!reply.is_empty(), "cmd_status_for_identity must return non-empty String");
         assert!(reply.contains("librarian"), "status should show active agent for brian: {}", reply);
         assert!(reply.contains("version:"), "status should include version: {}", reply);

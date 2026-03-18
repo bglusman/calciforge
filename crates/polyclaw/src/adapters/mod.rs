@@ -100,6 +100,23 @@ impl<'a> DispatchContext<'a> {
     }
 }
 
+/// Runtime model/provider status reported by an adapter.
+///
+/// Adapters that can query their underlying agent's runtime state
+/// return this from `get_runtime_status()`. For alloy providers,
+/// constituents list the constituent providers and models.
+#[derive(Debug, Clone)]
+pub struct RuntimeStatus {
+    /// The provider kind (e.g. "openai", "ollama", "alloy", "openclaw")
+    pub provider: String,
+    /// The model name or alloy alias (e.g. "gpt-5-mini", "fast-alloy")
+    pub model: String,
+    /// If this is an alloy, the constituent providers and their models
+    pub alloy_constituents: Option<Vec<(String, String)>>,
+    /// Which constituent was selected for the most recent request (if known)
+    pub last_selected: Option<(String, String)>,
+}
+
 /// Common interface for all agent adapters.
 ///
 /// Implementations are `Send + Sync` so they can be wrapped in `Arc` and
@@ -123,6 +140,14 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Short name for logs and `!agents` output (e.g. "openclaw-http", "zeroclaw", "cli").
     fn kind(&self) -> &'static str;
+
+    /// Query the underlying agent's runtime model/provider status.
+    ///
+    /// Default implementation returns `None` — adapters that support
+    /// runtime introspection (e.g. NZC) override this.
+    async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

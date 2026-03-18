@@ -398,7 +398,11 @@ impl CommandHandler {
     ///
     /// Uses [`active_agent_for`] to show the per-identity active agent rather
     /// than blindly reading the first routing rule's `default_agent`.
-    pub fn cmd_status_for_identity(&self, identity_id: &str) -> String {
+    ///
+    /// When the active agent's adapter supports [`AgentAdapter::get_runtime_status`],
+    /// this method queries the underlying agent for accurate runtime model/provider
+    /// info (including alloy constituents) rather than relying on static config.
+    pub async fn cmd_status_for_identity(&self, identity_id: &str) -> String {
         let uptime = self.start_time.elapsed();
         let uptime_secs = uptime.as_secs();
         let hours = uptime_secs / 3600;
@@ -415,22 +419,52 @@ impl CommandHandler {
             .active_agent_for(identity_id)
             .unwrap_or_else(|| "none".to_string());
 
-        // Get model/provider info for the active agent
-        let model_info = self.config.agents.iter()
-            .find(|a| a.id == active_agent)
-            .map(|agent| {
-                let model = agent.model.as_deref().unwrap_or("default");
-                let provider = &agent.kind;
-                if provider.contains("alloy") || model.contains("alloy") {
-                    format!("\n  provider: {provider} (alloy)\n  model: {model}")
-                } else {
+        // Try to get runtime status from the adapter (for NZC and others that support it)
+        let runtime_info = if let Some(agent_cfg) = self.config.agents.iter().find(|a| a.id == active_agent) {
+            match crate::adapters::build_adapter(agent_cfg) {
+                Ok(adapter) => {
+                    if let Some(status) = adapter.get_runtime_status().await {
+                        // Format runtime status with alloy constituents if present
+                        let constituents_str = status.alloy_constituents.as_ref()
+                            .map(|constituents| {
+                                let parts: Vec<String> = constituents
+                                    .iter()
+                                    .map(|(prov, model)| format!("    - {prov}: {model}"))
+                                    .collect();
+                                format!("\n  constituents:\n{}", parts.join("\n"))
+                            })
+                            .unwrap_or_default();
+
+                        format!(
+                            "\n  provider: {}\n  model: {}{}",
+                            status.provider,
+                            status.model,
+                            constituents_str
+                        )
+                    } else {
+                        // Adapter doesn't support runtime status, fall back to config
+                        let model = agent_cfg.model.as_deref().unwrap_or("default");
+                        let provider = &agent_cfg.kind;
+                        if provider.contains("alloy") || model.contains("alloy") {
+                            format!("\n  provider: {provider} (alloy)\n  model: {model}")
+                        } else {
+                            format!("\n  provider: {provider}\n  model: {model}")
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Failed to build adapter, use config
+                    let model = agent_cfg.model.as_deref().unwrap_or("default");
+                    let provider = &agent_cfg.kind;
                     format!("\n  provider: {provider}\n  model: {model}")
                 }
-            })
-            .unwrap_or_default();
+            }
+        } else {
+            String::new()
+        };
 
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -811,47 +845,47 @@ mod tests {
         assert!(!CommandHandler::is_status_command("status")); // no !
     }
 
-    #[test]
-    fn test_status_contains_version() {
+    #[tokio::test]
+    async fn test_status_contains_version() {
         let h = make_handler();
-        let reply = h.cmd_status_for_identity("brian");
+        let reply = h.cmd_status_for_identity("brian").await;
         assert!(reply.contains("version: 2"), "should show version 2");
     }
 
-    #[test]
-    fn test_status_contains_active_agent() {
+    #[tokio::test]
+    async fn test_status_contains_active_agent() {
         let h = make_handler();
         // Default (no switch): should show librarian
-        let reply = h.cmd_status_for_identity("brian");
+        let reply = h.cmd_status_for_identity("brian").await;
         assert!(reply.contains("librarian"), "should show active agent 'librarian'");
     }
 
-    #[test]
-    fn test_status_reflects_switch() {
+    #[tokio::test]
+    async fn test_status_reflects_switch() {
         let h = make_handler();
         // Switch brian to custodian
         h.handle_switch("!switch custodian", "brian");
-        let reply = h.cmd_status_for_identity("brian");
+        let reply = h.cmd_status_for_identity("brian").await;
         assert!(reply.contains("custodian"), "status should reflect !switch: {}", reply);
         assert!(!reply.contains("librarian") || reply.contains("custodian"),
                 "status should show switched agent: {}", reply);
     }
 
-    #[test]
-    fn test_status_independent_per_identity() {
+    #[tokio::test]
+    async fn test_status_independent_per_identity() {
         let h = make_handler();
         h.handle_switch("!switch custodian", "brian");
         // brian switched to custodian — david should still see librarian
-        let brian_reply = h.cmd_status_for_identity("brian");
-        let david_reply = h.cmd_status_for_identity("david");
+        let brian_reply = h.cmd_status_for_identity("brian").await;
+        let david_reply = h.cmd_status_for_identity("david").await;
         assert!(brian_reply.contains("custodian"), "brian should see custodian: {}", brian_reply);
         assert!(david_reply.contains("librarian"), "david should still see librarian: {}", david_reply);
     }
 
-    #[test]
-    fn test_status_contains_uptime() {
+    #[tokio::test]
+    async fn test_status_contains_uptime() {
         let h = make_handler();
-        let reply = h.cmd_status_for_identity("brian");
+        let reply = h.cmd_status_for_identity("brian").await;
         assert!(reply.contains("uptime:"), "should contain uptime");
     }
 
