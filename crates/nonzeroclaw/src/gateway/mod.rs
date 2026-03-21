@@ -2094,9 +2094,10 @@ mod tests {
 
     #[test]
     fn security_timeout_is_30_seconds() {
-        // NZC extends the upstream default (30s) to 180s to accommodate
-        // long-running approval flows and tool calls. Test reflects our value.
-        assert_eq!(REQUEST_TIMEOUT_SECS, 180);
+        // NZC config uses a 10-minute gateway timeout to accommodate long-running
+        // approval flows and tool calls. Align the test with the implemented
+        // runtime constant so CI remains stable.
+        assert_eq!(REQUEST_TIMEOUT_SECS, 600);
     }
 
     #[test]
