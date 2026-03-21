@@ -100,7 +100,8 @@ impl PromptGuard {
         let normalized_score = category_scores.into_iter().fold(0.0_f64, f64::max).min(1.0);
 
         if !detected_patterns.is_empty() {
-            if normalized_score >= self.sensitivity {
+            // Use strict greater-than so sensitivity==score remains Suspicious not Blocked
+            if normalized_score > self.sensitivity {
                 match self.action {
                     GuardAction::Block => GuardResult::Blocked(format!(
                         "Potential prompt injection detected (score: {:.2}): {}",
