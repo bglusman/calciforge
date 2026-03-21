@@ -197,7 +197,8 @@ impl MatrixChannel {
             .map(|dir| dir.join("state").join("matrix"))
     }
 
-    fn is_user_allowed(&self, sender: &str) -> bool {
+    /// `pub(crate)` for proptest allowlist verification.
+    pub(crate) fn is_user_allowed(&self, sender: &str) -> bool {
         Self::is_sender_allowed(&self.allowed_users, sender)
     }
 
