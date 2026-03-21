@@ -13,9 +13,17 @@ PROTECTED_FILES = [
     "/usr/local/bin/nonzeroclaw",
 ]
 
+# Files under the agent workspace that are not governance policy files should
+# require human review when Lucien attempts to modify them. Policy files are
+# explicitly denied.
 def evaluate(action, identity, agent, command="", path=""):
     if action == "tool:file_write":
         for protected in PROTECTED_FILES:
             if path == protected or path.endswith(protected):
                 return "deny:Protected file — Lucien cannot modify: " + path
+
+        # Require review for any workspace-level config changes
+        if path.startswith("/etc/nonzeroclaw/workspace/"):
+            return "review:Workspace config changes require approval: " + path
+
     return "allow"
