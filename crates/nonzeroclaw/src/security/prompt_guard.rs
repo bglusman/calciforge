@@ -122,7 +122,7 @@ impl PromptGuard {
         static SYSTEM_OVERRIDE_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
         let regexes = SYSTEM_OVERRIDE_PATTERNS.get_or_init(|| {
             vec![
-                Regex::new(r"(?i)ignore\s+(previous|all|above|prior)\s+(instructions?|prompts?|commands?)").unwrap(),
+                Regex::new(r"(?i)ignore\s+(?:\w+\s+)?(previous|all|above|prior)\s+(instructions?|prompts?|commands?)").unwrap(),
                 Regex::new(r"(?i)disregard\s+(previous|all|above|prior)").unwrap(),
                 Regex::new(r"(?i)forget\s+(previous|all|everything|above)").unwrap(),
                 Regex::new(r"(?i)new\s+(instructions?|rules?|system\s+prompt)").unwrap(),
@@ -186,7 +186,7 @@ impl PromptGuard {
         static SECRET_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
         let regexes = SECRET_PATTERNS.get_or_init(|| {
             vec![
-                Regex::new(r"(?i)(list|show|print|display|reveal|tell\s+me)\s+(all\s+)?(secrets?|credentials?|passwords?|tokens?|keys?)").unwrap(),
+                Regex::new(r"(?i)(list|show|print|display|reveal|tell\s+me)\s+.*(secrets?|credentials?|passwords?|tokens?|keys?)").unwrap(),
                 Regex::new(r"(?i)(what|show)\s+(are|is|me)\s+(your|the)\s+(api\s+)?(keys?|secrets?|credentials?)").unwrap(),
                 Regex::new(r"(?i)contents?\s+of\s+(vault|secrets?|credentials?)").unwrap(),
                 Regex::new(r"(?i)(dump|export)\s+(vault|secrets?|credentials?)").unwrap(),
