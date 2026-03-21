@@ -48,8 +48,9 @@ impl WhatsAppChannel {
         crate::config::build_runtime_proxy_client("channel.whatsapp")
     }
 
-    /// Check if a phone number is allowed (E.164 format: +1234567890)
-    fn is_number_allowed(&self, phone: &str) -> bool {
+    /// Check if a phone number is allowed (E.164 format: +1234567890).
+    /// `pub(crate)` for proptest allowlist verification.
+    pub(crate) fn is_number_allowed(&self, phone: &str) -> bool {
         self.allowed_numbers.iter().any(|n| n == "*" || n == phone)
     }
 

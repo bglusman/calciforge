@@ -105,7 +105,8 @@ impl SignalChannel {
             .map(String::from)
     }
 
-    fn is_sender_allowed(&self, sender: &str) -> bool {
+    /// `pub(crate)` for proptest allowlist verification.
+    pub(crate) fn is_sender_allowed(&self, sender: &str) -> bool {
         if self.allowed_from.iter().any(|u| u == "*") {
             return true;
         }

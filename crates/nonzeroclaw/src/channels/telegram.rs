@@ -637,7 +637,8 @@ impl TelegramChannel {
             .unwrap_or(false)
     }
 
-    fn is_user_allowed(&self, username: &str) -> bool {
+    /// `pub(crate)` for proptest allowlist verification.
+    pub(crate) fn is_user_allowed(&self, username: &str) -> bool {
         let identity = Self::normalize_identity(username);
         self.allowed_users
             .read()

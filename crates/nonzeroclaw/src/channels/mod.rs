@@ -67,6 +67,12 @@ pub use whatsapp::WhatsAppChannel;
 #[cfg(feature = "whatsapp-web")]
 pub use whatsapp_web::WhatsAppWebChannel;
 
+// Proptest-based allowlist verification (test-only modules).
+#[cfg(test)]
+mod allowlist_proptest;
+#[cfg(test)]
+mod whatsapp_allowlist_tests;
+
 use crate::agent::loop_::{build_tool_instructions, run_tool_call_loop, scrub_credentials};
 use crate::config::Config;
 use crate::identity;

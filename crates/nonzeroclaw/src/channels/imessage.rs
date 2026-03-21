@@ -21,7 +21,8 @@ impl IMessageChannel {
         }
     }
 
-    fn is_contact_allowed(&self, sender: &str) -> bool {
+    /// `pub(crate)` for proptest allowlist verification.
+    pub(crate) fn is_contact_allowed(&self, sender: &str) -> bool {
         if self.allowed_contacts.iter().any(|u| u == "*") {
             return true;
         }
