@@ -548,29 +548,3 @@ fn file_write_renee_any_path_review() {
     }
 }
 
-// Temporary debug test: print policy verdicts for failing cases. Remove after debugging.
-#[test]
-fn debug_policy_verdicts() {
-    let policy = nzc_policy();
-
-    let cases = vec![
-        ("lucien", "tool:file_write", "/etc/nonzeroclaw/workspace/.clash/policy.star"),
-        ("lucien", "tool:file_write", "/etc/nonzeroclaw/workspace/config.toml"),
-        ("renee", "tool:file_write", "/tmp/foo"),
-        ("renee", "tool:shell", "rm /tmp/foo"),
-    ];
-
-    for (identity, tool, subject) in cases {
-        let ctx = if tool == "tool:shell" {
-            PolicyContext::new(identity, "nzc", tool).with_command(subject)
-        } else {
-            PolicyContext::new(identity, "nzc", tool).with_path(subject)
-        };
-        let verdict = policy.evaluate(tool, &ctx);
-        match verdict {
-            PolicyVerdict::Allow => println!("CASE: identity={} tool={} subject={} => Allow", identity, tool, subject),
-            PolicyVerdict::Review(reason) => println!("CASE: identity={} tool={} subject={} => Review: {}", identity, tool, subject, reason),
-            PolicyVerdict::Deny(reason) => println!("CASE: identity={} tool={} subject={} => Deny: {}", identity, tool, subject, reason),
-        }
-    }
-}
