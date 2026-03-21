@@ -4586,6 +4586,7 @@ dependencies = [
  "postgres",
  "probe-rs",
  "prometheus",
+ "proptest",
  "prost 0.14.3",
  "rand 0.10.0",
  "regex",

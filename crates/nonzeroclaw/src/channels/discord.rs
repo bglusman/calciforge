@@ -42,7 +42,8 @@ impl DiscordChannel {
     /// Check if a Discord user ID is in the allowlist.
     /// Empty list means deny everyone until explicitly configured.
     /// `"*"` means allow everyone.
-    fn is_user_allowed(&self, user_id: &str) -> bool {
+    /// `pub(crate)` for proptest allowlist verification.
+    pub(crate) fn is_user_allowed(&self, user_id: &str) -> bool {
         self.allowed_users.iter().any(|u| u == "*" || u == user_id)
     }
 
