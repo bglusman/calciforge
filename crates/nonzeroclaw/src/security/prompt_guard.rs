@@ -83,18 +83,21 @@ impl PromptGuard {
     /// Scan a message for prompt injection patterns.
     pub fn scan(&self, content: &str) -> GuardResult {
         let mut detected_patterns = Vec::new();
-        let mut total_score = 0.0;
+        // Collect individual category scores so we can use the strongest signal
+        // (max single-category score) as the normalized score. This prevents a
+        // small single high-confidence signal from being washed out by empty
+        // categories when dividing by the number of checks.
+        let mut category_scores: Vec<f64> = Vec::with_capacity(6);
 
-        // Check each pattern category
-        total_score += self.check_system_override(content, &mut detected_patterns);
-        total_score += self.check_role_confusion(content, &mut detected_patterns);
-        total_score += self.check_tool_injection(content, &mut detected_patterns);
-        total_score += self.check_secret_extraction(content, &mut detected_patterns);
-        total_score += self.check_command_injection(content, &mut detected_patterns);
-        total_score += self.check_jailbreak_attempts(content, &mut detected_patterns);
+        category_scores.push(self.check_system_override(content, &mut detected_patterns));
+        category_scores.push(self.check_role_confusion(content, &mut detected_patterns));
+        category_scores.push(self.check_tool_injection(content, &mut detected_patterns));
+        category_scores.push(self.check_secret_extraction(content, &mut detected_patterns));
+        category_scores.push(self.check_command_injection(content, &mut detected_patterns));
+        category_scores.push(self.check_jailbreak_attempts(content, &mut detected_patterns));
 
-        // Normalize score to 0.0-1.0 range (max possible is 6.0, one per category)
-        let normalized_score = (total_score / 6.0).min(1.0);
+        // Use the maximum per-category score as the normalized_score (range 0.0-1.0)
+        let normalized_score = category_scores.into_iter().fold(0.0_f64, f64::max).min(1.0);
 
         if !detected_patterns.is_empty() {
             if normalized_score >= self.sensitivity {
