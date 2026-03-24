@@ -197,6 +197,7 @@ rag-pdf = ["dep:pdf-extract"]
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost"]
 
 [dev-dependencies]
+hegeltest = { git = "https://github.com/hegeldev/hegel-rust" }
 tempfile = "3.14"
 criterion = { version = "0.8", features = ["async_tokio"] }
 wiremock = "0.6"
