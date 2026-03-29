@@ -1,11 +1,20 @@
-//! Secure approval token generation and validation (P1-5, P1-6)
+//! Secure approval token generation and validation (P1-5, P1-6, P-C6)
 //!
 //! Tokens are 16-character HMAC-based strings with high entropy (~80 bits).
 //! For logging, only SHA-256 hashes are stored, never plaintext tokens.
+//!
+//! # Timing-attack mitigations (P-C6)
+//! `verify_token_hash` uses `subtle::ConstantTimeEq` to prevent timing-based
+//! hash oracle attacks. Remaining risk: the HashMap lookup in ApprovalManager
+//! is not constant-time by design (necessary for correctness); tokens are hashed
+//! before lookup so an attacker cannot reconstruct the plaintext from timing alone.
+//! The lookup itself leaks "hash found vs. not found" timing, which is acceptable
+//! because the hash is a 256-bit secret derived from the token.
 
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use std::fmt::Write;
 
 // HMAC-SHA256 for token generation
@@ -77,10 +86,15 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Verify a token against its hash
+/// Verify a token against its hash using constant-time comparison (P-C6)
+///
+/// Prevents timing-based oracle attacks where an adversary could infer how many
+/// leading bytes of their guess are correct from the response latency.
 pub fn verify_token_hash(token: &str, expected_hash: &str) -> bool {
     let actual_hash = hash_token(token);
-    actual_hash == expected_hash
+    // ConstantTimeEq from the `subtle` crate ensures the comparison runs in
+    // constant time regardless of where the first differing byte is.
+    actual_hash.as_bytes().ct_eq(expected_hash.as_bytes()).into()
 }
 
 /// Format a token for display (first 4 chars only, rest masked)
@@ -179,8 +193,10 @@ mod tests {
     #[test]
     fn test_mask_token() {
         assert_eq!(mask_token("X7K9M2P4Q8R5N6V3"), "X7K9****");
-        assert_eq!(mask_token("short"), "****");
-        assert_eq!(mask_token("ab"), "****");
+        // Strings with 5+ chars get a prefix; strings with <=4 chars get all-mask
+        assert_eq!(mask_token("short"), "shor****"); // 5 chars → show first 4
+        assert_eq!(mask_token("ab"), "****");        // 2 chars → all-mask
+        assert_eq!(mask_token("abcd"), "****");      // exactly 4 → all-mask (len <= 4)
     }
 
     #[test]

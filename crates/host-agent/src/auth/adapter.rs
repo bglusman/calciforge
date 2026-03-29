@@ -257,6 +257,7 @@ mod tests {
             allowed_operations: vec!["zfs-list".to_string()],
             requires_approval_for: vec!["zfs-destroy".to_string()],
             pattern_rules: vec![],
+            allow_full_autonomy_bypass: false,
         }
     }
 
