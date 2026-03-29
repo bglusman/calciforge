@@ -225,24 +225,98 @@ EOF
     log_info "Configuration created at $CONFIG_PATH"
 }
 
-# Setup sudoers
-setup_sudoers() {
-    log_info "Setting up sudoers..."
-    
-    cat > /etc/sudoers.d/clash-agent << 'EOF'
-# PolyClaw Host-Agent sudoers
-clash-agent ALL=(root) NOPASSWD: /sbin/zfs
-EOF
-    
-    chmod 440 /etc/sudoers.d/clash-agent
-    
-    # Validate sudoers
-    if ! visudo -cf /etc/sudoers.d/clash-agent; then
-        log_error "Sudoers file validation failed"
+# Install OS-level wrapper scripts (root-owned, mode 0755)
+install_wrappers() {
+    log_info "Installing OS wrapper scripts to /usr/local/sbin/ ..."
+
+    local wrapper_src="$SCRIPT_DIR/wrappers"
+
+    if [[ ! -d "$wrapper_src" ]]; then
+        log_warn "Wrappers directory $wrapper_src not found; skipping wrapper install"
+        return
+    fi
+
+    for wrapper in pct-create-wrapper zfs-destroy-wrapper git-safe-wrapper; do
+        local src="$wrapper_src/$wrapper"
+        local dst="/usr/local/sbin/$wrapper"
+
+        if [[ ! -f "$src" ]]; then
+            log_warn "Wrapper $wrapper not found at $src; skipping"
+            continue
+        fi
+
+        install -o root -g root -m 0755 "$src" "$dst"
+        log_info "  Installed $dst (root:root 0755)"
+    done
+
+    log_info "Wrapper scripts installed"
+}
+
+# Install logrotate configuration
+install_logrotate() {
+    log_info "Installing logrotate configuration..."
+
+    local src="$SCRIPT_DIR/wrappers/logrotate-clash-host-agent"
+    local dst="/etc/logrotate.d/clash-host-agent"
+
+    if [[ ! -f "$src" ]]; then
+        log_warn "Logrotate template not found at $src; skipping"
+        return
+    fi
+
+    install -o root -g root -m 0644 "$src" "$dst"
+    log_info "Logrotate configuration installed at $dst"
+
+    # Validate it
+    if command -v logrotate &>/dev/null; then
+        if logrotate --debug "$dst" > /dev/null 2>&1; then
+            log_info "logrotate syntax check passed"
+        else
+            log_warn "logrotate debug run returned warnings — review $dst"
+        fi
+    fi
+}
+
+# Install sudoers fragment (wrapper-only policy — replaces broad /sbin/zfs entry)
+install_sudoers() {
+    log_info "Setting up sudoers (wrapper-only policy)..."
+
+    local template="$SCRIPT_DIR/wrappers/sudoers-clash-agent.template"
+    local dst="/etc/sudoers.d/clash-agent"
+    local agent_user="${CLASH_AGENT_USER:-clash-agent}"
+
+    if [[ ! -f "$template" ]]; then
+        log_warn "Sudoers template not found at $template; writing minimal fallback"
+        cat > "$dst" << SUDOERS_EOF
+# PolyClaw Host-Agent sudoers — minimal fallback
+${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/pct-create-wrapper
+${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/zfs-destroy-wrapper
+${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/git-safe-wrapper
+${agent_user} ALL=(root) NOPASSWD: /usr/sbin/pct status *
+${agent_user} ALL=(root) NOPASSWD: /sbin/zfs list *
+${agent_user} ALL=(root) NOPASSWD: /sbin/zfs get *
+${agent_user} ALL=(root) NOPASSWD: /sbin/zfs snapshot *
+SUDOERS_EOF
+    else
+        # Substitute {{CLASH_AGENT_USER}} placeholder
+        sed "s/{{CLASH_AGENT_USER}}/${agent_user}/g" "$template" > "$dst"
+    fi
+
+    chmod 440 "$dst"
+
+    # Validate
+    if ! visudo -cf "$dst"; then
+        log_error "Sudoers file validation failed — removing $dst"
+        rm -f "$dst"
         exit 1
     fi
-    
-    log_info "Sudoers configured"
+
+    log_info "Sudoers configured at $dst"
+}
+
+# setup_sudoers is now replaced by install_sudoers (kept as alias for backwards compat)
+setup_sudoers() {
+    install_sudoers
 }
 
 # Create systemd service
@@ -326,8 +400,10 @@ main() {
     setup_user
     generate_certs
     install_binary
+    install_wrappers
     create_config
-    setup_sudoers
+    install_sudoers
+    install_logrotate
     create_service
     start_service
     test_installation

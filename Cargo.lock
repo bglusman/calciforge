@@ -3079,6 +3079,7 @@ dependencies = [
  "chrono",
  "clap",
  "dashmap",
+ "glob",
  "hex",
  "hmac",
  "http 1.4.0",

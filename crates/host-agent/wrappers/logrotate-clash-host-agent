@@ -13,8 +13,10 @@
 /var/log/clash/host-agent.log
 /var/log/clash/zfs-destroy-wrapper.log
 {
+    # Rotate at least daily; also rotate early if file exceeds 100 MiB.
+    # maxsize triggers mid-cycle rotation without replacing the daily schedule.
     daily
-    size 100M
+    maxsize 100M
     rotate 14
     compress
     delaycompress
@@ -22,6 +24,9 @@
     notifempty
     dateext
     dateformat -%Y%m%d
+    # Note: 'clash-agent' user is created by install.sh (useradd).
+    # logrotate --debug will report "unknown user" on systems where the
+    # service account has not yet been created — this is expected.
     create 640 clash-agent clash-agent
 
     postrotate
