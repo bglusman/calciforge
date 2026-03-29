@@ -18,6 +18,35 @@ pub struct Config {
     pub rate_limit: RateLimitConfig,
     pub agents: Vec<AgentConfig>,
     pub rules: Vec<RuleConfig>,
+    /// Git adapter configuration
+    #[serde(default)]
+    pub git: Option<GitConfig>,
+    /// Exec adapter configuration
+    #[serde(default)]
+    pub exec: Option<ExecConfig>,
+}
+
+/// Git adapter configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitConfig {
+    /// List of allowed repository root paths.
+    /// Empty = all absolute paths allowed (not recommended for production).
+    #[serde(default)]
+    pub allowed_repos: Vec<String>,
+}
+
+/// Exec/Ansible adapter configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecConfig {
+    /// Must be true to enable this adapter (disabled by default).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Absolute paths of commands that may be executed.
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
+    /// Directory where Ansible job specs are written (stub).
+    #[serde(default)]
+    pub ansible_job_queue: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +270,7 @@ impl Default for Config {
                 },
             ],
             rules: vec![
+                // ZFS rules
                 RuleConfig {
                     operation: "zfs-destroy".to_string(),
                     approval_required: true,
@@ -262,7 +292,116 @@ impl Default for Config {
                     always_ask: false,
                     approval_admin_only: false,
                 },
+                RuleConfig {
+                    operation: "zfs-rollback".to_string(),
+                    approval_required: true,
+                    pattern: None,
+                    always_ask: true,
+                    approval_admin_only: false,
+                },
+                // Systemd rules
+                RuleConfig {
+                    operation: "systemd-status".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "systemd-start".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "systemd-stop".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "systemd-restart".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                // PCT rules
+                RuleConfig {
+                    operation: "pct-status".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "pct-start".to_string(),
+                    approval_required: true,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "pct-stop".to_string(),
+                    approval_required: true,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "pct-destroy".to_string(),
+                    approval_required: true,
+                    pattern: None,
+                    always_ask: true,
+                    approval_admin_only: true,
+                },
+                // Git rules
+                RuleConfig {
+                    operation: "git-status".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "git-log".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "git-fetch".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "git-pull".to_string(),
+                    approval_required: false,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
+                RuleConfig {
+                    operation: "git-checkout".to_string(),
+                    approval_required: true,
+                    pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
+                },
             ],
+            git: Some(GitConfig {
+                allowed_repos: vec!["/srv".to_string(), "/opt".to_string()],
+            }),
+            exec: Some(ExecConfig {
+                enabled: false, // disabled by default
+                allowed_commands: vec![],
+                ansible_job_queue: None,
+            }),
         }
     }
 }
