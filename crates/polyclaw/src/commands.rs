@@ -1114,8 +1114,8 @@ mod tests {
 
     // --- case insensitivity ---
 
-    #[test]
-    fn test_commands_case_insensitive() {
+    #[tokio::test]
+    async fn test_commands_case_insensitive() {
         let h = make_handler();
         assert_eq!(h.handle("!PING"), Some("pong".to_string()));
         assert_eq!(h.handle("!Ping"), Some("pong".to_string()));
@@ -1123,7 +1123,7 @@ mod tests {
         // !STATUS now requires identity context — returns None from handle()
         assert!(h.handle("!STATUS").is_none());
         // cmd_status_for_identity is case-insensitive at the identity level
-        assert!(h.cmd_status_for_identity("brian").contains("version:"));
+        assert!(h.cmd_status_for_identity("brian").await.contains("version:"));
     }
 
     // --- record_dispatch counter ---
