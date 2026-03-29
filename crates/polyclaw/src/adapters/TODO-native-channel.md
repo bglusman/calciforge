@@ -1,59 +1,137 @@
-# TODO: Native Channel Plugin for OpenClaw
+# Native Channel Adapters for OpenClaw and NZC
 
-## The Problem
+## Status: **IMPLEMENTED** (v3, branch `host-agent-v3`)
 
-`OpenClawHttpAdapter` dispatches all messages — including OpenClaw native
+The bugs described below have been fixed. Two new native adapters are now available.
+
+---
+
+## Background (The Original Bug)
+
+`OpenClawHttpAdapter` dispatched all messages — including OpenClaw native
 commands — via `POST /v1/chat/completions` (the LLM completions path).
 
-This means commands like `/status`, `/model`, `/reasoning`, `!approve`, and
-`!deny` are **not handled natively**. Instead they land in the LLM's context as
-plain user messages, which produces:
+**Two bug symptoms:**
 
-- Confusing or incorrect responses (the LLM tries to answer "what is /status?")
-- No ability to trigger real approval flows from PolyClaw
-- No heartbeat integration, no reaction support, no session commands
+1. **No conversation context** — every message was a fresh single-turn request.
+   No session history was maintained across turns.
 
-## The Root Cause
+2. **Native commands broken** — commands like `/status`, `/model`, `/reasoning`,
+   `!approve`, and `!deny` were **not handled natively**. They landed in the
+   LLM's context as plain user messages.
 
-OpenClaw's native command handling lives in its **inbound message pipeline**
-(the channel plugin layer). The `/v1/chat/completions` HTTP shim completely
-bypasses that pipeline — it's a read-only LLM proxy that has no knowledge of
-OpenClaw sessions, commands, or reactions.
+`NzcHttpAdapter` correctly used the native `/webhook` endpoint but **did not
+accumulate conversation history across turns** — NZC saw each message in isolation.
 
-## The Solution
+---
 
-Implement a **`PolyClawChannelPlugin`** for OpenClaw that feeds messages
-directly into OpenClaw's native inbound message pipeline, exactly as if
-PolyClaw were a first-class channel (like Telegram or Signal).
+## What Was Implemented
 
-### What this requires
+### `openclaw-native` adapter (`src/adapters/openclaw_native.rs`)
 
-1. **OpenClaw side** — expose a `/v1/inbound` (or equivalent) endpoint that
-   accepts a raw message envelope `{text, sender, channel}` and runs it through
-   the full native pipeline (command dispatch → tool calls → memory → response).
+Uses OpenClaw's **`/hooks/agent`** endpoint instead of `/v1/chat/completions`.
 
-2. **PolyClaw side** — add a new adapter kind (e.g. `kind: "openclaw-native"`)
-   that calls `/v1/inbound` instead of `/v1/chat/completions`. This adapter
-   would be registered via the existing `build_adapter` factory in
-   `adapters/mod.rs`.
+This runs the **full native agent loop** — same codepath as Telegram/Signal
+inbound messages. OpenClaw interprets `/` and `!` tokens as native commands
+before they ever reach the LLM.
 
-3. **Config** — update `polyclaw.yaml` agent entries to use
-   `kind: openclaw-native` for agents that need native command support.
+**Session continuity:** Stable `sessionKey` derived from `agent_id + sender`
+(format: `polyclaw:{agent_id}:{sender}`). Requires on the OpenClaw side:
 
-### What it unlocks
+```json5
+{
+  hooks: {
+    allowRequestSessionKey: true,
+    allowedSessionKeyPrefixes: ["polyclaw:"],
+  }
+}
+```
 
-| Feature                        | HTTP adapter (`openclaw-http`) | Native channel plugin |
-|--------------------------------|--------------------------------|----------------------|
-| `/status`, `/model` commands   | ❌ LLM answers instead        | ✅ Native handler    |
-| `!approve` / `!deny` flows     | ❌ Not supported               | ✅ Native handler    |
-| Heartbeats (HEARTBEAT_OK)      | ❌ LLM loop only               | ✅ Proper heartbeat  |
-| Emoji reactions                | ❌ No channel context          | ✅ Full reaction API |
-| Session continuity             | ⚠️ Via `x-openclaw-session-key` header | ✅ Native session   |
-| Tool approval escalation       | ❌ Not reachable               | ✅ Full Clash flow   |
+**Config:**
+```toml
+[[agents]]
+id = "librarian"
+kind = "openclaw-native"
+endpoint = "http://10.0.0.20:18789"
+api_key = "REPLACE_WITH_HOOKS_TOKEN"   # hooks.token, NOT the gateway token
+```
+
+### `nzc-native` adapter (`src/adapters/nzc_native.rs`)
+
+Wraps `NzcHttpAdapter` with a **per-sender conversation history ring buffer**.
+
+Each request includes the prior `(user, assistant)` turns as a plain-text
+preamble so NZC's agent sees the full conversational context:
+
+```
+[Conversation history]
+User: <prior user message>
+Assistant: <prior assistant reply>
+[End history]
+<current user message>
+```
+
+History is:
+- Isolated per sender (`sender_key = ctx.sender || ""`)
+- Capped at `MAX_HISTORY_TURNS = 20` turn-pairs (ring buffer, oldest evicted)
+- Not recorded when `ApprovalPending` fires (deferred until resolution via
+  `record_approval_continuation()`)
+
+**Config:**
+```toml
+[[agents]]
+id = "nzc"
+kind = "nzc-native"
+endpoint = "http://10.0.0.50:18799"
+auth_token = "tok"
+```
+
+---
+
+## Feature Comparison
+
+| Feature                        | `openclaw-http` | `openclaw-native` | `nzc-http` | `nzc-native` |
+|--------------------------------|-----------------|-------------------|------------|--------------|
+| `/status`, `/model` commands   | ❌ LLM answers  | ✅ Native handler | ✅ Native  | ✅ Native    |
+| `!approve` / `!deny` flows     | ❌ Not supported| ✅ Native handler | ✅ Native  | ✅ Native    |
+| Session continuity             | ⚠️ Header only  | ✅ Native session | ❌ stateless | ✅ In-process history |
+| History across turns           | ❌              | ✅ (OpenClaw side)| ❌         | ✅           |
+| Heartbeats (HEARTBEAT_OK)      | ❌ LLM loop only| ✅ Proper heartbeat | ✅ Native | ✅ Native    |
+| Tool approval escalation       | ❌ Not reachable| ✅ Full Clash flow | ✅ Native  | ✅ Native    |
+
+---
+
+## Backwards Compatibility
+
+Old adapters (`openclaw-http`, `nzc-http`) are **kept unchanged** and still
+registered in `build_adapter`. Existing configs continue to work as before.
+
+---
+
+## Tests Added
+
+All tests pass. See test modules in the respective adapter files:
+
+- `adapters/openclaw_native.rs` — 11 tests including:
+  - `test_openclaw_native_maintains_session_across_turns`
+  - `test_openclaw_native_forwards_sender_identity`
+  - `test_openclaw_native_adapter_passes_session_key`
+
+- `adapters/nzc_native.rs` — 10 tests including:
+  - `test_nzc_native_appends_history`
+  - `test_nzc_native_history_isolated_by_sender`
+  - `test_clear_history`
+
+- `adapters/mod.rs` — 5 new factory tests for the new kinds
+
+---
 
 ## Tracking
 
 - Branch: `host-agent-v3`
-- Related adapter: `src/adapters/openclaw.rs` (`OpenClawHttpAdapter`)
-- Test documenting the current limitation:
-  `src/router.rs::tests::test_openclaw_http_adapter_does_not_intercept_slash_commands`
+- Commit: `fix(polyclaw): native channel adapters for OpenClaw and NZC with session continuity`
+- Files changed:
+  - `src/adapters/openclaw_native.rs` (new)
+  - `src/adapters/nzc_native.rs` (new)
+  - `src/adapters/mod.rs` (new adapter registrations + factory entries)
+  - `src/adapters/TODO-native-channel.md` (this file — updated to reflect completion)
