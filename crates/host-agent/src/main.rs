@@ -30,6 +30,7 @@ use tracing::{error, info, warn};
 use rustls::crypto::ring::default_provider;
 use rustls::crypto::CryptoProvider;
 
+mod adapters;
 mod approval;
 mod audit;
 mod auth;
@@ -51,6 +52,7 @@ use metrics::Metrics;
 use rate_limit::{RateLimiter, rate_limit_response};
 use tls::IdentityExtractingAcceptor;
 use zfs::{ZfsEntry, ZfsExecutor, ZfsOp};
+use adapters::{AdapterRegistry, HostOp, PolicyDecision};
 
 /// PolyClaw Host-Agent CLI
 #[derive(Parser, Debug)]
@@ -76,6 +78,8 @@ pub struct AppState {
     metrics: Arc<Metrics>,
     agent_registry: Arc<AgentRegistry>,
     rate_limiter: Arc<RateLimiter>,
+    /// Adapter registry for the unified /host/op dispatch
+    adapter_registry: Arc<AdapterRegistry>,
 }
 
 // API Request/Response Types
@@ -668,6 +672,194 @@ async fn list_all_pending(State(state): State<AppState>) -> impl IntoResponse {
     Json(pending)
 }
 
+// Unified operation dispatch endpoint — POST /host/op
+//
+// Takes a HostOp JSON body, dispatches to the appropriate adapter,
+// runs policy validation, then executes if approved.
+//
+// Flow:
+//   1. Look up adapter by HostOp::kind
+//   2. Call adapter.validate() → PolicyDecision
+//   3. If RequiresApproval:
+//      a. If approval_token in metadata → try to consume it
+//      b. Otherwise → create approval request and return pending
+//   4. Call adapter.execute() → ExecutionResult
+//   5. Audit + return result
+async fn host_op_dispatch(
+    State(state): State<AppState>,
+    Extension(identity): Extension<ClientIdentity>,
+    Json(op): Json<HostOp>,
+) -> Result<impl IntoResponse, AppError> {
+    state.metrics.increment_requests();
+
+    // Rate-limit check
+    if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
+        state.metrics.increment_rate_limited();
+        return Err(AppError::RateLimited(retry_after));
+    }
+
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    let operation_label = format!("{}/{}", op.kind, op.command().unwrap_or("unknown"));
+
+    // Find adapter
+    let adapter = state
+        .adapter_registry
+        .dispatch(&op.kind)
+        .ok_or_else(|| AppError::Internal(format!("No adapter registered for kind '{}'", op.kind)))?;
+
+    // Audit: operation attempt
+    state.audit.log(AuditEvent {
+        timestamp: chrono::Utc::now(),
+        audit_id: audit_id.clone(),
+        caller: identity.cn.clone(),
+        caller_uid: identity.uid,
+        operation: operation_label.clone(),
+        target: op.resource.clone().unwrap_or_default(),
+        approval_id: None,
+        result: "attempting".to_string(),
+        details: None,
+        token_hash: None,
+    })?;
+
+    // Adapter validation + policy decision
+    let decision = adapter.validate(&state, &op).await?;
+
+    match decision {
+        PolicyDecision::Deny { reason } => {
+            state.metrics.increment_policy_denials();
+            state.audit.log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                audit_id: audit_id.clone(),
+                caller: identity.cn.clone(),
+                caller_uid: identity.uid,
+                operation: operation_label.clone(),
+                target: op.resource.clone().unwrap_or_default(),
+                approval_id: None,
+                result: "denied".to_string(),
+                details: Some(reason.clone()),
+                token_hash: None,
+            })?;
+            return Err(AppError::PolicyDenied(reason));
+        }
+
+        PolicyDecision::RequiresApproval { message: _ } => {
+            // Check if approval token was provided
+            if let Some(token) = op.approval_token() {
+                let approval_id = state
+                    .approvals
+                    .validate_and_consume_token(token, op.resource.as_deref().unwrap_or(""), &identity.cn)
+                    .await;
+
+                match approval_id {
+                    Some(id) => {
+                        // Token valid — fall through to execute
+                        state.audit.log(AuditEvent {
+                            timestamp: chrono::Utc::now(),
+                            audit_id: audit_id.clone(),
+                            caller: identity.cn.clone(),
+                            caller_uid: identity.uid,
+                            operation: operation_label.clone(),
+                            target: op.resource.clone().unwrap_or_default(),
+                            approval_id: Some(id),
+                            result: "approval_consumed".to_string(),
+                            details: None,
+                            token_hash: None,
+                        })?;
+                        // Continue to execute below
+                    }
+                    None => {
+                        return Err(AppError::InvalidToken);
+                    }
+                }
+            } else {
+                // No token — create approval request and return pending
+                let approval_req = ApprovalRequest {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    caller: identity.cn.clone(),
+                    caller_uid: identity.uid,
+                    operation: operation_label.clone(),
+                    target: op.resource.clone().unwrap_or_default(),
+                    requested_at: chrono::Utc::now(),
+                    nzc_request_id: None,
+                };
+
+                let token = state.approvals.create_approval(approval_req.clone()).await;
+                state.metrics.increment_approvals_created();
+
+                let token_audit = approval::token::TokenAuditInfo::from(token.as_str());
+                state.audit.log(AuditEvent {
+                    timestamp: chrono::Utc::now(),
+                    audit_id: approval_req.id.clone(),
+                    caller: identity.cn.clone(),
+                    caller_uid: identity.uid,
+                    operation: operation_label.clone(),
+                    target: op.resource.clone().unwrap_or_default(),
+                    approval_id: Some(approval_req.id.clone()),
+                    result: "pending_approval".to_string(),
+                    details: None,
+                    token_hash: Some(token_audit.hash),
+                })?;
+
+                return Ok(Json(serde_json::json!({
+                    "pending_approval": true,
+                    "approval_id": approval_req.id,
+                    "message": format!(
+                        "Approval required for {operation_label}. Reply CONFIRM {} to approve.",
+                        token_audit.masked
+                    ),
+                })).into_response());
+            }
+        }
+
+        PolicyDecision::Allow => {
+            // Fall through to execute
+        }
+    }
+
+    // Execute
+    let result = adapter.execute(&state, &identity, &op).await;
+
+    match result {
+        Ok(exec_result) => {
+            state.audit.log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                audit_id: audit_id.clone(),
+                caller: identity.cn.clone(),
+                caller_uid: identity.uid,
+                operation: operation_label.clone(),
+                target: op.resource.clone().unwrap_or_default(),
+                approval_id: None,
+                result: "success".to_string(),
+                details: Some(exec_result.output.clone()),
+                token_hash: None,
+            })?;
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "audit_id": audit_id,
+                "output": exec_result.output,
+                "exit_code": exec_result.exit_code,
+                "metadata": exec_result.metadata,
+            })).into_response())
+        }
+        Err(e) => {
+            state.audit.log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                audit_id: audit_id.clone(),
+                caller: identity.cn.clone(),
+                caller_uid: identity.uid,
+                operation: operation_label.clone(),
+                target: op.resource.clone().unwrap_or_default(),
+                approval_id: None,
+                result: "failure".to_string(),
+                details: Some(e.to_string()),
+                token_hash: None,
+            })?;
+            Err(e)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install ring crypto provider for rustls
@@ -732,6 +924,16 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Build adapter registry
+    let adapter_registry = AdapterRegistry::new()
+        .with(adapters::zfs::ZfsAdapter::new())
+        .with(adapters::systemd::SystemdAdapter::new())
+        .with(adapters::pct::PctAdapter::new())
+        .with(adapters::git::GitAdapter::new())
+        .with(adapters::exec::ExecAdapter::new());
+
+    info!("Registered adapters: {:?}", adapter_registry.kinds());
+
     let state = AppState {
         config: reloadable_config,
         audit: Arc::new(audit),
@@ -740,12 +942,16 @@ async fn main() -> Result<()> {
         metrics,
         agent_registry,
         rate_limiter,
+        adapter_registry: Arc::new(adapter_registry),
     };
 
     // Build router with state
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(metrics::metrics_handler))
+        // Unified adapter dispatch endpoint (v4)
+        .route("/host/op", post(host_op_dispatch))
+        // Legacy ZFS endpoints (kept for backwards compatibility — shim to adapter)
         .route("/zfs/snapshot", post(zfs_snapshot))
         .route("/zfs/list", post(zfs_list))
         .route("/zfs/destroy", post(zfs_destroy))

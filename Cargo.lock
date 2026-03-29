@@ -3073,6 +3073,7 @@ name = "host-agent"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.7.9",
  "axum-server",
  "chrono",

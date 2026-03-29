@@ -242,6 +242,13 @@ impl AgentRegistry {
             info!("Agent identity cache cleared");
         }
     }
+
+    /// Return a placeholder CN for policy lookups when no per-request identity is available.
+    /// Returns None if no configs are registered.
+    pub fn resolve_cn_placeholder(&self) -> Option<String> {
+        // Return the first registered CN pattern (stripped of '*') as a placeholder
+        self.configs.first().map(|c| c.cn_pattern.trim_end_matches('*').to_string())
+    }
 }
 
 #[cfg(test)]
