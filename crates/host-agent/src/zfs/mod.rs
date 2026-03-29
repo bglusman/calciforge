@@ -317,7 +317,11 @@ mod tests {
     fn test_valid_snapshot_name() {
         assert!(is_valid_snapshot_name("daily-2024-01-15"));
         assert!(is_valid_snapshot_name("manual_backup"));
-        assert!(is_valid_snapshot_name("snap@123"));
+        // '@' is NOT valid in a snapshot name component — it's used as the separator
+        // between dataset and snapshot in "dataset@snapshot" references
+        assert!(!is_valid_snapshot_name("snap@123"), "@ should be invalid in snapshot name");
+        assert!(is_valid_snapshot_name("snap123"));
+        assert!(is_valid_snapshot_name("snap.v1"));
     }
 
     #[test]

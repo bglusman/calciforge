@@ -40,6 +40,9 @@ pub enum AppError {
     #[error("Policy denied: {0}")]
     PolicyDenied(String),
 
+    #[error("Rate limit exceeded — retry after {0}s")]
+    RateLimited(u64),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -116,6 +119,7 @@ impl IntoResponse for AppError {
             AppError::Auth(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Identity(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::PolicyDenied(_) => (StatusCode::FORBIDDEN, self.to_string()),
+            AppError::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 

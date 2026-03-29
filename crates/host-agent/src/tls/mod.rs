@@ -167,32 +167,34 @@ impl IdentityExtractingAcceptor {
     }
 }
 
-/// Test helper to generate self-signed certs for testing
+/// Test helper to generate self-signed certs for testing (updated for rcgen 0.13)
 #[cfg(test)]
 pub mod test_certs {
-    use rcgen::{Certificate, CertificateParams, KeyPair, SignatureAlgorithm};
+    use rcgen::{CertifiedKey, CertificateParams, KeyPair, IsCa, BasicConstraints, KeyUsagePurpose};
 
-    pub fn generate_test_ca() -> (Certificate, Vec<u8>) {
-        let mut params = CertificateParams::new(vec!["PolyClaw CA".to_string()]);
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    /// Generate a self-signed CA certificate. Returns (CertifiedKey) which holds
+    /// the cert + key pair together.
+    pub fn generate_test_ca() -> (CertifiedKey, Vec<u8>) {
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["PolyClaw CA".to_string()]).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages = vec![
-            rcgen::KeyUsagePurpose::KeyCertSign,
-            rcgen::KeyUsagePurpose::CrlSign,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
         ];
-
-        let cert = Certificate::from_params(params).unwrap();
-        let pem = cert.serialize_pem().unwrap();
-        (cert, pem.into_bytes())
+        let cert = params.self_signed(&key_pair).unwrap();
+        let pem = cert.pem().into_bytes();
+        (CertifiedKey { cert, key_pair }, pem)
     }
 
-    pub fn generate_test_client_cert(ca: &Certificate, cn: &str) -> (Vec<u8>, Vec<u8>) {
-        let mut params = CertificateParams::new(vec![cn.to_string()]);
+    /// Generate a client cert signed by the given CA.
+    pub fn generate_test_client_cert(ca: &CertifiedKey, cn: &str) -> (Vec<u8>, Vec<u8>) {
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec![cn.to_string()]).unwrap();
         params.distinguished_name.push(rcgen::DnType::CommonName, cn);
-        
-        let cert = Certificate::from_params(params).unwrap();
-        let cert_pem = cert.serialize_pem_with_signer(ca).unwrap();
-        let key_pem = cert.serialize_private_key_pem();
-        
-        (cert_pem.into_bytes(), key_pem.into_bytes())
+        let cert = params.signed_by(&key_pair, &ca.cert, &ca.key_pair).unwrap();
+        let cert_pem = cert.pem().into_bytes();
+        let key_pem = key_pair.serialize_pem().into_bytes();
+        (cert_pem, key_pem)
     }
 }
