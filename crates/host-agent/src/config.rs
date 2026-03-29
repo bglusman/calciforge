@@ -14,6 +14,8 @@ pub struct Config {
     pub audit: AuditConfig,
     pub approval: ApprovalConfig,
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
     pub agents: Vec<AgentConfig>,
     pub rules: Vec<RuleConfig>,
 }
@@ -59,10 +61,48 @@ pub struct ApprovalConfig {
     pub allowed_approvers: Vec<String>,
     /// Secret key for HMAC token generation
     pub token_secret: Option<String>,
+    /// If set, only clients whose CN matches this pattern can approve operations
+    /// marked `approval_admin_only = true` in rules. Default: any mTLS client can approve.
+    #[serde(default)]
+    pub admin_cn_pattern: Option<String>,
+    /// Optional out-of-process hook for approver identity validation.
+    /// Format: "command:/path/to/bin", "http://127.0.0.1:PORT/validate", or unset.
+    /// Hook receives JSON on stdin: {"approver_cn":"...", "approval_id":"...", "operation":"...", "target":"..."}
+    /// Expected JSON response: {"allowed": true|false, "reason": "optional"}
+    /// When unset, identity validation is skipped (mTLS is the only gate).
+    #[serde(default)]
+    pub identity_plugin: Option<String>,
 }
 
 fn default_token_entropy() -> u32 {
     80
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Enable per-CN rate limiting on destructive endpoints
+    #[serde(default = "default_rate_limit_enabled")]
+    pub enabled: bool,
+    /// Maximum requests per window
+    #[serde(default = "default_rate_limit_max")]
+    pub max_requests: u32,
+    /// Window size in seconds
+    #[serde(default = "default_rate_limit_window")]
+    pub window_seconds: u64,
+    /// Endpoints to rate-limit (default: destroy, approve, pending)
+    #[serde(default = "default_rate_limited_endpoints")]
+    pub endpoints: Vec<String>,
+}
+
+fn default_rate_limit_enabled() -> bool { true }
+fn default_rate_limit_max() -> u32 { 5 }
+fn default_rate_limit_window() -> u64 { 60 }
+fn default_rate_limited_endpoints() -> Vec<String> {
+    vec![
+        "/zfs/destroy".to_string(),
+        "/approve".to_string(),
+        "/pending".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +132,11 @@ pub struct AgentConfig {
     /// Pattern-based rules
     #[serde(default)]
     pub pattern_rules: Vec<PatternRule>,
+    /// Allow Full-autonomy agents to bypass operations marked `always_ask = true`.
+    /// Default: false (safe). Must be explicitly set true per-agent by admin to allow bypass.
+    /// Even when true, bypass only applies if the global rule does NOT mark `always_ask = true`.
+    #[serde(default)]
+    pub allow_full_autonomy_bypass: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +168,24 @@ pub struct RuleConfig {
     pub operation: String,
     pub approval_required: bool,
     pub pattern: Option<String>,
+    /// If true, even agents with Full autonomy must ask for approval.
+    /// Requires `allow_full_autonomy_bypass = false` (the default) to take effect.
+    #[serde(default)]
+    pub always_ask: bool,
+    /// If true, only clients matching `approval.admin_cn_pattern` may submit the approval token.
+    #[serde(default)]
+    pub approval_admin_only: bool,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_rate_limit_enabled(),
+            max_requests: default_rate_limit_max(),
+            window_seconds: default_rate_limit_window(),
+            endpoints: default_rate_limited_endpoints(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -147,11 +210,14 @@ impl Default for Config {
                 signal_webhook: None,
                 allowed_approvers: vec![],
                 token_secret: None,
+                admin_cn_pattern: None,
+                identity_plugin: None,
             },
             metrics: MetricsConfig {
                 enabled: true,
                 bind: "127.0.0.1:19090".to_string(),
             },
+            rate_limit: RateLimitConfig::default(),
             agents: vec![
                 AgentConfig {
                     cn_pattern: "librarian*".to_string(),
@@ -161,6 +227,7 @@ impl Default for Config {
                     allowed_operations: vec!["zfs-list".to_string(), "zfs-snapshot".to_string()],
                     requires_approval_for: vec!["zfs-destroy".to_string()],
                     pattern_rules: vec![],
+                    allow_full_autonomy_bypass: false,
                 },
                 AgentConfig {
                     cn_pattern: "claude-code*".to_string(),
@@ -170,6 +237,7 @@ impl Default for Config {
                     allowed_operations: vec!["zfs-list".to_string()],
                     requires_approval_for: vec!["zfs-snapshot".to_string(), "zfs-destroy".to_string()],
                     pattern_rules: vec![],
+                    allow_full_autonomy_bypass: false,
                 },
             ],
             rules: vec![
@@ -177,16 +245,22 @@ impl Default for Config {
                     operation: "zfs-destroy".to_string(),
                     approval_required: true,
                     pattern: None,
+                    always_ask: true,        // destroy always requires approval
+                    approval_admin_only: false,
                 },
                 RuleConfig {
                     operation: "zfs-snapshot".to_string(),
                     approval_required: false,
                     pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
                 },
                 RuleConfig {
                     operation: "zfs-list".to_string(),
                     approval_required: false,
                     pattern: None,
+                    always_ask: false,
+                    approval_admin_only: false,
                 },
             ],
         }
@@ -213,25 +287,60 @@ impl Config {
         }
     }
 
-    /// Check if an operation requires approval (P0-4)
+    /// Check if an operation requires approval (P0-4 / P-B4)
+    ///
+    /// When `agent` is provided, Full-autonomy bypass logic is applied:
+    /// - If the rule has `always_ask = true`, approval is ALWAYS required regardless of autonomy.
+    /// - Otherwise, if the agent has `autonomy = Full` AND `allow_full_autonomy_bypass = true`,
+    ///   the approval requirement is bypassed.
+    /// - Default: Full autonomy does NOT bypass approval (safe default, P-B4).
     pub fn requires_approval(&self, operation: &str, target: &str) -> bool {
-        self.rules
-            .iter()
-            .find(|r| r.operation == operation)
-            .map(|r| {
-                if !r.approval_required {
+        self.requires_approval_for_agent(operation, target, None)
+    }
+
+    /// Like `requires_approval` but aware of the calling agent's autonomy level.
+    pub fn requires_approval_for_agent(
+        &self,
+        operation: &str,
+        target: &str,
+        agent: Option<&AgentConfig>,
+    ) -> bool {
+        let rule = match self.rules.iter().find(|r| r.operation == operation) {
+            Some(r) => r,
+            None => return false,
+        };
+
+        if !rule.approval_required {
+            return false;
+        }
+
+        // Check pattern if present
+        if let Some(ref pattern) = rule.pattern {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if !re.is_match(target) {
                     return false;
                 }
-                // Check pattern if present
-                if let Some(ref pattern) = r.pattern {
-                    let regex = regex::Regex::new(pattern).ok();
-                    if let Some(re) = regex {
-                        return re.is_match(target);
-                    }
-                }
-                true
-            })
-            .unwrap_or(false)
+            }
+        }
+
+        // `always_ask = true` overrides Full autonomy bypass entirely (P-B4)
+        if rule.always_ask {
+            return true;
+        }
+
+        // Full-autonomy bypass: only if the agent explicitly opts in AND the rule allows it
+        if let Some(agent) = agent {
+            if agent.autonomy == AutonomyLevel::Full && agent.allow_full_autonomy_bypass {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Return the rule for a given operation if it exists.
+    pub fn find_rule(&self, operation: &str) -> Option<&RuleConfig> {
+        self.rules.iter().find(|r| r.operation == operation)
     }
 
     /// Find agent config by CN
@@ -248,6 +357,7 @@ impl Config {
 }
 
 /// Reloadable configuration wrapper (P2-12)
+#[derive(Clone)]
 pub struct ReloadableConfig {
     inner: Arc<RwLock<Config>>,
     path: String,
@@ -328,10 +438,110 @@ mod tests {
 
     #[test]
     fn test_autonomy_level_deserialize() {
-        let toml_str = r#"
-            level = "supervised"
-        "#;
-        let level: AutonomyLevel = toml::from_str(toml_str).unwrap();
-        assert_eq!(level, AutonomyLevel::Supervised);
+        // AutonomyLevel is used as the value for the `autonomy` field in AgentConfig.
+        // Test via a wrapper struct to mimic TOML deserialization.
+        #[derive(serde::Deserialize)]
+        struct Wrapper { autonomy: AutonomyLevel }
+
+        let w: Wrapper = toml::from_str(r#"autonomy = "supervised""#).unwrap();
+        assert_eq!(w.autonomy, AutonomyLevel::Supervised);
+
+        let w: Wrapper = toml::from_str(r#"autonomy = "full""#).unwrap();
+        assert_eq!(w.autonomy, AutonomyLevel::Full);
+
+        let w: Wrapper = toml::from_str(r#"autonomy = "read_only""#).unwrap();
+        assert_eq!(w.autonomy, AutonomyLevel::ReadOnly);
+    }
+
+    /// P-B4: Full autonomy cannot bypass always_ask = true operations (default safe)
+    #[test]
+    fn test_full_autonomy_cannot_bypass_always_ask() {
+        let config = Config::default();
+        
+        // zfs-destroy has always_ask = true in default rules
+        let full_agent = AgentConfig {
+            cn_pattern: "full-agent*".to_string(),
+            agent_type: "test".to_string(),
+            unix_user: "test".to_string(),
+            autonomy: AutonomyLevel::Full,
+            allowed_operations: vec![],
+            requires_approval_for: vec![],
+            pattern_rules: vec![],
+            allow_full_autonomy_bypass: true, // even with bypass enabled
+        };
+
+        // always_ask=true overrides even allow_full_autonomy_bypass=true
+        assert!(
+            config.requires_approval_for_agent("zfs-destroy", "tank/media", Some(&full_agent)),
+            "Full autonomy with bypass should NOT bypass always_ask=true operations"
+        );
+    }
+
+    /// P-B4: Full autonomy CAN bypass when always_ask=false and bypass is explicitly enabled
+    #[test]
+    fn test_full_autonomy_bypass_when_explicitly_enabled() {
+        let mut config = Config::default();
+        // Set snapshot rule: approval required, but always_ask=false
+        config.rules.push(RuleConfig {
+            operation: "zfs-snapshot-protected".to_string(),
+            approval_required: true,
+            pattern: None,
+            always_ask: false,
+            approval_admin_only: false,
+        });
+
+        let full_agent_with_bypass = AgentConfig {
+            cn_pattern: "full-agent*".to_string(),
+            agent_type: "test".to_string(),
+            unix_user: "test".to_string(),
+            autonomy: AutonomyLevel::Full,
+            allowed_operations: vec![],
+            requires_approval_for: vec![],
+            pattern_rules: vec![],
+            allow_full_autonomy_bypass: true,
+        };
+
+        let full_agent_no_bypass = AgentConfig {
+            allow_full_autonomy_bypass: false,
+            ..full_agent_with_bypass.clone()
+        };
+
+        // With bypass enabled: skip approval
+        assert!(
+            !config.requires_approval_for_agent(
+                "zfs-snapshot-protected", "tank/data", Some(&full_agent_with_bypass)
+            ),
+            "Full autonomy with bypass=true should skip approval when always_ask=false"
+        );
+
+        // Without bypass: still require approval
+        assert!(
+            config.requires_approval_for_agent(
+                "zfs-snapshot-protected", "tank/data", Some(&full_agent_no_bypass)
+            ),
+            "Full autonomy with bypass=false should still require approval"
+        );
+    }
+
+    /// P-B4: Supervised autonomy always requires approval regardless of bypass flag
+    #[test]
+    fn test_supervised_always_requires_approval() {
+        let config = Config::default();
+
+        let supervised_agent = AgentConfig {
+            cn_pattern: "supervised*".to_string(),
+            agent_type: "test".to_string(),
+            unix_user: "test".to_string(),
+            autonomy: AutonomyLevel::Supervised,
+            allowed_operations: vec![],
+            requires_approval_for: vec![],
+            pattern_rules: vec![],
+            allow_full_autonomy_bypass: true, // irrelevant for Supervised
+        };
+
+        assert!(
+            config.requires_approval_for_agent("zfs-destroy", "tank/media", Some(&supervised_agent)),
+            "Supervised agent should require approval"
+        );
     }
 }

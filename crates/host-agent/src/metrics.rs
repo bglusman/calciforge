@@ -23,6 +23,8 @@ pub struct Metrics {
     auth_failures_total: AtomicU64,
     /// Number of policy denials
     policy_denials_total: AtomicU64,
+    /// Number of requests rejected by rate limiter (P-B5)
+    rate_limited_total: AtomicU64,
 }
 
 impl Metrics {
@@ -37,6 +39,7 @@ impl Metrics {
             approvals_granted_total: AtomicU64::new(0),
             auth_failures_total: AtomicU64::new(0),
             policy_denials_total: AtomicU64::new(0),
+            rate_limited_total: AtomicU64::new(0),
         }
     }
 
@@ -68,6 +71,10 @@ impl Metrics {
 
     pub fn increment_policy_denials(&self) {
         self.policy_denials_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_rate_limited(&self) {
+        self.rate_limited_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Generate Prometheus-formatted metrics
@@ -108,6 +115,10 @@ host_agent_auth_failures_total {}
 # HELP host_agent_policy_denials_total Total number of policy denials
 # TYPE host_agent_policy_denials_total counter
 host_agent_policy_denials_total {}
+
+# HELP host_agent_rate_limited_total Total number of requests rejected by rate limiter
+# TYPE host_agent_rate_limited_total counter
+host_agent_rate_limited_total {}
 "#,
             self.requests_total.load(Ordering::Relaxed),
             self.zfs_operations_total.load(Ordering::Relaxed),
@@ -118,6 +129,7 @@ host_agent_policy_denials_total {}
             self.approvals_granted_total.load(Ordering::Relaxed),
             self.auth_failures_total.load(Ordering::Relaxed),
             self.policy_denials_total.load(Ordering::Relaxed),
+            self.rate_limited_total.load(Ordering::Relaxed),
         )
     }
 }
@@ -129,10 +141,10 @@ impl Default for Metrics {
 }
 
 /// Metrics endpoint handler
-pub async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoResponse {
+pub async fn metrics_handler(State(state): State<crate::AppState>) -> impl IntoResponse {
     (
         [("Content-Type", "text/plain; version=0.0.4")],
-        metrics.render(),
+        state.metrics.render(),
     )
 }
 
