@@ -37,6 +37,7 @@ mod auth;
 mod config;
 mod error;
 mod metrics;
+mod perm_warn;
 mod rate_limit;
 mod tls;
 mod zfs;
@@ -156,9 +157,18 @@ struct SignalWebhookBody {
 // Health check endpoint (no auth required)
 async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     state.metrics.increment_requests();
+
+    // Run perm-warn probe and expose the count in the health response.
+    // Scan is lightweight (reads /etc/sudoers* — typically a few KB).
+    use std::sync::atomic::AtomicU64;
+    let risky_gauge = Arc::new(AtomicU64::new(0));
+    let perm_result = perm_warn::probe_and_record(&state.audit, &state.metrics, &risky_gauge);
+    let risky_count = perm_result.risky_entries.len();
+
     Json(serde_json::json!({
         "status": "healthy",
         "version": env!("CARGO_PKG_VERSION"),
+        "sudoers_warnings": risky_count,
     }))
 }
 
@@ -672,6 +682,53 @@ async fn list_all_pending(State(state): State<AppState>) -> impl IntoResponse {
     Json(pending)
 }
 
+// Admin permission-warning probe — GET /admin/warn-permissions
+//
+// Scans /etc/sudoers and /etc/sudoers.d/* for risky patterns that indicate
+// the clash-agent user has overly-broad sudo privileges.  Results are also
+// written to audit.jsonl and exposed in the Prometheus metrics endpoint.
+//
+// This endpoint is admin-only (caller CN must match admin_cn_pattern if set).
+async fn warn_permissions(
+    State(state): State<AppState>,
+    Extension(identity): Extension<ClientIdentity>,
+) -> impl IntoResponse {
+    state.metrics.increment_requests();
+
+    // Admin-only guard (mirrors list_all_pending logic)
+    let config = state.config.get().await;
+    if let Some(ref pattern) = config.approval.admin_cn_pattern {
+        if !pattern.is_empty() {
+            let matches = if pattern.ends_with('*') {
+                identity.cn.starts_with(&pattern[..pattern.len() - 1])
+            } else {
+                identity.cn == *pattern
+            };
+            if !matches {
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "admin access required",
+                        "caller": identity.cn,
+                    })),
+                ).into_response();
+            }
+        }
+    }
+
+    use std::sync::atomic::AtomicU64;
+    let risky_gauge = Arc::new(AtomicU64::new(0));
+    let result = perm_warn::probe_and_record(&state.audit, &state.metrics, &risky_gauge);
+
+    let status = if result.risky_entries.is_empty() {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::OK // still 200; warnings are informational
+    };
+
+    (status, Json(result)).into_response()
+}
+
 // Unified operation dispatch endpoint — POST /host/op
 //
 // Takes a HostOp JSON body, dispatches to the appropriate adapter,
@@ -959,6 +1016,7 @@ async fn main() -> Result<()> {
         .route("/webhook/signal", post(signal_webhook))
         .route("/pending", get(list_pending))
         .route("/admin/pending", get(list_all_pending))
+        .route("/admin/warn-permissions", get(warn_permissions))
         .with_state(state);
 
     // Setup mTLS — NO HTTP FALLBACK (P0-2)

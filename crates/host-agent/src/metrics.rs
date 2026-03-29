@@ -2,7 +2,6 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Metrics collector for host-agent
@@ -25,6 +24,8 @@ pub struct Metrics {
     policy_denials_total: AtomicU64,
     /// Number of requests rejected by rate limiter (P-B5)
     rate_limited_total: AtomicU64,
+    /// Number of risky sudoers entries detected by the perm-warn probe (gauge, not counter)
+    sudoers_risky_entries: AtomicU64,
 }
 
 impl Metrics {
@@ -40,6 +41,7 @@ impl Metrics {
             auth_failures_total: AtomicU64::new(0),
             policy_denials_total: AtomicU64::new(0),
             rate_limited_total: AtomicU64::new(0),
+            sudoers_risky_entries: AtomicU64::new(0),
         }
     }
 
@@ -75,6 +77,11 @@ impl Metrics {
 
     pub fn increment_rate_limited(&self) {
         self.rate_limited_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Update the sudoers risky-entry gauge (set to the current scan count).
+    pub fn record_sudoers_risky(&self, count: u64) {
+        self.sudoers_risky_entries.store(count, Ordering::Relaxed);
     }
 
     /// Generate Prometheus-formatted metrics
@@ -119,6 +126,10 @@ host_agent_policy_denials_total {}
 # HELP host_agent_rate_limited_total Total number of requests rejected by rate limiter
 # TYPE host_agent_rate_limited_total counter
 host_agent_rate_limited_total {}
+
+# HELP host_agent_sudoers_risky_entries Current number of risky sudoers entries detected
+# TYPE host_agent_sudoers_risky_entries gauge
+host_agent_sudoers_risky_entries {}
 "#,
             self.requests_total.load(Ordering::Relaxed),
             self.zfs_operations_total.load(Ordering::Relaxed),
@@ -130,6 +141,7 @@ host_agent_rate_limited_total {}
             self.auth_failures_total.load(Ordering::Relaxed),
             self.policy_denials_total.load(Ordering::Relaxed),
             self.rate_limited_total.load(Ordering::Relaxed),
+            self.sudoers_risky_entries.load(Ordering::Relaxed),
         )
     }
 }

@@ -78,6 +78,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # Config file path expansion
 shellexpand = "3"
 
+# Glob for sudoers.d/* scanning in perm_warn
+glob = "0.3"
+
 # Async trait support for Adapter trait
 async-trait = "0.1"
 
