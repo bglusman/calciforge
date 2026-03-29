@@ -23,13 +23,17 @@ use std::fmt;
 pub mod acp;
 pub mod acpx;
 pub mod cli;
+pub mod nzc_native;
 pub mod openclaw;
+pub mod openclaw_native;
 pub mod zeroclaw;
 
 pub use acp::AcpAdapter;
 pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
+pub use nzc_native::NzcNativeAdapter;
 pub use openclaw::{NzcHttpAdapter, OpenClawHttpAdapter};
+pub use openclaw_native::OpenClawNativeAdapter;
 pub use zeroclaw::ZeroClawAdapter;
 
 use crate::config::AgentConfig;
@@ -162,6 +166,19 @@ pub trait AgentAdapter: Send + Sync {
 ///
 /// Returns an error if the `kind` is unknown or required config fields are
 /// missing.
+///
+/// # Adapter kinds
+///
+/// | `kind`             | Protocol            | Session continuity | Native commands |
+/// |--------------------|---------------------|--------------------|-----------------|
+/// | `openclaw-http`    | `/v1/chat/completions` (SSE) | ⚠️ via header | ❌ |
+/// | `openclaw-native`  | `/hooks/agent`      | ✅ native sessionKey | ✅ |
+/// | `nzc-http`         | `/webhook`          | ❌ stateless        | ✅ |
+/// | `nzc-native`       | `/webhook` + history | ✅ in-process ring buffer | ✅ |
+/// | `zeroclaw`         | `/webhook`          | per-NZC-config     | n/a |
+/// | `cli`              | subprocess stdin    | ❌ one-shot         | n/a |
+/// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
+/// | `acpx`             | acpx CLI            | ✅ acpx sessions    | n/a |
 pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, String> {
     match agent.kind.as_str() {
         "openclaw-http" => {
@@ -186,6 +203,51 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 .or_else(|| agent.auth_token.clone())
                 .unwrap_or_default();
             Ok(Box::new(NzcHttpAdapter::new(
+                agent.endpoint.clone(),
+                token,
+                agent.timeout_ms,
+            )))
+        }
+        // ── New native adapters ─────────────────────────────────────────────
+        //
+        // `openclaw-native`: uses OpenClaw's `/hooks/agent` endpoint so that
+        // native commands (/status, !approve, etc.) are handled by the OpenClaw
+        // pipeline rather than forwarded to the LLM.  Session continuity is
+        // maintained via a stable `sessionKey` derived from agent_id + sender.
+        //
+        // Requires `hooks.enabled = true` in your OpenClaw config, and optionally
+        // `hooks.allowRequestSessionKey = true` + `allowedSessionKeyPrefixes = ["polyclaw:"]`
+        // for full session continuity.
+        //
+        // `api_key` / `auth_token` should be the `hooks.token` (NOT the gateway token).
+        "openclaw-native" => {
+            let token = agent
+                .api_key
+                .clone()
+                .or_else(|| agent.auth_token.clone())
+                .or_else(|| std::env::var("POLYCLAW_AGENT_TOKEN").ok())
+                .unwrap_or_default();
+            Ok(Box::new(OpenClawNativeAdapter::new(
+                agent.endpoint.clone(),
+                token,
+                agent.id.clone(),
+                None, // hooks_path — use default "/hooks"
+                agent.timeout_ms,
+            )))
+        }
+        // `nzc-native`: wraps `NzcHttpAdapter` with an in-process conversation
+        // history ring buffer.  Each request includes the prior (user, assistant)
+        // turns as a preamble so NZC's agent has full conversational context.
+        //
+        // `ApprovalPending` responses are handled gracefully — the pending turn is
+        // not recorded until the approval is resolved.
+        "nzc-native" => {
+            let token = agent
+                .api_key
+                .clone()
+                .or_else(|| agent.auth_token.clone())
+                .unwrap_or_default();
+            Ok(Box::new(NzcNativeAdapter::new(
                 agent.endpoint.clone(),
                 token,
                 agent.timeout_ms,
@@ -471,5 +533,118 @@ mod tests {
         // Should build without error — api_key takes priority
         let adapter = build_adapter(&agent).expect("should build");
         assert_eq!(adapter.kind(), "openclaw-http");
+    }
+
+    // ── New adapter factory tests ────────────────────────────────────────────
+
+    fn openclaw_native_agent() -> AgentConfig {
+        AgentConfig {
+            id: "test-librarian".to_string(),
+            kind: "openclaw-native".to_string(),
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            timeout_ms: Some(5000),
+            model: None,
+            auth_token: None,
+            api_key: Some("REPLACE_WITH_HOOKS_TOKEN".to_string()),
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        }
+    }
+
+    fn nzc_native_agent() -> AgentConfig {
+        AgentConfig {
+            id: "test-nzc".to_string(),
+            kind: "nzc-native".to_string(),
+            endpoint: "http://127.0.0.1:18799".to_string(),
+            timeout_ms: Some(5000),
+            model: None,
+            auth_token: Some("tok".to_string()),
+            api_key: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        }
+    }
+
+    #[test]
+    fn test_build_openclaw_native_adapter() {
+        let agent = openclaw_native_agent();
+        let adapter = build_adapter(&agent).expect("should build openclaw-native adapter");
+        assert_eq!(adapter.kind(), "openclaw-native");
+    }
+
+    #[test]
+    fn test_build_nzc_native_adapter() {
+        let agent = nzc_native_agent();
+        let adapter = build_adapter(&agent).expect("should build nzc-native adapter");
+        assert_eq!(adapter.kind(), "nzc-native");
+    }
+
+    #[test]
+    fn test_openclaw_native_uses_api_key() {
+        let agent = AgentConfig {
+            id: "native-test".to_string(),
+            kind: "openclaw-native".to_string(),
+            endpoint: "http://localhost:18789".to_string(),
+            timeout_ms: None,
+            model: None,
+            auth_token: Some("old-token".to_string()),
+            api_key: Some("new-hooks-token".to_string()),
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+        // api_key takes precedence — should build without error
+        let adapter = build_adapter(&agent).expect("should build");
+        assert_eq!(adapter.kind(), "openclaw-native");
+    }
+
+    #[test]
+    fn test_nzc_native_uses_auth_token_fallback() {
+        let agent = AgentConfig {
+            id: "nzc-test".to_string(),
+            kind: "nzc-native".to_string(),
+            endpoint: "http://localhost:18799".to_string(),
+            timeout_ms: None,
+            model: None,
+            auth_token: Some("auth-token".to_string()),
+            api_key: None, // no api_key — falls back to auth_token
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+        let adapter = build_adapter(&agent).expect("should build with auth_token fallback");
+        assert_eq!(adapter.kind(), "nzc-native");
+    }
+
+    #[test]
+    fn test_openclaw_native_builds_without_token() {
+        // Should build even with no token (empty string is valid — might be
+        // an unauthenticated loopback deployment)
+        let agent = AgentConfig {
+            id: "no-token".to_string(),
+            kind: "openclaw-native".to_string(),
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            timeout_ms: None,
+            model: None,
+            auth_token: None,
+            api_key: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+        let adapter = build_adapter(&agent).expect("should build with empty token");
+        assert_eq!(adapter.kind(), "openclaw-native");
     }
 }
