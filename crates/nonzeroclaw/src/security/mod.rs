@@ -56,8 +56,8 @@ pub use secrets::SecretStore;
 #[allow(unused_imports)]
 pub use traits::{NoopSandbox, Sandbox};
 // Prompt injection defense exports
-pub use leak_detector::{LeakDetector, LeakResult};
-pub use prompt_guard::{GuardAction, GuardResult, PromptGuard};
+// pub use leak_detector::{LeakDetector, LeakResult}; // commented: reserved as future public API (was unused)
+// pub use prompt_guard::{GuardAction, GuardResult, PromptGuard}; // commented: reserved as future public API (was unused)
 
 /// Redact sensitive values for safe logging. Shows first 4 chars + "***" suffix.
 /// This function intentionally breaks the data-flow taint chain for static analysis.

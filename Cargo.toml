@@ -6,6 +6,7 @@ members = [
     "crates/outpost",
     "crates/clash",
     "crates/robot-kit",
+    "crates/host-agent",
 ]
 resolver = "2"
 
