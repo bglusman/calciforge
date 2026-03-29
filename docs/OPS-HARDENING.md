@@ -132,10 +132,10 @@ clash-agent ALL=(root) NOPASSWD: /sbin/zfs snapshot *
 # PCT read-only
 clash-agent ALL=(root) NOPASSWD: /usr/sbin/pct status *
 
-# Deny fallthrough to bare binaries
-clash-agent ALL=(root) !NOPASSWD: /sbin/zfs destroy *
-clash-agent ALL=(root) !NOPASSWD: /usr/sbin/pct create *
-clash-agent ALL=(root) !NOPASSWD: /usr/bin/git *
+# Deny fallthrough to bare binaries (! negates the command)
+clash-agent ALL=(root) NOPASSWD: !/sbin/zfs destroy *
+clash-agent ALL=(root) NOPASSWD: !/usr/sbin/pct create *
+clash-agent ALL=(root) NOPASSWD: !/usr/bin/git *
 ```
 
 Apply:

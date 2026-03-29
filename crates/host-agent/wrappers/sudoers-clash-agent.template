@@ -45,10 +45,9 @@
 {{CLASH_AGENT_USER}} ALL=(root) NOPASSWD: /sbin/zfs snapshot *
 
 # ------ explicitly DENY fallthrough to unrestricted binaries ---------------
-# Belt-and-suspenders: if a future sudoers entry above were accidentally
-# broadened, these Deny rules ensure the bare binaries cannot be invoked.
-# (sudoers processes rules top-to-bottom; first match wins, so NOPASSWD:
-#  entries above for wrappers take priority; these are safety backstops.)
-{{CLASH_AGENT_USER}} ALL=(root) !NOPASSWD: /sbin/zfs destroy *
-{{CLASH_AGENT_USER}} ALL=(root) !NOPASSWD: /usr/sbin/pct create *
-{{CLASH_AGENT_USER}} ALL=(root) !NOPASSWD: /usr/bin/git *
+# Belt-and-suspenders: the negation operator (!) prevents these broad paths
+# from being invoked even if a future rule accidentally adds them.
+# Note: sudoers Cmnd negation means "this command is NOT permitted".
+{{CLASH_AGENT_USER}} ALL=(root) NOPASSWD: !/sbin/zfs destroy *
+{{CLASH_AGENT_USER}} ALL=(root) NOPASSWD: !/usr/sbin/pct create *
+{{CLASH_AGENT_USER}} ALL=(root) NOPASSWD: !/usr/bin/git *
