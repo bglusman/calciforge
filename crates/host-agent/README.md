@@ -1,6 +1,80 @@
-# PolyClaw v3 Host-Agent
+# PolyClaw Host-Agent (v4 — Adapter-First)
 
-mTLS RPC server providing safe VM-to-host delegation for ZFS, systemd, and PCT.
+mTLS RPC server providing safe VM-to-host delegation via an adapter-first architecture.
+
+**v4 adds:** unified `/host/op` dispatch endpoint, five adapters (ZFS, Systemd, PCT, Git,
+Exec/Ansible stub), per-adapter validation, and policy-driven approval flows.
+
+## v4 Quick Start — `/host/op`
+
+```bash
+# ZFS list
+curl -s --cert client.crt --key client.key -k \
+  -X POST https://host:18443/host/op \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"zfs","args":["list"]}'
+
+# Systemd status
+curl -s --cert client.crt --key client.key -k \
+  -X POST https://host:18443/host/op \
+  -d '{"kind":"systemd","resource":"nginx.service","args":["status"]}'
+
+# PCT container status
+curl -s --cert client.crt --key client.key -k \
+  -X POST https://host:18443/host/op \
+  -d '{"kind":"pct","resource":"101","args":["status"]}'
+
+# Git repo status (repo must be in allowed_repos)
+curl -s --cert client.crt --key client.key -k \
+  -X POST https://host:18443/host/op \
+  -d '{"kind":"git","resource":"/srv/myapp","args":["status"]}'
+```
+
+## v4 Adapter Config
+
+```toml
+# Git adapter: repo allowlist (empty = allow any absolute path)
+[git]
+allowed_repos = ["/srv", "/opt", "/home"]
+
+# Exec adapter: disabled by default
+[exec]
+enabled = false                              # must be true to activate
+allowed_commands = ["/usr/bin/uptime"]       # absolute paths only
+# ansible_job_queue = "/var/lib/clash/jobs"  # for Ansible stub
+```
+
+## v4 Default Policy Rules
+
+Adapter dispatch respects the same `[[rules]]` config as v3:
+
+```toml
+# Systemd — read-only ops: no approval needed
+[[rules]]
+operation = "systemd-status"
+approval_required = false
+
+# PCT — start/stop requires approval
+[[rules]]
+operation = "pct-start"
+approval_required = true
+
+# PCT — destroy always requires admin approval
+[[rules]]
+operation = "pct-destroy"
+approval_required = true
+always_ask = true
+approval_admin_only = true
+
+# Git — checkout requires approval
+[[rules]]
+operation = "git-checkout"
+approval_required = true
+```
+
+---
+
+## Legacy API (still supported)
 
 ## Security Features (SDD Round 2)
 
@@ -33,6 +107,22 @@ mTLS RPC server providing safe VM-to-host delegation for ZFS, systemd, and PCT.
 16. **NZC integration framework** — Policy engine trait defined, ready for NZC connection
 17. **Agent adapter framework** — CN → agent identity mapping, ACPX support
 18. **Unified approvals** — Signal webhook integration for human confirmation
+
+## mTLS Security Features (unchanged from v3)
+
+### P0 — Authentication & Authorization ✅
+
+1. **Real mTLS auth middleware** — CN extracted from TLS session, ClientIdentity injected
+2. **No HTTP fallback** — TLS failure is fatal, no plaintext server
+3. **Caller identity passed to operations** — All operations use `sudo -u <identity>`
+4. **Config approval rules enforced** — policy checked at runtime
+
+### P1 — Token & Security Hardening ✅
+
+5. **16-character token entropy** — ~80 bits, cryptographically secure
+6. **Token hash logging** — Only SHA-256 hashes logged, never plaintext
+7. **Filtered `/pending` endpoint** — Returns only caller's pending approvals
+8. **Real UID lookup** — Uses `nix::unistd::User::from_name()` / `getpwnam()`
 
 ## Quick Start
 
