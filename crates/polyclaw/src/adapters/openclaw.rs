@@ -77,6 +77,16 @@ const DEFAULT_MODEL: &str = "openclaw:main";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 /// OpenAI-compatible HTTP adapter for OpenClaw agents.
+///
+/// # ⚠️ Native Command Limitation (v3 TODO)
+///
+/// This adapter dispatches via `/v1/chat/completions` (the LLM path).
+/// OpenClaw native commands (`/status`, `/model`, `!approve`, etc.) are
+/// **NOT intercepted here** — they are forwarded verbatim to the LLM and
+/// processed as ordinary chat messages rather than handled natively.
+///
+/// For native command support, a PolyClaw channel plugin for OpenClaw is
+/// required. See `adapters/TODO-native-channel.md` for the full plan.
 pub struct OpenClawHttpAdapter {
     client: reqwest::Client,
     endpoint: String,
@@ -673,6 +683,7 @@ mod tests {
                 content: "hello world".to_string(),
             }],
             stream: true,
+            temperature: Some(1.0),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "openclaw:main");
