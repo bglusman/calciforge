@@ -13,6 +13,7 @@ use crate::approval::signal::{SignalClient, SignalWebhookPayload, ValidatedAppro
 use crate::approval::token::{hash_token, generate_token, TokenAuditInfo};
 use crate::auth::ClientIdentity;
 
+pub mod identity_plugin;
 pub mod signal;
 pub mod token;
 
