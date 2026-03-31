@@ -12,6 +12,7 @@ mod commands;
 mod config;
 mod context;
 mod hooks;
+mod install;
 mod router;
 
 use anyhow::{Context, Result};

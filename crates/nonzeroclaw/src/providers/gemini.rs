@@ -5,8 +5,9 @@
 //! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
 use crate::auth::AuthService;
-use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
+use crate::providers::traits::{ChatMessage, Provider, TokenUsage};
 use async_trait::async_trait;
+use base64::Engine;
 use directories::UserDirs;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -134,8 +135,54 @@ struct Content {
 }
 
 #[derive(Debug, Serialize, Clone)]
-struct Part {
-    text: String,
+#[serde(untagged)]
+enum Part {
+    Text { text: String },
+    Inline { inline_data: InlineData },
+}
+
+impl Part {
+    fn text(s: impl Into<String>) -> Self {
+        Part::Text { text: s.into() }
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct InlineData {
+    mime_type: String,
+    data: String,
+}
+
+/// Build Gemini Parts from a message content string.
+/// If the content contains [IMAGE:data:...] markers (already normalized by the
+/// multimodal pipeline), they are extracted as inline_data parts. The remaining
+/// text becomes a text part. Falls back to a single text part if no markers.
+fn build_parts(content: &str) -> Vec<Part> {
+    let (text, image_refs) = crate::multimodal::parse_image_markers(content);
+    let mut parts = Vec::new();
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        parts.push(Part::text(trimmed));
+    }
+    for uri in &image_refs {
+        if let Some(rest) = uri.strip_prefix("data:") {
+            if let Some(semi_pos) = rest.find(';') {
+                let mime = &rest[..semi_pos];
+                if let Some(b64) = rest[semi_pos + 1..].strip_prefix("base64,") {
+                    parts.push(Part::Inline {
+                        inline_data: InlineData {
+                            mime_type: mime.to_string(),
+                            data: b64.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        parts.push(Part::text(content));
+    }
+    parts
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -251,10 +298,15 @@ impl GenerateContentResponse {
 #[derive(Debug, Deserialize)]
 struct GeminiCliOAuthCreds {
     access_token: Option<String>,
+    #[serde(alias = "idToken")]
+    id_token: Option<String>,
     refresh_token: Option<String>,
+    #[serde(alias = "clientId")]
     client_id: Option<String>,
+    #[serde(alias = "clientSecret")]
     client_secret: Option<String>,
     /// Unix milliseconds expiry (used by newer Gemini CLI versions).
+    #[serde(alias = "expiryDate")]
     expiry_date: Option<i64>,
     /// RFC 3339 expiry string (used by older Gemini CLI versions).
     expiry: Option<String>,
@@ -305,16 +357,7 @@ fn refresh_gemini_cli_token(
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
-    let mut form: Vec<(&str, String)> = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.to_string()),
-    ];
-    if let Some(id) = client_id.and_then(GeminiProvider::normalize_non_empty) {
-        form.push(("client_id", id));
-    }
-    if let Some(secret) = client_secret.and_then(GeminiProvider::normalize_non_empty) {
-        form.push(("client_secret", secret));
-    }
+    let form = build_oauth_refresh_form(refresh_token, client_id, client_secret);
 
     let response = client
         .post(GOOGLE_TOKEN_ENDPOINT)
@@ -359,6 +402,50 @@ fn refresh_gemini_cli_token(
         access_token,
         expiry_millis,
     })
+}
+
+fn build_oauth_refresh_form(
+    refresh_token: &str,
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_string()),
+    ];
+    if let Some(id) = client_id.and_then(GeminiProvider::normalize_non_empty) {
+        form.push(("client_id", id));
+    }
+    if let Some(secret) = client_secret.and_then(GeminiProvider::normalize_non_empty) {
+        form.push(("client_secret", secret));
+    }
+    form
+}
+
+fn extract_client_id_from_id_token(id_token: &str) -> Option<String> {
+    let payload = id_token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
+        .ok()?;
+
+    #[derive(Deserialize)]
+    struct IdTokenClaims {
+        aud: Option<String>,
+        azp: Option<String>,
+    }
+
+    let claims: IdTokenClaims = serde_json::from_slice(&decoded).ok()?;
+    claims
+        .aud
+        .as_deref()
+        .and_then(GeminiProvider::normalize_non_empty)
+        .or_else(|| {
+            claims
+                .azp
+                .as_deref()
+                .and_then(GeminiProvider::normalize_non_empty)
+        })
 }
 
 /// Async version of token refresh for use during runtime (inside tokio context).
@@ -565,12 +652,19 @@ impl GeminiProvider {
             .access_token
             .and_then(|token| Self::normalize_non_empty(&token))?;
 
-        let client_id = Self::load_non_empty_env("GEMINI_OAUTH_CLIENT_ID").or_else(|| {
-            creds
-                .client_id
-                .as_deref()
-                .and_then(Self::normalize_non_empty)
-        });
+        let id_token_client_id = creds
+            .id_token
+            .as_deref()
+            .and_then(extract_client_id_from_id_token);
+
+        let client_id = Self::load_non_empty_env("GEMINI_OAUTH_CLIENT_ID")
+            .or_else(|| {
+                creds
+                    .client_id
+                    .as_deref()
+                    .and_then(Self::normalize_non_empty)
+            })
+            .or(id_token_client_id);
         let client_secret = Self::load_non_empty_env("GEMINI_OAUTH_CLIENT_SECRET").or_else(|| {
             creds
                 .client_secret
@@ -1080,6 +1174,7 @@ impl GeminiProvider {
         let usage = result.usage_metadata.map(|u| TokenUsage {
             input_tokens: u.prompt_token_count,
             output_tokens: u.candidates_token_count,
+            cached_input_tokens: None,
         });
 
         let text = result
@@ -1095,6 +1190,14 @@ impl GeminiProvider {
 
 #[async_trait]
 impl Provider for GeminiProvider {
+    fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
+        crate::providers::traits::ProviderCapabilities {
+            vision: true,
+            native_tool_calling: false,
+            prompt_caching: false,
+        }
+    }
+
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,
@@ -1104,16 +1207,12 @@ impl Provider for GeminiProvider {
     ) -> anyhow::Result<String> {
         let system_instruction = system_prompt.map(|sys| Content {
             role: None,
-            parts: vec![Part {
-                text: sys.to_string(),
-            }],
+            parts: vec![Part::text(sys)],
         });
 
         let contents = vec![Content {
             role: Some("user".to_string()),
-            parts: vec![Part {
-                text: message.to_string(),
-            }],
+            parts: build_parts(message),
         }];
 
         let (text, _usage) = self
@@ -1139,18 +1238,14 @@ impl Provider for GeminiProvider {
                 "user" => {
                     contents.push(Content {
                         role: Some("user".to_string()),
-                        parts: vec![Part {
-                            text: msg.content.clone(),
-                        }],
+                        parts: build_parts(&msg.content),
                     });
                 }
                 "assistant" => {
                     // Gemini API uses "model" role instead of "assistant"
                     contents.push(Content {
                         role: Some("model".to_string()),
-                        parts: vec![Part {
-                            text: msg.content.clone(),
-                        }],
+                        parts: vec![Part::text(&msg.content)],
                     });
                 }
                 _ => {}
@@ -1162,9 +1257,7 @@ impl Provider for GeminiProvider {
         } else {
             Some(Content {
                 role: None,
-                parts: vec![Part {
-                    text: system_parts.join("\n\n"),
-                }],
+                parts: vec![Part::text(system_parts.join("\n\n"))],
             })
         };
 
@@ -1174,79 +1267,52 @@ impl Provider for GeminiProvider {
         Ok(text)
     }
 
-    async fn chat(
-        &self,
-        request: crate::providers::traits::ChatRequest<'_>,
-        model: &str,
-        temperature: f64,
-    ) -> anyhow::Result<ChatResponse> {
-        let mut system_parts: Vec<&str> = Vec::new();
-        let mut contents: Vec<Content> = Vec::new();
-
-        for msg in request.messages {
-            match msg.role.as_str() {
-                "system" => system_parts.push(&msg.content),
-                "user" => contents.push(Content {
-                    role: Some("user".to_string()),
-                    parts: vec![Part {
-                        text: msg.content.clone(),
-                    }],
-                }),
-                "assistant" => contents.push(Content {
-                    role: Some("model".to_string()),
-                    parts: vec![Part {
-                        text: msg.content.clone(),
-                    }],
-                }),
-                _ => {}
-            }
-        }
-
-        let system_instruction = if system_parts.is_empty() {
-            None
-        } else {
-            Some(Content {
-                role: None,
-                parts: vec![Part {
-                    text: system_parts.join("\n\n"),
-                }],
-            })
-        };
-
-        let (text, usage) = self
-            .send_generate_content(contents, system_instruction, model, temperature)
-            .await?;
-
-        Ok(ChatResponse {
-            text: Some(text),
-            tool_calls: Vec::new(),
-            usage,
-            reasoning_content: None,
-        })
-    }
-
     async fn warmup(&self) -> anyhow::Result<()> {
         if let Some(auth) = self.auth.as_ref() {
-            // cloudcode-pa does not expose a lightweight model-list probe like the public API.
-            // Avoid false negatives for valid Gemini CLI OAuth credentials.
-            if auth.is_oauth() {
-                return Ok(());
+            match auth {
+                GeminiAuth::ManagedOAuth => {
+                    // For ManagedOAuth, verify and refresh the token if needed.
+                    // This ensures fallback works even if tokens expired during daemon uptime.
+                    let auth_service = self
+                        .auth_service
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("ManagedOAuth requires auth_service"))?;
+
+                    let _token = auth_service
+                        .get_valid_gemini_access_token(self.auth_profile_override.as_deref())
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Gemini auth profile not found or expired. Run: zeroclaw auth login --provider gemini"
+                            )
+                        })?;
+
+                    // Token refresh happens in get_valid_gemini_access_token().
+                    // We don't call resolve_oauth_project() here to keep warmup fast.
+                    // OAuth project will be resolved lazily on first real request.
+                }
+                GeminiAuth::OAuthToken(_) => {
+                    // CLI OAuth — cloudcode-pa does not expose a lightweight model-list probe.
+                    // Token will be validated on first real request.
+                }
+                _ => {
+                    // API key path — verify with public API models endpoint.
+                    let url = if auth.is_api_key() {
+                        format!(
+                            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+                            auth.api_key_credential()
+                        )
+                    } else {
+                        "https://generativelanguage.googleapis.com/v1beta/models".to_string()
+                    };
+
+                    self.http_client()
+                        .get(&url)
+                        .send()
+                        .await?
+                        .error_for_status()?;
+                }
             }
-
-            let url = if auth.is_api_key() {
-                format!(
-                    "https://generativelanguage.googleapis.com/v1beta/models?key={}",
-                    auth.api_key_credential()
-                )
-            } else {
-                "https://generativelanguage.googleapis.com/v1beta/models".to_string()
-            };
-
-            self.http_client()
-                .get(&url)
-                .send()
-                .await?
-                .error_for_status()?;
         }
         Ok(())
     }
@@ -1255,7 +1321,7 @@ impl Provider for GeminiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::{header::AUTHORIZATION, StatusCode};
+    use reqwest::{StatusCode, header::AUTHORIZATION};
 
     /// Helper to create a test OAuth auth variant.
     fn test_oauth_auth(token: &str) -> GeminiAuth {
@@ -1287,6 +1353,84 @@ mod tests {
         );
         assert_eq!(GeminiProvider::normalize_non_empty(""), None);
         assert_eq!(GeminiProvider::normalize_non_empty(" \t\n"), None);
+    }
+
+    #[test]
+    fn oauth_refresh_form_uses_provided_client_credentials() {
+        let form = build_oauth_refresh_form("refresh-token", Some("client-id"), Some("secret"));
+        let map: std::collections::HashMap<_, _> = form.into_iter().collect();
+        assert_eq!(map.get("grant_type"), Some(&"refresh_token".to_string()));
+        assert_eq!(map.get("refresh_token"), Some(&"refresh-token".to_string()));
+        assert_eq!(map.get("client_id"), Some(&"client-id".to_string()));
+        assert_eq!(map.get("client_secret"), Some(&"secret".to_string()));
+    }
+
+    #[test]
+    fn oauth_refresh_form_omits_client_credentials_when_missing() {
+        let form = build_oauth_refresh_form("refresh-token", None, None);
+        let map: std::collections::HashMap<_, _> = form.into_iter().collect();
+        assert!(!map.contains_key("client_id"));
+        assert!(!map.contains_key("client_secret"));
+    }
+
+    #[test]
+    fn extract_client_id_from_id_token_prefers_aud_claim() {
+        let payload = serde_json::json!({
+            "aud": "aud-client-id",
+            "azp": "azp-client-id"
+        });
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        let token = format!("header.{payload_b64}.sig");
+
+        assert_eq!(
+            extract_client_id_from_id_token(&token),
+            Some("aud-client-id".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_client_id_from_id_token_uses_azp_when_aud_missing() {
+        let payload = serde_json::json!({
+            "azp": "azp-client-id"
+        });
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        let token = format!("header.{payload_b64}.sig");
+
+        assert_eq!(
+            extract_client_id_from_id_token(&token),
+            Some("azp-client-id".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_client_id_from_id_token_returns_none_for_invalid_tokens() {
+        assert_eq!(extract_client_id_from_id_token("invalid"), None);
+        assert_eq!(extract_client_id_from_id_token("a.b.c"), None);
+    }
+
+    #[test]
+    fn try_load_cli_token_derives_client_id_from_id_token_when_missing() {
+        let payload = serde_json::json!({ "aud": "derived-client-id" });
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        let id_token = format!("header.{payload_b64}.sig");
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let json = format!(
+            r#"{{
+                "access_token": "ya29.test-access",
+                "refresh_token": "1//test-refresh",
+                "id_token": "{id_token}"
+            }}"#
+        );
+        std::fs::write(file.path(), json).unwrap();
+
+        let path = file.path().to_path_buf();
+        let state = GeminiProvider::try_load_gemini_cli_token(Some(&path)).unwrap();
+        assert_eq!(state.client_id.as_deref(), Some("derived-client-id"));
+        assert_eq!(state.client_secret, None);
     }
 
     #[test]
@@ -1392,9 +1536,7 @@ mod tests {
         let body = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".into()),
-                parts: vec![Part {
-                    text: "hello".into(),
-                }],
+                parts: vec![Part::text("hello")],
             }],
             system_instruction: None,
             generation_config: GenerationConfig {
@@ -1433,9 +1575,7 @@ mod tests {
         let body = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".into()),
-                parts: vec![Part {
-                    text: "hello".into(),
-                }],
+                parts: vec![Part::text("hello")],
             }],
             system_instruction: None,
             generation_config: GenerationConfig {
@@ -1477,9 +1617,7 @@ mod tests {
         let body = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".into()),
-                parts: vec![Part {
-                    text: "hello".into(),
-                }],
+                parts: vec![Part::text("hello")],
             }],
             system_instruction: None,
             generation_config: GenerationConfig {
@@ -1509,15 +1647,11 @@ mod tests {
         let request = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".to_string()),
-                parts: vec![Part {
-                    text: "Hello".to_string(),
-                }],
+                parts: vec![Part::text("Hello")],
             }],
             system_instruction: Some(Content {
                 role: None,
-                parts: vec![Part {
-                    text: "You are helpful".to_string(),
-                }],
+                parts: vec![Part::text("You are helpful")],
             }),
             generation_config: GenerationConfig {
                 temperature: 0.7,
@@ -1543,9 +1677,7 @@ mod tests {
             request: InternalGenerateContentRequest {
                 contents: vec![Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
-                        text: "Hello".to_string(),
-                    }],
+                    parts: vec![Part::text("Hello")],
                 }],
                 system_instruction: None,
                 generation_config: Some(GenerationConfig {
@@ -1575,9 +1707,7 @@ mod tests {
             request: InternalGenerateContentRequest {
                 contents: vec![Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
-                        text: "Hello".to_string(),
-                    }],
+                    parts: vec![Part::text("Hello")],
                 }],
                 system_instruction: None,
                 generation_config: None,
@@ -1598,9 +1728,7 @@ mod tests {
             request: InternalGenerateContentRequest {
                 contents: vec![Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
-                        text: "Hello".to_string(),
-                    }],
+                    parts: vec![Part::text("Hello")],
                 }],
                 system_instruction: None,
                 generation_config: None,
@@ -1652,8 +1780,26 @@ mod tests {
         let creds: GeminiCliOAuthCreds = serde_json::from_str(json).unwrap();
         assert_eq!(creds.access_token.as_deref(), Some("ya29.test-token"));
         assert_eq!(creds.refresh_token.as_deref(), Some("1//test-refresh"));
-        assert_eq!(creds.expiry_date, Some(4102444800000));
+        assert_eq!(creds.expiry_date, Some(4_102_444_800_000));
         assert!(creds.expiry.is_none());
+    }
+
+    #[test]
+    fn creds_deserialize_accepts_camel_case_fields() {
+        let json = r#"{
+            "access_token": "ya29.test-token",
+            "idToken": "header.payload.sig",
+            "refresh_token": "1//test-refresh",
+            "clientId": "test-client-id",
+            "clientSecret": "test-client-secret",
+            "expiryDate": 4102444800000
+        }"#;
+
+        let creds: GeminiCliOAuthCreds = serde_json::from_str(json).unwrap();
+        assert_eq!(creds.id_token.as_deref(), Some("header.payload.sig"));
+        assert_eq!(creds.client_id.as_deref(), Some("test-client-id"));
+        assert_eq!(creds.client_secret.as_deref(), Some("test-client-secret"));
+        assert_eq!(creds.expiry_date, Some(4_102_444_800_000));
     }
 
     #[test]
@@ -1941,5 +2087,189 @@ mod tests {
         let json = r#"{"candidates": [{"content": {"parts": [{"text": "Hello"}]}}]}"#;
         let resp: GenerateContentResponse = serde_json::from_str(json).unwrap();
         assert!(resp.usage_metadata.is_none());
+    }
+
+    /// Validates that warmup() for ManagedOAuth requires auth_service.
+    #[tokio::test]
+    async fn warmup_managed_oauth_requires_auth_service() {
+        let provider = GeminiProvider {
+            auth: Some(GeminiAuth::ManagedOAuth),
+            oauth_project: Arc::new(tokio::sync::Mutex::new(None)),
+            oauth_cred_paths: Vec::new(),
+            oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
+            auth_service: None, // Missing auth_service
+            auth_profile_override: None,
+        };
+
+        let result = provider.warmup().await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ManagedOAuth requires auth_service")
+        );
+    }
+
+    /// Validates that warmup() for CLI OAuth skips validation (existing behavior).
+    #[tokio::test]
+    async fn warmup_cli_oauth_skips_validation() {
+        let provider = test_provider(Some(test_oauth_auth("fake_token")));
+        let result = provider.warmup().await;
+        // Should succeed without making HTTP requests
+        assert!(result.is_ok());
+    }
+
+    // ── Part enum serialization tests ────────────────────────────────────
+
+    #[test]
+    fn part_text_serializes_as_text_object() {
+        let part = Part::text("hello");
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json, serde_json::json!({"text": "hello"}));
+    }
+
+    #[test]
+    fn part_inline_serializes_as_inline_data_object() {
+        let part = Part::Inline {
+            inline_data: InlineData {
+                mime_type: "image/png".to_string(),
+                data: "iVBOR...".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"inline_data": {"mime_type": "image/png", "data": "iVBOR..."}})
+        );
+    }
+
+    #[test]
+    fn part_text_constructor_accepts_string_and_str() {
+        let from_str = Part::text("hello");
+        let from_string = Part::text(String::from("hello"));
+        // Both should serialize identically
+        assert_eq!(
+            serde_json::to_value(&from_str).unwrap(),
+            serde_json::to_value(&from_string).unwrap(),
+        );
+    }
+
+    #[test]
+    fn content_with_mixed_parts_serializes_correctly() {
+        let content = Content {
+            role: Some("user".to_string()),
+            parts: vec![
+                Part::text("Describe this image:"),
+                Part::Inline {
+                    inline_data: InlineData {
+                        mime_type: "image/jpeg".to_string(),
+                        data: "/9j/4AAQ...".to_string(),
+                    },
+                },
+            ],
+        };
+        let json = serde_json::to_value(&content).unwrap();
+        let parts = json["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].get("text").is_some());
+        assert!(parts[1].get("inline_data").is_some());
+    }
+
+    // ── build_parts tests ────────────────────────────────────────────────
+
+    #[test]
+    fn build_parts_plain_text_returns_single_text_part() {
+        let parts = build_parts("Hello, world!");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&parts[0]).unwrap(),
+            serde_json::json!({"text": "Hello, world!"})
+        );
+    }
+
+    #[test]
+    fn build_parts_empty_string_returns_single_text_part() {
+        let parts = build_parts("");
+        assert_eq!(parts.len(), 1);
+        // Falls back to original content when no markers and trimmed is empty
+        assert_eq!(
+            serde_json::to_value(&parts[0]).unwrap(),
+            serde_json::json!({"text": ""})
+        );
+    }
+
+    #[test]
+    fn build_parts_extracts_data_uri_as_inline_part() {
+        let content = "Check this [IMAGE:data:image/png;base64,iVBORw0KGgo=]";
+        let parts = build_parts(content);
+        assert_eq!(parts.len(), 2);
+        // First part is text
+        assert_eq!(
+            serde_json::to_value(&parts[0]).unwrap(),
+            serde_json::json!({"text": "Check this"})
+        );
+        // Second part is inline image
+        assert_eq!(
+            serde_json::to_value(&parts[1]).unwrap(),
+            serde_json::json!({"inline_data": {"mime_type": "image/png", "data": "iVBORw0KGgo="}})
+        );
+    }
+
+    #[test]
+    fn build_parts_multiple_images() {
+        let content = "Image A: [IMAGE:data:image/png;base64,AAAA] Image B: [IMAGE:data:image/jpeg;base64,BBBB]";
+        let parts = build_parts(content);
+        assert_eq!(parts.len(), 3); // text + 2 images
+        // Verify both inline parts
+        let inline_parts: Vec<_> = parts
+            .iter()
+            .filter(|p| matches!(p, Part::Inline { .. }))
+            .collect();
+        assert_eq!(inline_parts.len(), 2);
+    }
+
+    #[test]
+    fn build_parts_ignores_non_data_uri_markers() {
+        // File paths and URLs are not data URIs — build_parts should only
+        // extract data: URIs, leaving non-data markers as stripped text.
+        let content = "Look [IMAGE:/tmp/photo.png]";
+        let parts = build_parts(content);
+        // parse_image_markers extracts the marker, but build_parts only
+        // converts data: URIs to inline parts. The text remains.
+        for part in &parts {
+            assert!(matches!(part, Part::Text { .. }));
+        }
+    }
+
+    #[test]
+    fn build_parts_image_only_still_produces_inline_part() {
+        let content = "[IMAGE:data:image/gif;base64,R0lGODlh]";
+        let parts = build_parts(content);
+        // Should have just the inline part (text is empty after marker removal)
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(&parts[0], Part::Inline { .. }));
+    }
+
+    // ── chat_with_history uses build_parts for user messages ─────────────
+
+    #[test]
+    fn chat_with_history_maps_roles_correctly() {
+        // Verify the message→Content mapping logic directly by checking
+        // that the provider constructs the right Content structures.
+        // We can't call chat_with_history without a real API, but we can
+        // verify the Part construction used in each role branch.
+
+        // User messages should go through build_parts (supports images)
+        let user_parts = build_parts("Hello [IMAGE:data:image/png;base64,AA==]");
+        assert!(user_parts.iter().any(|p| matches!(p, Part::Inline { .. })));
+
+        // Assistant messages should use Part::text (no image parsing)
+        let assistant_part = Part::text("I see the image");
+        assert!(matches!(assistant_part, Part::Text { .. }));
+
+        // System messages should use Part::text
+        let system_part = Part::text("You are helpful");
+        assert!(matches!(system_part, Part::Text { .. }));
     }
 }
