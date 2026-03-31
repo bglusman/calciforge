@@ -1,4 +1,4 @@
-//! Local command handler for PolyClaw v2.
+//! Local command handler for PolyClaw v3.
 //!
 //! Commands starting with `!` are handled locally — they never reach the agent.
 //! All other messages route to the agent as normal.
@@ -533,7 +533,7 @@ impl CommandHandler {
         };
 
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v3 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -796,7 +796,7 @@ impl CommandHandler {
 
     fn cmd_help(&self) -> String {
         [
-            "PolyClaw v2 — available commands:",
+            "PolyClaw v3 — available commands:",
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
             "  !agents  — list configured agents with endpoints",
@@ -853,7 +853,7 @@ impl CommandHandler {
             .unwrap_or_default();
 
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v3 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -889,7 +889,7 @@ impl CommandHandler {
         };
 
         format!(
-            "PolyClaw v2 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms"
+            "PolyClaw v3 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms"
         )
     }
 }
