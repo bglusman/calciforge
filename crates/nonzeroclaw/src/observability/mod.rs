@@ -1,20 +1,12 @@
-// PASSTHROUGH CANDIDATE: zeroclawlabs::observability
-//
-// Our ObserverEvent is now structurally identical to zeroclaw 0.4's version
-// (added `arguments: Option<String>` to ToolCallStart for upstream compat).
-// Full re-export requires local impls to implement zeroclaw::observability::Observer;
-// tracked as next wiring step in HYBRID-ARCHITECTURE.md.
-//
-// See crates/nonzeroclaw/HYBRID-ARCHITECTURE.md
-
+pub mod dora;
 pub mod log;
 pub mod multi;
 pub mod noop;
 #[cfg(feature = "observability-otel")]
 pub mod otel;
+#[cfg(feature = "observability-prometheus")]
 pub mod prometheus;
 pub mod runtime_trace;
-// In-tree traits module — always compiled so local submodules can import from it.
 pub mod traits;
 pub mod verbose;
 
@@ -25,17 +17,8 @@ pub use self::multi::MultiObserver;
 pub use noop::NoopObserver;
 #[cfg(feature = "observability-otel")]
 pub use otel::OtelObserver;
+#[cfg(feature = "observability-prometheus")]
 pub use prometheus::PrometheusObserver;
-// Core types — always from in-tree traits module.
-//
-// NOTE (2026-03-15): ObserverEvent is now structurally identical to
-// zeroclaw::observability::ObserverEvent in version 0.4 — we added
-// `arguments: Option<String>` to ToolCallStart to match upstream.
-// Full type-level re-export (pub use zeroclaw::observability::*) requires
-// our in-tree impls (NoopObserver, LogObserver, PrometheusObserver, etc.) to
-// implement zeroclaw::observability::Observer rather than our local trait,
-// which is a larger refactor.  Tracked in HYBRID-ARCHITECTURE.md as
-// PASSTHROUGH candidate — ready for wiring once trait alignment is done.
 pub use traits::{Observer, ObserverEvent};
 #[allow(unused_imports)]
 pub use verbose::VerboseObserver;
@@ -46,7 +29,20 @@ use crate::config::ObservabilityConfig;
 pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
     match config.backend.as_str() {
         "log" => Box::new(LogObserver::new()),
-        "prometheus" => Box::new(PrometheusObserver::new()),
+        "verbose" => Box::new(VerboseObserver::new()),
+        "prometheus" => {
+            #[cfg(feature = "observability-prometheus")]
+            {
+                Box::new(PrometheusObserver::new())
+            }
+            #[cfg(not(feature = "observability-prometheus"))]
+            {
+                tracing::warn!(
+                    "Prometheus backend requested but this build was compiled without `observability-prometheus`; falling back to noop."
+                );
+                Box::new(NoopObserver)
+            }
+        }
         "otel" | "opentelemetry" | "otlp" => {
             #[cfg(feature = "observability-otel")]
             match OtelObserver::new(
@@ -119,12 +115,26 @@ mod tests {
     }
 
     #[test]
+    fn factory_verbose_returns_verbose() {
+        let cfg = ObservabilityConfig {
+            backend: "verbose".into(),
+            ..ObservabilityConfig::default()
+        };
+        assert_eq!(create_observer(&cfg).name(), "verbose");
+    }
+
+    #[test]
     fn factory_prometheus_returns_prometheus() {
         let cfg = ObservabilityConfig {
             backend: "prometheus".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "prometheus");
+        let expected = if cfg!(feature = "observability-prometheus") {
+            "prometheus"
+        } else {
+            "noop"
+        };
+        assert_eq!(create_observer(&cfg).name(), expected);
     }
 
     #[test]

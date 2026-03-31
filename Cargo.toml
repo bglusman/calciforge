@@ -7,6 +7,7 @@ members = [
     "crates/clash",
     "crates/robot-kit",
     "crates/host-agent",
+    "crates/aardvark-sys",
 ]
 resolver = "2"
 

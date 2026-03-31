@@ -4,10 +4,10 @@
 //! Uses BCM pin numbering (e.g. GPIO 17, 27).
 
 use crate::config::PeripheralBoardConfig;
-use crate::peripherals::traits::Peripheral;
+use crate::peripherals::Peripheral;
 use crate::tools::{Tool, ToolResult};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// RPi GPIO peripheral — direct access via rppal.
 pub struct RpiGpioPeripheral {

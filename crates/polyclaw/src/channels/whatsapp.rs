@@ -875,7 +875,12 @@ mod tests {
 
     fn make_channel(config: Arc<PolyConfig>) -> Arc<WhatsAppChannel> {
         let router = Arc::new(Router::new());
-        let command_handler = Arc::new(CommandHandler::new(config.clone()));
+        // Use a per-test temp state dir to avoid cross-test state pollution.
+        let tmp = tempfile::tempdir().expect("tempdir for whatsapp test state isolation");
+        let command_handler = Arc::new(CommandHandler::with_state_dir(
+            config.clone(),
+            tmp.path().to_path_buf(),
+        ));
         let context_store = ContextStore::new(20, 5);
         Arc::new(WhatsAppChannel::new(config, router, command_handler, context_store))
     }
