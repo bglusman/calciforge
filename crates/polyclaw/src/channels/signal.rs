@@ -1,4 +1,4 @@
-//! Signal channel adapter for PolyClaw v2.
+//! Signal channel adapter for PolyClaw v3.
 //!
 //! ## Architecture
 //!

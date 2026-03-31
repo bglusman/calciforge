@@ -1,4 +1,4 @@
-//! WhatsApp channel adapter for PolyClaw v2.
+//! WhatsApp channel adapter for PolyClaw v3.
 //!
 //! ## Architecture
 //!

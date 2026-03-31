@@ -1,4 +1,4 @@
-//! Channel adapters for PolyClaw v2.
+//! Channel adapters for PolyClaw v3.
 //!
 //! Currently active: Telegram.
 //! Scaffolded (needs bot account): Matrix.

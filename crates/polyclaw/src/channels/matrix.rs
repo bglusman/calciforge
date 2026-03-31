@@ -1,4 +1,4 @@
-//! Matrix channel adapter for PolyClaw v2.
+//! Matrix channel adapter for PolyClaw v3.
 //!
 //! ## Architecture
 //!
