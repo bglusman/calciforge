@@ -622,6 +622,13 @@ mod tests {
     use super::*;
     use crate::config::{AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule};
 
+    /// Create a CommandHandler backed by a temp state directory so tests are
+    /// isolated from `~/.polyclaw/state/active-agents.json` on disk.
+    fn make_handler(config: Arc<PolyConfig>) -> CommandHandler {
+        let tmp = tempfile::tempdir().expect("tempdir for telegram test state isolation");
+        CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+    }
+
     fn make_test_config() -> PolyConfig {
         PolyConfig {
             polyclaw: PolyHeader { version: 2 },
@@ -683,7 +690,7 @@ mod tests {
     #[test]
     fn test_routing_uses_active_agent_not_just_default() {
         let config = Arc::new(make_test_config());
-        let handler = CommandHandler::new(config.clone());
+        let handler = make_handler(config.clone());
         assert_eq!(handler.active_agent_for("brian"), Some("librarian".to_string()));
         handler.handle_switch("!switch librarian", "brian");
         assert_eq!(handler.active_agent_for("brian"), Some("librarian".to_string()));
@@ -700,7 +707,7 @@ mod tests {
     #[test]
     fn test_no_routing_for_unknown_identity() {
         let config = Arc::new(make_test_config());
-        let handler = CommandHandler::new(config);
+        let handler = make_handler(config);
         assert!(handler.active_agent_for("stranger").is_none());
     }
 
@@ -788,7 +795,7 @@ mod tests {
         // If it returns Some(_), the reply is ready immediately and can be sent
         // in a spawned task without blocking the Teloxide dispatcher.
         let config = Arc::new(make_test_config());
-        let handler = CommandHandler::new(config);
+        let handler = make_handler(config);
 
         // All of these should return Some immediately, with no I/O or blocking.
         // NOTE: !status is intentionally excluded — it requires identity context
@@ -853,7 +860,7 @@ mod tests {
         // cmd_status_for_identity() is now async — it queries the adapter for runtime status.
         // Verify it returns a non-empty, identity-aware String.
         let config = Arc::new(make_test_config());
-        let handler = CommandHandler::new(config);
+        let handler = make_handler(config);
 
         let reply = handler.cmd_status_for_identity("brian").await;
         assert!(!reply.is_empty(), "cmd_status_for_identity must return non-empty String");
@@ -867,7 +874,7 @@ mod tests {
         // handle_switch() is also a plain synchronous fn — critical for the fix.
         // Verify it returns a non-empty String without any async machinery.
         let config = Arc::new(make_test_config());
-        let handler = CommandHandler::new(config);
+        let handler = make_handler(config);
 
         let reply = handler.handle_switch("!switch librarian", "brian");
         assert!(!reply.is_empty(), "handle_switch must return non-empty String synchronously");

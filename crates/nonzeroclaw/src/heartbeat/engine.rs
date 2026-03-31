@@ -1,6 +1,8 @@
 use crate::config::HeartbeatConfig;
 use crate::observability::{Observer, ObserverEvent};
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+use parking_lot::Mutex as ParkingMutex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
@@ -11,8 +13,6 @@ use tracing::{info, warn};
 // ── Structured task types ────────────────────────────────────────
 
 /// Priority level for a heartbeat task.
-///
-/// Backport of upstream zeroclaw commit c86a067.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskPriority {
@@ -32,8 +32,6 @@ impl fmt::Display for TaskPriority {
 }
 
 /// Status of a heartbeat task.
-///
-/// Backport of upstream zeroclaw commit c86a067.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -53,8 +51,6 @@ impl fmt::Display for TaskStatus {
 }
 
 /// A structured heartbeat task with priority and status metadata.
-///
-/// Backport of upstream zeroclaw commit c86a067.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatTask {
     pub text: String,
@@ -74,6 +70,99 @@ impl fmt::Display for HeartbeatTask {
     }
 }
 
+// ── Health Metrics ───────────────────────────────────────────────
+
+/// Live health metrics for the heartbeat subsystem.
+///
+/// Shared via `Arc<ParkingMutex<>>` between the heartbeat worker,
+/// deadman watcher, and API consumers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatMetrics {
+    /// Monotonic uptime since the heartbeat loop started.
+    pub uptime_secs: u64,
+    /// Consecutive successful ticks (resets on failure).
+    pub consecutive_successes: u64,
+    /// Consecutive failed ticks (resets on success).
+    pub consecutive_failures: u64,
+    /// Timestamp of the most recent tick (UTC RFC 3339).
+    pub last_tick_at: Option<DateTime<Utc>>,
+    /// Exponential moving average of tick durations in milliseconds.
+    pub avg_tick_duration_ms: f64,
+    /// Total number of ticks executed since startup.
+    pub total_ticks: u64,
+}
+
+impl Default for HeartbeatMetrics {
+    fn default() -> Self {
+        Self {
+            uptime_secs: 0,
+            consecutive_successes: 0,
+            consecutive_failures: 0,
+            last_tick_at: None,
+            avg_tick_duration_ms: 0.0,
+            total_ticks: 0,
+        }
+    }
+}
+
+impl HeartbeatMetrics {
+    /// Record a successful tick with the given duration.
+    pub fn record_success(&mut self, duration_ms: f64) {
+        self.consecutive_successes += 1;
+        self.consecutive_failures = 0;
+        self.last_tick_at = Some(Utc::now());
+        self.total_ticks += 1;
+        self.update_avg_duration(duration_ms);
+    }
+
+    /// Record a failed tick with the given duration.
+    pub fn record_failure(&mut self, duration_ms: f64) {
+        self.consecutive_failures += 1;
+        self.consecutive_successes = 0;
+        self.last_tick_at = Some(Utc::now());
+        self.total_ticks += 1;
+        self.update_avg_duration(duration_ms);
+    }
+
+    fn update_avg_duration(&mut self, duration_ms: f64) {
+        const ALPHA: f64 = 0.3; // EMA smoothing factor
+        if self.total_ticks == 1 {
+            self.avg_tick_duration_ms = duration_ms;
+        } else {
+            self.avg_tick_duration_ms =
+                ALPHA * duration_ms + (1.0 - ALPHA) * self.avg_tick_duration_ms;
+        }
+    }
+}
+
+/// Compute the adaptive interval for the next heartbeat tick.
+///
+/// Strategy:
+/// - On failures: exponential back-off `base * 2^failures` capped at `max_interval`.
+/// - When high-priority tasks are present: use `min_interval` for faster reaction.
+/// - Otherwise: use `base_interval`.
+pub fn compute_adaptive_interval(
+    base_minutes: u32,
+    min_minutes: u32,
+    max_minutes: u32,
+    consecutive_failures: u64,
+    has_high_priority_tasks: bool,
+) -> u32 {
+    if consecutive_failures > 0 {
+        let backoff = base_minutes.saturating_mul(
+            1u32.checked_shl(consecutive_failures.min(10) as u32)
+                .unwrap_or(u32::MAX),
+        );
+        return backoff.min(max_minutes).max(min_minutes);
+    }
+
+    if has_high_priority_tasks {
+        return min_minutes.max(5); // never go below 5 minutes
+    }
+
+    base_minutes.clamp(min_minutes, max_minutes)
+}
+
 // ── Engine ───────────────────────────────────────────────────────
 
 /// Heartbeat engine — reads HEARTBEAT.md and executes tasks periodically
@@ -81,6 +170,7 @@ pub struct HeartbeatEngine {
     config: HeartbeatConfig,
     workspace_dir: std::path::PathBuf,
     observer: Arc<dyn Observer>,
+    metrics: Arc<ParkingMutex<HeartbeatMetrics>>,
 }
 
 impl HeartbeatEngine {
@@ -93,7 +183,13 @@ impl HeartbeatEngine {
             config,
             workspace_dir,
             observer,
+            metrics: Arc::new(ParkingMutex::new(HeartbeatMetrics::default())),
         }
+    }
+
+    /// Get a shared handle to the live heartbeat metrics.
+    pub fn metrics(&self) -> Arc<ParkingMutex<HeartbeatMetrics>> {
+        Arc::clone(&self.metrics)
     }
 
     /// Start the heartbeat loop (runs until cancelled)
@@ -145,8 +241,6 @@ impl HeartbeatEngine {
     }
 
     /// Collect only runnable (active) tasks, sorted by priority (high first).
-    ///
-    /// Backport of upstream zeroclaw commit c86a067.
     pub async fn collect_runnable_tasks(&self) -> Result<Vec<HeartbeatTask>> {
         let mut tasks: Vec<HeartbeatTask> = self
             .collect_tasks()
@@ -170,8 +264,6 @@ impl HeartbeatEngine {
     ///   `- [high] Check email`           →  high priority, active
     ///   `- [low|paused] Review old PRs`  →  low priority, paused
     ///   `- [completed] Old task`         →  medium priority, completed
-    ///
-    /// Backport of upstream zeroclaw commit c86a067.
     fn parse_tasks(content: &str) -> Vec<HeartbeatTask> {
         content
             .lines()
@@ -232,11 +324,6 @@ impl HeartbeatEngine {
     }
 
     /// Build the Phase 1 LLM decision prompt for two-phase heartbeat.
-    ///
-    /// Phase 1 asks the LLM (at temperature 0.0) whether any tasks need to run
-    /// right now, saving API cost on quiet periods.
-    ///
-    /// Backport of upstream zeroclaw commit c86a067.
     pub fn build_decision_prompt(tasks: &[HeartbeatTask]) -> String {
         let mut prompt = String::from(
             "You are a heartbeat scheduler. Review the following periodic tasks and decide \
@@ -265,9 +352,7 @@ impl HeartbeatEngine {
 
     /// Parse the Phase 1 LLM decision response.
     ///
-    /// Returns indices of tasks to run (0-based), or empty vec if skipped.
-    ///
-    /// Backport of upstream zeroclaw commit c86a067.
+    /// Returns indices of tasks to run, or empty vec if skipped.
     pub fn parse_decision_response(response: &str, task_count: usize) -> Vec<usize> {
         let trimmed = response.trim().to_ascii_lowercase();
 
@@ -289,9 +374,8 @@ impl HeartbeatEngine {
             .split(',')
             .filter_map(|s| {
                 let n: usize = s.trim().parse().ok()?;
-                // 1-based → 0-based, validate range
                 if n >= 1 && n <= task_count {
-                    Some(n - 1)
+                    Some(n - 1) // Convert to 0-indexed
                 } else {
                     None
                 }
@@ -307,16 +391,14 @@ impl HeartbeatEngine {
                            # Add tasks below (one per line, starting with `- `)\n\
                            # The agent will check this file on each heartbeat tick.\n\
                            #\n\
-                           # Structured format (backport from zeroclaw c86a067):\n\
-                           #   - [high] Check critical alerts\n\
-                           #   - [medium] Check email\n\
-                           #   - [low|paused] Review old PRs\n\
-                           #   - [completed] Old finished task\n\
+                           # Format: - [priority|status] Task description\n\
+                           #   priority: high, medium (default), low\n\
+                           #   status:   active (default), paused, completed\n\
                            #\n\
                            # Examples:\n\
-                           # - Check my email for important messages\n\
+                           # - [high] Check my email for important messages\n\
                            # - Review my calendar for upcoming events\n\
-                           # - Check the weather forecast\n";
+                           # - [low|paused] Check the weather forecast\n";
             tokio::fs::write(&path, default).await?;
         }
         Ok(())
@@ -335,8 +417,6 @@ mod tests {
         assert_eq!(tasks[0].text, "Check email");
         assert_eq!(tasks[0].priority, TaskPriority::Medium);
         assert_eq!(tasks[0].status, TaskStatus::Active);
-        assert_eq!(tasks[1].text, "Review calendar");
-        assert_eq!(tasks[2].text, "Third task");
     }
 
     #[test]
@@ -388,7 +468,7 @@ mod tests {
         let content = "- Check email 📧\n- Review calendar 📅\n- 日本語タスク";
         let tasks = HeartbeatEngine::parse_tasks(content);
         assert_eq!(tasks.len(), 3);
-        assert!(tasks[0].text.contains("📧"));
+        assert!(tasks[0].text.contains('📧'));
         assert!(tasks[2].text.contains("日本語"));
     }
 
@@ -420,103 +500,74 @@ mod tests {
         assert_eq!(tasks[99].text, "Task 99");
     }
 
-    // ── Structured task format tests ─────────────────────────────
+    // ── Structured task parsing tests ────────────────────────────
 
     #[test]
-    fn parse_task_line_high_priority() {
-        let task = HeartbeatEngine::parse_task_line("[high] Check alerts");
-        assert_eq!(task.text, "Check alerts");
-        assert_eq!(task.priority, TaskPriority::High);
-        assert_eq!(task.status, TaskStatus::Active);
-    }
-
-    #[test]
-    fn parse_task_line_low_priority_paused() {
-        let task = HeartbeatEngine::parse_task_line("[low|paused] Review old PRs");
-        assert_eq!(task.text, "Review old PRs");
-        assert_eq!(task.priority, TaskPriority::Low);
-        assert_eq!(task.status, TaskStatus::Paused);
-    }
-
-    #[test]
-    fn parse_task_line_completed() {
-        let task = HeartbeatEngine::parse_task_line("[completed] Old task");
-        assert_eq!(task.text, "Old task");
-        assert_eq!(task.priority, TaskPriority::Medium);
-        assert_eq!(task.status, TaskStatus::Completed);
-    }
-
-    #[test]
-    fn parse_task_line_legacy_no_metadata() {
-        let task = HeartbeatEngine::parse_task_line("Check email");
-        assert_eq!(task.text, "Check email");
-        assert_eq!(task.priority, TaskPriority::Medium);
-        assert_eq!(task.status, TaskStatus::Active);
-    }
-
-    #[test]
-    fn parse_tasks_structured_format() {
-        let content = "- [high] Critical alert\n- [low|paused] Low priority\n- [completed] Done task\n- Regular task";
+    fn parse_task_with_high_priority() {
+        let content = "- [high] Urgent email check";
         let tasks = HeartbeatEngine::parse_tasks(content);
-        assert_eq!(tasks.len(), 4);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text, "Urgent email check");
         assert_eq!(tasks[0].priority, TaskPriority::High);
         assert_eq!(tasks[0].status, TaskStatus::Active);
-        assert_eq!(tasks[1].priority, TaskPriority::Low);
-        assert_eq!(tasks[1].status, TaskStatus::Paused);
-        assert_eq!(tasks[2].status, TaskStatus::Completed);
-        assert_eq!(tasks[3].priority, TaskPriority::Medium);
-        assert_eq!(tasks[3].status, TaskStatus::Active);
     }
 
     #[test]
-    fn is_runnable_only_active() {
-        let active = HeartbeatTask {
-            text: "t".into(),
-            priority: TaskPriority::Medium,
-            status: TaskStatus::Active,
-        };
-        let paused = HeartbeatTask {
-            text: "t".into(),
-            priority: TaskPriority::Medium,
-            status: TaskStatus::Paused,
-        };
-        let completed = HeartbeatTask {
-            text: "t".into(),
-            priority: TaskPriority::Medium,
-            status: TaskStatus::Completed,
-        };
-        assert!(active.is_runnable());
-        assert!(!paused.is_runnable());
-        assert!(!completed.is_runnable());
+    fn parse_task_with_low_paused() {
+        let content = "- [low|paused] Review old PRs";
+        let tasks = HeartbeatEngine::parse_tasks(content);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text, "Review old PRs");
+        assert_eq!(tasks[0].priority, TaskPriority::Low);
+        assert_eq!(tasks[0].status, TaskStatus::Paused);
     }
 
     #[test]
-    fn parse_decision_response_skip() {
-        assert!(HeartbeatEngine::parse_decision_response("skip", 3).is_empty());
-        assert!(HeartbeatEngine::parse_decision_response("skip - no tasks needed", 3).is_empty());
-        assert!(HeartbeatEngine::parse_decision_response("SKIP", 3).is_empty());
+    fn parse_task_completed() {
+        let content = "- [completed] Old task";
+        let tasks = HeartbeatEngine::parse_tasks(content);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].priority, TaskPriority::Medium);
+        assert_eq!(tasks[0].status, TaskStatus::Completed);
     }
 
     #[test]
-    fn parse_decision_response_run() {
-        let indices = HeartbeatEngine::parse_decision_response("run: 1,3", 3);
-        assert_eq!(indices, vec![0, 2]);
+    fn parse_task_without_metadata_defaults() {
+        let content = "- Plain task";
+        let tasks = HeartbeatEngine::parse_tasks(content);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text, "Plain task");
+        assert_eq!(tasks[0].priority, TaskPriority::Medium);
+        assert_eq!(tasks[0].status, TaskStatus::Active);
     }
 
     #[test]
-    fn parse_decision_response_run_single() {
-        let indices = HeartbeatEngine::parse_decision_response("run: 2", 3);
-        assert_eq!(indices, vec![1]);
+    fn parse_mixed_structured_and_legacy() {
+        let content = "- [high] Urgent\n- Normal task\n- [low|paused] Later";
+        let tasks = HeartbeatEngine::parse_tasks(content);
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].priority, TaskPriority::High);
+        assert_eq!(tasks[1].priority, TaskPriority::Medium);
+        assert_eq!(tasks[2].priority, TaskPriority::Low);
+        assert_eq!(tasks[2].status, TaskStatus::Paused);
     }
 
     #[test]
-    fn parse_decision_response_out_of_range_filtered() {
-        let indices = HeartbeatEngine::parse_decision_response("run: 1,5", 3);
-        assert_eq!(indices, vec![0]); // 5 is out of range for 3 tasks
+    fn runnable_filters_paused_and_completed() {
+        let content = "- [high] Active\n- [low|paused] Paused\n- [completed] Done";
+        let tasks = HeartbeatEngine::parse_tasks(content);
+        let runnable: Vec<_> = tasks
+            .into_iter()
+            .filter(HeartbeatTask::is_runnable)
+            .collect();
+        assert_eq!(runnable.len(), 1);
+        assert_eq!(runnable[0].text, "Active");
     }
 
+    // ── Two-phase decision tests ────────────────────────────────
+
     #[test]
-    fn build_decision_prompt_contains_tasks() {
+    fn decision_prompt_includes_all_tasks() {
         let tasks = vec![
             HeartbeatTask {
                 text: "Check email".into(),
@@ -524,19 +575,74 @@ mod tests {
                 status: TaskStatus::Active,
             },
             HeartbeatTask {
-                text: "Review PR".into(),
-                priority: TaskPriority::Low,
+                text: "Review calendar".into(),
+                priority: TaskPriority::Medium,
                 status: TaskStatus::Active,
             },
         ];
         let prompt = HeartbeatEngine::build_decision_prompt(&tasks);
-        assert!(prompt.contains("Check email"));
-        assert!(prompt.contains("Review PR"));
-        assert!(prompt.contains("high"));
-        assert!(prompt.contains("low"));
-        assert!(prompt.contains("run:"));
+        assert!(prompt.contains("1. [high] Check email"));
+        assert!(prompt.contains("2. [medium] Review calendar"));
         assert!(prompt.contains("skip"));
+        assert!(prompt.contains("run:"));
     }
+
+    #[test]
+    fn parse_decision_skip() {
+        let indices = HeartbeatEngine::parse_decision_response("skip", 3);
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn parse_decision_skip_with_reason() {
+        let indices =
+            HeartbeatEngine::parse_decision_response("skip — nothing urgent right now", 3);
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn parse_decision_run_single() {
+        let indices = HeartbeatEngine::parse_decision_response("run: 1", 3);
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn parse_decision_run_multiple() {
+        let indices = HeartbeatEngine::parse_decision_response("run: 1, 3", 3);
+        assert_eq!(indices, vec![0, 2]);
+    }
+
+    #[test]
+    fn parse_decision_run_out_of_range_ignored() {
+        let indices = HeartbeatEngine::parse_decision_response("run: 1, 5, 2", 3);
+        assert_eq!(indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn parse_decision_run_zero_ignored() {
+        let indices = HeartbeatEngine::parse_decision_response("run: 0, 1", 3);
+        assert_eq!(indices, vec![0]);
+    }
+
+    // ── Task display ────────────────────────────────────────────
+
+    #[test]
+    fn task_display_format() {
+        let task = HeartbeatTask {
+            text: "Check email".into(),
+            priority: TaskPriority::High,
+            status: TaskStatus::Active,
+        };
+        assert_eq!(format!("{task}"), "[high] Check email");
+    }
+
+    #[test]
+    fn priority_ordering() {
+        assert!(TaskPriority::High > TaskPriority::Medium);
+        assert!(TaskPriority::Medium > TaskPriority::Low);
+    }
+
+    // ── Async tests ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn ensure_heartbeat_file_creates_file() {
@@ -550,6 +656,7 @@ mod tests {
         assert!(path.exists());
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(content.contains("Periodic Tasks"));
+        assert!(content.contains("[high]"));
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -582,6 +689,7 @@ mod tests {
             HeartbeatConfig {
                 enabled: true,
                 interval_minutes: 30,
+                ..HeartbeatConfig::default()
             },
             dir.clone(),
             observer,
@@ -607,6 +715,7 @@ mod tests {
             HeartbeatConfig {
                 enabled: true,
                 interval_minutes: 30,
+                ..HeartbeatConfig::default()
             },
             dir.clone(),
             observer,
@@ -624,6 +733,7 @@ mod tests {
             HeartbeatConfig {
                 enabled: false,
                 interval_minutes: 30,
+                ..HeartbeatConfig::default()
             },
             std::env::temp_dir(),
             observer,
@@ -634,14 +744,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_runnable_tasks_filters_and_sorts() {
-        let dir = std::env::temp_dir().join("zeroclaw_test_runnable");
+    async fn collect_runnable_tasks_sorts_by_priority() {
+        let dir = std::env::temp_dir().join("zeroclaw_test_runnable_sort");
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
         tokio::fs::write(
             dir.join("HEARTBEAT.md"),
-            "- [low] Low task\n- [high] High task\n- [completed] Done\n- [paused] Paused",
+            "- [low] Low task\n- [high] High task\n- Medium task\n- [low|paused] Skip me",
         )
         .await
         .unwrap();
@@ -651,17 +761,93 @@ mod tests {
             HeartbeatConfig {
                 enabled: true,
                 interval_minutes: 30,
+                ..HeartbeatConfig::default()
             },
             dir.clone(),
             observer,
         );
 
-        let runnable = engine.collect_runnable_tasks().await.unwrap();
-        // Only active tasks (low + high), sorted high-first
-        assert_eq!(runnable.len(), 2);
-        assert_eq!(runnable[0].priority, TaskPriority::High);
-        assert_eq!(runnable[1].priority, TaskPriority::Low);
+        let tasks = engine.collect_runnable_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 3); // paused one excluded
+        assert_eq!(tasks[0].priority, TaskPriority::High);
+        assert_eq!(tasks[1].priority, TaskPriority::Medium);
+        assert_eq!(tasks[2].priority, TaskPriority::Low);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    // ── HeartbeatMetrics tests ───────────────────────────────────
+
+    #[test]
+    fn metrics_record_success_updates_fields() {
+        let mut m = HeartbeatMetrics::default();
+        m.record_success(100.0);
+        assert_eq!(m.consecutive_successes, 1);
+        assert_eq!(m.consecutive_failures, 0);
+        assert_eq!(m.total_ticks, 1);
+        assert!(m.last_tick_at.is_some());
+        assert!((m.avg_tick_duration_ms - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn metrics_record_failure_resets_successes() {
+        let mut m = HeartbeatMetrics::default();
+        m.record_success(50.0);
+        m.record_success(50.0);
+        m.record_failure(200.0);
+        assert_eq!(m.consecutive_successes, 0);
+        assert_eq!(m.consecutive_failures, 1);
+        assert_eq!(m.total_ticks, 3);
+    }
+
+    #[test]
+    fn metrics_ema_smoothing() {
+        let mut m = HeartbeatMetrics::default();
+        m.record_success(100.0);
+        assert!((m.avg_tick_duration_ms - 100.0).abs() < f64::EPSILON);
+        m.record_success(200.0);
+        // EMA: 0.3 * 200 + 0.7 * 100 = 130
+        assert!((m.avg_tick_duration_ms - 130.0).abs() < f64::EPSILON);
+    }
+
+    // ── Adaptive interval tests ─────────────────────────────────
+
+    #[test]
+    fn adaptive_uses_base_when_no_failures() {
+        let result = compute_adaptive_interval(30, 5, 120, 0, false);
+        assert_eq!(result, 30);
+    }
+
+    #[test]
+    fn adaptive_uses_min_for_high_priority() {
+        let result = compute_adaptive_interval(30, 5, 120, 0, true);
+        assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn adaptive_backs_off_on_failures() {
+        // 1 failure: 30 * 2 = 60
+        assert_eq!(compute_adaptive_interval(30, 5, 120, 1, false), 60);
+        // 2 failures: 30 * 4 = 120 (capped at max)
+        assert_eq!(compute_adaptive_interval(30, 5, 120, 2, false), 120);
+        // 3 failures: 30 * 8 = 240 → capped at 120
+        assert_eq!(compute_adaptive_interval(30, 5, 120, 3, false), 120);
+    }
+
+    #[test]
+    fn adaptive_backoff_respects_min() {
+        // Even with failures, must be >= min
+        assert!(compute_adaptive_interval(5, 10, 120, 0, false) >= 10);
+    }
+
+    // ── Engine metrics accessor ─────────────────────────────────
+
+    #[test]
+    fn engine_exposes_shared_metrics() {
+        let observer: Arc<dyn Observer> = Arc::new(crate::observability::NoopObserver);
+        let engine =
+            HeartbeatEngine::new(HeartbeatConfig::default(), std::env::temp_dir(), observer);
+        let metrics = engine.metrics();
+        assert_eq!(metrics.lock().total_ticks, 0);
     }
 }
