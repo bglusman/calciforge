@@ -1,7 +1,7 @@
 Using CPython 3.10.12 interpreter at: /usr/bin/python3
 Creating virtual environment at: .hegel/venv
 Using Python 3.10.12 environment at: .hegel/venv
-Resolved 7 packages in 80ms
+Resolved 7 packages in 87ms
 Installed 7 packages in 2ms
  + cbor2==5.9.0
  + click==8.3.1
