@@ -13,6 +13,7 @@ path = "src/main.rs"
 channel-matrix = ["dep:matrix-sdk"]
 
 [dependencies]
+axum = "0.7"
 # Async runtime
 tokio = { version = "1", features = ["full", "net"] }
 

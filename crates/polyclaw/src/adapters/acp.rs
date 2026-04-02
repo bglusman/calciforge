@@ -31,14 +31,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use sacp::role::ClientToAgent;
 use sacp::schema::{
     ContentBlock, EnvVariable, InitializeRequest, McpServer, NewSessionRequest, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionNotification, SessionUpdate, TextContent, ToolCallStatus,
-    VERSION as PROTOCOL_VERSION,
+    SessionNotification, SessionUpdate, TextContent, ToolCallStatus, VERSION as PROTOCOL_VERSION,
 };
 use sacp::{ByteStreams, Component, JrConnectionCx};
-use sacp::role::ClientToAgent;
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -181,9 +180,10 @@ impl AcpAdapter {
         let agent = AcpAgent::new(server);
 
         // Spawn the agent process
-        let (agent_stdin, agent_stdout, _stderr, mut child) = agent
-            .spawn_process()
-            .map_err(|e| AdapterError::Unavailable(format!("failed to spawn {}: {}", self.command, e)))?;
+        let (agent_stdin, agent_stdout, _stderr, mut child) =
+            agent.spawn_process().map_err(|e| {
+                AdapterError::Unavailable(format!("failed to spawn {}: {}", self.command, e))
+            })?;
 
         let transport = ByteStreams::new(agent_stdin.compat_write(), agent_stdout.compat());
         let command_name = self.command.clone();
@@ -409,14 +409,18 @@ async fn run_acp_client_session(
                                             "acp agent returned empty response".to_string(),
                                         )));
                                     } else {
-                                        info!(response_len = response.len(), "acp: response collected");
+                                        info!(
+                                            response_len = response.len(),
+                                            "acp: response collected"
+                                        );
                                         let _ = response_tx.send(Ok(response));
                                     }
                                 }
                                 Err(e) => {
-                                    let _ = response_tx.send(Err(AdapterError::Protocol(
-                                        format!("acp prompt error: {}", e),
-                                    )));
+                                    let _ = response_tx.send(Err(AdapterError::Protocol(format!(
+                                        "acp prompt error: {}",
+                                        e
+                                    ))));
                                 }
                             }
                         }
@@ -481,13 +485,7 @@ mod tests {
 
     #[test]
     fn test_default_timeout_is_5_minutes() {
-        let adapter = AcpAdapter::new(
-            "claude".to_string(),
-            None,
-            HashMap::new(),
-            None,
-            None,
-        );
+        let adapter = AcpAdapter::new("claude".to_string(), None, HashMap::new(), None, None);
         assert_eq!(adapter.timeout, Duration::from_millis(300_000));
     }
 
@@ -505,13 +503,7 @@ mod tests {
 
     #[test]
     fn test_default_args_when_none() {
-        let adapter = AcpAdapter::new(
-            "opencode".to_string(),
-            None,
-            HashMap::new(),
-            None,
-            None,
-        );
+        let adapter = AcpAdapter::new("opencode".to_string(), None, HashMap::new(), None, None);
         assert!(adapter.args.is_empty());
     }
 
@@ -519,12 +511,12 @@ mod tests {
     // In-process mock agent tests using SACP Channel::duplex()
     // -----------------------------------------------------------------------
 
-    use sacp::Channel;
     use sacp::role::AgentToClient;
     use sacp::schema::{
-        ContentChunk, Implementation, InitializeResponse, NewSessionResponse,
-        PromptResponse, SessionId, StopReason,
+        ContentChunk, Implementation, InitializeResponse, NewSessionResponse, PromptResponse,
+        SessionId, StopReason,
     };
+    use sacp::Channel;
 
     /// Spawn a mock ACP agent that echoes prompts back as responses.
     ///
@@ -610,10 +602,7 @@ mod tests {
 
     /// Helper: create a session channel connected to a mock echo agent,
     /// and return the command sender for dispatching prompts.
-    async fn setup_mock_session() -> (
-        mpsc::Sender<SessionCommand>,
-        tokio::task::JoinHandle<()>,
-    ) {
+    async fn setup_mock_session() -> (mpsc::Sender<SessionCommand>, tokio::task::JoinHandle<()>) {
         let (client_channel, agent_channel) = Channel::duplex();
 
         // Spawn the mock agent
@@ -695,7 +684,10 @@ mod tests {
             })
             .await;
 
-        assert!(send_result.is_err(), "send should fail when receiver is dropped");
+        assert!(
+            send_result.is_err(),
+            "send should fail when receiver is dropped"
+        );
     }
 
     #[tokio::test]
