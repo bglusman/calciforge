@@ -237,7 +237,7 @@ impl AgentAdapter for OpenClawHttpAdapter {
                                 info!("openclaw-http: streaming complete, {} chars received", accumulated.len());
                                 debug!(response = %accumulated, "agent response");
                                 return Ok(if accumulated.is_empty() {
-                                    "(no response)".to_string()
+                                    String::new()
                                 } else {
                                     accumulated
                                 });
@@ -267,7 +267,7 @@ impl AgentAdapter for OpenClawHttpAdapter {
         info!("openclaw-http: stream ended, {} chars received", accumulated.len());
         debug!(response = %accumulated, "agent response");
         Ok(if accumulated.is_empty() {
-            "(no response)".to_string()
+            String::new()
         } else {
             accumulated
         })
@@ -455,7 +455,7 @@ impl AgentAdapter for NzcHttpAdapter {
         }
         // ─────────────────────────────────────────────────────────────────────
 
-        Ok(nzc_resp.response.unwrap_or_else(|| "(no response)".to_string()))
+        Ok(nzc_resp.response.unwrap_or_else(|| String::new()))
     }
 
     fn kind(&self) -> &'static str {
@@ -599,7 +599,7 @@ impl NzcHttpAdapter {
             .await
             .map_err(|e| AdapterError::Protocol(format!("result JSON parse error: {e}")))?;
 
-        Ok(result.response.unwrap_or_else(|| "(no response)".to_string()))
+        Ok(result.response.unwrap_or_else(|| String::new()))
     }
 }
 

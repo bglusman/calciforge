@@ -227,10 +227,17 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 .or_else(|| agent.auth_token.clone())
                 .or_else(|| std::env::var("POLYCLAW_AGENT_TOKEN").ok())
                 .unwrap_or_default();
+            // Use openclaw_agent_id if set, otherwise fall back to agent.id.
+            // This allows a PolyClaw agent named "openclaw-max" to route to
+            // OpenClaw's "david" agent without renaming the PolyClaw-side entry.
+            let target_agent_id = agent
+                .openclaw_agent_id
+                .clone()
+                .unwrap_or_else(|| agent.id.clone());
             Ok(Box::new(OpenClawNativeAdapter::new(
                 agent.endpoint.clone(),
                 token,
-                agent.id.clone(),
+                target_agent_id,
                 None, // hooks_path — use default "/hooks"
                 agent.timeout_ms,
             )))
@@ -326,6 +333,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -343,6 +353,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -364,6 +377,9 @@ mod tests {
             }),
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -403,6 +419,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let result = build_adapter(&agent);
         assert!(result.is_err());
@@ -425,6 +444,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let result = build_adapter(&agent);
         assert!(result.is_err());
@@ -446,6 +468,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec!["cc".to_string()],
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
         }
     }
 
@@ -471,6 +496,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let result = build_adapter(&agent);
         assert!(result.is_err());
@@ -493,6 +521,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let result = build_adapter(&agent);
         assert!(result.is_err());
@@ -529,6 +560,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         // Should build without error — api_key takes priority
         let adapter = build_adapter(&agent).expect("should build");
@@ -551,6 +585,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -568,6 +605,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -600,6 +640,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         // api_key takes precedence — should build without error
         let adapter = build_adapter(&agent).expect("should build");
@@ -621,6 +664,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let adapter = build_adapter(&agent).expect("should build with auth_token fallback");
         assert_eq!(adapter.kind(), "nzc-native");
@@ -643,6 +689,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let adapter = build_adapter(&agent).expect("should build with empty token");
         assert_eq!(adapter.kind(), "openclaw-native");
