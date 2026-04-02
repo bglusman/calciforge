@@ -47,8 +47,9 @@ impl Router {
         _config: &PolyConfig,
         sender: Option<&str>,
     ) -> Result<String> {
-        let adapter = build_adapter(agent)
-            .map_err(|e| anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e))?;
+        let adapter = build_adapter(agent).map_err(|e| {
+            anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
+        })?;
 
         info!(
             agent_id = %agent.id,
@@ -58,7 +59,10 @@ impl Router {
             adapter.kind()
         );
 
-        let ctx = DispatchContext { message: text, sender };
+        let ctx = DispatchContext {
+            message: text,
+            sender,
+        };
         adapter.dispatch_with_context(ctx).await.map_err(|e| {
             let msg = match &e {
                 AdapterError::Timeout => format!("agent '{}' timed out", agent.id),
@@ -73,9 +77,7 @@ impl Router {
                 AdapterError::ApprovalPending(req) => {
                     // Re-wrap as anyhow error so callers can downcast and
                     // extract the NzcApprovalRequest for user notification.
-                    return anyhow::Error::new(
-                        AdapterError::ApprovalPending(req.clone())
-                    );
+                    return anyhow::Error::new(AdapterError::ApprovalPending(req.clone()));
                 }
             };
             anyhow::anyhow!("{}", msg)
@@ -121,6 +123,9 @@ mod tests {
             model: None,
             auth_token: Some("test-token".to_string()),
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -141,6 +146,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: Some("zc_test".to_string()),
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -161,6 +169,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: Some("/bin/echo".to_string()),
             args: Some(vec!["{message}".to_string()]),
             env: Some(HashMap::new()),
@@ -187,6 +198,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -240,6 +254,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: Some("/nonexistent/bin/xyzzy".to_string()),
             args: None,
             env: Some(HashMap::new()),
@@ -299,8 +316,7 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 4096];
                 let n = stream.read(&mut buf).await.unwrap_or(0);
-                *captured_srv.lock().await =
-                    String::from_utf8_lossy(&buf[..n]).to_string();
+                *captured_srv.lock().await = String::from_utf8_lossy(&buf[..n]).to_string();
                 let _ = stream.write_all(http_response.as_bytes()).await;
                 let _ = stream.flush().await;
                 // Keep connection open briefly so reqwest can read the body.

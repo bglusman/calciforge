@@ -101,11 +101,8 @@ pub trait MemoryStore: Send + Sync {
 pub trait PreReadHook: Send + Sync {
     /// Given the inbound message and a handle to the memory store,
     /// return zero or more memory chunks to inject into context.
-    async fn evaluate(
-        &self,
-        message: &InboundMessage,
-        store: &dyn MemoryStore,
-    ) -> Vec<MemoryChunk>;
+    async fn evaluate(&self, message: &InboundMessage, store: &dyn MemoryStore)
+        -> Vec<MemoryChunk>;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,11 +118,7 @@ pub trait PostWriteHook: Send + Sync {
     /// Given the completed turn (message + response), optionally persist memory.
     /// Writes go to the pending buffer; a background consolidation job compacts
     /// and deduplicates periodically.
-    async fn evaluate(
-        &self,
-        turn: &CompletedTurn,
-        store: &dyn MemoryStore,
-    ) -> WriteDecision;
+    async fn evaluate(&self, turn: &CompletedTurn, store: &dyn MemoryStore) -> WriteDecision;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,11 +149,7 @@ pub struct NoOpPostWriteHook;
 
 #[async_trait]
 impl PostWriteHook for NoOpPostWriteHook {
-    async fn evaluate(
-        &self,
-        _turn: &CompletedTurn,
-        _store: &dyn MemoryStore,
-    ) -> WriteDecision {
+    async fn evaluate(&self, _turn: &CompletedTurn, _store: &dyn MemoryStore) -> WriteDecision {
         WriteDecision::Skip
     }
 }

@@ -32,12 +32,7 @@ pub trait SshClient: Send + Sync {
     /// `key` is the path to the SSH private key (may be `None` for default-key use).
     /// `command` is a **pre-quoted** shell command (use [`shell_quote`] on all
     /// user-supplied components before calling).
-    fn run(
-        &self,
-        host: &str,
-        key: Option<&Path>,
-        command: &str,
-    ) -> Result<SshOutput>;
+    fn run(&self, host: &str, key: Option<&Path>, command: &str) -> Result<SshOutput>;
 
     /// Read the contents of a remote file.
     fn read_file(&self, host: &str, key: Option<&Path>, remote_path: &str) -> Result<String> {
@@ -68,11 +63,7 @@ pub trait SshClient: Send + Sync {
         );
         let out = self.run(host, key, &cmd)?;
         if !out.success {
-            bail!(
-                "write_file failed on {}: {}",
-                host,
-                out.stderr.trim()
-            );
+            bail!("write_file failed on {}: {}", host, out.stderr.trim());
         }
         Ok(())
     }
@@ -94,17 +85,18 @@ pub trait SshClient: Send + Sync {
         );
         let out = self.run(host, key, &cmd)?;
         if !out.success {
-            bail!(
-                "backup_file failed on {}: {}",
-                host,
-                out.stderr.trim()
-            );
+            bail!("backup_file failed on {}: {}", host, out.stderr.trim());
         }
         Ok(())
     }
 
     /// Verify a remote file exists and is non-empty.
-    fn verify_file_exists(&self, host: &str, key: Option<&Path>, remote_path: &str) -> Result<bool> {
+    fn verify_file_exists(
+        &self,
+        host: &str,
+        key: Option<&Path>,
+        remote_path: &str,
+    ) -> Result<bool> {
         let cmd = format!(
             "test -s {} && echo EXISTS || echo MISSING",
             shell_quote(remote_path)
@@ -128,11 +120,7 @@ pub trait SshClient: Send + Sync {
         );
         let out = self.run(host, key, &cmd)?;
         if !out.success {
-            bail!(
-                "restore_backup failed on {}: {}",
-                host,
-                out.stderr.trim()
-            );
+            bail!("restore_backup failed on {}: {}", host, out.stderr.trim());
         }
         Ok(())
     }
@@ -159,16 +147,14 @@ pub struct SshOutput {
 pub struct RealSshClient;
 
 impl SshClient for RealSshClient {
-    fn run(
-        &self,
-        host: &str,
-        key: Option<&Path>,
-        command: &str,
-    ) -> Result<SshOutput> {
+    fn run(&self, host: &str, key: Option<&Path>, command: &str) -> Result<SshOutput> {
         let mut cmd = Command::new("ssh");
-        cmd.arg("-o").arg("StrictHostKeyChecking=accept-new")
-            .arg("-o").arg("ConnectTimeout=10")
-            .arg("-o").arg("BatchMode=yes");
+        cmd.arg("-o")
+            .arg("StrictHostKeyChecking=accept-new")
+            .arg("-o")
+            .arg("ConnectTimeout=10")
+            .arg("-o")
+            .arg("BatchMode=yes");
 
         if let Some(key_path) = key {
             cmd.arg("-i").arg(key_path);
@@ -186,7 +172,12 @@ impl SshClient for RealSshClient {
         let exit_code = output.status.code().unwrap_or(-1);
         let success = output.status.success();
 
-        Ok(SshOutput { stdout, stderr, exit_code, success })
+        Ok(SshOutput {
+            stdout,
+            stderr,
+            exit_code,
+            success,
+        })
     }
 }
 
@@ -265,12 +256,7 @@ impl Default for MockSshClient {
 }
 
 impl SshClient for MockSshClient {
-    fn run(
-        &self,
-        host: &str,
-        key: Option<&Path>,
-        command: &str,
-    ) -> Result<SshOutput> {
+    fn run(&self, host: &str, key: Option<&Path>, command: &str) -> Result<SshOutput> {
         self.calls.lock().unwrap().push(SshCall {
             host: host.to_string(),
             key: key.map(PathBuf::from),
@@ -325,12 +311,9 @@ pub fn shell_quote(s: &str) -> String {
 ///
 /// Returns `Ok(())` if the connection succeeds and stdout contains "OK".
 /// Returns `Err` with a descriptive message on failure.
-pub fn test_connectivity(
-    client: &dyn SshClient,
-    host: &str,
-    key: Option<&Path>,
-) -> Result<()> {
-    let out = client.run(host, key, "echo OK")
+pub fn test_connectivity(client: &dyn SshClient, host: &str, key: Option<&Path>) -> Result<()> {
+    let out = client
+        .run(host, key, "echo OK")
         .with_context(|| format!("SSH connectivity test to '{}' failed", host))?;
 
     if !out.success {
@@ -344,9 +327,7 @@ pub fn test_connectivity(
 
     // Check for exact "OK" token (not just substring, to avoid "NOTOK" matching).
     let stdout_trimmed = out.stdout.trim();
-    let has_ok = stdout_trimmed
-        .split_whitespace()
-        .any(|token| token == "OK");
+    let has_ok = stdout_trimmed.split_whitespace().any(|token| token == "OK");
     if !has_ok {
         bail!(
             "SSH connectivity test to '{}' succeeded but unexpected stdout: {:?}",
@@ -405,14 +386,22 @@ pub fn detect_nzc_version(
     host: &str,
     key: Option<&Path>,
 ) -> Result<Option<String>> {
-    let out = client.run(host, key, "nzc --version 2>/dev/null || nonzeroclaw --version 2>/dev/null || true")?;
+    let out = client.run(
+        host,
+        key,
+        "nzc --version 2>/dev/null || nonzeroclaw --version 2>/dev/null || true",
+    )?;
     let version = out.stdout.trim().to_string();
     if version.is_empty() {
         return Ok(None);
     }
     // Parse "nzc 0.3.0" or "nonzeroclaw 0.3.0" → "0.3.0"
     let version = version.split_whitespace().last().unwrap_or("").to_string();
-    if version.is_empty() { Ok(None) } else { Ok(Some(version)) }
+    if version.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(version))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +534,11 @@ mod tests {
         assert!(content.contains("2026.3.13"));
         // Verify the command used cat and the quoted path
         let calls = client.recorded_calls();
-        assert!(calls[0].command.contains("cat"), "should use cat: {}", calls[0].command);
+        assert!(
+            calls[0].command.contains("cat"),
+            "should use cat: {}",
+            calls[0].command
+        );
         assert!(
             calls[0].command.contains("/etc/openclaw.json"),
             "should contain path: {}",
@@ -559,18 +552,31 @@ mod tests {
         // Success response
         client.push_success("");
         client
-            .backup_file("host", None, "/etc/openclaw.json", "/etc/openclaw.json.bak.123")
+            .backup_file(
+                "host",
+                None,
+                "/etc/openclaw.json",
+                "/etc/openclaw.json.bak.123",
+            )
             .unwrap();
         let calls = client.recorded_calls();
-        assert!(calls[0].command.contains("cp"), "should use cp: {}", calls[0].command);
+        assert!(
+            calls[0].command.contains("cp"),
+            "should use cp: {}",
+            calls[0].command
+        );
     }
 
     #[test]
     fn backup_file_failure_returns_error() {
         let client = MockSshClient::new();
         client.push_failure("permission denied");
-        let result =
-            client.backup_file("host", None, "/etc/openclaw.json", "/etc/openclaw.json.bak.123");
+        let result = client.backup_file(
+            "host",
+            None,
+            "/etc/openclaw.json",
+            "/etc/openclaw.json.bak.123",
+        );
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("permission denied"), "got: {}", msg);
@@ -580,14 +586,18 @@ mod tests {
     fn verify_file_exists_present() {
         let client = MockSshClient::new();
         client.push_success("EXISTS\n");
-        assert!(client.verify_file_exists("host", None, "/etc/file").unwrap());
+        assert!(client
+            .verify_file_exists("host", None, "/etc/file")
+            .unwrap());
     }
 
     #[test]
     fn verify_file_exists_missing() {
         let client = MockSshClient::new();
         client.push_success("MISSING\n");
-        assert!(!client.verify_file_exists("host", None, "/etc/file").unwrap());
+        assert!(!client
+            .verify_file_exists("host", None, "/etc/file")
+            .unwrap());
     }
 
     #[test]
@@ -595,7 +605,12 @@ mod tests {
         let client = MockSshClient::new();
         client.push_success("");
         client
-            .restore_backup("host", None, "/etc/openclaw.json.bak.123", "/etc/openclaw.json")
+            .restore_backup(
+                "host",
+                None,
+                "/etc/openclaw.json.bak.123",
+                "/etc/openclaw.json",
+            )
             .unwrap();
         let calls = client.recorded_calls();
         assert!(calls[0].command.contains("cp"), "should use cp");
@@ -605,13 +620,9 @@ mod tests {
     fn detect_openclaw_version_jq_path() {
         let client = MockSshClient::new();
         client.push_success("2026.3.13\n");
-        let version = detect_openclaw_version(
-            &client,
-            "host",
-            None,
-            "/root/.openclaw/openclaw.json",
-        )
-        .unwrap();
+        let version =
+            detect_openclaw_version(&client, "host", None, "/root/.openclaw/openclaw.json")
+                .unwrap();
         assert_eq!(version, Some("2026.3.13".to_string()));
     }
 
@@ -620,13 +631,9 @@ mod tests {
         let client = MockSshClient::new();
         client.push_success("\n"); // jq returns empty
         client.push_success("\n"); // grep fallback also empty
-        let version = detect_openclaw_version(
-            &client,
-            "host",
-            None,
-            "/root/.openclaw/openclaw.json",
-        )
-        .unwrap();
+        let version =
+            detect_openclaw_version(&client, "host", None, "/root/.openclaw/openclaw.json")
+                .unwrap();
         assert!(version.is_none());
     }
 
@@ -675,11 +682,7 @@ mod tests {
 
         // Inputs that DO contain single-quotes: must use `'\''` escape idiom.
         // Verify the output starts/ends with `'` and is NOT the bare input.
-        let single_quote_inputs = &[
-            "'; rm -rf /; echo '",
-            "it's a test",
-            "'$(dangerous)'",
-        ];
+        let single_quote_inputs = &["'; rm -rf /; echo '", "it's a test", "'$(dangerous)'"];
         for input in single_quote_inputs {
             let quoted = shell_quote(input);
             assert!(quoted.starts_with('\''), "must start with ': {}", quoted);
@@ -727,9 +730,9 @@ mod tests {
         // We restrict to printable ASCII (0x20–0x7e) to avoid null bytes and
         // control characters that shells handle unpredictably.
         let input = tc.draw(
-            gs::text().max_size(80).filter(|s: &String| {
-                s.chars().all(|c| c.is_ascii() && c >= ' ' && c != '\x7f')
-            }),
+            gs::text()
+                .max_size(80)
+                .filter(|s: &String| s.chars().all(|c| c.is_ascii() && c >= ' ' && c != '\x7f')),
         );
 
         let quoted = shell_quote(&input);

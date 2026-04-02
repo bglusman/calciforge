@@ -83,6 +83,15 @@ pub struct AgentConfig {
     pub auth_token: Option<String>,
     /// Per-agent API key / Bearer token. Overrides global `POLYCLAW_AGENT_TOKEN`.
     pub api_key: Option<String>,
+    /// OpenClaw agent lane id for kind = "openclaw-channel" (defaults to this agent id).
+    #[serde(default)]
+    pub openclaw_agent_id: Option<String>,
+    /// Local port for OpenClaw callback replies on POST /hooks/reply (default 18797).
+    #[serde(default)]
+    pub reply_port: Option<u16>,
+    /// Optional bearer token required on POST /hooks/reply callbacks.
+    #[serde(default)]
+    pub reply_auth_token: Option<String>,
     /// Path to binary for `kind = "cli"`.
     pub command: Option<String>,
     /// Argument template for `kind = "cli"`. `{message}` is substituted at dispatch time.
@@ -155,7 +164,6 @@ pub struct ChannelConfig {
     pub enabled: bool,
 
     // --- Matrix-specific fields ---
-
     /// Matrix homeserver URL, e.g. `"https://matrix.org"`.
     pub homeserver: Option<String>,
 
@@ -172,7 +180,6 @@ pub struct ChannelConfig {
     pub allowed_users: Vec<String>,
 
     // --- WhatsApp/Signal-specific fields (shared) ---
-
     /// NZC (NonZeroClaw) / OpenClaw gateway endpoint that owns the WA Web or Signal session.
     /// PolyClaw will POST reply messages to `{nzc_endpoint}/tools/invoke`.
     /// Example: `"http://127.0.0.1:18789"` (local OpenClaw) or
@@ -242,8 +249,12 @@ pub struct ContextConfig {
     pub inject_depth: usize,
 }
 
-fn default_buffer_size() -> usize { 20 }
-fn default_inject_depth() -> usize { 5 }
+fn default_buffer_size() -> usize {
+    20
+}
+fn default_inject_depth() -> usize {
+    5
+}
 
 impl Default for ContextConfig {
     fn default() -> Self {
@@ -431,7 +442,11 @@ version = 2
     #[test]
     fn test_zeroclaw_agent_parses() {
         let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
-        let zc = cfg.agents.iter().find(|a| a.id == "zeroclaw").expect("zeroclaw agent missing");
+        let zc = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "zeroclaw")
+            .expect("zeroclaw agent missing");
         assert_eq!(zc.kind, "zeroclaw");
         assert_eq!(zc.endpoint, "http://127.0.0.1:18792");
         assert_eq!(
@@ -446,7 +461,11 @@ version = 2
     #[test]
     fn test_cli_agent_parses() {
         let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
-        let ic = cfg.agents.iter().find(|a| a.id == "ironclaw").expect("ironclaw agent missing");
+        let ic = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "ironclaw")
+            .expect("ironclaw agent missing");
         assert_eq!(ic.kind, "cli");
         assert_eq!(ic.command.as_deref(), Some("/usr/local/bin/ironclaw"));
         assert_eq!(
@@ -467,8 +486,15 @@ version = 2
         // table syntax is valid TOML but is silently ignored by the toml crate when
         // deserializing array-of-tables — it's documentation only.
         let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
-        let lib = cfg.agents.iter().find(|a| a.id == "librarian").expect("librarian missing");
-        let reg = lib.registry.as_ref().expect("registry should be present (inline table)");
+        let lib = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "librarian")
+            .expect("librarian missing");
+        let reg = lib
+            .registry
+            .as_ref()
+            .expect("registry should be present (inline table)");
         assert_eq!(reg.display_name.as_deref(), Some("Librarian"));
         assert!(reg.specialties.contains(&"general".to_string()));
     }
@@ -515,14 +541,24 @@ version = 2
 inject_depth = 0
 "#;
         let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
-        assert_eq!(cfg.context.buffer_size, 20, "buffer_size should default to 20");
-        assert_eq!(cfg.context.inject_depth, 0, "inject_depth should be 0 (disabled)");
+        assert_eq!(
+            cfg.context.buffer_size, 20,
+            "buffer_size should default to 20"
+        );
+        assert_eq!(
+            cfg.context.inject_depth, 0,
+            "inject_depth should be 0 (disabled)"
+        );
     }
 
     #[test]
     fn test_agent_aliases_parse() {
         let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
-        let lib = cfg.agents.iter().find(|a| a.id == "librarian").expect("librarian missing");
+        let lib = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "librarian")
+            .expect("librarian missing");
         assert_eq!(lib.aliases, vec!["lib".to_string(), "main".to_string()]);
     }
 
@@ -530,20 +566,28 @@ inject_depth = 0
     fn test_agent_aliases_default_empty() {
         let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         // zeroclaw agent has no aliases field — should default to empty
-        let zc = cfg.agents.iter().find(|a| a.id == "zeroclaw").expect("zeroclaw missing");
-        assert!(zc.aliases.is_empty(), "missing aliases field should default to empty vec");
+        let zc = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "zeroclaw")
+            .expect("zeroclaw missing");
+        assert!(
+            zc.aliases.is_empty(),
+            "missing aliases field should default to empty vec"
+        );
     }
 
     #[test]
     fn test_acp_agent_parses() {
         let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
-        let cc = cfg.agents.iter().find(|a| a.id == "claude-code").expect("claude-code agent missing");
+        let cc = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "claude-code")
+            .expect("claude-code agent missing");
         assert_eq!(cc.kind, "acp");
         assert_eq!(cc.command.as_deref(), Some("claude"));
-        assert_eq!(
-            cc.args.as_deref(),
-            Some(&["--acp".to_string()][..])
-        );
+        assert_eq!(cc.args.as_deref(), Some(&["--acp".to_string()][..]));
         assert_eq!(cc.model.as_deref(), Some("claude-sonnet-4-5"));
         assert_eq!(cc.timeout_ms, Some(300000));
         assert_eq!(cc.aliases, vec!["cc".to_string(), "claude".to_string()]);

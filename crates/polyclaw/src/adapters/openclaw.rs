@@ -130,17 +130,28 @@ impl OpenClawHttpAdapter {
             .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client");
-        Self { client, endpoint, auth_token, model, timeout, agent_id: agent_id.to_string() }
+        Self {
+            client,
+            endpoint,
+            auth_token,
+            model,
+            timeout,
+            agent_id: agent_id.to_string(),
+        }
     }
 }
 
 #[async_trait]
 impl AgentAdapter for OpenClawHttpAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        self.dispatch_with_context(DispatchContext::message_only(msg)).await
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
     }
 
-    async fn dispatch_with_context(&self, ctx: DispatchContext<'_>) -> Result<String, AdapterError> {
+    async fn dispatch_with_context(
+        &self,
+        ctx: DispatchContext<'_>,
+    ) -> Result<String, AdapterError> {
         let msg = ctx.message;
         let url = format!(
             "{}/v1/chat/completions",
@@ -164,7 +175,9 @@ impl AgentAdapter for OpenClawHttpAdapter {
         // history across PolyClaw-routed messages.  Without this, each call creates
         // a fresh OpenClaw session and the agent loses all prior context.
         // Key format: "polyclaw-{agent_id}-{sender}" e.g. "polyclaw-librarian-brian"
-        let session_key = ctx.sender.map(|s| format!("polyclaw-{}-{}", self.agent_id, s));
+        let session_key = ctx
+            .sender
+            .map(|s| format!("polyclaw-{}-{}", self.agent_id, s));
 
         let mut req = self
             .client
@@ -176,17 +189,13 @@ impl AgentAdapter for OpenClawHttpAdapter {
             req = req.header("x-openclaw-session-key", key);
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    AdapterError::Timeout
-                } else {
-                    AdapterError::Unavailable(e.to_string())
-                }
-            })?;
+        let resp = req.json(&body).send().await.map_err(|e| {
+            if e.is_timeout() {
+                AdapterError::Timeout
+            } else {
+                AdapterError::Unavailable(e.to_string())
+            }
+        })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -234,7 +243,10 @@ impl AgentAdapter for OpenClawHttpAdapter {
 
                             if data == "[DONE]" {
                                 // Stream complete — we're done
-                                info!("openclaw-http: streaming complete, {} chars received", accumulated.len());
+                                info!(
+                                    "openclaw-http: streaming complete, {} chars received",
+                                    accumulated.len()
+                                );
                                 debug!(response = %accumulated, "agent response");
                                 return Ok(if accumulated.is_empty() {
                                     String::new()
@@ -264,7 +276,10 @@ impl AgentAdapter for OpenClawHttpAdapter {
             }
         }
 
-        info!("openclaw-http: stream ended, {} chars received", accumulated.len());
+        info!(
+            "openclaw-http: stream ended, {} chars received",
+            accumulated.len()
+        );
         debug!(response = %accumulated, "agent response");
         Ok(if accumulated.is_empty() {
             String::new()
@@ -363,7 +378,8 @@ struct NzcWebhookResponse {
 #[async_trait]
 impl AgentAdapter for NzcHttpAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        self.dispatch_with_context(DispatchContext::message_only(msg)).await
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
     }
 
     async fn dispatch_with_context(
@@ -406,9 +422,10 @@ impl AgentAdapter for NzcHttpAdapter {
             )));
         }
 
-        let nzc_resp: NzcWebhookResponse = resp.json().await.map_err(|e| {
-            AdapterError::Protocol(format!("nzc-http JSON parse error: {e}"))
-        })?;
+        let nzc_resp: NzcWebhookResponse = resp
+            .json()
+            .await
+            .map_err(|e| AdapterError::Protocol(format!("nzc-http JSON parse error: {e}")))?;
 
         if let Some(err) = nzc_resp.error {
             return Err(AdapterError::Protocol(format!("NZC agent error: {err}")));
@@ -528,7 +545,11 @@ impl NzcHttpAdapter {
         reason: Option<&str>,
     ) -> Result<(), AdapterError> {
         let url = format!("{}/webhook/approve", nzc_endpoint.trim_end_matches('/'));
-        let body = NzcApproveRequest { request_id, approved, reason };
+        let body = NzcApproveRequest {
+            request_id,
+            approved,
+            reason,
+        };
 
         let resp = client
             .post(&url)
@@ -709,16 +730,25 @@ mod tests {
 
     #[test]
     fn test_nzc_webhook_request_serialization_without_sender() {
-        let req = NzcWebhookRequest { message: "hello", sender: None };
+        let req = NzcWebhookRequest {
+            message: "hello",
+            sender: None,
+        };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["message"], "hello");
         // sender should be omitted entirely when None
-        assert!(json.get("sender").is_none(), "sender should be absent when None");
+        assert!(
+            json.get("sender").is_none(),
+            "sender should be absent when None"
+        );
     }
 
     #[test]
     fn test_nzc_webhook_request_serialization_with_sender() {
-        let req = NzcWebhookRequest { message: "hi", sender: Some("brian") };
+        let req = NzcWebhookRequest {
+            message: "hi",
+            sender: Some("brian"),
+        };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["message"], "hi");
         assert_eq!(json["sender"], "brian");

@@ -30,7 +30,10 @@ pub enum ClawKind {
 
     /// Generic HTTP webhook receiver.
     /// Installer registers the endpoint only — no SSH config management.
-    Webhook { endpoint: String, format: WebhookFormat },
+    Webhook {
+        endpoint: String,
+        format: WebhookFormat,
+    },
 
     /// Spawn a local binary and read its stdout.
     /// No network health-check possible; installer records command only.
@@ -123,13 +126,13 @@ impl ClawTarget {
     /// Returns the SSH key path, or an error if this target needs SSH but has
     /// no key configured.
     pub fn ssh_key_required(&self) -> anyhow::Result<&PathBuf> {
-        self.ssh_key
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!(
+        self.ssh_key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
                 "claw '{}' uses adapter '{}' which requires SSH, but no ssh_key was provided",
                 self.name,
                 self.adapter.kind_label(),
-            ))
+            )
+        })
     }
 }
 
@@ -177,12 +180,7 @@ const OPENCLAW_COMPATIBLE_VERSIONS: &[&str] = &[
 ];
 
 /// Known-compatible NZC versions.
-const NZC_COMPATIBLE_VERSIONS: &[&str] = &[
-    "0.1.0",
-    "0.2.0",
-    "0.3.0",
-    "0.4.0",
-];
+const NZC_COMPATIBLE_VERSIONS: &[&str] = &["0.1.0", "0.2.0", "0.3.0", "0.4.0"];
 
 /// Compatibility verdict for a detected version string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,10 +206,7 @@ impl std::fmt::Display for VersionCompatibility {
 }
 
 /// Check a version string against the known compatibility list for a given adapter.
-pub fn check_version_compatibility(
-    adapter: &ClawKind,
-    version: &str,
-) -> VersionCompatibility {
+pub fn check_version_compatibility(adapter: &ClawKind, version: &str) -> VersionCompatibility {
     let compatible_list = match adapter {
         ClawKind::OpenClawHttp => OPENCLAW_COMPATIBLE_VERSIONS,
         ClawKind::NzcNative => NZC_COMPATIBLE_VERSIONS,
@@ -343,7 +338,11 @@ mod tests {
         let result = target.ssh_key_required();
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("ssh_key"), "error should mention ssh_key: {}", msg);
+        assert!(
+            msg.contains("ssh_key"),
+            "error should mention ssh_key: {}",
+            msg
+        );
     }
 
     #[test]
@@ -375,7 +374,9 @@ mod tests {
         // Non-SSH adapters: version is informational, never blocks
         assert_eq!(
             check_version_compatibility(
-                &ClawKind::OpenAiCompat { endpoint: "http://x".into() },
+                &ClawKind::OpenAiCompat {
+                    endpoint: "http://x".into()
+                },
                 "anything-at-all"
             ),
             VersionCompatibility::Compatible
@@ -392,7 +393,9 @@ mod tests {
         );
         assert_eq!(
             check_version_compatibility(
-                &ClawKind::Cli { command: "cmd".into() },
+                &ClawKind::Cli {
+                    command: "cmd".into()
+                },
                 "1.0"
             ),
             VersionCompatibility::Compatible
@@ -471,10 +474,7 @@ mod tests {
             for path in paths {
                 for ts in timestamps {
                     let bak = backup_filename(path, *ts);
-                    assert_ne!(
-                        bak, *path,
-                        "backup filename must differ from original path"
-                    );
+                    assert_ne!(bak, *path, "backup filename must differ from original path");
                 }
             }
         }
@@ -500,7 +500,10 @@ mod hegel_tests {
         }
         let b1 = backup_filename(&path, ts1);
         let b2 = backup_filename(&path, ts2);
-        assert_ne!(b1, b2, "distinct timestamps must produce distinct backup names");
+        assert_ne!(
+            b1, b2,
+            "distinct timestamps must produce distinct backup names"
+        );
     }
 
     /// Property: backup_filename always contains the timestamp as a substring.
@@ -528,9 +531,11 @@ mod hegel_tests {
     #[hegel::test]
     fn prop_shell_quote_safe(tc: TestCase) {
         // Restrict to printable ASCII to model realistic paths/hosts.
-        let s = tc.draw(text().max_size(60).filter(|s: &String| {
-            s.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-        }));
+        let s = tc.draw(
+            text()
+                .max_size(60)
+                .filter(|s: &String| s.chars().all(|c| c.is_ascii_graphic() || c == ' ')),
+        );
         let quoted = super::super::ssh::shell_quote(&s);
         // Always starts and ends with single-quote.
         assert!(quoted.starts_with('\''), "must start with ': {}", quoted);
@@ -539,7 +544,8 @@ mod hegel_tests {
         if !s.contains('\'') {
             let inner = &quoted[1..quoted.len() - 1];
             assert_eq!(
-                inner, s.as_str(),
+                inner,
+                s.as_str(),
                 "inner of quoted string must equal input when no single-quotes present"
             );
         }
@@ -548,7 +554,8 @@ mod hegel_tests {
             assert!(
                 quoted.contains("'\\''"),
                 "inputs with single-quotes must use '\\'' escape idiom; input={:?} quoted={}",
-                s, quoted
+                s,
+                quoted
             );
         }
     }
@@ -595,8 +602,7 @@ mod hegel_tests {
         // Restrict path to content that is safe for the recovery split.
         // We test the general case first (paths without `.bak.`).
         let path = tc.draw(text().min_size(1).max_size(60).filter(|s: &String| {
-            s.chars().all(|c| c.is_ascii() && c >= ' ' && c != '\x7f')
-                && !s.contains(".bak.")
+            s.chars().all(|c| c.is_ascii() && c >= ' ' && c != '\x7f') && !s.contains(".bak.")
         }));
         let ts = tc.draw(integers::<u64>());
         let bak = backup_filename(&path, ts);
@@ -604,13 +610,11 @@ mod hegel_tests {
         // Recovery: split at the LAST `.bak.` to get original path.
         // The format is `<path>.bak.<ts>` so splitting on `.bak.` recovers path.
         let separator = ".bak.";
-        let recovered_path = bak
-            .rfind(separator)
-            .map(|idx| &bak[..idx])
-            .unwrap_or(&bak);
+        let recovered_path = bak.rfind(separator).map(|idx| &bak[..idx]).unwrap_or(&bak);
 
         assert_eq!(
-            recovered_path, path.as_str(),
+            recovered_path,
+            path.as_str(),
             "backup roundtrip: original path not recoverable\n\
              path: {:?}\n\
              bak:  {:?}",
@@ -646,10 +650,7 @@ mod hegel_tests {
         let version = tc.draw(text().max_size(40));
 
         // Test all adapter types that have version lists.
-        for adapter in &[
-            super::ClawKind::OpenClawHttp,
-            super::ClawKind::NzcNative,
-        ] {
+        for adapter in &[super::ClawKind::OpenClawHttp, super::ClawKind::NzcNative] {
             let result = super::check_version_compatibility(adapter, &version);
             assert!(
                 !matches!(result, super::VersionCompatibility::Incompatible { .. }),

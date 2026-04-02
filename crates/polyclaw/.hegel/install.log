@@ -1,8 +1,13 @@
 Using CPython 3.10.12 interpreter at: /usr/bin/python3
 Creating virtual environment at: .hegel/venv
 Using Python 3.10.12 environment at: .hegel/venv
+<<<<<<< HEAD
 Resolved 7 packages in 87ms
 Installed 7 packages in 2ms
+=======
+Resolved 7 packages in 79ms
+Installed 7 packages in 4ms
+>>>>>>> fix/openclaw-channel
  + cbor2==5.9.0
  + click==8.3.1
  + exceptiongroup==1.3.1

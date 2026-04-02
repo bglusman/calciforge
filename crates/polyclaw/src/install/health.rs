@@ -263,7 +263,11 @@ mod tests {
         };
         let result = health_check_claw(&checker, &adapter, "anything").await;
         assert!(result.is_ok(), "Cli adapter should skip health check");
-        assert_eq!(checker.call_count(), 0, "checker should not be called for Cli");
+        assert_eq!(
+            checker.call_count(),
+            0,
+            "checker should not be called for Cli"
+        );
     }
 
     #[tokio::test]
