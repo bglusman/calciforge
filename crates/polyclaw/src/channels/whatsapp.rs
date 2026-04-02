@@ -850,6 +850,9 @@ mod tests {
                 env: None,
                 registry: None,
                 aliases: vec![],
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             }],
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
