@@ -126,6 +126,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -143,6 +146,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -160,6 +166,9 @@ mod tests {
             env: Some(HashMap::new()),
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         }
     }
 
@@ -183,6 +192,9 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         // build_adapter is synchronous — test it directly
         let result = build_adapter(&agent);
@@ -233,9 +245,107 @@ mod tests {
             env: Some(HashMap::new()),
             registry: None,
             aliases: vec![],
+        openclaw_agent_id: None,
+        reply_port: None,
+        reply_auth_token: None,
         };
         let cfg = base_config();
         let result = router.dispatch("ping", &agent, &cfg).await;
         assert!(result.is_err());
+    }
+
+    /// Documents that `OpenClawHttpAdapter` does NOT intercept OpenClaw native
+    /// commands (e.g. `/status`, `/model`).  The message is forwarded verbatim
+    /// to the `/v1/chat/completions` LLM endpoint — no command parsing happens
+    /// in the HTTP adapter layer.
+    ///
+    /// This is a known v3 limitation. For native command support a dedicated
+    /// PolyClaw channel plugin for OpenClaw is required (see
+    /// `adapters/TODO-native-channel.md`).
+    #[tokio::test]
+    async fn test_openclaw_http_adapter_does_not_intercept_slash_commands() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Build the SSE body first so we can set an accurate Content-Length.
+        // Using plain HTTP/1.1 with Content-Length (not chunked) avoids the
+        // complexity of hand-crafting valid chunked transfer encoding in a raw
+        // TCP handler.
+        let delta_line = concat!(
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":1,",
+            "\"model\":\"test\",\"choices\":[{\"index\":0,",
+            "\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"
+        );
+        let done_line = "data: [DONE]\n\n";
+        let sse_body = format!("{}{}", delta_line, done_line);
+        let content_length = sse_body.len();
+
+        let http_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            content_length, sse_body
+        );
+
+        // Bind to an OS-assigned port so we don't collide with other tests.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Shared buffer to capture the raw HTTP request received by the server.
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let captured_srv = captured.clone();
+
+        // Serve exactly one connection, capture the request, send the canned
+        // SSE response, then exit.
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                *captured_srv.lock().await =
+                    String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = stream.write_all(http_response.as_bytes()).await;
+                let _ = stream.flush().await;
+                // Keep connection open briefly so reqwest can read the body.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        });
+
+        // Give the spawned task a moment to start listening (it already bound
+        // above, so the port is ready; this just avoids any scheduler races).
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Dispatch `/status` — an OpenClaw native command — through the router.
+        // The HTTP adapter should NOT intercept it; it must reach the mock server.
+        let router = Router::new();
+        let agent = openclaw_agent(&format!("http://127.0.0.1:{}", port));
+        let cfg = base_config();
+        let result = router.dispatch("/status", &agent, &cfg).await;
+
+        let req_text = captured.lock().await.clone();
+
+        // ── Assertions ──────────────────────────────────────────────────────
+        // 1. The mock server must have received the request — not intercepted
+        //    locally by the adapter.
+        assert!(
+            !req_text.is_empty(),
+            "mock server received no request — adapter intercepted the command locally"
+        );
+        // 2. The raw HTTP request body must contain '/status' verbatim.
+        assert!(
+            req_text.contains("/status"),
+            "expected '/status' forwarded verbatim to the LLM endpoint, got:\n{}",
+            req_text
+        );
+        // 3. The adapter must succeed (no protocol error, no early exit).
+        assert!(
+            result.is_ok(),
+            "dispatch failed unexpectedly: {:?}",
+            result.err()
+        );
+        // 4. The reply is the mock LLM's content ("ok"), NOT a native /status
+        //    response — confirming the adapter is purely on the LLM path.
+        assert_eq!(
+            result.unwrap(),
+            "ok",
+            "response should be the mock LLM reply, not a native /status output"
+        );
     }
 }

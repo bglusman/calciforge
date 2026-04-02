@@ -1,0 +1,170 @@
+#!/bin/bash
+# git-safe-wrapper — run a safe subset of git commands in allowlisted repos.
+#
+# This script is installed root-owned to /usr/local/sbin/git-safe-wrapper.
+# It is the only git execution path granted via sudoers so that clash-agent
+# can trigger git operations without unrestricted git access.
+#
+# Supported sub-commands (read-only or controlled fetch/pull only):
+#   status, fetch, pull, log, diff
+#
+# Validation rules:
+#   - working_dir must be an absolute path with no '..' components.
+#   - working_dir must appear literally in the config allowlist
+#     ([git] allowed_repos).
+#   - Only the sub-commands listed above are accepted; no checkout, no push,
+#     no config, no clean -fdx, etc.
+#   - Branch name for operations that accept one is validated with
+#     BRANCH_RE (mirrors GitAdapter is_valid_branch_name).
+#   - Maximum two arguments (sub-command + optional branch/ref).
+#
+# Security properties:
+#   - exec-array pattern; no shell interpolation.
+#   - Config parsed with grep — no eval.
+#   - All paths are resolved with realpath --canonicalize-missing before
+#     allowlist lookup to resist symlink traversal.
+#   - chdir happens in bash before exec; git never receives a path argument.
+
+set -euo pipefail
+
+readonly GIT_BIN=/usr/bin/git
+readonly CONFIG_FILE=/etc/clash/host-agent.toml
+readonly SCRIPT_NAME=git-safe-wrapper
+readonly MAX_ARGS=2  # sub-command [branch/ref]
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+die() {
+    logger -t "$SCRIPT_NAME" -p security.warn \
+        "DENIED uid=$EUID pid=$$ msg=$*"
+    printf '%s: %s\n' "$SCRIPT_NAME" "$*" >&2
+    exit 1
+}
+
+log_info() {
+    logger -t "$SCRIPT_NAME" -p security.info "$*"
+}
+
+# ── arg validation ────────────────────────────────────────────────────────────
+
+if [[ $# -lt 2 ]]; then
+    die "Usage: git-safe-wrapper <working_dir> <sub-command> [branch/ref]"
+fi
+
+if [[ $# -gt $(( MAX_ARGS + 1 )) ]]; then
+    die "Too many arguments ($#); maximum is $(( MAX_ARGS + 1 ))"
+fi
+
+WORKING_DIR="$1"
+GIT_CMD="$2"
+EXTRA_ARG="${3:-}"
+
+# ── working_dir validation ────────────────────────────────────────────────────
+
+# Must be absolute
+if [[ "$WORKING_DIR" != "/"* ]]; then
+    die "working_dir '$WORKING_DIR' is not an absolute path"
+fi
+
+# No '..' components (belt-and-suspenders before realpath)
+if [[ "$WORKING_DIR" == *".."* ]]; then
+    die "Path traversal detected in working_dir '$WORKING_DIR'"
+fi
+
+# Reject shell metacharacters
+if [[ "$WORKING_DIR" =~ [\;\|\&\`\$\(\)\<\>\\] ]]; then
+    die "Shell metacharacters in working_dir '$WORKING_DIR'"
+fi
+
+# Canonicalise (resolves symlinks, normalises double slashes, etc.)
+CANONICAL_DIR="$(realpath --canonicalize-missing -- "$WORKING_DIR")"
+
+# Must still be absolute after canonicalisation
+if [[ "$CANONICAL_DIR" != "/"* ]]; then
+    die "Canonicalised path '$CANONICAL_DIR' is not absolute"
+fi
+
+# ── allowlist check ───────────────────────────────────────────────────────────
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    die "Config file $CONFIG_FILE not found; git-safe-wrapper cannot determine allowlist"
+fi
+
+# Extract the [git] allowed_repos array from TOML.
+# We look for lines inside the [git] section that contain quoted paths.
+# This is intentionally simple/strict: one path per line, double-quoted strings.
+GIT_SECTION=$(awk '/^\[git\]/{found=1; next} /^\[/{found=0} found{print}' "$CONFIG_FILE")
+
+PATH_ALLOWED=false
+while IFS= read -r repo_line; do
+    # Extract value from:  allowed_repos = ["/path/one", "/path/two"]
+    # or multi-line TOML array entries:  "/path/one",
+    while IFS= read -r candidate; do
+        candidate="${candidate//\"/}"   # strip double-quotes
+        candidate="${candidate//,/}"    # strip trailing comma
+        candidate="${candidate// /}"    # strip spaces
+        [[ -z "$candidate" ]] && continue
+
+        # Canonicalise allowlist entry too
+        candidate_canon="$(realpath --canonicalize-missing -- "$candidate" 2>/dev/null || echo "$candidate")"
+
+        if [[ "$CANONICAL_DIR" == "$candidate_canon" ]]; then
+            PATH_ALLOWED=true
+            break 2
+        fi
+    done < <(grep -oP '"[^"]*"' <<< "$repo_line" || true)
+done <<< "$GIT_SECTION"
+
+if [[ "$PATH_ALLOWED" != "true" ]]; then
+    die "working_dir '$CANONICAL_DIR' is not in git.allowed_repos"
+fi
+
+# Confirm the directory actually exists and is a git repo
+if [[ ! -d "$CANONICAL_DIR" ]]; then
+    die "working_dir '$CANONICAL_DIR' does not exist"
+fi
+
+if [[ ! -d "$CANONICAL_DIR/.git" ]]; then
+    die "working_dir '$CANONICAL_DIR' is not a git repository"
+fi
+
+# ── sub-command allowlist ─────────────────────────────────────────────────────
+
+case "$GIT_CMD" in
+    status|fetch|pull|log|diff) ;;
+    *)
+        die "Unsupported git sub-command '$GIT_CMD'; allowed: status, fetch, pull, log, diff"
+        ;;
+esac
+
+# ── optional extra argument validation ───────────────────────────────────────
+
+GIT_EXTRA_ARGS=()
+if [[ -n "$EXTRA_ARG" ]]; then
+    # Validate branch/ref name: alphanumeric, hyphen, underscore, dot, slash
+    # Mirrors is_valid_branch_name in crates/host-agent/src/adapters/git.rs
+    BRANCH_RE='^[a-zA-Z0-9_][a-zA-Z0-9_./:-]*$'
+    if [[ ! "$EXTRA_ARG" =~ $BRANCH_RE ]] \
+       || [[ "$EXTRA_ARG" == *".."* ]] \
+       || [[ "$EXTRA_ARG" == "-"* ]] \
+       || [[ "$EXTRA_ARG" == *"/" ]]; then
+        die "Invalid branch/ref '$EXTRA_ARG'"
+    fi
+    GIT_EXTRA_ARGS+=("$EXTRA_ARG")
+fi
+
+# ── standardise log sub-command ───────────────────────────────────────────────
+
+# Force safe, non-interactive flags for log
+if [[ "$GIT_CMD" == "log" ]]; then
+    GIT_EXTRA_ARGS=("--oneline" "-20")
+fi
+
+# ── execute ───────────────────────────────────────────────────────────────────
+
+log_info "ALLOW uid=$EUID cmd=$GIT_CMD dir=$CANONICAL_DIR extra=${GIT_EXTRA_ARGS[*]:-<none>}"
+
+# Change to the repo directory first so git never receives a user-supplied -C path
+cd "$CANONICAL_DIR"
+
+exec "$GIT_BIN" "$GIT_CMD" "${GIT_EXTRA_ARGS[@]}"

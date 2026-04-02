@@ -1,0 +1,145 @@
+#!/bin/bash
+# zfs-destroy-wrapper — opt-in shim for `zfs destroy` called by clash-agent.
+#
+# This wrapper is DISABLED by default and must be explicitly enabled with:
+#
+#   [wrappers.zfs_destroy]
+#   enabled = true
+#   allowed_uids = [<clash-agent-uid>]
+#
+# in /etc/clash/host-agent.toml.  Without that config file (or with
+# enabled = false), every call is rejected.
+#
+# Validation rules:
+#   - Dataset/snapshot name must match is_valid_dataset_name logic (mirrors
+#     the Rust function in crates/host-agent/src/zfs/mod.rs):
+#       ^[a-zA-Z0-9_][a-zA-Z0-9_\-/.]*$, no '..' prefix/suffix traversal,
+#       no leading '/', no trailing '/'.
+#   - If '@' is present, the dataset part and snapshot name are validated
+#     separately.
+#   - Caller UID must appear in allowed_uids parsed from config.
+#   - A structured log line is appended to /var/log/clash/zfs-destroy-wrapper.log
+#     BEFORE exec, providing a pre-execution audit trail.
+#
+# Security properties:
+#   - exec-array pattern; no shell interpolation of user-supplied data.
+#   - Config parsed with strict grep — no eval.
+#   - Wrapper is a no-op (safe fail) if config is absent.
+#   - Only a single argument (the target name) is accepted.
+
+set -euo pipefail
+
+readonly ZFS_BIN=/sbin/zfs
+readonly CONFIG_FILE=/etc/clash/host-agent.toml
+readonly AUDIT_LOG=/var/log/clash/zfs-destroy-wrapper.log
+readonly SCRIPT_NAME=zfs-destroy-wrapper
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+die() {
+    local msg="$*"
+    logger -t "$SCRIPT_NAME" -p security.warn \
+        "DENIED uid=$EUID pid=$$ msg=$msg"
+    printf '%s: %s\n' "$SCRIPT_NAME" "$msg" >&2
+    exit 1
+}
+
+audit_log() {
+    local result="$1"
+    local target="${2:-}"
+    local ts
+    ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '{"timestamp":"%s","wrapper":"%s","uid":%d,"pid":%d,"target":"%s","result":"%s"}\n' \
+        "$ts" "$SCRIPT_NAME" "$EUID" "$$" "$target" "$result" \
+        >> "$AUDIT_LOG" 2>/dev/null || true
+    logger -t "$SCRIPT_NAME" -p security.info \
+        "result=$result uid=$EUID target=$target"
+}
+
+# ── config: enabled check ─────────────────────────────────────────────────────
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    die "Config file $CONFIG_FILE not found; wrapper disabled"
+fi
+
+# Parse [wrappers.zfs_destroy] enabled = true  (strict, no eval)
+ENABLED=$(grep -A5 '^\[wrappers\.zfs_destroy\]' "$CONFIG_FILE" 2>/dev/null \
+    | grep -m1 '^enabled' \
+    | grep -o 'true\|false' \
+    || echo "false")
+
+if [[ "$ENABLED" != "true" ]]; then
+    die "zfs-destroy-wrapper is disabled in config (wrappers.zfs_destroy.enabled = false)"
+fi
+
+# ── config: allowed_uids check ────────────────────────────────────────────────
+
+ALLOWED_UIDS_LINE=$(grep -A10 '^\[wrappers\.zfs_destroy\]' "$CONFIG_FILE" 2>/dev/null \
+    | grep -m1 '^allowed_uids' || echo "")
+
+UID_ALLOWED=false
+if [[ -n "$ALLOWED_UIDS_LINE" ]]; then
+    # Extract integers from a TOML array like:  allowed_uids = [1001, 1002]
+    while IFS= read -r -d '' uid_candidate; do
+        if [[ "$uid_candidate" =~ ^[0-9]+$ ]] && [[ "$uid_candidate" == "$EUID" ]]; then
+            UID_ALLOWED=true
+            break
+        fi
+    done < <(grep -oP '\d+' <<< "$ALLOWED_UIDS_LINE" | tr '\n' '\0')
+fi
+
+if [[ "$UID_ALLOWED" != "true" ]]; then
+    audit_log "DENIED_UID" "uid=$EUID not in allowed_uids"
+    die "Caller UID $EUID is not in wrappers.zfs_destroy.allowed_uids"
+fi
+
+# ── arg validation ────────────────────────────────────────────────────────────
+
+if [[ $# -ne 1 ]]; then
+    die "Usage: zfs-destroy-wrapper <dataset[@snapshot]>  (exactly one argument)"
+fi
+
+TARGET="$1"
+
+# Mirrors is_valid_dataset_name / is_valid_dataset_or_snapshot from zfs/mod.rs
+# Pattern: ^[a-zA-Z0-9_][a-zA-Z0-9_\-/.]*$
+DATASET_RE='^[a-zA-Z0-9_][a-zA-Z0-9_./:-]*$'
+SNAP_RE='^[a-zA-Z0-9_][a-zA-Z0-9_.:-]*$'
+
+if [[ "$TARGET" == *"@"* ]]; then
+    # Snapshot reference: dataset@snapname
+    DATASET="${TARGET%%@*}"
+    SNAPNAME="${TARGET#*@}"
+
+    if [[ -z "$DATASET" || -z "$SNAPNAME" ]]; then
+        die "Invalid snapshot reference '$TARGET': dataset and snapshot name must be non-empty"
+    fi
+
+    if [[ ! "$DATASET" =~ $DATASET_RE ]] || [[ "$DATASET" == *".."* ]] \
+       || [[ "$DATASET" == "/"* ]] || [[ "$DATASET" == *"/" ]]; then
+        die "Invalid dataset part '$DATASET' in '$TARGET'"
+    fi
+
+    if [[ ! "$SNAPNAME" =~ $SNAP_RE ]] || [[ "$SNAPNAME" == *".."* ]]; then
+        die "Invalid snapshot name '$SNAPNAME' in '$TARGET'"
+    fi
+else
+    # Plain dataset
+    if [[ ! "$TARGET" =~ $DATASET_RE ]] || [[ "$TARGET" == *".."* ]] \
+       || [[ "$TARGET" == "/"* ]] || [[ "$TARGET" == *"/" ]]; then
+        die "Invalid dataset name '$TARGET'"
+    fi
+fi
+
+# Reject any residual shell metacharacters (belt-and-suspenders)
+if [[ "$TARGET" =~ [\;\|\&\`\$\(\)\<\>\\\ ] ]]; then
+    die "Shell metacharacters in target '$TARGET'"
+fi
+
+# ── pre-exec audit log ────────────────────────────────────────────────────────
+
+audit_log "ALLOW" "$TARGET"
+
+# ── execute ───────────────────────────────────────────────────────────────────
+
+exec "$ZFS_BIN" destroy "$TARGET"

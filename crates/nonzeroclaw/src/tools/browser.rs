@@ -10,7 +10,7 @@ use crate::security::SecurityPolicy;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::ToSocketAddrs;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -241,7 +241,12 @@ impl BrowserTool {
 
     /// Check if agent-browser CLI is available
     pub async fn is_agent_browser_available() -> bool {
-        Command::new("agent-browser")
+        let cmd = if cfg!(target_os = "windows") {
+            "agent-browser.cmd"
+        } else {
+            "agent-browser"
+        };
+        Command::new(cmd)
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -333,9 +338,14 @@ impl BrowserTool {
                 if Self::is_agent_browser_available().await {
                     Ok(ResolvedBackend::AgentBrowser)
                 } else {
+                    #[cfg(target_os = "windows")]
+                    let install_hint = "Install with: npm install -g agent-browser (ensure npm global bin is in PATH)";
+                    #[cfg(not(target_os = "windows"))]
+                    let install_hint = "Install with: npm install -g agent-browser";
                     anyhow::bail!(
-                        "browser.backend='{}' but agent-browser CLI is unavailable. Install with: npm install -g agent-browser",
-                        configured.as_str()
+                        "browser.backend='{}' but agent-browser CLI is unavailable. {}",
+                        configured.as_str(),
+                        install_hint
                     )
                 }
             }
@@ -438,7 +448,18 @@ impl BrowserTool {
 
     /// Execute an agent-browser command
     async fn run_command(&self, args: &[&str]) -> anyhow::Result<AgentBrowserResponse> {
-        let mut cmd = Command::new("agent-browser");
+        let agent_browser_bin = if cfg!(target_os = "windows") {
+            "agent-browser.cmd"
+        } else {
+            "agent-browser"
+        };
+        let mut cmd = Command::new(agent_browser_bin);
+
+        // When running as a service (systemd/OpenRC), the process may lack
+        // HOME which browsers need for profile directories.
+        if is_service_environment() {
+            ensure_browser_env(&mut cmd);
+        }
 
         // Add session if configured
         if let Some(ref session) = self.session_name {
@@ -633,14 +654,34 @@ impl BrowserTool {
         {
             let mut state = self.native_state.lock().await;
 
-            let output = state
+            let first_attempt = state
                 .execute_action(
-                    action,
+                    action.clone(),
                     self.native_headless,
                     &self.native_webdriver_url,
                     self.native_chrome_path.as_deref(),
                 )
-                .await?;
+                .await;
+
+            let output = match first_attempt {
+                Ok(output) => output,
+                Err(err) => {
+                    if !is_recoverable_rust_native_error(&err) {
+                        return Err(err);
+                    }
+
+                    state.reset_session().await;
+                    state
+                        .execute_action(
+                            action,
+                            self.native_headless,
+                            &self.native_webdriver_url,
+                            self.native_chrome_path.as_deref(),
+                        )
+                        .await
+                        .with_context(|| "rust_native backend retry after session reset failed")?
+                }
+            };
 
             Ok(ToolResult {
                 success: true,
@@ -1074,7 +1115,7 @@ mod native_backend {
     use fantoccini::actions::{InputSource, MouseActions, PointerAction};
     use fantoccini::key::Key;
     use fantoccini::{Client, ClientBuilder, Locator};
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
     use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
 
@@ -1348,9 +1389,7 @@ mod native_backend {
                     }))
                 }
                 BrowserAction::Close => {
-                    if let Some(client) = self.client.take() {
-                        let _ = client.close().await;
-                    }
+                    self.reset_session().await;
 
                     Ok(json!({
                         "backend": "rust_native",
@@ -1418,6 +1457,12 @@ mod native_backend {
             }
         }
 
+        pub async fn reset_session(&mut self) {
+            if let Some(client) = self.client.take() {
+                let _ = client.close().await;
+            }
+        }
+
         async fn ensure_session(
             &mut self,
             headless: bool,
@@ -1435,6 +1480,14 @@ mod native_backend {
             if headless {
                 args.push(Value::String("--headless=new".to_string()));
                 args.push(Value::String("--disable-gpu".to_string()));
+            }
+
+            // When running as a service (systemd/OpenRC), the browser sandbox
+            // fails because the process lacks a user namespace / session.
+            // --no-sandbox and --disable-dev-shm-usage are required in this context.
+            if super::is_service_environment() {
+                args.push(Value::String("--no-sandbox".to_string()));
+                args.push(Value::String("--disable-dev-shm-usage".to_string()));
             }
 
             if !args.is_empty() {
@@ -1947,6 +2000,21 @@ fn unavailable_action_for_backend_error(action: &str, backend: ResolvedBackend) 
     )
 }
 
+fn is_recoverable_rust_native_error(err: &anyhow::Error) -> bool {
+    let message = format!("{err:#}").to_ascii_lowercase();
+
+    if message.contains("invalid session id")
+        || message.contains("no such window")
+        || message.contains("session not created")
+        || message.contains("connection reset")
+        || message.contains("broken pipe")
+    {
+        return true;
+    }
+
+    message.contains("webdriver") && (message.contains("timed out") || message.contains("timeout"))
+}
+
 fn normalize_domains(domains: Vec<String>) -> Vec<String> {
     domains
         .into_iter()
@@ -2072,6 +2140,44 @@ fn is_non_global_v6(v6: std::net::Ipv6Addr) -> bool {
         || v6.to_ipv4_mapped().is_some_and(is_non_global_v4)
 }
 
+/// Detect whether the current process is running inside a service environment
+/// (e.g. systemd, OpenRC, or launchd) where the browser sandbox and
+/// environment setup may be restricted.
+fn is_service_environment() -> bool {
+    if std::env::var_os("INVOCATION_ID").is_some() {
+        return true;
+    }
+    if std::env::var_os("JOURNAL_STREAM").is_some() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if std::path::Path::new("/run/openrc").exists() && std::env::var_os("HOME").is_none() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("HOME").is_none() {
+        return true;
+    }
+    false
+}
+
+/// Ensure environment variables required by headless browsers are present
+/// when running inside a service context.
+fn ensure_browser_env(cmd: &mut Command) {
+    if std::env::var_os("HOME").is_none() {
+        cmd.env("HOME", "/tmp");
+    }
+    let existing = std::env::var("CHROMIUM_FLAGS").unwrap_or_default();
+    if !existing.contains("--no-sandbox") {
+        let new_flags = if existing.is_empty() {
+            "--no-sandbox --disable-dev-shm-usage".to_string()
+        } else {
+            format!("{existing} --no-sandbox --disable-dev-shm-usage")
+        };
+        cmd.env("CHROMIUM_FLAGS", new_flags);
+    }
+}
+
 fn host_matches_allowlist(host: &str, allowed: &[String]) -> bool {
     allowed.iter().any(|pattern| {
         if pattern == "*" {
@@ -2184,9 +2290,10 @@ mod tests {
         let tool = BrowserTool::new(security, vec!["*".into()], None);
         assert!(tool.validate_url("https://[::1]/").is_err());
         assert!(tool.validate_url("https://[::ffff:127.0.0.1]/").is_err());
-        assert!(tool
-            .validate_url("https://[::ffff:10.0.0.1]:8080/")
-            .is_err());
+        assert!(
+            tool.validate_url("https://[::ffff:10.0.0.1]:8080/")
+                .is_err()
+        );
     }
 
     #[test]
@@ -2341,15 +2448,18 @@ mod tests {
             },
         );
 
-        assert!(tool
-            .validate_coordinate("x", 50, tool.computer_use.max_coordinate_x)
-            .is_ok());
-        assert!(tool
-            .validate_coordinate("x", 101, tool.computer_use.max_coordinate_x)
-            .is_err());
-        assert!(tool
-            .validate_coordinate("y", -1, tool.computer_use.max_coordinate_y)
-            .is_err());
+        assert!(
+            tool.validate_coordinate("x", 50, tool.computer_use.max_coordinate_x)
+                .is_ok()
+        );
+        assert!(
+            tool.validate_coordinate("x", 101, tool.computer_use.max_coordinate_x)
+                .is_err()
+        );
+        assert!(
+            tool.validate_coordinate("y", -1, tool.computer_use.max_coordinate_y)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2411,5 +2521,137 @@ mod tests {
             unavailable_action_for_backend_error("mouse_move", ResolvedBackend::RustNative),
             "Action 'mouse_move' is unavailable for backend 'rust_native'"
         );
+    }
+
+    #[test]
+    fn recoverable_error_detection_matches_session_patterns() {
+        for message in [
+            "invalid session id",
+            "No Such Window",
+            "session not created",
+            "connection reset by peer",
+            "broken pipe while writing webdriver command",
+            "WebDriver request timed out",
+        ] {
+            let err = anyhow::anyhow!(message);
+            assert!(is_recoverable_rust_native_error(&err), "{message}");
+        }
+
+        let allowlist_error =
+            anyhow::anyhow!("URL host 'localhost' is not in browser allowlist [example.com]");
+        assert!(!is_recoverable_rust_native_error(&allowlist_error));
+    }
+
+    #[test]
+    fn non_recoverable_error_detection_rejects_policy_errors() {
+        for message in [
+            "Blocked by security policy",
+            "URL host '127.0.0.1' is private and disallowed",
+            "Action 'mouse_move' is unavailable for backend 'rust_native'",
+        ] {
+            let err = anyhow::anyhow!(message);
+            assert!(!is_recoverable_rust_native_error(&err), "{message}");
+        }
+    }
+
+    #[cfg(feature = "browser-native")]
+    #[test]
+    fn reset_session_is_idempotent_without_client() {
+        tokio_test::block_on(async {
+            let mut state = native_backend::NativeBrowserState::default();
+            state.reset_session().await;
+            state.reset_session().await;
+        });
+    }
+
+    #[test]
+    fn ensure_browser_env_sets_home_when_missing() {
+        let original_home = std::env::var_os("HOME");
+        unsafe { std::env::remove_var("HOME") };
+
+        let mut cmd = Command::new("true");
+        ensure_browser_env(&mut cmd);
+        // Function completes without panic — HOME and CHROMIUM_FLAGS set on cmd.
+
+        if let Some(home) = original_home {
+            unsafe { std::env::set_var("HOME", home) };
+        }
+    }
+
+    #[test]
+    fn ensure_browser_env_sets_chromium_flags() {
+        let original = std::env::var_os("CHROMIUM_FLAGS");
+        unsafe { std::env::remove_var("CHROMIUM_FLAGS") };
+
+        let mut cmd = Command::new("true");
+        ensure_browser_env(&mut cmd);
+
+        if let Some(val) = original {
+            unsafe { std::env::set_var("CHROMIUM_FLAGS", val) };
+        }
+    }
+
+    #[test]
+    fn is_service_environment_detects_invocation_id() {
+        let original = std::env::var_os("INVOCATION_ID");
+        unsafe { std::env::set_var("INVOCATION_ID", "test-unit-id") };
+
+        assert!(is_service_environment());
+
+        if let Some(val) = original {
+            unsafe { std::env::set_var("INVOCATION_ID", val) };
+        } else {
+            unsafe { std::env::remove_var("INVOCATION_ID") };
+        }
+    }
+
+    #[test]
+    fn is_service_environment_detects_journal_stream() {
+        let original = std::env::var_os("JOURNAL_STREAM");
+        unsafe { std::env::set_var("JOURNAL_STREAM", "8:12345") };
+
+        assert!(is_service_environment());
+
+        if let Some(val) = original {
+            unsafe { std::env::set_var("JOURNAL_STREAM", val) };
+        } else {
+            unsafe { std::env::remove_var("JOURNAL_STREAM") };
+        }
+    }
+
+    #[test]
+    fn is_service_environment_false_in_normal_context() {
+        let inv = std::env::var_os("INVOCATION_ID");
+        let journal = std::env::var_os("JOURNAL_STREAM");
+        unsafe { std::env::remove_var("INVOCATION_ID") };
+        unsafe { std::env::remove_var("JOURNAL_STREAM") };
+
+        if std::env::var_os("HOME").is_some() {
+            assert!(!is_service_environment());
+        }
+
+        if let Some(val) = inv {
+            unsafe { std::env::set_var("INVOCATION_ID", val) };
+        }
+        if let Some(val) = journal {
+            unsafe { std::env::set_var("JOURNAL_STREAM", val) };
+        }
+    }
+
+    #[test]
+    fn windows_command_name_selection() {
+        // Verify the cfg-based command name logic used in is_agent_browser_available
+        // and run_command selects the correct binary name per platform.
+        let cmd = if cfg!(target_os = "windows") {
+            "agent-browser.cmd"
+        } else {
+            "agent-browser"
+        };
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(cmd, "agent-browser.cmd");
+        } else {
+            assert_eq!(cmd, "agent-browser");
+        }
     }
 }
