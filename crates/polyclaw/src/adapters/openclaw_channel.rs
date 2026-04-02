@@ -1,7 +1,7 @@
 //! OpenClawChannelAdapter — bridge PolyClaw to the OpenClaw polyclaw plugin.
 //!
 //! This adapter posts inbound messages to OpenClaw at
-//! `POST /hooks/polyclaw/inbound` and waits for a correlated callback on the
+//! `POST /polyclaw/inbound` (gateway auth) and waits for a correlated callback on the
 //! local reply webhook `POST /hooks/reply`.
 
 use std::collections::HashMap;
@@ -189,7 +189,7 @@ impl OpenClawChannelAdapter {
 
     fn inbound_url(&self) -> String {
         format!(
-            "{}/hooks/polyclaw/inbound",
+            "{}/polyclaw/inbound",
             self.endpoint.trim_end_matches('/')
         )
     }
