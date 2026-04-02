@@ -40,12 +40,7 @@ pub async fn run(
         .context("telegram channel missing bot_token_file")?;
     let token_path = expand_tilde(token_file_path);
     let token = std::fs::read_to_string(&token_path)
-        .with_context(|| {
-            format!(
-                "reading Telegram bot token from {}",
-                token_path.display()
-            )
-        })?
+        .with_context(|| format!("reading Telegram bot token from {}", token_path.display()))?
         .trim()
         .to_string();
 
@@ -59,8 +54,8 @@ pub async fn run(
     let cmd_handler_clone = command_handler.clone();
     let ctx_store_clone = context_store.clone();
 
-    let handler = Update::filter_message().branch(
-        dptree::entry().endpoint(move |bot: Bot, msg: Message| {
+    let handler =
+        Update::filter_message().branch(dptree::entry().endpoint(move |bot: Bot, msg: Message| {
             let cfg = config_clone.clone();
             let rtr = router_clone.clone();
             let cmd = cmd_handler_clone.clone();
@@ -72,8 +67,7 @@ pub async fn run(
                 handle_message_nonblocking(bot, msg, cfg, rtr, cmd, ctx);
                 respond(())
             }
-        }),
-    );
+        }));
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
@@ -338,7 +332,10 @@ fn handle_message_nonblocking(
         }
 
         let dispatch_start = std::time::Instant::now();
-        match router.dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id)).await {
+        match router
+            .dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id))
+            .await
+        {
             Ok(response) => {
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                 command_handler.record_dispatch(latency_ms);
@@ -581,7 +578,10 @@ async fn handle_message(
 
     // Dispatch to agent
     let dispatch_start = std::time::Instant::now();
-    match router.dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id)).await {
+    match router
+        .dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id))
+        .await
+    {
         Ok(response) => {
             let latency_ms = dispatch_start.elapsed().as_millis() as u64;
             command_handler.record_dispatch(latency_ms);
@@ -620,7 +620,9 @@ async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule};
+    use crate::config::{
+        AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule,
+    };
 
     /// Create a CommandHandler backed by a temp state directory so tests are
     /// isolated from `~/.polyclaw/state/active-agents.json` on disk.
@@ -649,11 +651,14 @@ mod tests {
                 model: None,
                 auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                 api_key: None,
+                openclaw_agent_id: None,
+                reply_port: None,
+                reply_auth_token: None,
                 command: None,
                 args: None,
                 env: None,
                 registry: None,
-            aliases: vec![],
+                aliases: vec![],
             }],
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
@@ -691,9 +696,15 @@ mod tests {
     fn test_routing_uses_active_agent_not_just_default() {
         let config = Arc::new(make_test_config());
         let handler = make_handler(config.clone());
-        assert_eq!(handler.active_agent_for("brian"), Some("librarian".to_string()));
+        assert_eq!(
+            handler.active_agent_for("brian"),
+            Some("librarian".to_string())
+        );
         handler.handle_switch("!switch librarian", "brian");
-        assert_eq!(handler.active_agent_for("brian"), Some("librarian".to_string()));
+        assert_eq!(
+            handler.active_agent_for("brian"),
+            Some("librarian".to_string())
+        );
     }
 
     #[test]
@@ -723,10 +734,20 @@ mod tests {
     #[test]
     fn test_context_store_push_and_augment() {
         let store = ContextStore::new(20, 5);
-        store.push("chat:1", "Brian", "first question", "librarian", "first answer");
+        store.push(
+            "chat:1",
+            "Brian",
+            "first question",
+            "librarian",
+            "first answer",
+        );
         // custodian hasn't seen anything
         let out = store.augment_message("chat:1", "custodian", "second question");
-        assert!(out.starts_with("[Recent context:"), "preamble expected: {}", out);
+        assert!(
+            out.starts_with("[Recent context:"),
+            "preamble expected: {}",
+            out
+        );
         assert!(out.ends_with("second question"), "message at end: {}", out);
     }
 
@@ -801,13 +822,8 @@ mod tests {
         // NOTE: !status is intentionally excluded — it requires identity context
         // (post-auth) and is handled via cmd_status_for_identity(), not handle().
         let cases = [
-            "!ping",
-            "!help",
-            "!agents",
-            "!metrics",
-            // Case variants
-            "!PING",
-            "!Help",
+            "!ping", "!help", "!agents", "!metrics", // Case variants
+            "!PING", "!Help",
         ];
 
         for cmd in &cases {
@@ -863,10 +879,25 @@ mod tests {
         let handler = make_handler(config);
 
         let reply = handler.cmd_status_for_identity("brian").await;
-        assert!(!reply.is_empty(), "cmd_status_for_identity must return non-empty String");
-        assert!(reply.contains("librarian"), "status should show active agent for brian: {}", reply);
-        assert!(reply.contains("version:"), "status should include version: {}", reply);
-        assert!(reply.contains("uptime:"), "status should include uptime: {}", reply);
+        assert!(
+            !reply.is_empty(),
+            "cmd_status_for_identity must return non-empty String"
+        );
+        assert!(
+            reply.contains("librarian"),
+            "status should show active agent for brian: {}",
+            reply
+        );
+        assert!(
+            reply.contains("version:"),
+            "status should include version: {}",
+            reply
+        );
+        assert!(
+            reply.contains("uptime:"),
+            "status should include uptime: {}",
+            reply
+        );
     }
 
     #[test]
@@ -877,8 +908,15 @@ mod tests {
         let handler = make_handler(config);
 
         let reply = handler.handle_switch("!switch librarian", "brian");
-        assert!(!reply.is_empty(), "handle_switch must return non-empty String synchronously");
+        assert!(
+            !reply.is_empty(),
+            "handle_switch must return non-empty String synchronously"
+        );
         // A successful switch should include ✅
-        assert!(reply.contains('✅'), "successful switch should confirm: {}", reply);
+        assert!(
+            reply.contains('✅'),
+            "successful switch should confirm: {}",
+            reply
+        );
     }
 }

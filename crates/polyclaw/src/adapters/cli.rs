@@ -90,11 +90,15 @@ impl CliAdapter {
     ) -> Self {
         let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
         // Default args: ["-m", "{message}"] when not specified
-        let args = args.unwrap_or_else(|| {
-            vec!["-m".to_string(), MESSAGE_PLACEHOLDER.to_string()]
-        });
+        let args = args.unwrap_or_else(|| vec!["-m".to_string(), MESSAGE_PLACEHOLDER.to_string()]);
         let max_arg_chars = max_arg_chars.unwrap_or(DEFAULT_MAX_ARG_CHARS);
-        Self { command, args, env, timeout, max_arg_chars }
+        Self {
+            command,
+            args,
+            env,
+            timeout,
+            max_arg_chars,
+        }
     }
 
     /// Strip the `[Recent context:\n...\n]\n\n` preamble from a message,
@@ -309,12 +313,7 @@ mod tests {
 
     #[test]
     fn test_default_args_when_none() {
-        let adapter = CliAdapter::new(
-            "/bin/echo".to_string(),
-            None,
-            HashMap::new(),
-            None,
-        );
+        let adapter = CliAdapter::new("/bin/echo".to_string(), None, HashMap::new(), None);
         // Default: ["-m", "{message}"]
         let args = adapter.build_args("test");
         assert_eq!(args, vec!["-m", "test"]);
@@ -322,18 +321,16 @@ mod tests {
 
     #[test]
     fn test_default_timeout() {
-        let adapter = CliAdapter::new(
-            "/bin/echo".to_string(),
-            None,
-            HashMap::new(),
-            None,
-        );
+        let adapter = CliAdapter::new("/bin/echo".to_string(), None, HashMap::new(), None);
         assert_eq!(adapter.timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
     }
 
     #[test]
     fn test_default_timeout_is_30s() {
-        assert_eq!(DEFAULT_TIMEOUT_MS, 30_000, "IronClaw default timeout should be 30s");
+        assert_eq!(
+            DEFAULT_TIMEOUT_MS, 30_000,
+            "IronClaw default timeout should be 30s"
+        );
     }
 
     #[test]
@@ -341,12 +338,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("LLM_BACKEND".to_string(), "openai_compatible".to_string());
         env.insert("LLM_MODEL".to_string(), "kimi-k2.5".to_string());
-        let adapter = CliAdapter::new(
-            "/bin/echo".to_string(),
-            None,
-            env.clone(),
-            None,
-        );
+        let adapter = CliAdapter::new("/bin/echo".to_string(), None, env.clone(), None);
         assert_eq!(adapter.env["LLM_BACKEND"], "openai_compatible");
         assert_eq!(adapter.env["LLM_MODEL"], "kimi-k2.5");
     }
@@ -377,7 +369,11 @@ mod tests {
     #[test]
     fn test_effective_message_under_limit_unchanged() {
         let adapter = CliAdapter::with_max_arg_chars(
-            "/bin/echo".to_string(), None, HashMap::new(), None, Some(1000),
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(1000),
         );
         let short_msg = "short message";
         assert_eq!(adapter.effective_message(short_msg), short_msg);
@@ -386,9 +382,14 @@ mod tests {
     #[test]
     fn test_effective_message_over_limit_strips_preamble() {
         let adapter = CliAdapter::with_max_arg_chars(
-            "/bin/echo".to_string(), None, HashMap::new(), None, Some(10),
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(10),
         );
-        let augmented = "[Recent context:\nBrian: something long\nlibrarian: a reply\n]\n\nshort msg";
+        let augmented =
+            "[Recent context:\nBrian: something long\nlibrarian: a reply\n]\n\nshort msg";
         let effective = adapter.effective_message(augmented);
         assert_eq!(effective, "short msg");
     }
@@ -397,7 +398,11 @@ mod tests {
     fn test_effective_message_over_limit_no_preamble_unchanged() {
         // Message is long but has no context preamble — return as-is
         let adapter = CliAdapter::with_max_arg_chars(
-            "/bin/echo".to_string(), None, HashMap::new(), None, Some(10),
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(10),
         );
         let long_plain = "this is a long plain message without any preamble present";
         assert_eq!(adapter.effective_message(long_plain), long_plain);
@@ -407,7 +412,11 @@ mod tests {
     fn test_build_args_strips_preamble_when_over_limit() {
         let adapter = CliAdapter::with_max_arg_chars(
             "/usr/local/bin/ironclaw".to_string(),
-            Some(vec!["run".to_string(), "-m".to_string(), "{message}".to_string()]),
+            Some(vec![
+                "run".to_string(),
+                "-m".to_string(),
+                "{message}".to_string(),
+            ]),
             HashMap::new(),
             None,
             Some(50), // small limit to force stripping

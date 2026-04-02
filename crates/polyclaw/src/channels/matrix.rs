@@ -149,7 +149,10 @@ mod inner {
 
         if configured.starts_with('#') {
             let encoded = encode_path_segment(configured);
-            let url = format!("{}/_matrix/client/v3/directory/room/{}", homeserver, encoded);
+            let url = format!(
+                "{}/_matrix/client/v3/directory/room/{}",
+                homeserver, encoded
+            );
             let resp = http
                 .get(&url)
                 .header("Authorization", auth_header)
@@ -160,7 +163,9 @@ mod inner {
                 anyhow::bail!("Matrix room alias resolution failed for '{configured}': {err}");
             }
             #[derive(serde::Deserialize)]
-            struct RoomAliasResp { room_id: String }
+            struct RoomAliasResp {
+                room_id: String,
+            }
             let resolved: RoomAliasResp = resp.json().await?;
             return Ok(resolved.room_id);
         }
@@ -186,7 +191,10 @@ mod inner {
             anyhow::bail!("Matrix whoami failed: {err}");
         }
         #[derive(serde::Deserialize)]
-        struct WhoAmI { user_id: String, device_id: Option<String> }
+        struct WhoAmI {
+            user_id: String,
+            device_id: Option<String>,
+        }
         let w: WhoAmI = resp.json().await?;
         Ok((w.user_id, w.device_id))
     }
@@ -249,7 +257,10 @@ mod inner {
         if let Some(dir) = store_dir {
             info!(store_dir = %dir.display(), "Matrix: creating sqlite store dir");
             tokio::fs::create_dir_all(&dir).await.with_context(|| {
-                format!("Matrix: failed to create sqlite store dir at {}", dir.display())
+                format!(
+                    "Matrix: failed to create sqlite store dir at {}",
+                    dir.display()
+                )
             })?;
             builder = builder.sqlite_store(&dir, None);
         }
@@ -317,10 +328,7 @@ mod inner {
             .context("Matrix channel missing `access_token_file` in config")?;
 
         // room_id is now optional — if provided, we verify access; if not, we rely on DMs only
-        let room_id_config: Option<String> = channel
-            .room_id
-            .as_deref()
-            .map(|s| s.to_string());
+        let room_id_config: Option<String> = channel.room_id.as_deref().map(|s| s.to_string());
 
         let allowed_users: Vec<String> = channel
             .allowed_users
@@ -335,9 +343,7 @@ mod inner {
 
         // Read access token from file
         let access_token = std::fs::read_to_string(expand_tilde(token_file))
-            .with_context(|| {
-                format!("Matrix: failed to read access_token_file '{token_file}'")
-            })?
+            .with_context(|| format!("Matrix: failed to read access_token_file '{token_file}'"))?
             .trim()
             .to_string();
 
@@ -357,13 +363,17 @@ mod inner {
                 .await
                 .with_context(|| format!("Matrix: room '{room_id_str}' not accessible"))?;
 
-            let is_encrypted = check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
+            let is_encrypted =
+                check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
             if is_encrypted {
                 info!(room_id = %room_id_str, "Matrix room is encrypted — E2EE enabled via matrix-sdk");
             }
 
-            Some(room_id_str.parse()
-                .with_context(|| format!("Matrix: invalid room ID '{room_id_str}'"))?)
+            Some(
+                room_id_str
+                    .parse()
+                    .with_context(|| format!("Matrix: invalid room ID '{room_id_str}'"))?,
+            )
         } else {
             info!("Matrix: no room_id configured — operating in DM-only mode");
             None
@@ -372,8 +382,9 @@ mod inner {
         // --- Whoami ---
         let (my_user_id_str, my_device_id_opt) =
             get_whoami(&homeserver, &http, &auth_header).await?;
-        let my_device_id = my_device_id_opt
-            .context("Matrix whoami did not return a device_id — needed for E2EE session restore")?;
+        let my_device_id = my_device_id_opt.context(
+            "Matrix whoami did not return a device_id — needed for E2EE session restore",
+        )?;
 
         info!(user_id = %my_user_id_str, device_id = %my_device_id, "Matrix bot identity confirmed");
 
@@ -431,10 +442,12 @@ mod inner {
             .parse()
             .with_context(|| format!("Matrix: invalid user_id '{my_user_id_str}'"))?;
 
-        let dedup_cache: Arc<Mutex<(
-            std::collections::VecDeque<String>,
-            std::collections::HashSet<String>,
-        )>> = Arc::new(Mutex::new((
+        let dedup_cache: Arc<
+            Mutex<(
+                std::collections::VecDeque<String>,
+                std::collections::HashSet<String>,
+            )>,
+        > = Arc::new(Mutex::new((
             std::collections::VecDeque::new(),
             std::collections::HashSet::new(),
         )));

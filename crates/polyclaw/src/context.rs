@@ -85,7 +85,13 @@ impl ConversationContext {
     ///
     /// The agent that just answered is considered to have seen this exchange
     /// (it generated the response), so its watermark advances to `seq`.
-    pub fn push(&mut self, sender_label: String, prompt: String, agent_id: String, response: String) {
+    pub fn push(
+        &mut self,
+        sender_label: String,
+        prompt: String,
+        agent_id: String,
+        response: String,
+    ) {
         let seq = self.next_seq;
         self.next_seq += 1;
 
@@ -270,8 +276,19 @@ mod tests {
     // ConversationContext unit tests
     // -----------------------------------------------------------------------
 
-    fn push_exchange(ctx: &mut ConversationContext, sender: &str, prompt: &str, agent: &str, response: &str) {
-        ctx.push(sender.to_string(), prompt.to_string(), agent.to_string(), response.to_string());
+    fn push_exchange(
+        ctx: &mut ConversationContext,
+        sender: &str,
+        prompt: &str,
+        agent: &str,
+        response: &str,
+    ) {
+        ctx.push(
+            sender.to_string(),
+            prompt.to_string(),
+            agent.to_string(),
+            response.to_string(),
+        );
     }
 
     #[test]
@@ -294,7 +311,13 @@ mod tests {
     fn test_ring_buffer_caps_at_capacity() {
         let mut ctx = ConversationContext::new(3);
         for i in 0..5 {
-            push_exchange(&mut ctx, "Brian", &format!("msg {}", i), "librarian", &format!("resp {}", i));
+            push_exchange(
+                &mut ctx,
+                "Brian",
+                &format!("msg {}", i),
+                "librarian",
+                &format!("resp {}", i),
+            );
         }
         assert_eq!(ctx.len(), 3, "should cap at capacity=3");
     }
@@ -315,28 +338,64 @@ mod tests {
     fn test_new_agent_sees_all_prior_exchanges() {
         let mut ctx = ConversationContext::new(20);
         push_exchange(&mut ctx, "Brian", "hello", "librarian", "hi");
-        push_exchange(&mut ctx, "Brian", "how are you?", "librarian", "good thanks");
+        push_exchange(
+            &mut ctx,
+            "Brian",
+            "how are you?",
+            "librarian",
+            "good thanks",
+        );
 
         // custodian has never seen any of these
-        let pre = ctx.build_preamble("custodian", 5).expect("should have preamble");
-        assert!(pre.contains("hello"), "should contain first prompt: {}", pre);
+        let pre = ctx
+            .build_preamble("custodian", 5)
+            .expect("should have preamble");
+        assert!(
+            pre.contains("hello"),
+            "should contain first prompt: {}",
+            pre
+        );
         assert!(pre.contains("hi"), "should contain first response: {}", pre);
-        assert!(pre.contains("how are you?"), "should contain second prompt: {}", pre);
+        assert!(
+            pre.contains("how are you?"),
+            "should contain second prompt: {}",
+            pre
+        );
     }
 
     #[test]
     fn test_inject_depth_limits_preamble_length() {
         let mut ctx = ConversationContext::new(20);
         for i in 0..10 {
-            push_exchange(&mut ctx, "Brian", &format!("msg {}", i), "librarian", &format!("resp {}", i));
+            push_exchange(
+                &mut ctx,
+                "Brian",
+                &format!("msg {}", i),
+                "librarian",
+                &format!("resp {}", i),
+            );
         }
         // custodian has seen none — inject_depth=3 should only give last 3
-        let pre = ctx.build_preamble("custodian", 3).expect("should have preamble");
+        let pre = ctx
+            .build_preamble("custodian", 3)
+            .expect("should have preamble");
         // Last 3 exchanges: msg 7, msg 8, msg 9
         assert!(pre.contains("msg 9"), "should contain most recent: {}", pre);
-        assert!(pre.contains("msg 8"), "should contain second recent: {}", pre);
-        assert!(pre.contains("msg 7"), "should contain third recent: {}", pre);
-        assert!(!pre.contains("msg 6"), "should NOT contain older than depth: {}", pre);
+        assert!(
+            pre.contains("msg 8"),
+            "should contain second recent: {}",
+            pre
+        );
+        assert!(
+            pre.contains("msg 7"),
+            "should contain third recent: {}",
+            pre
+        );
+        assert!(
+            !pre.contains("msg 6"),
+            "should NOT contain older than depth: {}",
+            pre
+        );
     }
 
     #[test]
@@ -345,10 +404,26 @@ mod tests {
         push_exchange(&mut ctx, "Brian", "what is 2+2?", "librarian", "It's 4.");
 
         let pre = ctx.build_preamble("custodian", 5).unwrap();
-        assert!(pre.starts_with("[Recent context:"), "should start with header: {}", pre);
-        assert!(pre.contains("Brian: what is 2+2?"), "should have sender label: {}", pre);
-        assert!(pre.contains("librarian: It's 4."), "should have agent label: {}", pre);
-        assert!(pre.ends_with(']'), "should end with closing bracket: {}", pre);
+        assert!(
+            pre.starts_with("[Recent context:"),
+            "should start with header: {}",
+            pre
+        );
+        assert!(
+            pre.contains("Brian: what is 2+2?"),
+            "should have sender label: {}",
+            pre
+        );
+        assert!(
+            pre.contains("librarian: It's 4."),
+            "should have agent label: {}",
+            pre
+        );
+        assert!(
+            pre.ends_with(']'),
+            "should end with closing bracket: {}",
+            pre
+        );
     }
 
     #[test]
@@ -359,9 +434,19 @@ mod tests {
 
         // librarian answered q1 (seq=0) but NOT q2 (seq=1, answered by custodian)
         // so librarian should see q2
-        let pre = ctx.build_preamble("librarian", 5).expect("librarian should see custodian's exchange");
-        assert!(pre.contains("q2"), "librarian should see the custodian exchange: {}", pre);
-        assert!(!pre.contains("q1"), "librarian should NOT see its own exchange: {}", pre);
+        let pre = ctx
+            .build_preamble("librarian", 5)
+            .expect("librarian should see custodian's exchange");
+        assert!(
+            pre.contains("q2"),
+            "librarian should see the custodian exchange: {}",
+            pre
+        );
+        assert!(
+            !pre.contains("q1"),
+            "librarian should NOT see its own exchange: {}",
+            pre
+        );
     }
 
     #[test]
@@ -394,22 +479,50 @@ mod tests {
     #[test]
     fn test_store_augment_prepends_preamble() {
         let store = ContextStore::new(20, 5);
-        store.push("chat:1", "Brian", "first message", "librarian", "first reply");
+        store.push(
+            "chat:1",
+            "Brian",
+            "first message",
+            "librarian",
+            "first reply",
+        );
 
         // custodian hasn't seen anything yet
         let msg = store.augment_message("chat:1", "custodian", "second message");
-        assert!(msg.starts_with("[Recent context:"), "should prepend preamble: {}", msg);
-        assert!(msg.contains("first message"), "should include prior exchange: {}", msg);
-        assert!(msg.ends_with("second message"), "original message should be at the end: {}", msg);
+        assert!(
+            msg.starts_with("[Recent context:"),
+            "should prepend preamble: {}",
+            msg
+        );
+        assert!(
+            msg.contains("first message"),
+            "should include prior exchange: {}",
+            msg
+        );
+        assert!(
+            msg.ends_with("second message"),
+            "original message should be at the end: {}",
+            msg
+        );
     }
 
     #[test]
     fn test_store_augment_same_agent_no_preamble() {
         let store = ContextStore::new(20, 5);
-        store.push("chat:1", "Brian", "first message", "librarian", "first reply");
+        store.push(
+            "chat:1",
+            "Brian",
+            "first message",
+            "librarian",
+            "first reply",
+        );
         // librarian answered, so its watermark is up to date
         let msg = store.augment_message("chat:1", "librarian", "second message");
-        assert_eq!(msg, "second message", "same agent should get no preamble: {}", msg);
+        assert_eq!(
+            msg, "second message",
+            "same agent should get no preamble: {}",
+            msg
+        );
     }
 
     #[test]
@@ -445,13 +558,27 @@ mod tests {
     fn test_store_inject_depth_respected() {
         let store = ContextStore::new(20, 2); // inject_depth=2
         for i in 0..5 {
-            store.push("chat:1", "Brian", &format!("q{}", i), "librarian", &format!("a{}", i));
+            store.push(
+                "chat:1",
+                "Brian",
+                &format!("q{}", i),
+                "librarian",
+                &format!("a{}", i),
+            );
         }
         // custodian hasn't seen any — but inject_depth=2 limits to last 2
         let msg = store.augment_message("chat:1", "custodian", "new question");
         assert!(msg.contains("q4"), "should have most recent: {}", msg);
-        assert!(msg.contains("q3"), "should have second most recent: {}", msg);
-        assert!(!msg.contains("q2"), "should NOT have older than depth=2: {}", msg);
+        assert!(
+            msg.contains("q3"),
+            "should have second most recent: {}",
+            msg
+        );
+        assert!(
+            !msg.contains("q2"),
+            "should NOT have older than depth=2: {}",
+            msg
+        );
     }
 
     #[test]
@@ -469,6 +596,10 @@ mod tests {
         store.push("chat:1", "Brian", "old message", "librarian", "old reply");
         let msg = store.augment_message("chat:1", "custodian", "new message");
         // Should have blank line between ']' and the message
-        assert!(msg.contains("]\n\nnew message"), "should have blank line separator: {:?}", msg);
+        assert!(
+            msg.contains("]\n\nnew message"),
+            "should have blank line separator: {:?}",
+            msg
+        );
     }
 }

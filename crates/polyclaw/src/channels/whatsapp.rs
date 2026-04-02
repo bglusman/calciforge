@@ -209,7 +209,9 @@ impl WhatsAppChannel {
         };
 
         for entry in entries {
-            let Some(changes) = entry.changes else { continue };
+            let Some(changes) = entry.changes else {
+                continue;
+            };
             for change in changes {
                 let Some(value) = change.value else { continue };
                 let Some(msgs) = value.messages else { continue };
@@ -285,16 +287,15 @@ impl WhatsAppChannel {
             req = req.bearer_auth(token);
         }
 
-        let resp = req.send().await.with_context(|| {
-            format!("WhatsApp: HTTP error sending reply via {url}")
-        })?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("WhatsApp: HTTP error sending reply via {url}"))?;
 
         let status = resp.status();
         if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "WhatsApp: NZC replied {status} for send to {to}: {body_text}"
-            );
+            anyhow::bail!("WhatsApp: NZC replied {status} for send to {to}: {body_text}");
         }
 
         debug!(to = %to, "WhatsApp: reply sent via NZC");
@@ -342,7 +343,12 @@ impl WhatsAppChannel {
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "WhatsApp: failed to send command reply");
@@ -352,12 +358,25 @@ impl WhatsAppChannel {
         }
 
         // Unknown !command handling
-        if CommandHandler::is_command(&text) && !CommandHandler::is_status_command(&text) && !CommandHandler::is_switch_command(&text) && !CommandHandler::is_default_command(&text) && !CommandHandler::is_sessions_command(&text) {
+        if CommandHandler::is_command(&text)
+            && !CommandHandler::is_status_command(&text)
+            && !CommandHandler::is_switch_command(&text)
+            && !CommandHandler::is_default_command(&text)
+            && !CommandHandler::is_sessions_command(&text)
+        {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel.send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply).await {
+                if let Err(e) = channel
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
+                    .await
+                {
                     warn!(from = %from_owned, error = %e, "failed to send unknown-command reply");
                 }
             });
@@ -366,12 +385,20 @@ impl WhatsAppChannel {
 
         // !status — post-auth command
         if CommandHandler::is_status_command(&text) {
-            let reply = self.command_handler.cmd_status_for_identity(&identity.id).await;
+            let reply = self
+                .command_handler
+                .cmd_status_for_identity(&identity.id)
+                .await;
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "WhatsApp: failed to send status reply");
@@ -387,7 +414,12 @@ impl WhatsAppChannel {
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "WhatsApp: failed to send switch reply");
@@ -398,12 +430,20 @@ impl WhatsAppChannel {
 
         // !sessions — post-auth command
         if CommandHandler::is_sessions_command(&text) {
-            let reply = self.command_handler.handle_sessions(&text, &identity.id).await;
+            let reply = self
+                .command_handler
+                .handle_sessions(&text, &identity.id)
+                .await;
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "WhatsApp: failed to send sessions reply");
@@ -419,7 +459,12 @@ impl WhatsAppChannel {
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "WhatsApp: failed to send default reply");
@@ -498,7 +543,11 @@ impl WhatsAppChannel {
                 .augment_message(&chat_key, &agent_id, &text);
 
             let dispatch_start = std::time::Instant::now();
-            match self.router.dispatch_with_sender(&augmented, &agent, &self.config, Some(&identity_id)).await {
+            match self
+                .router
+                .dispatch_with_sender(&augmented, &agent, &self.config, Some(&identity_id))
+                .await
+            {
                 Ok(response) => {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                     self.command_handler.record_dispatch(latency_ms);
@@ -511,21 +560,11 @@ impl WhatsAppChannel {
                     );
 
                     // Record exchange in context buffer
-                    self.context_store.push(
-                        &chat_key,
-                        &sender_label,
-                        &text,
-                        &agent_id,
-                        &response,
-                    );
+                    self.context_store
+                        .push(&chat_key, &sender_label, &text, &agent_id, &response);
 
                     if let Err(e) = self
-                        .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
-                            &from,
-                            &response,
-                        )
+                        .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from, &response)
                         .await
                     {
                         warn!(
@@ -650,7 +689,8 @@ pub async fn run(
             let raw = match std::str::from_utf8(&buf[..n]) {
                 Ok(s) => s,
                 Err(_) => {
-                    let _ = send_http_response(&mut stream, 400, "Bad Request", "Invalid UTF-8").await;
+                    let _ =
+                        send_http_response(&mut stream, 400, "Bad Request", "Invalid UTF-8").await;
                     return;
                 }
             };
@@ -669,7 +709,9 @@ pub async fn run(
 
             // Only POST to the configured webhook path
             if method != "POST" || path != webhook_path {
-                let _ = send_http_response(&mut stream, 404, "Not Found", r#"{"error":"not found"}"#).await;
+                let _ =
+                    send_http_response(&mut stream, 404, "Not Found", r#"{"error":"not found"}"#)
+                        .await;
                 return;
             }
 
@@ -694,7 +736,13 @@ pub async fn run(
 
                 if !verify_hmac_sha256(secret, body.as_bytes(), sig_header) {
                     warn!(peer = %peer_addr, "WhatsApp: webhook HMAC verification failed");
-                    let _ = send_http_response(&mut stream, 401, "Unauthorized", r#"{"error":"invalid signature"}"#).await;
+                    let _ = send_http_response(
+                        &mut stream,
+                        401,
+                        "Unauthorized",
+                        r#"{"error":"invalid signature"}"#,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -704,7 +752,13 @@ pub async fn run(
                 Ok(v) => v,
                 Err(e) => {
                     warn!(peer = %peer_addr, error = %e, "WhatsApp: invalid JSON body");
-                    let _ = send_http_response(&mut stream, 400, "Bad Request", r#"{"error":"invalid json"}"#).await;
+                    let _ = send_http_response(
+                        &mut stream,
+                        400,
+                        "Bad Request",
+                        r#"{"error":"invalid json"}"#,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -817,7 +871,9 @@ async fn send_http_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule};
+    use crate::config::{
+        AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule,
+    };
 
     fn make_test_config() -> Arc<PolyConfig> {
         Arc::new(PolyConfig {
@@ -845,6 +901,9 @@ mod tests {
                 model: None,
                 auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                 api_key: None,
+                openclaw_agent_id: None,
+                reply_port: None,
+                reply_auth_token: None,
                 command: None,
                 args: None,
                 env: None,
@@ -882,7 +941,12 @@ mod tests {
             tmp.path().to_path_buf(),
         ));
         let context_store = ContextStore::new(20, 5);
-        Arc::new(WhatsAppChannel::new(config, router, command_handler, context_store))
+        Arc::new(WhatsAppChannel::new(
+            config,
+            router,
+            command_handler,
+            context_store,
+        ))
     }
 
     // --- Payload parsing tests ---
@@ -1037,8 +1101,14 @@ mod tests {
 
     #[test]
     fn test_is_number_allowed_exact() {
-        assert!(is_number_allowed("+15555550001", &["+15555550001".to_string()]));
-        assert!(!is_number_allowed("+19998887777", &["+15555550001".to_string()]));
+        assert!(is_number_allowed(
+            "+15555550001",
+            &["+15555550001".to_string()]
+        ));
+        assert!(!is_number_allowed(
+            "+19998887777",
+            &["+15555550001".to_string()]
+        ));
     }
 
     #[test]

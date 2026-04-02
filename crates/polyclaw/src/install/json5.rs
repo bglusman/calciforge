@@ -267,30 +267,25 @@ mod tests {
         use hegel::Generator;
 
         // Generate a simple key that is safe to embed in JSON.
-        let key = tc.draw(
-            gs::text()
-                .min_size(1)
-                .max_size(30)
-                .filter(|s: &String| {
-                    // No characters that would interact with JSON escaping or
-                    // the comment-stripping state machine.
-                    !s.contains('"')
-                        && !s.contains('\\')
-                        && !s.contains("//")
-                        && !s.contains("/*")
-                        && s.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
-                }),
-        );
+        let key = tc.draw(gs::text().min_size(1).max_size(30).filter(|s: &String| {
+            // No characters that would interact with JSON escaping or
+            // the comment-stripping state machine.
+            !s.contains('"')
+                && !s.contains('\\')
+                && !s.contains("//")
+                && !s.contains("/*")
+                && s.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
+        }));
 
         let json = format!(r#"{{"k": "{}"}}"#, key);
 
         // Direct parse must succeed (we built valid JSON).
-        let direct: serde_json::Value = serde_json::from_str(&json)
-            .expect("test-generated JSON must be valid");
+        let direct: serde_json::Value =
+            serde_json::from_str(&json).expect("test-generated JSON must be valid");
 
         // Parse via strip_json_comments must yield the same value.
-        let via_strip: serde_json::Value = parse_json5_relaxed(&json)
-            .expect("stripping comments on valid JSON must not break it");
+        let via_strip: serde_json::Value =
+            parse_json5_relaxed(&json).expect("stripping comments on valid JSON must not break it");
 
         assert_eq!(
             direct, via_strip,

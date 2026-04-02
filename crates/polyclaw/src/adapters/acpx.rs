@@ -43,9 +43,9 @@ impl AcpxAdapter {
 
     /// Ensure session directory exists
     async fn ensure_session_dir(&self) -> Result<(), AdapterError> {
-        tokio::fs::create_dir_all(&self.session_dir).await.map_err(|e| {
-            AdapterError::Unavailable(format!("Failed to create session dir: {}", e))
-        })
+        tokio::fs::create_dir_all(&self.session_dir)
+            .await
+            .map_err(|e| AdapterError::Unavailable(format!("Failed to create session dir: {}", e)))
     }
 
     /// List existing sessions for this agent
@@ -129,9 +129,9 @@ impl AcpxAdapter {
         // Add timeout
         let timeout = std::time::Duration::from_millis(self.timeout_ms);
 
-        let child = cmd.spawn().map_err(|e| {
-            AdapterError::Unavailable(format!("Failed to spawn acpx: {}", e))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| AdapterError::Unavailable(format!("Failed to spawn acpx: {}", e)))?;
 
         // Wait with timeout
         let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
@@ -152,9 +152,7 @@ impl AcpxAdapter {
                 "Failed to run acpx: {}",
                 e
             ))),
-            Err(_) => Err(AdapterError::Unavailable(
-                "acpx exec timed out".to_string()
-            )),
+            Err(_) => Err(AdapterError::Unavailable("acpx exec timed out".to_string())),
         }
     }
 
@@ -175,9 +173,9 @@ impl AcpxAdapter {
             .stderr(Stdio::piped());
 
         let timeout = std::time::Duration::from_millis(self.timeout_ms);
-        let child = cmd.spawn().map_err(|e| {
-            AdapterError::Unavailable(format!("Failed to spawn acpx: {}", e))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| AdapterError::Unavailable(format!("Failed to spawn acpx: {}", e)))?;
 
         let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
 
@@ -205,7 +203,7 @@ impl AcpxAdapter {
                 e
             ))),
             Err(_) => Err(AdapterError::Unavailable(
-                "acpx prompt timed out".to_string()
+                "acpx prompt timed out".to_string(),
             )),
         }
     }
@@ -214,7 +212,8 @@ impl AcpxAdapter {
 #[async_trait]
 impl AgentAdapter for AcpxAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        self.dispatch_with_context(DispatchContext::message_only(msg)).await
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
     }
 
     async fn dispatch_with_context(
