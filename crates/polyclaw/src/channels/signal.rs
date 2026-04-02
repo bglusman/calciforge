@@ -298,16 +298,15 @@ impl SignalChannel {
             req = req.bearer_auth(token);
         }
 
-        let resp = req.send().await.with_context(|| {
-            format!("Signal: HTTP error sending reply via {url}")
-        })?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("Signal: HTTP error sending reply via {url}"))?;
 
         let status = resp.status();
         if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Signal: OpenClaw replied {status} for send to {to}: {body_text}"
-            );
+            anyhow::bail!("Signal: OpenClaw replied {status} for send to {to}: {body_text}");
         }
 
         debug!(to = %to, "Signal: reply sent via OpenClaw");
@@ -355,7 +354,12 @@ impl SignalChannel {
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "Signal: failed to send command reply");
@@ -365,12 +369,25 @@ impl SignalChannel {
         }
 
         // Unknown !command handling
-        if CommandHandler::is_command(&text) && !CommandHandler::is_status_command(&text) && !CommandHandler::is_switch_command(&text) && !CommandHandler::is_default_command(&text) && !CommandHandler::is_sessions_command(&text) {
+        if CommandHandler::is_command(&text)
+            && !CommandHandler::is_status_command(&text)
+            && !CommandHandler::is_switch_command(&text)
+            && !CommandHandler::is_default_command(&text)
+            && !CommandHandler::is_sessions_command(&text)
+        {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel.send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply).await {
+                if let Err(e) = channel
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
+                    .await
+                {
                     warn!(from = %from_owned, error = %e, "failed to send unknown-command reply");
                 }
             });
@@ -379,12 +396,20 @@ impl SignalChannel {
 
         // !status — post-auth command
         if CommandHandler::is_status_command(&text) {
-            let reply = self.command_handler.cmd_status_for_identity(&identity.id).await;
+            let reply = self
+                .command_handler
+                .cmd_status_for_identity(&identity.id)
+                .await;
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "Signal: failed to send status reply");
@@ -400,7 +425,12 @@ impl SignalChannel {
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "Signal: failed to send switch reply");
@@ -411,12 +441,20 @@ impl SignalChannel {
 
         // !sessions — post-auth command
         if CommandHandler::is_sessions_command(&text) {
-            let reply = self.command_handler.handle_sessions(&text, &identity.id).await;
+            let reply = self
+                .command_handler
+                .handle_sessions(&text, &identity.id)
+                .await;
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "Signal: failed to send sessions reply");
@@ -432,7 +470,12 @@ impl SignalChannel {
             let from_owned = from.clone();
             tokio::spawn(async move {
                 if let Err(e) = channel
-                    .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from_owned, &reply)
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "Signal: failed to send default reply");
@@ -511,7 +554,11 @@ impl SignalChannel {
                 .augment_message(&chat_key, &agent_id, &text);
 
             let dispatch_start = std::time::Instant::now();
-            match self.router.dispatch_with_sender(&augmented, &agent, &self.config, Some(&identity_id)).await {
+            match self
+                .router
+                .dispatch_with_sender(&augmented, &agent, &self.config, Some(&identity_id))
+                .await
+            {
                 Ok(response) => {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                     self.command_handler.record_dispatch(latency_ms);
@@ -524,21 +571,11 @@ impl SignalChannel {
                     );
 
                     // Record exchange in context buffer
-                    self.context_store.push(
-                        &chat_key,
-                        &sender_label,
-                        &text,
-                        &agent_id,
-                        &response,
-                    );
+                    self.context_store
+                        .push(&chat_key, &sender_label, &text, &agent_id, &response);
 
                     if let Err(e) = self
-                        .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
-                            &from,
-                            &response,
-                        )
+                        .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from, &response)
                         .await
                     {
                         warn!(
@@ -664,7 +701,8 @@ pub async fn run(
             let raw = match std::str::from_utf8(&buf[..n]) {
                 Ok(s) => s,
                 Err(_) => {
-                    let _ = send_http_response(&mut stream, 400, "Bad Request", "Invalid UTF-8").await;
+                    let _ =
+                        send_http_response(&mut stream, 400, "Bad Request", "Invalid UTF-8").await;
                     return;
                 }
             };
@@ -683,7 +721,9 @@ pub async fn run(
 
             // Only POST to the configured webhook path
             if method != "POST" || path != webhook_path {
-                let _ = send_http_response(&mut stream, 404, "Not Found", r#"{"error":"not found"}"#).await;
+                let _ =
+                    send_http_response(&mut stream, 404, "Not Found", r#"{"error":"not found"}"#)
+                        .await;
                 return;
             }
 
@@ -707,12 +747,24 @@ pub async fn run(
                 if let Some(sig) = signature {
                     if !verify_hmac_sha256(secret, body, sig) {
                         warn!(peer = %peer_addr, "Signal: HMAC verification failed");
-                        let _ = send_http_response(&mut stream, 401, "Unauthorized", r#"{"error":"invalid signature"}"#).await;
+                        let _ = send_http_response(
+                            &mut stream,
+                            401,
+                            "Unauthorized",
+                            r#"{"error":"invalid signature"}"#,
+                        )
+                        .await;
                         return;
                     }
                 } else {
                     warn!(peer = %peer_addr, "Signal: missing HMAC signature");
-                    let _ = send_http_response(&mut stream, 401, "Unauthorized", r#"{"error":"missing signature"}"#).await;
+                    let _ = send_http_response(
+                        &mut stream,
+                        401,
+                        "Unauthorized",
+                        r#"{"error":"missing signature"}"#,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -722,7 +774,13 @@ pub async fn run(
                 Ok(v) => v,
                 Err(e) => {
                     warn!(peer = %peer_addr, error = %e, "Signal: JSON parse error");
-                    let _ = send_http_response(&mut stream, 400, "Bad Request", r#"{"error":"invalid json"}"#).await;
+                    let _ = send_http_response(
+                        &mut stream,
+                        400,
+                        "Bad Request",
+                        r#"{"error":"invalid json"}"#,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -737,7 +795,8 @@ pub async fn run(
             }
 
             // Acknowledge receipt immediately
-            if let Err(e) = send_http_response(&mut stream, 200, "OK", r#"{"received":true}"#).await {
+            if let Err(e) = send_http_response(&mut stream, 200, "OK", r#"{"received":true}"#).await
+            {
                 warn!(peer = %peer_addr, error = %e, "Signal: failed to send ack");
             }
 

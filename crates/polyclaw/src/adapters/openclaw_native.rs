@@ -173,7 +173,14 @@ impl OpenClawNativeAdapter {
             .timeout(timeout)
             .build()
             .expect("reqwest client");
-        Self { client, endpoint, hooks_token, agent_id, hooks_path, timeout }
+        Self {
+            client,
+            endpoint,
+            hooks_token,
+            agent_id,
+            hooks_path,
+            timeout,
+        }
     }
 
     /// Build the full URL for `POST /hooks/agent`.
@@ -206,7 +213,8 @@ impl OpenClawNativeAdapter {
 #[async_trait]
 impl AgentAdapter for OpenClawNativeAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        self.dispatch_with_context(DispatchContext::message_only(msg)).await
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
     }
 
     async fn dispatch_with_context(
@@ -262,9 +270,7 @@ impl AgentAdapter for OpenClawNativeAdapter {
 
             // 400 can indicate that `allowRequestSessionKey` is disabled.
             // Warn clearly so operators can configure OpenClaw accordingly.
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && body_text.contains("sessionKey")
-            {
+            if status == reqwest::StatusCode::BAD_REQUEST && body_text.contains("sessionKey") {
                 warn!(
                     "openclaw-native: session key rejected by OpenClaw. \
                     Set hooks.allowRequestSessionKey=true and \
@@ -280,9 +286,7 @@ impl AgentAdapter for OpenClawNativeAdapter {
         }
 
         let hooks_resp: HooksAgentResponse = resp.json().await.map_err(|e| {
-            AdapterError::Protocol(format!(
-                "openclaw-native JSON parse error: {e}"
-            ))
+            AdapterError::Protocol(format!("openclaw-native JSON parse error: {e}"))
         })?;
 
         // Surface explicit error from OpenClaw
@@ -297,10 +301,7 @@ impl AgentAdapter for OpenClawNativeAdapter {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "(no response)".to_string());
 
-        info!(
-            len = reply.len(),
-            "openclaw-native: response received"
-        );
+        info!(len = reply.len(), "openclaw-native: response received");
         debug!(response = %reply, "agent response");
 
         Ok(reply)
@@ -471,8 +472,7 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 8192];
                 let n = stream.read(&mut buf).await.unwrap_or(0);
-                *captured_srv.lock().await =
-                    String::from_utf8_lossy(&buf[..n]).to_string();
+                *captured_srv.lock().await = String::from_utf8_lossy(&buf[..n]).to_string();
                 let _ = stream.write_all(http_response.as_bytes()).await;
                 let _ = stream.flush().await;
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -578,7 +578,10 @@ mod tests {
 
         // Dispatch two messages from the same sender
         for msg in ["first message", "second message"] {
-            let ctx = DispatchContext { message: msg, sender: Some("brian") };
+            let ctx = DispatchContext {
+                message: msg,
+                sender: Some("brian"),
+            };
             let _ = a.dispatch_with_context(ctx).await;
         }
 
@@ -626,8 +629,7 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 8192];
                 let n = stream.read(&mut buf).await.unwrap_or(0);
-                *captured_srv.lock().await =
-                    String::from_utf8_lossy(&buf[..n]).to_string();
+                *captured_srv.lock().await = String::from_utf8_lossy(&buf[..n]).to_string();
                 let _ = stream.write_all(http_response.as_bytes()).await;
                 let _ = stream.flush().await;
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;

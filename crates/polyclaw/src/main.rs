@@ -20,12 +20,7 @@ use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
-use crate::{
-    commands::CommandHandler,
-    config::load_config,
-    context::ContextStore,
-    router::Router,
-};
+use crate::{commands::CommandHandler, config::load_config, context::ContextStore, router::Router};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -62,10 +57,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let context_store = ContextStore::new(
-        config.context.buffer_size,
-        config.context.inject_depth,
-    );
+    let context_store = ContextStore::new(config.context.buffer_size, config.context.inject_depth);
 
     let config = Arc::new(config);
     let router = Arc::new(Router::new());
@@ -163,7 +155,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (tg_result, mx_result, wa_result, sig_result) = tokio::join!(telegram_fut, matrix_fut, whatsapp_fut, signal_fut);
+    let (tg_result, mx_result, wa_result, sig_result) =
+        tokio::join!(telegram_fut, matrix_fut, whatsapp_fut, signal_fut);
     tg_result?;
     mx_result?;
     wa_result?;

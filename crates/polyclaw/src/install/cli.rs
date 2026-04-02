@@ -19,9 +19,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
-use super::model::{
-    ClawKind, ClawTarget, InstallTarget, PolyClawTarget, WebhookFormat,
-};
+use super::model::{ClawKind, ClawTarget, InstallTarget, PolyClawTarget, WebhookFormat};
 
 // ---------------------------------------------------------------------------
 // InstallArgs
@@ -82,8 +80,7 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
         .iter()
         .enumerate()
         .map(|(i, spec)| {
-            parse_claw_spec(spec)
-                .with_context(|| format!("--claw[{}] '{}': parse error", i, spec))
+            parse_claw_spec(spec).with_context(|| format!("--claw[{}] '{}': parse error", i, spec))
         })
         .collect::<Result<_>>()?;
 
@@ -142,9 +139,12 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         ClawKind::Webhook { endpoint, .. } => endpoint.clone(),
         _ => {
             // NzcNative / OpenClawHttp: endpoint explicitly provided.
-            kv.get("endpoint")
-                .cloned()
-                .with_context(|| format!("adapter '{}' requires 'endpoint=...' in spec: {}", adapter_str, spec))?
+            kv.get("endpoint").cloned().with_context(|| {
+                format!(
+                    "adapter '{}' requires 'endpoint=...' in spec: {}",
+                    adapter_str, spec
+                )
+            })?
         }
     };
 
@@ -214,7 +214,10 @@ fn parse_kv_pairs(spec: &str) -> Result<std::collections::HashMap<String, String
             continue;
         }
         let idx = part.find('=').with_context(|| {
-            format!("expected 'key=value' pair, got '{}' in spec: {}", part, spec)
+            format!(
+                "expected 'key=value' pair, got '{}' in spec: {}",
+                part, spec
+            )
         })?;
         let key = part[..idx].trim().to_string();
         let value = part[idx + 1..].to_string();
@@ -317,7 +320,10 @@ mod tests {
         let claw = parse_claw_spec(spec).unwrap();
         assert!(matches!(
             &claw.adapter,
-            ClawKind::Webhook { format: WebhookFormat::Json, .. }
+            ClawKind::Webhook {
+                format: WebhookFormat::Json,
+                ..
+            }
         ));
     }
 
@@ -327,7 +333,10 @@ mod tests {
         let claw = parse_claw_spec(spec).unwrap();
         assert!(matches!(
             &claw.adapter,
-            ClawKind::Webhook { format: WebhookFormat::Text, .. }
+            ClawKind::Webhook {
+                format: WebhookFormat::Text,
+                ..
+            }
         ));
     }
 
@@ -364,7 +373,11 @@ mod tests {
         let result = parse_claw_spec(spec);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("endpoint"), "should mention 'endpoint': {}", msg);
+        assert!(
+            msg.contains("endpoint"),
+            "should mention 'endpoint': {}",
+            msg
+        );
     }
 
     #[test]
@@ -382,7 +395,11 @@ mod tests {
         let result = parse_claw_spec(spec);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("magic-claw"), "should name the bad adapter: {}", msg);
+        assert!(
+            msg.contains("magic-claw"),
+            "should name the bad adapter: {}",
+            msg
+        );
     }
 
     // ── parse_install_target ─────────────────────────────────────────────────
@@ -393,7 +410,8 @@ mod tests {
             polyclaw_host: Some("admin@10.0.0.1".into()),
             polyclaw_key: Some(PathBuf::from("/keys/id_rsa")),
             claw_specs: vec![
-                "name=lib,adapter=nzc,host=user@10.0.0.20,endpoint=http://10.0.0.20:18799".into(),
+                "name=lib,adapter=nzc,host=user@10.0.0.20,endpoint=http://10.0.0.20:18799"
+                    .into(),
             ],
             ..Default::default()
         };
@@ -475,7 +493,11 @@ mod tests {
         let spec = "name=x,adapter=openai-compat,endpoint=http://host/v1?foo=bar";
         let claw = parse_claw_spec(spec).unwrap();
         // The endpoint should contain the full value including `?foo=bar`
-        assert!(claw.endpoint.contains("foo=bar"), "endpoint: {}", claw.endpoint);
+        assert!(
+            claw.endpoint.contains("foo=bar"),
+            "endpoint: {}",
+            claw.endpoint
+        );
     }
 
     // ── Property tests (hegel) ────────────────────────────────────────────────
@@ -549,9 +571,8 @@ mod tests {
 
         let result = parse_claw_spec(&spec);
         // All generated specs are structurally valid — must succeed.
-        let claw = result.unwrap_or_else(|e| {
-            panic!("parse_claw_spec failed on valid spec {:?}: {}", spec, e)
-        });
+        let claw = result
+            .unwrap_or_else(|e| panic!("parse_claw_spec failed on valid spec {:?}: {}", spec, e));
 
         // Name must roundtrip exactly.
         assert_eq!(
@@ -604,10 +625,7 @@ mod tests {
                     "nzc/openclaw endpoint should contain name: endpoint={:?}",
                     claw.endpoint
                 );
-                assert!(
-                    !claw.host.is_empty(),
-                    "nzc/openclaw must have a host set"
-                );
+                assert!(!claw.host.is_empty(), "nzc/openclaw must have a host set");
             }
         }
     }
@@ -631,8 +649,16 @@ mod tests {
         let spec = tc.draw(gs::text().max_size(200));
 
         let args = InstallArgs {
-            polyclaw_host: if host.is_empty() { None } else { Some(host.clone()) },
-            claw_specs: if spec.is_empty() { vec![] } else { vec![spec.clone()] },
+            polyclaw_host: if host.is_empty() {
+                None
+            } else {
+                Some(host.clone())
+            },
+            claw_specs: if spec.is_empty() {
+                vec![]
+            } else {
+                vec![spec.clone()]
+            },
             ..Default::default()
         };
 
@@ -668,12 +694,20 @@ mod tests {
         let pairs_count = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
         let mut parts = Vec::new();
         let safe_keys = vec![
-            "adapter".to_string(), "host".to_string(), "endpoint".to_string(),
-            "command".to_string(), "format".to_string(), "key".to_string(),
+            "adapter".to_string(),
+            "host".to_string(),
+            "endpoint".to_string(),
+            "command".to_string(),
+            "format".to_string(),
+            "key".to_string(),
         ];
         let safe_vals = vec![
-            "nzc".to_string(), "openclaw".to_string(), "http://host:18799".to_string(),
-            "user@host".to_string(), "/path/to/key".to_string(), "foo".to_string(),
+            "nzc".to_string(),
+            "openclaw".to_string(),
+            "http://host:18799".to_string(),
+            "user@host".to_string(),
+            "/path/to/key".to_string(),
+            "foo".to_string(),
         ];
         for _ in 0..pairs_count {
             let key: String = tc.draw(gs::sampled_from(safe_keys.clone()));
