@@ -1,4 +1,4 @@
-//! Local command handler for PolyClaw v2.
+//! Local command handler for PolyClaw v3.
 //!
 //! Commands starting with `!` are handled locally — they never reach the agent.
 //! All other messages route to the agent as normal.
@@ -22,25 +22,30 @@ use std::path::PathBuf;
 use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
 use crate::config::PolyConfig;
 
-/// Path to the persisted active-agent state file.
-fn state_file_path() -> PathBuf {
+/// Default state directory: `~/.polyclaw/state/`.
+fn default_state_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join(".polyclaw").join("state").join("active-agents.json")
+    PathBuf::from(home).join(".polyclaw").join("state")
 }
 
-/// Load persisted active-agent selections from disk.
+/// Path to the active-agent state file within `state_dir`.
+fn state_file_path_for(state_dir: &PathBuf) -> PathBuf {
+    state_dir.join("active-agents.json")
+}
+
+/// Load persisted active-agent selections from a given state directory.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
-fn load_active_agents() -> HashMap<String, String> {
-    let path = state_file_path();
+fn load_active_agents_from(state_dir: &PathBuf) -> HashMap<String, String> {
+    let path = state_file_path_for(state_dir);
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => HashMap::new(),
     }
 }
 
-/// Persist the active-agent map to disk so it survives restarts.
-fn save_active_agents(map: &HashMap<String, String>) {
-    let path = state_file_path();
+/// Persist the active-agent map to a given state directory.
+fn save_active_agents_to(state_dir: &PathBuf, map: &HashMap<String, String>) {
+    let path = state_file_path_for(state_dir);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -56,8 +61,12 @@ pub struct CommandHandler {
     messages_routed: AtomicU64,
     total_latency_ms: AtomicU64,
     /// Per-identity active agent: identity_id → agent_id.
-    /// Persisted to ~/.polyclaw/state/active-agents.json and loaded on startup.
+    /// Persisted to `state_dir/active-agents.json` and loaded on startup.
     active_agents: Mutex<HashMap<String, String>>,
+    /// Directory for persisted state files.
+    /// Defaults to `~/.polyclaw/state/`; overridable for tests via
+    /// [`CommandHandler::with_state_dir`].
+    state_dir: PathBuf,
     /// Pending Clash approvals: request_id → NZC endpoint + metadata.
     /// Shared with any `NzcHttpAdapter` instances created for the same agent
     /// so that `!approve` / `!deny` can signal the right NZC instance.
@@ -68,8 +77,19 @@ pub struct CommandHandler {
 
 impl CommandHandler {
     /// Create a new CommandHandler, loading any persisted agent selections from disk.
+    ///
+    /// State is persisted to `~/.polyclaw/state/`.  For test isolation, use
+    /// [`CommandHandler::with_state_dir`] to supply a per-test temp directory.
     pub fn new(config: Arc<PolyConfig>) -> Self {
-        let active_agents = load_active_agents();
+        Self::with_state_dir(config, default_state_dir())
+    }
+
+    /// Create a CommandHandler using a specific state directory.
+    ///
+    /// Allows tests to inject a temp directory so that persisted state
+    /// (`active-agents.json`) does not bleed between test runs.
+    pub fn with_state_dir(config: Arc<PolyConfig>, state_dir: PathBuf) -> Self {
+        let active_agents = load_active_agents_from(&state_dir);
         if !active_agents.is_empty() {
             tracing::info!(
                 agents = ?active_agents,
@@ -86,6 +106,7 @@ impl CommandHandler {
             messages_routed: AtomicU64::new(0),
             total_latency_ms: AtomicU64::new(0),
             active_agents: Mutex::new(active_agents),
+            state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
         }
@@ -495,8 +516,24 @@ impl CommandHandler {
             String::new()
         };
 
+        // Build per-agent model summary: "librarian (claude-sonnet-4-6), max (default)"
+        let agent_summary: Vec<String> = self
+            .config
+            .agents
+            .iter()
+            .map(|a| {
+                let model = a.model.as_deref().unwrap_or("default");
+                format!("{} ({})", a.id, model)
+            })
+            .collect();
+        let agents_display = if agent_summary.is_empty() {
+            format!("{agent_count} agents")
+        } else {
+            agent_summary.join(", ")
+        };
+
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v3 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -596,7 +633,7 @@ impl CommandHandler {
                 {
                     let mut map = self.active_agents.lock().unwrap();
                     map.insert(identity_id.to_string(), agent_id.to_string());
-                    save_active_agents(&map);
+                    save_active_agents_to(&self.state_dir, &map);
                 }
 
                 format!(
@@ -747,7 +784,7 @@ impl CommandHandler {
         {
             let mut map = self.active_agents.lock().unwrap();
             map.insert(identity_id.to_string(), default_agent_id.clone());
-            save_active_agents(&map);
+            save_active_agents_to(&self.state_dir, &map);
         }
 
         format!("✅ Switched to default agent: {}", default_agent_id)
@@ -759,7 +796,7 @@ impl CommandHandler {
 
     fn cmd_help(&self) -> String {
         [
-            "PolyClaw v2 — available commands:",
+            "PolyClaw v3 — available commands:",
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
             "  !agents  — list configured agents with endpoints",
@@ -816,7 +853,7 @@ impl CommandHandler {
             .unwrap_or_default();
 
         format!(
-            "PolyClaw v2 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "PolyClaw v3 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -833,9 +870,10 @@ impl CommandHandler {
             } else {
                 agent.endpoint.clone()
             };
+            let model_info = agent.model.as_deref().unwrap_or("default");
             lines.push(format!(
-                "  {} ({}) — {}",
-                agent.id, agent.kind, location
+                "  {} ({}, model: {}) — {}",
+                agent.id, agent.kind, model_info, location
             ));
         }
         lines.join("\n")
@@ -851,7 +889,7 @@ impl CommandHandler {
         };
 
         format!(
-            "PolyClaw v2 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms"
+            "PolyClaw v3 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms"
         )
     }
 }
@@ -870,7 +908,13 @@ mod tests {
 
     fn make_handler() -> CommandHandler {
         let config = Arc::new(make_config());
-        CommandHandler::new(config)
+        // Use a per-test temp directory so persisted state (`active-agents.json`)
+        // never bleeds between test runs.  Without this, a test that calls
+        // `handle_switch` writes to the shared `~/.polyclaw/state/active-agents.json`
+        // file, causing subsequent tests that construct a fresh handler to observe
+        // the leftover switch state.
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
     }
 
     fn make_config() -> PolyConfig {
@@ -913,6 +957,9 @@ mod tests {
                         ..Default::default()
                     }),
                     aliases: vec![],
+                    openclaw_agent_id: None,
+                    reply_port: None,
+                    reply_auth_token: None,
                 },
                 AgentConfig {
                     id: "custodian".to_string(),
@@ -927,6 +974,9 @@ mod tests {
                     env: None,
                     registry: None,
                     aliases: vec!["keeper".to_string(), "cust".to_string()],
+                    openclaw_agent_id: None,
+                    reply_port: None,
+                    reply_auth_token: None,
                 },
             ],
             routing: vec![
@@ -1071,6 +1121,29 @@ mod tests {
         assert!(reply.contains("librarian"), "should show agent id");
         assert!(reply.contains("10.0.0.20"), "should show endpoint");
         assert!(reply.contains("openclaw-http"), "should show agent kind");
+        // Should show model info (fallback to "default" when no model set)
+        assert!(reply.contains("model: default"), "should show model info");
+    }
+
+    #[test]
+    fn test_agents_shows_model_when_set() {
+        let mut config = make_config();
+        // Set a specific model on the librarian agent
+        if let Some(agent) = config.agents.iter_mut().find(|a| a.id == "librarian") {
+            agent.model = Some("claude-sonnet-4-6".to_string());
+        }
+        let h = CommandHandler::new(Arc::new(config));
+        let reply = h.handle("!agents").unwrap();
+        assert!(reply.contains("model: claude-sonnet-4-6"), "should show configured model: {}", reply);
+    }
+
+    #[tokio::test]
+    async fn test_status_shows_per_agent_model_summary() {
+        let h = make_handler();
+        let reply = h.cmd_status_for_identity("brian").await;
+        // Both agents should appear in the agents summary line with their model (default since none set)
+        assert!(reply.contains("librarian (default)"), "should show librarian with model: {}", reply);
+        assert!(reply.contains("custodian (default)"), "should show custodian with model: {}", reply);
     }
 
     #[test]
@@ -1114,8 +1187,8 @@ mod tests {
 
     // --- case insensitivity ---
 
-    #[test]
-    fn test_commands_case_insensitive() {
+    #[tokio::test]
+    async fn test_commands_case_insensitive() {
         let h = make_handler();
         assert_eq!(h.handle("!PING"), Some("pong".to_string()));
         assert_eq!(h.handle("!Ping"), Some("pong".to_string()));
@@ -1123,7 +1196,7 @@ mod tests {
         // !STATUS now requires identity context — returns None from handle()
         assert!(h.handle("!STATUS").is_none());
         // cmd_status_for_identity is case-insensitive at the identity level
-        assert!(h.cmd_status_for_identity("brian").contains("version:"));
+        assert!(h.cmd_status_for_identity("brian").await.contains("version:"));
     }
 
     // --- record_dispatch counter ---

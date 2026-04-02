@@ -1,4 +1,4 @@
-//! PolyClaw v2 — Rust agent gateway
+//! PolyClaw v3 — Rust agent gateway
 //!
 //! Entry point: loads config, starts Telegram bot, routes messages to
 //! the downstream OpenClaw HTTP agent.
@@ -12,6 +12,7 @@ mod commands;
 mod config;
 mod context;
 mod hooks;
+mod install;
 mod router;
 
 use anyhow::{Context, Result};
@@ -33,7 +34,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("polyclaw=info".parse()?))
         .init();
 
-    info!("PolyClaw v2 starting");
+    info!("PolyClaw v3 starting");
 
     // Load config
     let config_path = config::config_path()?;

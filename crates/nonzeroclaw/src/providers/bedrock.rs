@@ -1,8 +1,10 @@
 //! AWS Bedrock provider using the Converse API.
 //!
-//! Authentication: AWS AKSK (Access Key ID + Secret Access Key)
-//! via environment variables. SigV4 signing is implemented manually
-//! using hmac/sha2 crates — no AWS SDK dependency.
+//! Authentication: supports two methods:
+//! - **Bearer token**: set `BEDROCK_API_KEY` env var (takes precedence).
+//! - **SigV4 signing**: AWS AKSK (Access Key ID + Secret Access Key)
+//!   via environment variables or EC2 IMDSv2. SigV4 signing is implemented
+//!   manually using hmac/sha2 crates — no AWS SDK dependency.
 
 use crate::providers::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
@@ -21,6 +23,14 @@ const ENDPOINT_PREFIX: &str = "bedrock-runtime";
 const SIGNING_SERVICE: &str = "bedrock";
 const DEFAULT_REGION: &str = "us-east-1";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
+
+// ── Authentication ──────────────────────────────────────────────
+
+/// Authentication method for Bedrock: either SigV4 (AKSK) or Bearer token.
+enum BedrockAuth {
+    SigV4(AwsCredentials),
+    BearerToken(String),
+}
 
 // ── AWS Credentials ─────────────────────────────────────────────
 
@@ -452,19 +462,52 @@ struct ResponseToolUseWrapper {
 // ── BedrockProvider ─────────────────────────────────────────────
 
 pub struct BedrockProvider {
-    credentials: Option<AwsCredentials>,
+    auth: Option<BedrockAuth>,
+    max_tokens: u32,
 }
 
 impl BedrockProvider {
     pub fn new() -> Self {
+        // Bearer token takes precedence over SigV4 credentials.
+        if let Some(token) = env_optional("BEDROCK_API_KEY") {
+            return Self {
+                auth: Some(BedrockAuth::BearerToken(token)),
+                max_tokens: DEFAULT_MAX_TOKENS,
+            };
+        }
         Self {
-            credentials: AwsCredentials::from_env().ok(),
+            auth: AwsCredentials::from_env().ok().map(BedrockAuth::SigV4),
+            max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
 
     pub async fn new_async() -> Self {
-        let credentials = AwsCredentials::resolve().await.ok();
-        Self { credentials }
+        // Bearer token takes precedence over SigV4 credentials.
+        if let Some(token) = env_optional("BEDROCK_API_KEY") {
+            return Self {
+                auth: Some(BedrockAuth::BearerToken(token)),
+                max_tokens: DEFAULT_MAX_TOKENS,
+            };
+        }
+        let auth = AwsCredentials::resolve().await.ok().map(BedrockAuth::SigV4);
+        Self {
+            auth,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
+    }
+
+    /// Create a provider using a Bearer token for authentication.
+    pub fn with_bearer_token(token: &str) -> Self {
+        Self {
+            auth: Some(BedrockAuth::BearerToken(token.to_string())),
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
+    }
+
+    /// Override the maximum output tokens for API requests.
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = max_tokens;
+        self
     }
 
     fn http_client(&self) -> Client {
@@ -476,6 +519,13 @@ impl BedrockProvider {
     /// may misparse them. Dots, hyphens, and alphanumerics are safe.
     fn encode_model_path(model_id: &str) -> String {
         model_id.replace(':', "%3A")
+    }
+
+    /// Resolve the AWS region from environment variables.
+    fn resolve_region() -> String {
+        env_optional("AWS_REGION")
+            .or_else(|| env_optional("AWS_DEFAULT_REGION"))
+            .unwrap_or_else(|| DEFAULT_REGION.to_string())
     }
 
     /// Build the actual request URL. Uses raw model ID (reqwest sends colons as-is).
@@ -491,22 +541,38 @@ impl BedrockProvider {
         format!("/model/{encoded}/converse")
     }
 
-    fn require_credentials(&self) -> anyhow::Result<&AwsCredentials> {
-        self.credentials.as_ref().ok_or_else(|| {
+    fn require_auth(&self) -> anyhow::Result<&BedrockAuth> {
+        self.auth.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "AWS Bedrock credentials not set. Set AWS_ACCESS_KEY_ID and \
-                 AWS_SECRET_ACCESS_KEY environment variables, or run on an EC2 \
-                 instance with an IAM role attached."
+                "AWS Bedrock credentials not set. Set BEDROCK_API_KEY for Bearer \
+                 token auth, or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for \
+                 SigV4 auth, or run on an EC2 instance with an IAM role attached."
             )
         })
     }
 
-    /// Resolve credentials: use cached if available, otherwise fetch from IMDS.
-    async fn resolve_credentials(&self) -> anyhow::Result<AwsCredentials> {
-        if let Ok(creds) = AwsCredentials::from_env() {
-            return Ok(creds);
+    /// Resolve auth: use cached if available, otherwise try env vars then IMDS.
+    async fn resolve_auth(&self) -> anyhow::Result<BedrockAuth> {
+        // If we already have auth cached, re-resolve from the same source.
+        if let Some(ref auth) = self.auth {
+            match auth {
+                BedrockAuth::BearerToken(token) => {
+                    return Ok(BedrockAuth::BearerToken(token.clone()));
+                }
+                BedrockAuth::SigV4(_) => {
+                    // Re-resolve SigV4 credentials (they may have rotated).
+                }
+            }
         }
-        AwsCredentials::from_imds().await
+        // Check Bearer token first.
+        if let Some(token) = env_optional("BEDROCK_API_KEY") {
+            return Ok(BedrockAuth::BearerToken(token));
+        }
+        // Fall back to SigV4.
+        if let Ok(creds) = AwsCredentials::from_env() {
+            return Ok(BedrockAuth::SigV4(creds));
+        }
+        Ok(BedrockAuth::SigV4(AwsCredentials::from_imds().await?))
     }
 
     // ── Cache heuristics (same thresholds as AnthropicProvider) ──
@@ -554,16 +620,50 @@ impl BedrockProvider {
                     }
                 }
                 "tool" => {
-                    if let Some(tool_result_msg) = Self::parse_tool_result_message(&msg.content) {
-                        converse_messages.push(tool_result_msg);
-                    } else {
-                        converse_messages.push(ConverseMessage {
-                            role: "user".to_string(),
-                            content: vec![ContentBlock::Text(TextBlock {
-                                text: msg.content.clone(),
-                            })],
+                    let tool_result_msg = Self::parse_tool_result_message(&msg.content)
+                        .unwrap_or_else(|| {
+                            // Fallback: always emit a toolResult block so the
+                            // Bedrock API contract (every toolUse needs a matching
+                            // toolResult) is never violated.
+                            let tool_use_id = Self::extract_tool_call_id(&msg.content)
+                                .or_else(|| Self::last_pending_tool_use_id(&converse_messages))
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            tracing::warn!(
+                                "Failed to parse tool result message, creating error \
+                                 toolResult for tool_use_id={}",
+                                tool_use_id
+                            );
+
+                            ConverseMessage {
+                                role: "user".to_string(),
+                                content: vec![ContentBlock::ToolResult(ToolResultWrapper {
+                                    tool_result: ToolResultBlock {
+                                        tool_use_id,
+                                        content: vec![ToolResultContent {
+                                            text: msg.content.clone(),
+                                        }],
+                                        status: "error".to_string(),
+                                    },
+                                })],
+                            }
                         });
+
+                    // Merge consecutive tool results into a single user message.
+                    // Bedrock requires all toolResult blocks for a multi-tool-call
+                    // turn to appear in one user message.
+                    if let Some(last) = converse_messages.last_mut() {
+                        if last.role == "user"
+                            && last
+                                .content
+                                .iter()
+                                .all(|b| matches!(b, ContentBlock::ToolResult(_)))
+                        {
+                            last.content.extend(tool_result_msg.content);
+                            continue;
+                        }
                     }
+                    converse_messages.push(tool_result_msg);
                 }
                 _ => {
                     let content_blocks = Self::parse_user_content_blocks(&msg.content);
@@ -581,6 +681,54 @@ impl BedrockProvider {
             Some(system_blocks)
         };
         (system, converse_messages)
+    }
+
+    /// Try to extract a tool_call_id from partially-valid JSON content.
+    fn extract_tool_call_id(content: &str) -> Option<String> {
+        let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
+        value
+            .get("tool_call_id")
+            .or_else(|| value.get("tool_use_id"))
+            .or_else(|| value.get("toolUseId"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from)
+    }
+
+    /// Find the first unmatched tool_use_id from the last assistant message.
+    ///
+    /// When a tool result can't be parsed at all (not even the ID), we fall
+    /// back to matching it against the preceding assistant turn's toolUse
+    /// blocks that don't yet have a corresponding toolResult.
+    fn last_pending_tool_use_id(converse_messages: &[ConverseMessage]) -> Option<String> {
+        let last_assistant = converse_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")?;
+
+        let tool_use_ids: Vec<&str> = last_assistant
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse(wrapper) => Some(wrapper.tool_use.tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let answered_ids: Vec<&str> = converse_messages
+            .iter()
+            .rev()
+            .take_while(|m| m.role == "user")
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult(wrapper) => Some(wrapper.tool_result.tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        tool_use_ids
+            .into_iter()
+            .find(|id| !answered_ids.contains(id))
+            .map(String::from)
     }
 
     /// Parse user message content, extracting [IMAGE:data:...] markers into image blocks.
@@ -615,7 +763,6 @@ impl BedrockProvider {
                         let after_semi = &rest[semi + 1..];
                         if let Some(b64) = after_semi.strip_prefix("base64,") {
                             let format = match mime {
-                                "image/jpeg" | "image/jpg" => "jpeg",
                                 "image/png" => "png",
                                 "image/gif" => "gif",
                                 "image/webp" => "webp",
@@ -699,6 +846,8 @@ impl BedrockProvider {
         let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
         let tool_use_id = value
             .get("tool_call_id")
+            .or_else(|| value.get("tool_use_id"))
+            .or_else(|| value.get("toolUseId"))
             .and_then(serde_json::Value::as_str)?
             .to_string();
         let result = value
@@ -749,6 +898,7 @@ impl BedrockProvider {
         let usage = response.usage.map(|u| TokenUsage {
             input_tokens: u.input_tokens,
             output_tokens: u.output_tokens,
+            cached_input_tokens: None,
         });
 
         if let Some(output) = response.output {
@@ -792,7 +942,7 @@ impl BedrockProvider {
 
     async fn send_converse_request(
         &self,
-        credentials: &AwsCredentials,
+        auth: &BedrockAuth,
         model: &str,
         request_body: &ConverseRequest,
     ) -> anyhow::Result<ConverseResponse> {
@@ -828,44 +978,62 @@ impl BedrockProvider {
                 }
             }
         }
-        let url = Self::endpoint_url(&credentials.region, model);
-        let canonical_uri = Self::canonical_uri(model);
-        let now = chrono::Utc::now();
-        let host = credentials.host();
-        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
 
-        let mut headers_to_sign = vec![
-            ("content-type".to_string(), "application/json".to_string()),
-            ("host".to_string(), host),
-            ("x-amz-date".to_string(), amz_date.clone()),
-        ];
-        if let Some(ref token) = credentials.session_token {
-            headers_to_sign.push(("x-amz-security-token".to_string(), token.clone()));
-        }
-        headers_to_sign.sort_by(|a, b| a.0.cmp(&b.0));
+        let response: reqwest::Response = match auth {
+            BedrockAuth::BearerToken(token) => {
+                let region = Self::resolve_region();
+                let url = Self::endpoint_url(&region, model);
 
-        let authorization = build_authorization_header(
-            credentials,
-            "POST",
-            &canonical_uri,
-            "",
-            &headers_to_sign,
-            &payload,
-            &now,
-        );
+                self.http_client()
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(payload)
+                    .send()
+                    .await?
+            }
+            BedrockAuth::SigV4(credentials) => {
+                let url = Self::endpoint_url(&credentials.region, model);
+                let canonical_uri = Self::canonical_uri(model);
+                let now = chrono::Utc::now();
+                let host = credentials.host();
+                let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
 
-        let mut request = self
-            .http_client()
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("x-amz-date", &amz_date)
-            .header("authorization", &authorization);
+                let mut headers_to_sign = vec![
+                    ("content-type".to_string(), "application/json".to_string()),
+                    ("host".to_string(), host),
+                    ("x-amz-date".to_string(), amz_date.clone()),
+                ];
+                if let Some(ref session_token) = credentials.session_token {
+                    headers_to_sign
+                        .push(("x-amz-security-token".to_string(), session_token.clone()));
+                }
+                headers_to_sign.sort_by(|a, b| a.0.cmp(&b.0));
 
-        if let Some(ref token) = credentials.session_token {
-            request = request.header("x-amz-security-token", token);
-        }
+                let authorization = build_authorization_header(
+                    credentials,
+                    "POST",
+                    &canonical_uri,
+                    "",
+                    &headers_to_sign,
+                    &payload,
+                    &now,
+                );
 
-        let response: reqwest::Response = request.body(payload).send().await?;
+                let mut request = self
+                    .http_client()
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .header("x-amz-date", &amz_date)
+                    .header("authorization", &authorization);
+
+                if let Some(ref session_token) = credentials.session_token {
+                    request = request.header("x-amz-security-token", session_token);
+                }
+
+                request.body(payload).send().await?
+            }
+        };
 
         if !response.status().is_success() {
             return Err(super::api_error("Bedrock", response).await);
@@ -884,6 +1052,7 @@ impl Provider for BedrockProvider {
         ProviderCapabilities {
             native_tool_calling: true,
             vision: true,
+            prompt_caching: false,
         }
     }
 
@@ -914,7 +1083,7 @@ impl Provider for BedrockProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let credentials = self.resolve_credentials().await?;
+        let auth = self.resolve_auth().await?;
 
         let system = system_prompt.map(|text| {
             let mut blocks = vec![SystemBlock::Text(TextBlock {
@@ -935,15 +1104,13 @@ impl Provider for BedrockProvider {
                 content: Self::parse_user_content_blocks(message),
             }],
             inference_config: Some(InferenceConfig {
-                max_tokens: DEFAULT_MAX_TOKENS,
+                max_tokens: self.max_tokens,
                 temperature,
             }),
             tool_config: None,
         };
 
-        let response = self
-            .send_converse_request(&credentials, model, &request)
-            .await?;
+        let response = self.send_converse_request(&auth, model, &request).await?;
 
         Self::parse_converse_response(response)
             .text
@@ -956,7 +1123,7 @@ impl Provider for BedrockProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let credentials = self.resolve_credentials().await?;
+        let auth = self.resolve_auth().await?;
 
         let (system_blocks, mut converse_messages) = Self::convert_messages(request.messages);
 
@@ -990,24 +1157,27 @@ impl Provider for BedrockProvider {
             system,
             messages: converse_messages,
             inference_config: Some(InferenceConfig {
-                max_tokens: DEFAULT_MAX_TOKENS,
+                max_tokens: self.max_tokens,
                 temperature,
             }),
             tool_config,
         };
 
         let response = self
-            .send_converse_request(&credentials, model, &converse_request)
+            .send_converse_request(&auth, model, &converse_request)
             .await?;
 
         Ok(Self::parse_converse_response(response))
     }
 
     async fn warmup(&self) -> anyhow::Result<()> {
-        if let Some(ref creds) = self.credentials {
-            let url = format!("https://{ENDPOINT_PREFIX}.{}.amazonaws.com/", creds.region);
-            let _ = self.http_client().get(&url).send().await;
-        }
+        let region = match self.auth {
+            Some(BedrockAuth::SigV4(ref creds)) => creds.region.clone(),
+            Some(BedrockAuth::BearerToken(_)) => Self::resolve_region(),
+            None => return Ok(()),
+        };
+        let url = format!("https://{ENDPOINT_PREFIX}.{region}.amazonaws.com/");
+        let _ = self.http_client().get(&url).send().await;
         Ok(())
     }
 }
@@ -1017,6 +1187,7 @@ impl Provider for BedrockProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::test_util::{EnvGuard, env_lock};
     use crate::providers::traits::ChatMessage;
 
     // ── SigV4 signing tests ─────────────────────────────────────
@@ -1170,7 +1341,13 @@ mod tests {
 
     #[tokio::test]
     async fn chat_fails_without_credentials() {
-        let provider = BedrockProvider { credentials: None };
+        let provider = {
+            let _env_lock = env_lock();
+            BedrockProvider {
+                auth: None,
+                max_tokens: DEFAULT_MAX_TOKENS,
+            }
+        };
         let result = provider
             .chat_with_system(None, "hello", "anthropic.claude-sonnet-4-6", 0.7)
             .await;
@@ -1179,9 +1356,51 @@ mod tests {
         assert!(
             err.contains("credentials not set")
                 || err.contains("169.254.169.254")
-                || err.to_lowercase().contains("credential"),
+                || err.to_lowercase().contains("credential")
+                || err.to_lowercase().contains("builder error"),
             "Expected missing-credentials style error, got: {err}"
         );
+    }
+
+    // ── Bearer token tests ──────────────────────────────────────
+
+    #[test]
+    fn creates_with_bearer_token() {
+        let provider = BedrockProvider::with_bearer_token("test-api-key");
+        assert!(provider.auth.is_some());
+        assert!(
+            matches!(provider.auth, Some(BedrockAuth::BearerToken(ref t)) if t == "test-api-key")
+        );
+    }
+
+    #[test]
+    fn bearer_token_from_env() {
+        let _env_lock = env_lock();
+        let _guard = EnvGuard::set("BEDROCK_API_KEY", Some("env-bearer-token"));
+        // Clear SigV4 vars to ensure Bearer is chosen.
+        let _ak_guard = EnvGuard::set("AWS_ACCESS_KEY_ID", None);
+        let _sk_guard = EnvGuard::set("AWS_SECRET_ACCESS_KEY", None);
+
+        let provider = BedrockProvider::new();
+        assert!(matches!(
+            provider.auth,
+            Some(BedrockAuth::BearerToken(ref t)) if t == "env-bearer-token"
+        ));
+    }
+
+    #[test]
+    fn bearer_token_precedence() {
+        let _env_lock = env_lock();
+        let _bearer_guard = EnvGuard::set("BEDROCK_API_KEY", Some("bearer-key"));
+        let _ak_guard = EnvGuard::set("AWS_ACCESS_KEY_ID", Some("AKIAEXAMPLE"));
+        let _sk_guard = EnvGuard::set("AWS_SECRET_ACCESS_KEY", Some("secret"));
+
+        let provider = BedrockProvider::new();
+        // Bearer token should take priority over SigV4 credentials.
+        assert!(matches!(
+            provider.auth,
+            Some(BedrockAuth::BearerToken(ref t)) if t == "bearer-key"
+        ));
     }
 
     // ── Endpoint URL tests ──────────────────────────────────────
@@ -1464,14 +1683,20 @@ mod tests {
 
     #[tokio::test]
     async fn warmup_without_credentials_is_noop() {
-        let provider = BedrockProvider { credentials: None };
+        let provider = BedrockProvider {
+            auth: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        };
         let result = provider.warmup().await;
         assert!(result.is_ok());
     }
 
     #[test]
     fn capabilities_reports_native_tool_calling() {
-        let provider = BedrockProvider { credentials: None };
+        let provider = BedrockProvider {
+            auth: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        };
         let caps = provider.capabilities();
         assert!(caps.native_tool_calling);
     }
@@ -1493,5 +1718,107 @@ mod tests {
         let json = r#"{"output": {"message": {"role": "assistant", "content": []}}}"#;
         let resp: ConverseResponse = serde_json::from_str(json).unwrap();
         assert!(resp.usage.is_none());
+    }
+
+    // ── Tool result fallback & merge tests ───────────────────────
+
+    #[test]
+    fn fallback_tool_result_emits_tool_result_block_not_text() {
+        // When tool message content is not valid JSON, we should still get
+        // a toolResult block (not a plain text user message).
+        let messages = vec![
+            ChatMessage::user("do something"),
+            ChatMessage::assistant(
+                r#"{"content":"","tool_calls":[{"id":"tool_1","name":"shell","arguments":"{}"}]}"#,
+            ),
+            ChatMessage {
+                role: "tool".to_string(),
+                content: "not valid json".to_string(),
+            },
+        ];
+        let (_, msgs) = BedrockProvider::convert_messages(&messages);
+        let tool_msg = &msgs[2];
+        assert_eq!(tool_msg.role, "user");
+        assert!(
+            matches!(&tool_msg.content[0], ContentBlock::ToolResult(_)),
+            "Expected ToolResult block, got {:?}",
+            tool_msg.content[0]
+        );
+    }
+
+    #[test]
+    fn fallback_recovers_tool_use_id_from_assistant() {
+        let messages = vec![
+            ChatMessage::user("run it"),
+            ChatMessage::assistant(
+                r#"{"content":"","tool_calls":[{"id":"tool_abc","name":"shell","arguments":"{}"}]}"#,
+            ),
+            ChatMessage {
+                role: "tool".to_string(),
+                content: "raw output with no json".to_string(),
+            },
+        ];
+        let (_, msgs) = BedrockProvider::convert_messages(&messages);
+        if let ContentBlock::ToolResult(ref wrapper) = msgs[2].content[0] {
+            assert_eq!(wrapper.tool_result.tool_use_id, "tool_abc");
+            assert_eq!(wrapper.tool_result.status, "error");
+        } else {
+            panic!("Expected ToolResult block");
+        }
+    }
+
+    #[test]
+    fn consecutive_tool_results_merged_into_single_message() {
+        let messages = vec![
+            ChatMessage::user("do two things"),
+            ChatMessage::assistant(
+                r#"{"content":"","tool_calls":[{"id":"t1","name":"a","arguments":"{}"},{"id":"t2","name":"b","arguments":"{}"}]}"#,
+            ),
+            ChatMessage::tool(r#"{"tool_call_id":"t1","content":"result 1"}"#),
+            ChatMessage::tool(r#"{"tool_call_id":"t2","content":"result 2"}"#),
+        ];
+        let (_, msgs) = BedrockProvider::convert_messages(&messages);
+        // Should be: user, assistant, user (merged tool results)
+        assert_eq!(msgs.len(), 3, "Expected 3 messages, got {}", msgs.len());
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(
+            msgs[2].content.len(),
+            2,
+            "Expected 2 tool results in one message"
+        );
+        assert!(matches!(&msgs[2].content[0], ContentBlock::ToolResult(_)));
+        assert!(matches!(&msgs[2].content[1], ContentBlock::ToolResult(_)));
+    }
+
+    #[test]
+    fn extract_tool_call_id_tries_multiple_field_names() {
+        assert_eq!(
+            BedrockProvider::extract_tool_call_id(r#"{"tool_call_id":"a"}"#),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            BedrockProvider::extract_tool_call_id(r#"{"tool_use_id":"b"}"#),
+            Some("b".to_string())
+        );
+        assert_eq!(
+            BedrockProvider::extract_tool_call_id(r#"{"toolUseId":"c"}"#),
+            Some("c".to_string())
+        );
+        assert_eq!(
+            BedrockProvider::extract_tool_call_id("not json at all"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_tool_result_accepts_alternate_id_fields() {
+        let msg =
+            BedrockProvider::parse_tool_result_message(r#"{"tool_use_id":"x","content":"ok"}"#);
+        assert!(msg.is_some());
+        if let ContentBlock::ToolResult(ref wrapper) = msg.unwrap().content[0] {
+            assert_eq!(wrapper.tool_result.tool_use_id, "x");
+        } else {
+            panic!("Expected ToolResult");
+        }
     }
 }

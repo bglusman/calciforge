@@ -27,8 +27,8 @@ use serde::Deserialize;
 /// # Example
 ///
 /// ```rust,ignore
-/// use zeroclaw::providers::telnyx::TelnyxProvider;
-/// use zeroclaw::providers::Provider;
+/// use nonzeroclaw::providers::telnyx::TelnyxProvider;
+/// use nonzeroclaw::providers::Provider;
 ///
 /// let provider = TelnyxProvider::new(Some("your-api-key"));
 /// let response = provider.chat("Hello!", "openai/gpt-4o", 0.7).await?;

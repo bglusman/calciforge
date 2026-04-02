@@ -50,7 +50,7 @@ fn nzc_policy() -> Arc<dyn ClashPolicy> {
         .parent()
         .unwrap()
         .join("clash/examples/policy.star");
-    Arc::new(StarlarkPolicy::load(path))
+    Arc::new(StarlarkPolicy::load_with_profiles(path))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -547,3 +547,4 @@ fn file_write_renee_any_path_review() {
         );
     }
 }
+

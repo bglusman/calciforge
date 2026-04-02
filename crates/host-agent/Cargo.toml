@@ -1,0 +1,99 @@
+[package]
+name = "host-agent"
+version = "0.2.0"
+edition = "2021"
+description = "PolyClaw v3 Host-Agent — mTLS RPC server for ZFS/systemd/PCT delegation"
+license = "MIT"
+
+[[bin]]
+name = "clash-host-agent"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# HTTP server
+axum = { version = "0.7", features = ["http1", "http2"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# TLS/mTLS
+tokio-rustls = { version = "0.26", features = ["ring"] }
+rustls = { version = "0.23", features = ["ring", "std"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# UUID for audit IDs
+uuid = { version = "1", features = ["v4", "serde", "std", "rng"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Random token generation (P1-5)
+rand = "0.8"
+
+# HMAC for secure tokens (P1-5)
+hmac = "0.12"
+
+# SHA-256 for hashing (P1-6)
+sha2 = "0.10"
+hex = "0.4"
+
+# Constant-time comparison to prevent timing attacks (P-C6)
+subtle = "2"
+
+# Per-CN rate limiting (P-B5)
+dashmap = "6"
+
+# Regex for command validation
+regex = "1"
+
+# Unix user lookup (P1-8)
+nix = { version = "0.28", features = ["user"] }
+
+# Channel messaging (Signal integration later)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Config file path expansion
+shellexpand = "3"
+
+# Glob for sudoers.d/* scanning in perm_warn
+glob = "0.3"
+
+# Async trait support for Adapter trait
+async-trait = "0.1"
+
+# Signal handling for graceful shutdown
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Certificate parsing
+x509-parser = "0.16"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
