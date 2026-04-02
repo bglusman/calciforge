@@ -18,7 +18,7 @@
 //! OpenClaw's native Signal support. PolyClaw receives webhooks from OpenClaw
 //! and sends replies via the /tools/invoke API.
 
+pub mod matrix;
 pub mod signal;
 pub mod telegram;
-pub mod matrix;
 pub mod whatsapp;

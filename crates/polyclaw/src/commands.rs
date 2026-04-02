@@ -12,12 +12,12 @@
 //! are handled after auth via [`CommandHandler::handle_switch`] and
 //! [`CommandHandler::cmd_status_for_identity`] respectively.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::collections::HashMap;
-use std::time::Instant;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
 use crate::config::PolyConfig;
@@ -117,7 +117,8 @@ impl CommandHandler {
     /// Call this after a successful agent dispatch with the measured latency.
     pub fn record_dispatch(&self, latency_ms: u64) {
         self.messages_routed.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_ms.fetch_add(latency_ms, Ordering::Relaxed);
+        self.total_latency_ms
+            .fetch_add(latency_ms, Ordering::Relaxed);
     }
 
     /// Return the currently active agent ID for the given identity.
@@ -155,20 +156,20 @@ impl CommandHandler {
         let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
 
         match cmd.as_str() {
-            "!help"     => Some(self.cmd_help()),
+            "!help" => Some(self.cmd_help()),
             "!commands" => Some(self.cmd_help()),
             // !status needs auth — return None so the caller resolves identity first.
-            "!status"   => None,
-            "!agents"   => Some(self.cmd_agents()),
-            "!metrics"  => Some(self.cmd_metrics()),
-            "!ping"     => Some("pong".to_string()),
+            "!status" => None,
+            "!agents" => Some(self.cmd_agents()),
+            "!metrics" => Some(self.cmd_metrics()),
+            "!ping" => Some("pong".to_string()),
             // !sessions needs auth — return None so caller resolves identity first.
             "!sessions" => None,
             // !switch needs auth — return None here so the caller can do auth
             // first, then call handle_switch().
-            "!switch"   => None,
+            "!switch" => None,
             // !default needs auth — switches back to the configured default agent.
-            "!default"  => None,
+            "!default" => None,
             _ => None, // Unknown !command — fall through to agent
         }
     }
@@ -234,12 +235,7 @@ impl CommandHandler {
 
     /// Respond to unknown commands with a helpful message.
     pub fn unknown_command(&self, text: &str) -> String {
-        let cmd = text
-            .trim()
-            .splitn(2, ' ')
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let cmd = text.trim().splitn(2, ' ').next().unwrap_or("").to_string();
         format!(
             "⚠️ Unknown command: {}\n\nUse !help or !commands to see available commands.",
             cmd
@@ -311,10 +307,7 @@ impl CommandHandler {
         {
             Ok(()) => {}
             Err(e) => {
-                return (
-                    format!("⚠️ Failed to send approval: {e}"),
-                    None,
-                );
+                return (format!("⚠️ Failed to send approval: {e}"), None);
             }
         }
 
@@ -385,10 +378,7 @@ impl CommandHandler {
         {
             Ok(()) => {}
             Err(e) => {
-                return (
-                    format!("⚠️ Failed to send denial: {e}"),
-                    None,
-                );
+                return (format!("⚠️ Failed to send denial: {e}"), None);
             }
         }
 
@@ -473,48 +463,49 @@ impl CommandHandler {
             .unwrap_or_else(|| "none".to_string());
 
         // Try to get runtime status from the adapter (for NZC and others that support it)
-        let runtime_info = if let Some(agent_cfg) = self.config.agents.iter().find(|a| a.id == active_agent) {
-            match crate::adapters::build_adapter(agent_cfg) {
-                Ok(adapter) => {
-                    if let Some(status) = adapter.get_runtime_status().await {
-                        // Format runtime status with alloy constituents if present
-                        let constituents_str = status.alloy_constituents.as_ref()
-                            .map(|constituents| {
-                                let parts: Vec<String> = constituents
-                                    .iter()
-                                    .map(|(prov, model)| format!("    - {prov}: {model}"))
-                                    .collect();
-                                format!("\n  constituents:\n{}", parts.join("\n"))
-                            })
-                            .unwrap_or_default();
+        let runtime_info =
+            if let Some(agent_cfg) = self.config.agents.iter().find(|a| a.id == active_agent) {
+                match crate::adapters::build_adapter(agent_cfg) {
+                    Ok(adapter) => {
+                        if let Some(status) = adapter.get_runtime_status().await {
+                            // Format runtime status with alloy constituents if present
+                            let constituents_str = status
+                                .alloy_constituents
+                                .as_ref()
+                                .map(|constituents| {
+                                    let parts: Vec<String> = constituents
+                                        .iter()
+                                        .map(|(prov, model)| format!("    - {prov}: {model}"))
+                                        .collect();
+                                    format!("\n  constituents:\n{}", parts.join("\n"))
+                                })
+                                .unwrap_or_default();
 
-                        format!(
-                            "\n  provider: {}\n  model: {}{}",
-                            status.provider,
-                            status.model,
-                            constituents_str
-                        )
-                    } else {
-                        // Adapter doesn't support runtime status, fall back to config
-                        let model = agent_cfg.model.as_deref().unwrap_or("default");
-                        let provider = &agent_cfg.kind;
-                        if provider.contains("alloy") || model.contains("alloy") {
-                            format!("\n  provider: {provider} (alloy)\n  model: {model}")
+                            format!(
+                                "\n  provider: {}\n  model: {}{}",
+                                status.provider, status.model, constituents_str
+                            )
                         } else {
-                            format!("\n  provider: {provider}\n  model: {model}")
+                            // Adapter doesn't support runtime status, fall back to config
+                            let model = agent_cfg.model.as_deref().unwrap_or("default");
+                            let provider = &agent_cfg.kind;
+                            if provider.contains("alloy") || model.contains("alloy") {
+                                format!("\n  provider: {provider} (alloy)\n  model: {model}")
+                            } else {
+                                format!("\n  provider: {provider}\n  model: {model}")
+                            }
                         }
                     }
+                    Err(_) => {
+                        // Failed to build adapter, use config
+                        let model = agent_cfg.model.as_deref().unwrap_or("default");
+                        let provider = &agent_cfg.kind;
+                        format!("\n  provider: {provider}\n  model: {model}")
+                    }
                 }
-                Err(_) => {
-                    // Failed to build adapter, use config
-                    let model = agent_cfg.model.as_deref().unwrap_or("default");
-                    let provider = &agent_cfg.kind;
-                    format!("\n  provider: {provider}\n  model: {model}")
-                }
-            }
-        } else {
-            String::new()
-        };
+            } else {
+                String::new()
+            };
 
         // Build per-agent model summary: "librarian (claude-sonnet-4-6), max (default)"
         let agent_summary: Vec<String> = self
@@ -566,7 +557,12 @@ impl CommandHandler {
         let session_arg = args.get(1).map(|s| s.to_string());
 
         // Look up the routing rule for this identity.
-        let routing_rule = match self.config.routing.iter().find(|r| r.identity == identity_id) {
+        let routing_rule = match self
+            .config
+            .routing
+            .iter()
+            .find(|r| r.identity == identity_id)
+        {
             Some(r) => r,
             None => {
                 return "⚠️ No routing rule found for your identity.".to_string();
@@ -578,25 +574,32 @@ impl CommandHandler {
         let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
             self.config.agents.iter().map(|a| a.id.as_str()).collect()
         } else {
-            routing_rule.allowed_agents.iter().map(|s| s.as_str()).collect()
+            routing_rule
+                .allowed_agents
+                .iter()
+                .map(|s| s.as_str())
+                .collect()
         };
 
         // Case-insensitive match of the requested agent against allowed list,
         // checking both agent id and any configured aliases.
-        let matched_agent = allowed.iter().find(|&&a| {
-            // Direct id match
-            if a.eq_ignore_ascii_case(&agent_arg) {
-                return true;
-            }
-            // Alias match — look up the agent and check its aliases
-            if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
-                return agent_cfg
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
-            }
-            false
-        }).copied();
+        let matched_agent = allowed
+            .iter()
+            .find(|&&a| {
+                // Direct id match
+                if a.eq_ignore_ascii_case(&agent_arg) {
+                    return true;
+                }
+                // Alias match — look up the agent and check its aliases
+                if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
+                    return agent_cfg
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
+                }
+                false
+            })
+            .copied();
 
         match matched_agent {
             None => {
@@ -665,7 +668,12 @@ impl CommandHandler {
         }
 
         // Look up the routing rule for this identity.
-        let routing_rule = match self.config.routing.iter().find(|r| r.identity == identity_id) {
+        let routing_rule = match self
+            .config
+            .routing
+            .iter()
+            .find(|r| r.identity == identity_id)
+        {
             Some(r) => r,
             None => {
                 return "⚠️ No routing rule found for your identity.".to_string();
@@ -676,22 +684,29 @@ impl CommandHandler {
         let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
             self.config.agents.iter().map(|a| a.id.as_str()).collect()
         } else {
-            routing_rule.allowed_agents.iter().map(|s| s.as_str()).collect()
+            routing_rule
+                .allowed_agents
+                .iter()
+                .map(|s| s.as_str())
+                .collect()
         };
 
         // Find the matched agent (case-insensitive, checking aliases).
-        let matched_agent = allowed.iter().find(|&&a| {
-            if a.eq_ignore_ascii_case(&agent_arg) {
-                return true;
-            }
-            if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
-                return agent_cfg
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
-            }
-            false
-        }).copied();
+        let matched_agent = allowed
+            .iter()
+            .find(|&&a| {
+                if a.eq_ignore_ascii_case(&agent_arg) {
+                    return true;
+                }
+                if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
+                    return agent_cfg
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
+                }
+                false
+            })
+            .copied();
 
         let agent_id = match matched_agent {
             None => {
@@ -839,7 +854,10 @@ impl CommandHandler {
             .unwrap_or("none");
 
         // Get model/provider info for the default agent
-        let model_info = self.config.agents.iter()
+        let model_info = self
+            .config
+            .agents
+            .iter()
             .find(|a| a.id == default_agent)
             .map(|agent| {
                 let model = agent.model.as_deref().unwrap_or("default");
@@ -866,7 +884,11 @@ impl CommandHandler {
         for agent in &self.config.agents {
             // For CLI agents, show command instead of endpoint
             let location = if agent.kind == "cli" {
-                agent.command.as_deref().unwrap_or("(no command)").to_string()
+                agent
+                    .command
+                    .as_deref()
+                    .unwrap_or("(no command)")
+                    .to_string()
             } else {
                 agent.endpoint.clone()
             };
@@ -888,9 +910,7 @@ impl CommandHandler {
             0
         };
 
-        format!(
-            "PolyClaw v3 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms"
-        )
+        format!("PolyClaw v3 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms")
     }
 }
 
@@ -949,6 +969,9 @@ mod tests {
                     model: None,
                     auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                     api_key: None,
+                    openclaw_agent_id: None,
+                    reply_port: None,
+                    reply_auth_token: None,
                     command: None,
                     args: None,
                     env: None,
@@ -969,6 +992,9 @@ mod tests {
                     model: None,
                     auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                     api_key: None,
+                    openclaw_agent_id: None,
+                    reply_port: None,
+                    reply_auth_token: None,
                     command: None,
                     args: None,
                     env: None,
@@ -1053,7 +1079,10 @@ mod tests {
     fn test_status_handle_returns_none_pre_auth() {
         // !status must NOT be handled pre-auth — it needs identity context
         let h = make_handler();
-        assert!(h.handle("!status").is_none(), "!status must return None from handle()");
+        assert!(
+            h.handle("!status").is_none(),
+            "!status must return None from handle()"
+        );
         assert!(h.handle("!STATUS").is_none());
         assert!(h.handle("!Status").is_none());
     }
@@ -1080,7 +1109,10 @@ mod tests {
         let h = make_handler();
         // Default (no switch): should show librarian
         let reply = h.cmd_status_for_identity("brian").await;
-        assert!(reply.contains("librarian"), "should show active agent 'librarian'");
+        assert!(
+            reply.contains("librarian"),
+            "should show active agent 'librarian'"
+        );
     }
 
     #[tokio::test]
@@ -1089,9 +1121,16 @@ mod tests {
         // Switch brian to custodian
         h.handle_switch("!switch custodian", "brian");
         let reply = h.cmd_status_for_identity("brian").await;
-        assert!(reply.contains("custodian"), "status should reflect !switch: {}", reply);
-        assert!(!reply.contains("librarian") || reply.contains("custodian"),
-                "status should show switched agent: {}", reply);
+        assert!(
+            reply.contains("custodian"),
+            "status should reflect !switch: {}",
+            reply
+        );
+        assert!(
+            !reply.contains("librarian") || reply.contains("custodian"),
+            "status should show switched agent: {}",
+            reply
+        );
     }
 
     #[tokio::test]
@@ -1101,8 +1140,16 @@ mod tests {
         // brian switched to custodian — david should still see librarian
         let brian_reply = h.cmd_status_for_identity("brian").await;
         let david_reply = h.cmd_status_for_identity("david").await;
-        assert!(brian_reply.contains("custodian"), "brian should see custodian: {}", brian_reply);
-        assert!(david_reply.contains("librarian"), "david should still see librarian: {}", david_reply);
+        assert!(
+            brian_reply.contains("custodian"),
+            "brian should see custodian: {}",
+            brian_reply
+        );
+        assert!(
+            david_reply.contains("librarian"),
+            "david should still see librarian: {}",
+            david_reply
+        );
     }
 
     #[tokio::test]
@@ -1134,7 +1181,11 @@ mod tests {
         }
         let h = CommandHandler::new(Arc::new(config));
         let reply = h.handle("!agents").unwrap();
-        assert!(reply.contains("model: claude-sonnet-4-6"), "should show configured model: {}", reply);
+        assert!(
+            reply.contains("model: claude-sonnet-4-6"),
+            "should show configured model: {}",
+            reply
+        );
     }
 
     #[tokio::test]
@@ -1142,8 +1193,16 @@ mod tests {
         let h = make_handler();
         let reply = h.cmd_status_for_identity("brian").await;
         // Both agents should appear in the agents summary line with their model (default since none set)
-        assert!(reply.contains("librarian (default)"), "should show librarian with model: {}", reply);
-        assert!(reply.contains("custodian (default)"), "should show custodian with model: {}", reply);
+        assert!(
+            reply.contains("librarian (default)"),
+            "should show librarian with model: {}",
+            reply
+        );
+        assert!(
+            reply.contains("custodian (default)"),
+            "should show custodian with model: {}",
+            reply
+        );
     }
 
     #[test]
@@ -1196,7 +1255,10 @@ mod tests {
         // !STATUS now requires identity context — returns None from handle()
         assert!(h.handle("!STATUS").is_none());
         // cmd_status_for_identity is case-insensitive at the identity level
-        assert!(h.cmd_status_for_identity("brian").await.contains("version:"));
+        assert!(h
+            .cmd_status_for_identity("brian")
+            .await
+            .contains("version:"));
     }
 
     // --- record_dispatch counter ---
@@ -1242,7 +1304,11 @@ mod tests {
 
         // Switch to custodian
         let reply = h.handle_switch("!switch custodian", "brian");
-        assert!(reply.contains("custodian"), "reply should mention the agent: {}", reply);
+        assert!(
+            reply.contains("custodian"),
+            "reply should mention the agent: {}",
+            reply
+        );
         assert!(reply.contains('✅'), "should be a success reply: {}", reply);
 
         // Active agent is now custodian
@@ -1268,7 +1334,11 @@ mod tests {
         // david is restricted to allowed_agents = ["librarian"]
         let reply = h.handle_switch("!switch custodian", "david");
         assert!(reply.contains("⚠️"), "should be a rejection: {}", reply);
-        assert!(reply.contains("custodian"), "should mention the rejected agent: {}", reply);
+        assert!(
+            reply.contains("custodian"),
+            "should mention the rejected agent: {}",
+            reply
+        );
         // Active agent should NOT have changed
         assert_eq!(h.active_agent_for("david"), Some("librarian".to_string()));
     }
@@ -1278,7 +1348,11 @@ mod tests {
         let h = make_handler();
         let reply = h.handle_switch("!switch nonexistent", "brian");
         assert!(reply.contains("⚠️"), "should be a rejection: {}", reply);
-        assert!(reply.contains("nonexistent"), "should mention the requested agent: {}", reply);
+        assert!(
+            reply.contains("nonexistent"),
+            "should mention the requested agent: {}",
+            reply
+        );
         // Should list valid agents
         assert!(
             reply.contains("librarian") || reply.contains("custodian"),
@@ -1291,8 +1365,11 @@ mod tests {
     fn test_switch_without_agent_arg_returns_usage() {
         let h = make_handler();
         let reply = h.handle_switch("!switch", "brian");
-        assert!(reply.to_lowercase().contains("usage") || reply.contains("!switch"), 
-                "should show usage: {}", reply);
+        assert!(
+            reply.to_lowercase().contains("usage") || reply.contains("!switch"),
+            "should show usage: {}",
+            reply
+        );
     }
 
     #[test]
@@ -1300,7 +1377,11 @@ mod tests {
         let h = make_handler();
         // "CUSTODIAN" should match "custodian"
         let reply = h.handle_switch("!switch CUSTODIAN", "brian");
-        assert!(reply.contains('✅'), "case-insensitive switch should succeed: {}", reply);
+        assert!(
+            reply.contains('✅'),
+            "case-insensitive switch should succeed: {}",
+            reply
+        );
         assert_eq!(h.active_agent_for("brian"), Some("custodian".to_string()));
     }
 
@@ -1309,14 +1390,22 @@ mod tests {
         let h = make_handler();
         // librarian has display_name = "Librarian" in registry
         let reply = h.handle_switch("!switch librarian", "brian");
-        assert!(reply.contains("Librarian"), "should show display name: {}", reply);
+        assert!(
+            reply.contains("Librarian"),
+            "should show display name: {}",
+            reply
+        );
     }
 
     #[test]
     fn test_switch_no_routing_rule_for_identity() {
         let h = make_handler();
         let reply = h.handle_switch("!switch librarian", "unknown_identity");
-        assert!(reply.contains("⚠️"), "should reject unknown identity: {}", reply);
+        assert!(
+            reply.contains("⚠️"),
+            "should reject unknown identity: {}",
+            reply
+        );
     }
 
     #[test]
@@ -1351,7 +1440,11 @@ mod tests {
         let h = make_handler();
         // "keeper" is an alias for custodian
         let reply = h.handle_switch("!switch keeper", "brian");
-        assert!(reply.contains('✅'), "alias switch should succeed: {}", reply);
+        assert!(
+            reply.contains('✅'),
+            "alias switch should succeed: {}",
+            reply
+        );
         assert_eq!(h.active_agent_for("brian"), Some("custodian".to_string()));
     }
 
@@ -1359,7 +1452,11 @@ mod tests {
     fn test_switch_by_alias_case_insensitive() {
         let h = make_handler();
         let reply = h.handle_switch("!switch CUST", "brian");
-        assert!(reply.contains('✅'), "case-insensitive alias switch should succeed: {}", reply);
+        assert!(
+            reply.contains('✅'),
+            "case-insensitive alias switch should succeed: {}",
+            reply
+        );
         assert_eq!(h.active_agent_for("brian"), Some("custodian".to_string()));
     }
 
@@ -1368,7 +1465,11 @@ mod tests {
         let h = make_handler();
         // david is restricted to allowed_agents = ["librarian"]; "keeper" is custodian alias
         let reply = h.handle_switch("!switch keeper", "david");
-        assert!(reply.contains("⚠️"), "alias outside allowed list must be rejected: {}", reply);
+        assert!(
+            reply.contains("⚠️"),
+            "alias outside allowed list must be rejected: {}",
+            reply
+        );
         assert_eq!(h.active_agent_for("david"), Some("librarian".to_string()));
     }
 
@@ -1379,7 +1480,10 @@ mod tests {
     #[test]
     fn test_default_command_not_handled_pre_auth() {
         let h = make_handler();
-        assert!(h.handle("!default").is_none(), "!default must return None from handle()");
+        assert!(
+            h.handle("!default").is_none(),
+            "!default must return None from handle()"
+        );
         assert!(h.handle("!DEFAULT").is_none());
     }
 
@@ -1402,7 +1506,11 @@ mod tests {
 
         // !default should reset to librarian (brian's configured default)
         let reply = h.handle_default("brian");
-        assert!(reply.contains("librarian"), "reply should name the default agent: {}", reply);
+        assert!(
+            reply.contains("librarian"),
+            "reply should name the default agent: {}",
+            reply
+        );
         assert!(reply.contains('✅'), "should be a success reply: {}", reply);
         assert_eq!(h.active_agent_for("brian"), Some("librarian".to_string()));
     }
@@ -1412,7 +1520,11 @@ mod tests {
         let h = make_handler();
         // Already at librarian (the default) — !default should still succeed
         let reply = h.handle_default("brian");
-        assert!(reply.contains('✅'), "!default from default should still succeed: {}", reply);
+        assert!(
+            reply.contains('✅'),
+            "!default from default should still succeed: {}",
+            reply
+        );
         assert_eq!(h.active_agent_for("brian"), Some("librarian".to_string()));
     }
 
@@ -1420,7 +1532,11 @@ mod tests {
     fn test_default_no_routing_rule_returns_error() {
         let h = make_handler();
         let reply = h.handle_default("unknown_identity");
-        assert!(reply.contains("⚠️"), "unknown identity should get error: {}", reply);
+        assert!(
+            reply.contains("⚠️"),
+            "unknown identity should get error: {}",
+            reply
+        );
     }
 
     #[test]
@@ -1437,6 +1553,10 @@ mod tests {
     fn test_help_mentions_default_command() {
         let h = make_handler();
         let reply = h.handle("!help").unwrap();
-        assert!(reply.contains("!default"), "help should mention !default: {}", reply);
+        assert!(
+            reply.contains("!default"),
+            "help should mention !default: {}",
+            reply
+        );
     }
 }

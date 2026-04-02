@@ -68,7 +68,12 @@ impl ZeroClawAdapter {
             .timeout(Duration::from_secs(300))
             .build()
             .expect("reqwest client");
-        Self { client, endpoint, api_key, timeout }
+        Self {
+            client,
+            endpoint,
+            api_key,
+            timeout,
+        }
     }
 }
 
@@ -195,11 +200,7 @@ mod tests {
 
     #[test]
     fn test_default_timeout() {
-        let adapter = ZeroClawAdapter::new(
-            "http://localhost".to_string(),
-            "key".to_string(),
-            None,
-        );
+        let adapter = ZeroClawAdapter::new("http://localhost".to_string(), "key".to_string(), None);
         assert_eq!(adapter.timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
     }
 

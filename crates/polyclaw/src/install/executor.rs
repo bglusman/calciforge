@@ -35,8 +35,14 @@ use super::{
     cli::InstallArgs,
     health::{health_check_claw, HealthChecker, HttpHealthChecker, MockHealthChecker},
     json5::parse_json5_relaxed,
-    model::{backup_filename, check_version_compatibility, ClawKind, ClawTarget, InstallTarget, VersionCompatibility},
-    ssh::{detect_nzc_version, detect_openclaw_version, test_connectivity, MockSshClient, RealSshClient, SshClient},
+    model::{
+        backup_filename, check_version_compatibility, ClawKind, ClawTarget, InstallTarget,
+        VersionCompatibility,
+    },
+    ssh::{
+        detect_nzc_version, detect_openclaw_version, test_connectivity, MockSshClient,
+        RealSshClient, SshClient,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -167,7 +173,10 @@ pub async fn run_install(target: InstallTarget, args: &InstallArgs) -> Result<()
     let summary = run_install_with_deps(target, args, deps).await;
     print_summary(&summary);
     if summary.any_failed() {
-        bail!("installation completed with {} failure(s)", summary.failed_count());
+        bail!(
+            "installation completed with {} failure(s)",
+            summary.failed_count()
+        );
     }
     Ok(())
 }
@@ -271,7 +280,9 @@ async fn install_claw(
 
     // ── Step 4: Version detection ────────────────────────────────────────────
     let detected_version = run_version_detection(claw, deps);
-    let version_str = detected_version.clone().unwrap_or_else(|| "unknown".to_string());
+    let version_str = detected_version
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
     steps.push(StepResult {
         step: InstallStep::VersionDetection,
         outcome: StepOutcome::Ok {
@@ -381,11 +392,7 @@ fn run_ssh_connectivity(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
     }
 }
 
-async fn run_health_check(
-    claw: &ClawTarget,
-    deps: &ExecutorDeps,
-    step: InstallStep,
-) -> StepResult {
+async fn run_health_check(claw: &ClawTarget, deps: &ExecutorDeps, step: InstallStep) -> StepResult {
     match health_check_claw(deps.health.as_ref(), &claw.adapter, &claw.endpoint).await {
         Ok(()) => StepResult {
             step,
@@ -510,11 +517,13 @@ fn run_version_detection(claw: &ClawTarget, deps: &ExecutorDeps) -> Option<Strin
     match &claw.adapter {
         ClawKind::OpenClawHttp => {
             let config_path = remote_config_path(claw);
-            detect_openclaw_version(deps.ssh.as_ref(), &claw.host, key, &config_path).ok().flatten()
+            detect_openclaw_version(deps.ssh.as_ref(), &claw.host, key, &config_path)
+                .ok()
+                .flatten()
         }
-        ClawKind::NzcNative => {
-            detect_nzc_version(deps.ssh.as_ref(), &claw.host, key).ok().flatten()
-        }
+        ClawKind::NzcNative => detect_nzc_version(deps.ssh.as_ref(), &claw.host, key)
+            .ok()
+            .flatten(),
         _ => None,
     }
 }
@@ -688,10 +697,8 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
         .map_err(|e| anyhow::anyhow!("failed to read remote config: {}", e))?;
 
     let patched = match &claw.adapter {
-        ClawKind::OpenClawHttp => {
-            patch_openclaw_config(&current, &claw.name, &claw.endpoint)
-                .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?
-        }
+        ClawKind::OpenClawHttp => patch_openclaw_config(&current, &claw.name, &claw.endpoint)
+            .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
         ClawKind::NzcNative => {
             // NZC uses TOML — full patching deferred; use safe stub for now.
             // TODO (follow-on): implement real TOML patching for NZC config.
@@ -762,7 +769,9 @@ fn patch_openclaw_config(
         .ok_or_else(|| anyhow::anyhow!("hooks field is not a JSON object"))?;
 
     // Enable hooks globally if not already.
-    hooks_obj.entry("enabled").or_insert(serde_json::json!(true));
+    hooks_obj
+        .entry("enabled")
+        .or_insert(serde_json::json!(true));
 
     // Ensure entries sub-object exists.
     let entries = hooks_obj
@@ -880,14 +889,20 @@ fn print_summary(summary: &InstallSummary) {
             match rollback {
                 RollbackStatus::Restored => println!("  ↩ rollback: config restored from backup"),
                 RollbackStatus::Failed { reason } => {
-                    println!("  ⚠ rollback FAILED: {} — MANUAL INTERVENTION REQUIRED", reason)
+                    println!(
+                        "  ⚠ rollback FAILED: {} — MANUAL INTERVENTION REQUIRED",
+                        reason
+                    )
                 }
                 RollbackStatus::NotApplicable => {}
             }
         }
     }
-    println!("── {} succeeded, {} failed ──────────────────────────────",
-        summary.succeeded_count(), summary.failed_count());
+    println!(
+        "── {} succeeded, {} failed ──────────────────────────────",
+        summary.succeeded_count(),
+        summary.failed_count()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -914,7 +929,7 @@ mod tests {
         // backup
         ssh.push_success(""); // cp
         ssh.push_success("EXISTS\n"); // verify
-        // version detection (jq)
+                                      // version detection (jq)
         ssh.push_success("2026.3.13\n");
         // apply: read config
         ssh.push_success(r#"{"version": "2026.3.13"}"#);
@@ -960,7 +975,11 @@ mod tests {
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
-        assert!(result.success, "expected success, steps: {:?}", result.steps);
+        assert!(
+            result.success,
+            "expected success, steps: {:?}",
+            result.steps
+        );
         // No rollback needed
         assert!(matches!(
             result.rollback_status,
@@ -985,7 +1004,7 @@ mod tests {
         ssh.push_success("2026.3.13\n"); // version (jq)
         ssh.push_success(r#"{"version": "2026.3.13"}"#); // read config for apply
         ssh.push_success(""); // write config
-        // read-back verify after write
+                              // read-back verify after write
         ssh.push_success(r#"{"version": "2026.3.13", "hooks": {"enabled": true, "entries": {"bad-claw": {"enabled": true, "url": "http://host:18789", "token": "tok"}}}}"#);
         ssh.push_success(""); // rollback: restore_backup
 
@@ -993,8 +1012,8 @@ mod tests {
         // call 1: baseline → OK
         // call 2: post-apply → FAIL (triggers rollback)
         let health = MockHealthChecker::new();
-        health.push_ok();                                     // baseline health check
-        health.push_err("gateway down after change");         // post-apply health check
+        health.push_ok(); // baseline health check
+        health.push_err("gateway down after change"); // post-apply health check
 
         let args = InstallArgs::default();
         let deps = ExecutorDeps::mock(ssh, health);
@@ -1056,7 +1075,11 @@ mod tests {
 
         let result = install_claw(&claw, &args, &deps).await;
         assert!(!result.success);
-        let ssh_step = result.steps.iter().find(|s| s.step == InstallStep::SshConnectivity).unwrap();
+        let ssh_step = result
+            .steps
+            .iter()
+            .find(|s| s.step == InstallStep::SshConnectivity)
+            .unwrap();
         assert!(ssh_step.outcome.is_failure());
     }
 
@@ -1068,7 +1091,7 @@ mod tests {
         // We need to repopulate the mock since make_openclaw_claw pre-loads responses.
         let ssh2 = MockSshClient::new();
         ssh2.push_success("OK\n"); // connectivity
-        // version detection (jq) — this is a read
+                                   // version detection (jq) — this is a read
         ssh2.push_success("2026.3.13\n");
         // No backup write, no apply write.
         drop(ssh); // don't use the original
@@ -1081,7 +1104,11 @@ mod tests {
 
         let result = install_claw(&claw, &args, &deps).await;
         // Dry run should "succeed" (no errors, just DryRun outcomes).
-        let apply_step = result.steps.iter().find(|s| s.step == InstallStep::Apply).unwrap();
+        let apply_step = result
+            .steps
+            .iter()
+            .find(|s| s.step == InstallStep::Apply)
+            .unwrap();
         assert!(
             matches!(apply_step.outcome, StepOutcome::DryRun { .. }),
             "apply in dry-run should be DryRun, got: {:?}",
@@ -1096,14 +1123,26 @@ mod tests {
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
-        assert!(result.success, "openai-compat claw should succeed: {:?}", result.steps);
+        assert!(
+            result.success,
+            "openai-compat claw should succeed: {:?}",
+            result.steps
+        );
 
         // SSH connectivity step should be skipped
-        let ssh_step = result.steps.iter().find(|s| s.step == InstallStep::SshConnectivity).unwrap();
+        let ssh_step = result
+            .steps
+            .iter()
+            .find(|s| s.step == InstallStep::SshConnectivity)
+            .unwrap();
         assert!(matches!(ssh_step.outcome, StepOutcome::Skipped { .. }));
 
         // Backup step should be skipped
-        let bak_step = result.steps.iter().find(|s| s.step == InstallStep::Backup).unwrap();
+        let bak_step = result
+            .steps
+            .iter()
+            .find(|s| s.step == InstallStep::Backup)
+            .unwrap();
         assert!(matches!(bak_step.outcome, StepOutcome::Skipped { .. }));
     }
 
@@ -1165,8 +1204,8 @@ mod tests {
         // Actually or_insert only inserts if absent, so false stays. That's intentional:
         // we don't forcibly override the user's enabled: false — we just add the entry.
         // The user can re-enable manually. Let's verify the entry is still added.
-        let patched = patch_openclaw_config(input, "polyclaw", "http://pc/hook")
-            .expect("should patch");
+        let patched =
+            patch_openclaw_config(input, "polyclaw", "http://pc/hook").expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         assert_eq!(v["hooks"]["entries"]["polyclaw"]["enabled"], true);
     }
@@ -1175,8 +1214,8 @@ mod tests {
     #[test]
     fn patch_openclaw_config_preserves_existing_token() {
         let input = r#"{"hooks": {"enabled": true, "entries": {"polyclaw": {"enabled": true, "url": "old", "token": "existing-tok"}}}}"#;
-        let patched = patch_openclaw_config(input, "polyclaw", "http://new/hook")
-            .expect("should patch");
+        let patched =
+            patch_openclaw_config(input, "polyclaw", "http://new/hook").expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         // Token preserved; URL updated.
         assert_eq!(v["hooks"]["entries"]["polyclaw"]["token"], "existing-tok");
@@ -1205,7 +1244,10 @@ mod tests {
     fn patch_nzc_config_stub_idempotent() {
         let input = "[agent]\nname = \"x\"\n[polyclaw]\nregistered = true\n";
         let patched = patch_nzc_config_stub(input, "claw");
-        assert_eq!(patched, input, "should not re-add [polyclaw] if already present");
+        assert_eq!(
+            patched, input,
+            "should not re-add [polyclaw] if already present"
+        );
     }
 
     /// S1 integration test: apply_remote_config via mock SSH writes a config
@@ -1238,10 +1280,18 @@ mod tests {
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = apply_remote_config(&claw, &deps);
-        assert!(result.is_ok(), "apply_remote_config should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "apply_remote_config should succeed: {:?}",
+            result
+        );
 
         let detail = result.unwrap();
-        assert!(detail.contains("patched"), "detail should mention patching: {}", detail);
+        assert!(
+            detail.contains("patched"),
+            "detail should mention patching: {}",
+            detail
+        );
     }
 
     /// S1 test: written config is verified to contain the hook.
@@ -1249,12 +1299,12 @@ mod tests {
     fn patch_openclaw_config_written_json_contains_hook() {
         let original = r#"{"version": "2026.3.13", "gateway": {"port": 18789}}"#;
         let endpoint = "http://polyclaw.internal:18799/hooks/polyclaw";
-        let patched = patch_openclaw_config(original, "polyclaw", endpoint)
-            .expect("patch succeeds");
+        let patched =
+            patch_openclaw_config(original, "polyclaw", endpoint).expect("patch succeeds");
 
         // Must parse as valid JSON.
-        let v: serde_json::Value = serde_json::from_str(&patched)
-            .expect("patched output must be valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&patched).expect("patched output must be valid JSON");
 
         // Original fields preserved.
         assert_eq!(v["version"], "2026.3.13");
@@ -1262,11 +1312,19 @@ mod tests {
 
         // Hook entry present.
         let entry = &v["hooks"]["entries"]["polyclaw"];
-        assert!(entry.is_object(), "hooks.entries.polyclaw must be an object");
+        assert!(
+            entry.is_object(),
+            "hooks.entries.polyclaw must be an object"
+        );
         assert_eq!(entry["enabled"], true);
         assert_eq!(entry["url"], endpoint);
-        assert!(entry["token"].as_str().map(|s| s.len() > 10).unwrap_or(false),
-            "token should be non-trivially long");
+        assert!(
+            entry["token"]
+                .as_str()
+                .map(|s| s.len() > 10)
+                .unwrap_or(false),
+            "token should be non-trivially long"
+        );
     }
 
     #[test]

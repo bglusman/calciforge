@@ -58,8 +58,8 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use super::{AdapterError, AgentAdapter, DispatchContext, RuntimeStatus};
 use super::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
+use super::{AdapterError, AgentAdapter, DispatchContext, RuntimeStatus};
 
 // ---------------------------------------------------------------------------
 // History
@@ -179,7 +179,8 @@ impl NzcNativeAdapter {
 #[async_trait]
 impl AgentAdapter for NzcNativeAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        self.dispatch_with_context(DispatchContext::message_only(msg)).await
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
     }
 
     async fn dispatch_with_context(
@@ -281,7 +282,10 @@ mod tests {
     #[test]
     fn test_sender_history_one_turn() {
         let mut h = SenderHistory::default();
-        h.push("what is rust".to_string(), "Rust is a systems language.".to_string());
+        h.push(
+            "what is rust".to_string(),
+            "Rust is a systems language.".to_string(),
+        );
 
         let preamble = h.build_preamble().unwrap();
         assert!(preamble.contains("[Conversation history]"));
@@ -397,8 +401,7 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 8192];
                 let n = stream.read(&mut buf).await.unwrap_or(0);
-                *second_body_srv.lock().await =
-                    String::from_utf8_lossy(&buf[..n]).to_string();
+                *second_body_srv.lock().await = String::from_utf8_lossy(&buf[..n]).to_string();
                 let _ = stream.write_all(resp2.as_bytes()).await;
                 let _ = stream.flush().await;
                 tokio::time::sleep(Duration::from_millis(50)).await;

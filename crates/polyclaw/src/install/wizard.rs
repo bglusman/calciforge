@@ -67,7 +67,10 @@ pub async fn run_wizard() -> Result<()> {
     let polyclaw = collect_polyclaw_host()?;
 
     // ── Step 2: Add claws ─────────────────────────────────────────────────
-    println!("\n{}", style("Step 2/8 — Add Downstream Claws").bold().underlined());
+    println!(
+        "\n{}",
+        style("Step 2/8 — Add Downstream Claws").bold().underlined()
+    );
     let claws = collect_claws()?;
 
     if claws.is_empty() {
@@ -77,7 +80,10 @@ pub async fn run_wizard() -> Result<()> {
     let target = InstallTarget { polyclaw, claws };
 
     // ── Step 3: Test connections ──────────────────────────────────────────
-    println!("\n{}", style("Step 3/8 — Testing Connections").bold().underlined());
+    println!(
+        "\n{}",
+        style("Step 3/8 — Testing Connections").bold().underlined()
+    );
     let connection_ok = test_connections(&target).await;
     if !connection_ok {
         let proceed = Confirm::new()
@@ -91,7 +97,10 @@ pub async fn run_wizard() -> Result<()> {
     }
 
     // ── Step 4: Channel routing ───────────────────────────────────────────
-    println!("\n{}", style("Step 4/8 — Channel Routing").bold().underlined());
+    println!(
+        "\n{}",
+        style("Step 4/8 — Channel Routing").bold().underlined()
+    );
     let routing = collect_channel_routing(&target)?;
     display_routing_summary(&routing);
 
@@ -127,7 +136,11 @@ pub async fn run_wizard() -> Result<()> {
     println!("\n{}", style("Step 8/8 — Summary").bold().underlined());
     for result in &summary.claw_results {
         if result.success {
-            println!("  {} claw '{}' installed successfully", style("✅").green(), result.name);
+            println!(
+                "  {} claw '{}' installed successfully",
+                style("✅").green(),
+                result.name
+            );
         } else {
             println!("  {} claw '{}' FAILED", style("❌").red(), result.name);
             for step in &result.steps {
@@ -147,7 +160,9 @@ pub async fn run_wizard() -> Result<()> {
 
     println!(
         "\n{}",
-        style("All claws installed successfully! PolyClaw is ready.").green().bold()
+        style("All claws installed successfully! PolyClaw is ready.")
+            .green()
+            .bold()
     );
     Ok(())
 }
@@ -197,8 +212,14 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
     let mut claws: Vec<ClawTarget> = Vec::new();
 
     println!("  Add the downstream claws PolyClaw should route messages to.");
-    println!("  {} — knows the config format, can SSH in and apply changes safely.", style("NZC / OpenClaw").bold());
-    println!("  {} — registered in PolyClaw config; no remote config management.", style("Other adapters").bold());
+    println!(
+        "  {} — knows the config format, can SSH in and apply changes safely.",
+        style("NZC / OpenClaw").bold()
+    );
+    println!(
+        "  {} — registered in PolyClaw config; no remote config management.",
+        style("Other adapters").bold()
+    );
 
     loop {
         println!();
@@ -272,14 +293,19 @@ fn collect_adapter_config(adapter_str: &str) -> Result<ClawKind> {
                 .with_prompt("  OpenAI-compat endpoint (e.g. http://host/v1)")
                 .interact_text()
                 .context("failed to read endpoint")?;
-            Ok(ClawKind::OpenAiCompat { endpoint: endpoint.trim().to_string() })
+            Ok(ClawKind::OpenAiCompat {
+                endpoint: endpoint.trim().to_string(),
+            })
         }
         "webhook" => {
             let endpoint: String = Input::new()
                 .with_prompt("  Webhook endpoint URL")
                 .interact_text()
                 .context("failed to read endpoint")?;
-            let format_opts = &["json — POST {\"message\": \"...\"}", "text — POST raw text body"];
+            let format_opts = &[
+                "json — POST {\"message\": \"...\"}",
+                "text — POST raw text body",
+            ];
             let fmt_idx = Select::new()
                 .with_prompt("  Webhook format")
                 .items(format_opts)
@@ -290,14 +316,19 @@ fn collect_adapter_config(adapter_str: &str) -> Result<ClawKind> {
                 0 => WebhookFormat::Json,
                 _ => WebhookFormat::Text,
             };
-            Ok(ClawKind::Webhook { endpoint: endpoint.trim().to_string(), format })
+            Ok(ClawKind::Webhook {
+                endpoint: endpoint.trim().to_string(),
+                format,
+            })
         }
         "cli" => {
             let command: String = Input::new()
                 .with_prompt("  Binary path or command")
                 .interact_text()
                 .context("failed to read command")?;
-            Ok(ClawKind::Cli { command: command.trim().to_string() })
+            Ok(ClawKind::Cli {
+                command: command.trim().to_string(),
+            })
         }
         other => bail!("unknown adapter: {}", other),
     }
@@ -480,7 +511,11 @@ fn display_routing_summary(routing: &[ChannelRouting]) {
     }
     println!("  Planned channel routing:");
     for r in routing {
-        println!("    {} → {}", style(&r.channel_name).bold(), r.assigned_claw);
+        println!(
+            "    {} → {}",
+            style(&r.channel_name).bold(),
+            r.assigned_claw
+        );
     }
 }
 
@@ -602,5 +637,3 @@ mod tests {
         // If somehow running in a TTY context, skip.
     }
 }
-
-

@@ -25,6 +25,7 @@ pub mod acpx;
 pub mod cli;
 pub mod nzc_native;
 pub mod openclaw;
+pub mod openclaw_channel;
 pub mod openclaw_native;
 pub mod zeroclaw;
 
@@ -33,6 +34,7 @@ pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
 pub use nzc_native::NzcNativeAdapter;
 pub use openclaw::{NzcHttpAdapter, OpenClawHttpAdapter};
+pub use openclaw_channel::OpenClawChannelAdapter;
 pub use openclaw_native::OpenClawNativeAdapter;
 pub use zeroclaw::ZeroClawAdapter;
 
@@ -104,7 +106,10 @@ pub struct DispatchContext<'a> {
 impl<'a> DispatchContext<'a> {
     /// Create a context with only a message and no sender info.
     pub fn message_only(message: &'a str) -> Self {
-        Self { message, sender: None }
+        Self {
+            message,
+            sender: None,
+        }
     }
 }
 
@@ -196,6 +201,26 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 &agent.id,
             )))
         }
+        "openclaw-channel" => {
+            let token = agent
+                .api_key
+                .clone()
+                .or_else(|| agent.auth_token.clone())
+                .or_else(|| std::env::var("POLYCLAW_AGENT_TOKEN").ok())
+                .unwrap_or_default();
+            let openclaw_agent_id = agent
+                .openclaw_agent_id
+                .clone()
+                .unwrap_or_else(|| agent.id.clone());
+            Ok(Box::new(OpenClawChannelAdapter::new(
+                agent.endpoint.clone(),
+                token,
+                openclaw_agent_id,
+                agent.reply_port,
+                agent.reply_auth_token.clone(),
+                agent.timeout_ms,
+            )))
+        }
         "nzc-http" => {
             let token = agent
                 .api_key
@@ -272,9 +297,10 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "cli" => {
-            let command = agent.command.clone().ok_or_else(|| {
-                format!("agent '{}': kind='cli' requires command", agent.id)
-            })?;
+            let command = agent
+                .command
+                .clone()
+                .ok_or_else(|| format!("agent '{}': kind='cli' requires command", agent.id))?;
             Ok(Box::new(CliAdapter::new(
                 command,
                 agent.args.clone(),
@@ -283,9 +309,10 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "acp" => {
-            let command = agent.command.clone().ok_or_else(|| {
-                format!("agent '{}': kind='acp' requires command", agent.id)
-            })?;
+            let command = agent
+                .command
+                .clone()
+                .ok_or_else(|| format!("agent '{}': kind='acp' requires command", agent.id))?;
             Ok(Box::new(AcpAdapter::new(
                 command,
                 agent.args.clone(),
@@ -296,7 +323,10 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
         }
         "acpx" => {
             let agent_name = agent.command.clone().ok_or_else(|| {
-                format!("agent '{}': kind='acpx' requires command (agent name)", agent.id)
+                format!(
+                    "agent '{}': kind='acpx' requires command (agent name)",
+                    agent.id
+                )
             })?;
             Ok(Box::new(AcpxAdapter::new(
                 agent_name,
@@ -328,6 +358,9 @@ mod tests {
             model: Some("openclaw:main".to_string()),
             auth_token: Some("tok123".to_string()),
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -348,6 +381,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: Some("zc_abc123".to_string()),
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -368,8 +404,15 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: Some("/usr/local/bin/ironclaw".to_string()),
-            args: Some(vec!["run".to_string(), "-m".to_string(), "{message}".to_string()]),
+            args: Some(vec![
+                "run".to_string(),
+                "-m".to_string(),
+                "{message}".to_string(),
+            ]),
             env: Some({
                 let mut m = HashMap::new();
                 m.insert("LLM_BACKEND".to_string(), "openai_compatible".to_string());
@@ -414,6 +457,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -439,6 +485,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None, // missing!
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -463,6 +512,9 @@ mod tests {
             model: Some("claude-sonnet-4-5".to_string()),
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: Some("claude".to_string()),
             args: Some(vec!["--acp".to_string()]),
             env: None,
@@ -491,6 +543,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None, // missing!
             args: None,
             env: None,
@@ -516,6 +571,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None, // missing!
             args: None,
             env: None,
@@ -555,6 +613,9 @@ mod tests {
             model: None,
             auth_token: Some("old-token".to_string()),
             api_key: Some("new-api-key".to_string()),
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -580,6 +641,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: Some("REPLACE_WITH_HOOKS_TOKEN".to_string()),
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -600,6 +664,9 @@ mod tests {
             model: None,
             auth_token: Some("tok".to_string()),
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -635,6 +702,9 @@ mod tests {
             model: None,
             auth_token: Some("old-token".to_string()),
             api_key: Some("new-hooks-token".to_string()),
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -659,6 +729,9 @@ mod tests {
             model: None,
             auth_token: Some("auth-token".to_string()),
             api_key: None, // no api_key — falls back to auth_token
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
@@ -684,6 +757,9 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
             command: None,
             args: None,
             env: None,
