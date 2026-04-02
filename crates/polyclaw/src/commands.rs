@@ -957,6 +957,9 @@ mod tests {
                         ..Default::default()
                     }),
                     aliases: vec![],
+                    openclaw_agent_id: None,
+                    reply_port: None,
+                    reply_auth_token: None,
                 },
                 AgentConfig {
                     id: "custodian".to_string(),
@@ -971,6 +974,9 @@ mod tests {
                     env: None,
                     registry: None,
                     aliases: vec!["keeper".to_string(), "cust".to_string()],
+                    openclaw_agent_id: None,
+                    reply_port: None,
+                    reply_auth_token: None,
                 },
             ],
             routing: vec![
