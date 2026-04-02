@@ -104,26 +104,6 @@ pub struct AgentConfig {
     /// When resolving `!switch <name>`, both `id` and any alias are matched.
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// Target OpenClaw agent id for `openclaw-native` and `openclaw-channel` adapters.
-    ///
-    /// When set, overrides `id` as the `agentId` sent to OpenClaw's `/hooks/agent`
-    /// endpoint. Allows a PolyClaw agent named "openclaw-max" to route to OpenClaw's
-    /// "david" agent without renaming the PolyClaw-side entry.
-    ///
-    /// Example:
-    /// ```toml
-    /// [[agents]]
-    /// id = "openclaw-max"
-    /// kind = "openclaw-native"
-    /// endpoint = "http://10.0.0.20:18789"
-    /// api_key = "REPLACE_WITH_HOOKS_TOKEN"
-    /// openclaw_agent_id = "david"   # routes to OpenClaw's "david" agent
-    /// ```
-    pub openclaw_agent_id: Option<String>,
-    /// Reply webhook port for `openclaw-channel` adapter (default 18797).
-    pub reply_port: Option<u16>,
-    /// Bearer token OpenClaw uses when POSTing replies back to the PolyClaw reply webhook.
-    pub reply_auth_token: Option<String>,
 }
 
 /// Agent registry metadata (inside `[agents.<id>.registry]`).
