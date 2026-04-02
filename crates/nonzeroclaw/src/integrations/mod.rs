@@ -79,7 +79,7 @@ fn show_integration_info(config: &Config, name: &str) -> Result<()> {
 
     let Some(entry) = entries.iter().find(|e| e.name.to_lowercase() == name_lower) else {
         anyhow::bail!(
-            "Unknown integration: {name}. Check README for supported integrations or run `zeroclaw onboard --interactive` to configure channels/providers."
+            "Unknown integration: {name}. Check README for supported integrations or run `zeroclaw onboard` to configure channels/providers."
         );
     };
 
@@ -155,6 +155,13 @@ fn show_integration_info(config: &Config, name: &str) -> Result<()> {
             println!("    Schedule tasks in ~/.zeroclaw/workspace/cron/");
             println!("    Run: zeroclaw cron list");
         }
+        "Weather" => {
+            println!("  Built-in:");
+            println!("    Fetches live conditions from wttr.in — no API key required.");
+            println!("    Supports city names, IATA airport codes, GPS coordinates,");
+            println!("    postal/zip codes, and Unicode location names.");
+            println!("    Ask the agent: \"What's the weather in Tulsa?\"");
+        }
         "Webhooks" => {
             println!("  Built-in:");
             println!("    HTTP endpoint for external triggers.");
@@ -163,7 +170,7 @@ fn show_integration_info(config: &Config, name: &str) -> Result<()> {
         _ => {
             if status == IntegrationStatus::ComingSoon {
                 println!("  This integration is planned. Stay tuned!");
-                println!("  Track progress: https://github.com/theonlyhennygod/zeroclaw");
+                println!("  Track progress: https://github.com/zeroclaw-labs/zeroclaw");
             }
         }
     }

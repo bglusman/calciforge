@@ -1,0 +1,147 @@
+#!/bin/bash
+# pct-create-wrapper — safe shim for `pct create` called by clash-agent.
+#
+# This script is installed root-owned to /usr/local/sbin/pct-create-wrapper
+# and is the ONLY pct-create path granted via sudoers.  It validates every
+# argument before forwarding to the real pct binary; no shell interpolation
+# of user-supplied data is ever performed.
+#
+# Validation rules:
+#   - VMID must be a decimal integer in the range 100–999999 (Proxmox convention).
+#   - ostemplate must be a plain filename under a known template store
+#     (/var/lib/vz/template/cache/ or /mnt/pve/…/template/cache/).
+#     No path traversal, no shell metacharacters.
+#   - Every subsequent flag must be from an explicit allowlist.
+#   - Maximum argument count is capped to prevent stack-smashing attempts.
+#
+# Security properties:
+#   - Uses exec-array pattern (no "$@" in a sub-shell command string).
+#   - All validation done before exec; failure exits without touching pct.
+#   - Caller UID is logged to syslog for audit correlation.
+
+set -euo pipefail
+
+readonly PCT_BIN=/usr/sbin/pct
+readonly MAX_ARGS=30
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+die() {
+    logger -t pct-create-wrapper -p security.warn \
+        "DENIED uid=$EUID args='$*'"
+    echo "pct-create-wrapper: $*" >&2
+    exit 1
+}
+
+log_info() {
+    logger -t pct-create-wrapper -p security.info "$*"
+}
+
+# ── arg count guard ───────────────────────────────────────────────────────────
+
+if [[ $# -lt 2 ]]; then
+    die "Usage: pct-create-wrapper <vmid> <ostemplate> [options…]"
+fi
+
+if [[ $# -gt $MAX_ARGS ]]; then
+    die "Too many arguments ($#); maximum is $MAX_ARGS"
+fi
+
+# ── vmid validation ───────────────────────────────────────────────────────────
+
+VMID="$1"
+shift
+
+# Must be purely decimal, no leading zeros, in range [100, 999999]
+if [[ ! "$VMID" =~ ^[1-9][0-9]*$ ]]; then
+    die "Invalid vmid '$VMID': must be a positive decimal integer"
+fi
+
+if (( VMID < 100 || VMID > 999999 )); then
+    die "Invalid vmid '$VMID': must be in range 100–999999"
+fi
+
+# ── ostemplate validation ─────────────────────────────────────────────────────
+
+OSTEMPLATE="$1"
+shift
+
+# Accept only paths under known Proxmox template stores, with safe filename chars.
+# Format: local:vztmpl/filename.tar.gz  or  /var/lib/vz/template/cache/filename
+SAFE_TEMPLATE_RE='^(local:vztmpl/|[a-zA-Z0-9_-]+:vztmpl/)[a-zA-Z0-9._+-]+$'
+SAFE_PATH_RE='^(/var/lib/vz/template/cache/|/mnt/pve/[a-zA-Z0-9_-]+/template/cache/)[a-zA-Z0-9._+-]+$'
+
+if [[ ! ( "$OSTEMPLATE" =~ $SAFE_TEMPLATE_RE || "$OSTEMPLATE" =~ $SAFE_PATH_RE ) ]]; then
+    die "Invalid ostemplate '$OSTEMPLATE': must be a storage:vztmpl/… reference or absolute path under a known template cache"
+fi
+
+# Reject any path traversal
+if [[ "$OSTEMPLATE" == *".."* ]]; then
+    die "Path traversal detected in ostemplate '$OSTEMPLATE'"
+fi
+
+# ── optional flag allowlist ───────────────────────────────────────────────────
+
+# Flags that are explicitly permitted.  Each must match key=value or bare flag.
+ALLOWED_FLAGS=(
+    --hostname
+    --memory
+    --swap
+    --cores
+    --cpulimit
+    --cpuunits
+    --rootfs
+    --net0
+    --net1
+    --net2
+    --features
+    --unprivileged
+    --onboot
+    --startup
+    --storage
+    --password
+    --ssh-public-keys
+    --description
+    --tags
+    --pool
+    --nameserver
+    --searchdomain
+    --start
+    --restore
+    --archive
+    --ignore-unpack-errors
+)
+
+# Build a bash associative set for O(1) lookup
+declare -A ALLOWED_SET
+for f in "${ALLOWED_FLAGS[@]}"; do
+    ALLOWED_SET["$f"]=1
+done
+
+validated_extra_args=()
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
+
+    # Extract the key portion of key=value args
+    key="${arg%%=*}"
+
+    if [[ -z "${ALLOWED_SET[$key]+_}" ]]; then
+        die "Disallowed flag '$key'"
+    fi
+
+    # Reject shell metacharacters in values
+    value="${arg#*=}"
+    if [[ "$value" =~ [\;\|\&\`\$\(\)\<\>\\] ]]; then
+        die "Shell metacharacters in value for '$key'"
+    fi
+
+    validated_extra_args+=("$arg")
+done
+
+# ── execute (no shell interpolation) ─────────────────────────────────────────
+
+log_info "ALLOW uid=$EUID vmid=$VMID ostemplate=$OSTEMPLATE extra_args=${validated_extra_args[*]:-<none>}"
+
+# exec replaces this process; no subshell, no word-splitting on args
+exec "$PCT_BIN" create "$VMID" "$OSTEMPLATE" "${validated_extra_args[@]}"
