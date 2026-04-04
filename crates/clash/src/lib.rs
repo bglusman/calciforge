@@ -72,6 +72,18 @@ pub enum PolicyVerdict {
     Review(String),
 }
 
+/// Configuration for policy engine error handling.
+/// Controls the behaviour when Starlark evaluation encounters a runtime error
+/// or when a policy file is missing/unparseable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ErrorBehaviour {
+    /// On error, deny the action (fail-closed). Safer for production.
+    #[default]
+    Deny,
+    /// On error, allow the action (fail-open). Useful for development/testing.
+    Allow,
+}
+
 /// Trait implemented by all clash policy engines.
 ///
 /// # Implementing a Policy
@@ -203,8 +215,9 @@ def evaluate(action, identity, agent, command="", path=""):
     }
 
     #[test]
-    fn starlark_policy_fails_open_on_error() {
-        // Script that raises an error during evaluation
+    fn starlark_policy_fails_closed_on_error() {
+        // Script that raises an error during evaluation.
+        // Previously this failed open (Allow) — changed to fail closed per CVE-2026-33579.
         let script = r#"
 def evaluate(action, identity, agent, command="", path=""):
     fail("intentional error")
@@ -212,7 +225,21 @@ def evaluate(action, identity, agent, command="", path=""):
 "#;
         let policy = StarlarkPolicy::from_source("<test>", script);
         let ctx = PolicyContext::new("alice", "nzc", "tool:shell");
-        // On Starlark error, must fail-open (Allow)
+        // Default is fail-closed: on Starlark error, must deny
+        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Deny(_)));
+    }
+
+    #[test]
+    fn starlark_policy_can_fail_open_when_configured() {
+        // Verify the error_behaviour override works for dev/testing.
+        let script = r#"
+def evaluate(action, identity, agent, command="", path=""):
+    fail("intentional error")
+    return "allow"
+"#;
+        let policy = StarlarkPolicy::from_source("<test>", script)
+            .with_error_behaviour(crate::ErrorBehaviour::Allow);
+        let ctx = PolicyContext::new("alice", "nzc", "tool:shell");
         assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
     }
 
