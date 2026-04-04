@@ -176,7 +176,7 @@ pub mod test_certs {
     /// the cert + key pair together.
     pub fn generate_test_ca() -> (CertifiedKey, Vec<u8>) {
         let key_pair = KeyPair::generate().unwrap();
-        let mut params = CertificateParams::new(vec!["PolyClaw CA".to_string()]).unwrap();
+        let mut params = CertificateParams::new(vec!["NonZeroClawed CA".to_string()]).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages = vec![
             KeyUsagePurpose::KeyCertSign,

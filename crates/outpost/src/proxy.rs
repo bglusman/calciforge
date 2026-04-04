@@ -19,7 +19,7 @@
 //! # No raw HTTP outside this module
 //!
 //! Outside this module (and `scanner.rs` layer-3 service call), no crate in
-//! polyclaw-mono should hold a `reqwest::Client` or perform raw HTTP requests
+//! nonzeroclawed should hold a `reqwest::Client` or perform raw HTTP requests
 //! for **external content**. Internal API calls (e.g. posting replies back to a
 //! messaging gateway) are not "external content" and are exempt.
 

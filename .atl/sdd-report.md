@@ -1,8 +1,8 @@
-# SDD: PolyClaw v3 Host-Agent
+# SDD: NonZeroClawed v3 Host-Agent
 
 ## Phase 1: Init Summary
 
-**Project**: PolyClaw v3 Host-Agent  
+**Project**: NonZeroClawed v3 Host-Agent  
 **Stack**: Rust (Axum, tokio-rustls)  
 **Persistence**: Engram  
 **Mode**: Standard (no strict TDD)  
@@ -29,7 +29,7 @@
 
 **Existing Patterns:**
 - Workspace structure under `crates/`
-- PolyClaw v2 agent at `crates/polyclaw/`
+- NonZeroClawed v2 agent at `crates/nonzeroclawed/`
 - NonZeroClaw agent at `crates/nonzeroclaw/`
 - Outpost security module at `crates/outpost/`
 
@@ -47,7 +47,7 @@
 
 ## Phase 2: Spec Summary
 
-**Source**: `/root/.openclaw/workspace/specs/POLYCLAW-V3-HOST-AGENT-SPEC.md`
+**Source**: `/root/.openclaw/workspace/specs/NONZEROCLAWED-V3-HOST-AGENT-SPEC.md`
 
 ### Core Requirements
 
@@ -216,7 +216,7 @@ crates/host-agent/src/
 
 **Status**: ✅ PASS WITH NOTES
 
-The PolyClaw v3 Host-Agent implementation is complete and compliant with the specification. All core requirements are met:
+The NonZeroClawed v3 Host-Agent implementation is complete and compliant with the specification. All core requirements are met:
 
 - mTLS authentication is fully implemented
 - ZFS operations use proper delegation

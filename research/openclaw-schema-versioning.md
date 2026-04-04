@@ -38,7 +38,7 @@ The `/health` endpoint returns liveness but **not** the version. There is no `/v
 
 The `meta.lastTouchedVersion` field in `openclaw.json` records the version that last wrote the config. This is **not a guarantee** the running gateway is at that version (the gateway might have been updated since without running a wizard), but it gives a baseline.
 
-**For PolyClaw's adapter installer**: reading `meta.lastTouchedVersion` from the config file is the most reliable version signal without requiring SSH or a new CLI invocation.
+**For NonZeroClawed's adapter installer**: reading `meta.lastTouchedVersion` from the config file is the most reliable version signal without requiring SSH or a new CLI invocation.
 
 ---
 
@@ -84,7 +84,7 @@ openclaw doctor --fix   # Apply auto-fixes for known issues
 
 ---
 
-## Schema Versioning Strategy for PolyClaw
+## Schema Versioning Strategy for NonZeroClawed
 
 ### What We Know
 
@@ -94,12 +94,12 @@ openclaw doctor --fix   # Apply auto-fixes for known issues
 4. **Doctor command validates**: safest runtime validation mechanism
 5. **Config is JSON5**: allows comments, trailing commas — not strict JSON
 
-### Proposed PolyClaw Compatibility Matrix Approach
+### Proposed NonZeroClawed Compatibility Matrix Approach
 
-Since there's no schema introspection API, PolyClaw must maintain a **hardcoded compatibility matrix**:
+Since there's no schema introspection API, NonZeroClawed must maintain a **hardcoded compatibility matrix**:
 
 ```rust
-// In PolyClaw's openclaw adapter
+// In NonZeroClawed's openclaw adapter
 pub struct OpenClawCompatibility {
     version: String,      // "2026.3.13"
     commit: Option<String>, // "61d171a"
@@ -127,7 +127,7 @@ static COMPATIBILITY_MATRIX: &[OpenClawCompatibility] = &[
             "hooks.token",
         ],
         requires_plugin: vec![
-            "channels.polyclaw",
+            "channels.nonzeroclawed",
         ],
     },
 ];
@@ -142,7 +142,7 @@ static COMPATIBILITY_MATRIX: &[OpenClawCompatibility] = &[
 4. Look up compatibility matrix entry for "2026.3.*"
 5. If version is UNKNOWN → refuse with explanation
 6. If version is KNOWN:
-   a. Backup openclaw.json to polyclaw-backup-<timestamp>.json
+   a. Backup openclaw.json to nonzeroclawed-backup-<timestamp>.json
    b. Generate proposed changes (only from safe_to_add list for this version)
    c. Write changes to a TEMP file
    d. Run: openclaw doctor (via SSH or subprocess)
@@ -155,7 +155,7 @@ static COMPATIBILITY_MATRIX: &[OpenClawCompatibility] = &[
 
 ### Version Fields to Read
 
-The complete version detection sequence for PolyClaw:
+The complete version detection sequence for NonZeroClawed:
 
 ```rust
 // Priority order for version detection
@@ -194,7 +194,7 @@ From documentation analysis and live inspection:
 - `hooks.allowedAgentIds: [...]`
 
 ### Requires plugin installed first:
-- `channels.polyclaw.*` — PolyClaw channel plugin must be installed and discoverable
+- `channels.nonzeroclawed.*` — NonZeroClawed channel plugin must be installed and discoverable
 - `channels.mattermost.*` — requires `@openclaw/mattermost` plugin
 - Any `channels.<id>` where `<id>` is not a built-in channel name
 
@@ -208,15 +208,15 @@ From documentation analysis and live inspection:
 
 ---
 
-## No Machine-Readable Schema: Implications for PolyClaw
+## No Machine-Readable Schema: Implications for NonZeroClawed
 
-**The core problem**: PolyClaw cannot dynamically query "what fields does this version support?" It must maintain its own compatibility matrix.
+**The core problem**: NonZeroClawed cannot dynamically query "what fields does this version support?" It must maintain its own compatibility matrix.
 
 **Mitigation strategies**:
 
-1. **Conservative additions only**: Only add fields from PolyClaw's allowlist for known versions. Never add fields not on the list.
+1. **Conservative additions only**: Only add fields from NonZeroClawed's allowlist for known versions. Never add fields not on the list.
 
-2. **Doctor validation before commit**: Always run `openclaw doctor` on the proposed config before applying. Doctor will catch unknown fields even if PolyClaw's matrix missed them.
+2. **Doctor validation before commit**: Always run `openclaw doctor` on the proposed config before applying. Doctor will catch unknown fields even if NonZeroClawed's matrix missed them.
 
 3. **Version-gated features**: If target version is older than what a feature requires, disable that feature and warn.
 

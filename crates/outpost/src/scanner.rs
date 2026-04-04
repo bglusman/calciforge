@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// Configuration for the outpost scanner and transparent proxy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScannerConfig {
-    /// Optional URL of the shared PolyClaw outpost HTTP service.
+    /// Optional URL of the shared NonZeroClawed outpost HTTP service.
     /// If `None` or unreachable, layers 1+2 run locally only.
     pub service_url: Option<String>,
     /// Ratio threshold: if discussion_signals / injection_signals > this,
