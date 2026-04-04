@@ -194,6 +194,27 @@ pub struct Config {
     #[serde(default)]
     pub model_routes: Vec<ModelRouteConfig>,
 
+    /// Model shortcut aliases — map short names to full provider/model strings.
+    ///
+    /// ```toml
+    /// [[model_shortcut]]
+    /// alias = "sonnet"
+    /// model = "anthropic/claude-sonnet-4.6"
+    ///
+    /// [[model_shortcut]]
+    /// alias = "opus"
+    /// model = "anthropic/claude-opus-4.6"
+    ///
+    /// [[model_shortcut]]
+    /// alias = "qwen"
+    /// model = "qwen/qwen3-235b-a22b"
+    /// ```
+    ///
+    /// Usage: `/model sonnet` expands to `/model anthropic/claude-sonnet-4.6`.
+    /// Use `/model -` to switch back to the previously used model.
+    #[serde(default)]
+    pub model_shortcuts: Vec<ModelShortcutConfig>,
+
     /// Embedding routing rules — route `hint:<name>` to specific provider+model combos.
     #[serde(default)]
     pub embedding_routes: Vec<EmbeddingRouteConfig>,
@@ -5639,6 +5660,26 @@ pub struct ModelRouteConfig {
     pub api_key: Option<String>,
 }
 
+// ── Model shortcuts ───────────────────────────────────────────
+
+/// Short alias that expands to a full `provider/model` string at runtime.
+///
+/// ```toml
+/// [[model_shortcut]]
+/// alias = "sonnet"
+/// model = "anthropic/claude-sonnet-4.6"
+/// ```
+///
+/// Use `/model sonnet` in any model-switch-capable channel to expand the alias.
+/// Use `/model -` to revert to the previously used model (like `cd -`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ModelShortcutConfig {
+    /// Short alias name (e.g. "sonnet", "opus", "fast")
+    pub alias: String,
+    /// Full provider/model string this alias expands to (e.g. "anthropic/claude-sonnet-4.6")
+    pub model: String,
+}
+
 // ── Embedding routing ───────────────────────────────────────────
 
 /// Route an embedding hint to a specific provider + model.
@@ -8481,6 +8522,7 @@ impl Default for Config {
             skills: SkillsConfig::default(),
             pipeline: PipelineConfig::default(),
             model_routes: Vec::new(),
+            model_shortcuts: Vec::new(),
             embedding_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
             cron: CronConfig::default(),
@@ -11583,6 +11625,7 @@ auto_save = true
             skills: SkillsConfig::default(),
             pipeline: PipelineConfig::default(),
             model_routes: Vec::new(),
+            model_shortcuts: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
             heartbeat: HeartbeatConfig {
@@ -12173,6 +12216,7 @@ default_temperature = 0.7
             skills: SkillsConfig::default(),
             pipeline: PipelineConfig::default(),
             model_routes: Vec::new(),
+            model_shortcuts: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
             heartbeat: HeartbeatConfig::default(),
