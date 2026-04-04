@@ -169,6 +169,15 @@ pub struct SignalChannel {
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    // TODO(outpost-proxy): Replace `http_client` with `Arc<OutpostProxy>` once the
+    // channel adapter is migrated to the transparent proxy layer. The `http_client`
+    // here is used exclusively for sending outbound replies to the OpenClaw gateway
+    // (not for fetching external content), so it is exempt from the proxy requirement.
+    // However, any future code paths that fetch external URLs (e.g., link previews,
+    // media downloads) MUST go through `OutpostProxy::fetch` instead of calling this
+    // client directly.
+    //
+    // See: crates/outpost/src/proxy.rs — `OutpostProxy`
     http_client: reqwest::Client,
 }
 
