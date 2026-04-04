@@ -6136,6 +6136,10 @@ pub struct ChannelsConfig {
     pub reddit: Option<RedditConfig>,
     /// Bluesky channel configuration (AT Protocol).
     pub bluesky: Option<BlueskyConfig>,
+    /// Claude API channel configuration (Anthropic Messages API).
+    pub claude_api: Option<ClaudeApiConfig>,
+    /// Claude Code ACP channel configuration (CLI subprocess).
+    pub claude_acp: Option<ClaudeAcpConfig>,
     /// Voice call channel configuration (Twilio/Telnyx/Plivo).
     pub voice_call: Option<crate::channels::voice_call::VoiceCallConfig>,
     /// Voice wake word detection channel configuration.
@@ -6338,6 +6342,8 @@ impl Default for ChannelsConfig {
             mqtt: None,
             reddit: None,
             bluesky: None,
+            claude_api: None,
+            claude_acp: None,
             voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
@@ -7867,6 +7873,107 @@ impl ChannelConfig for BlueskyConfig {
     }
     fn desc() -> &'static str {
         "AT Protocol"
+    }
+}
+
+/// Claude API channel configuration.
+///
+/// Enables direct integration with Anthropic's Claude API for one-shot
+/// completions and multi-turn conversations.
+///
+/// ## Example
+/// ```toml
+/// [channels_config.claude_api]
+/// enabled = true
+/// api_key = "${CLAUDE_API_KEY}"
+/// model = "claude-sonnet-4-6"
+/// max_tokens = 4096
+/// conversation_ttl_hours = 24
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeApiConfig {
+    /// Enable the Claude API channel.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Anthropic API key. Supports `${ENV_VAR}` interpolation.
+    #[serde(default)]
+    pub api_key: String,
+    /// Model ID. Default: `"claude-sonnet-4-6"`.
+    #[serde(default)]
+    pub model: String,
+    /// Maximum tokens per turn. Default: `4096`.
+    #[serde(default)]
+    pub max_tokens: u32,
+    /// Idle conversation TTL in hours. Default: `24`.
+    #[serde(default)]
+    pub conversation_ttl_hours: u64,
+    /// Optional system prompt injected into every Claude request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Optional secret for verifying incoming webhook signatures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret: Option<String>,
+}
+
+impl Default for ClaudeApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            model: String::new(),
+            max_tokens: 0,
+            conversation_ttl_hours: 0,
+            system_prompt: None,
+            webhook_secret: None,
+        }
+    }
+}
+
+/// Claude Code ACP (Agent Communication Protocol) channel configuration.
+///
+/// Spawns the `claude` CLI subprocess to handle coding tasks via the
+/// NZC channel infrastructure.
+///
+/// ## Example
+/// ```toml
+/// [channels_config.claude_acp]
+/// enabled = true
+/// claude_path = "/usr/local/bin/claude"
+/// workspace_dir = "/home/user/workspace"
+/// permission_mode = "bypassPermissions"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeAcpConfig {
+    /// Enable the Claude Code ACP channel.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the `claude` CLI. Default: `"claude"` (searches `$PATH`).
+    #[serde(default)]
+    pub claude_path: String,
+    /// Working directory passed to the subprocess.
+    #[serde(default)]
+    pub workspace_dir: String,
+    /// Permission mode. Default: `"bypassPermissions"`.
+    #[serde(default)]
+    pub permission_mode: String,
+    /// Max execution time in seconds. Default: `600`.
+    #[serde(default)]
+    pub timeout_secs: u64,
+    /// Extra CLI arguments passed to `claude`.
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+impl Default for ClaudeAcpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            claude_path: String::new(),
+            workspace_dir: String::new(),
+            permission_mode: String::new(),
+            timeout_secs: 0,
+            extra_args: Vec::new(),
+        }
     }
 }
 
@@ -11527,6 +11634,8 @@ auto_save = true
                 clawdtalk: None,
                 reddit: None,
                 bluesky: None,
+                claude_api: None,
+                claude_acp: None,
                 voice_call: None,
                 #[cfg(feature = "voice-wake")]
                 voice_wake: None,
@@ -12567,6 +12676,8 @@ allowed_users = ["@ops:matrix.org"]
             clawdtalk: None,
             reddit: None,
             bluesky: None,
+            claude_api: None,
+            claude_acp: None,
             voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
@@ -12941,6 +13052,8 @@ channel_ids = ["C123", "D456"]
             clawdtalk: None,
             reddit: None,
             bluesky: None,
+            claude_api: None,
+            claude_acp: None,
             voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,

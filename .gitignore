@@ -1,4 +1,7 @@
 target/
+target-local/
 vendor/
 *.orig
 mutants.out/
+mutants.out.old/
+src-backup/

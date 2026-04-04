@@ -1,4 +1,4 @@
-use crate::approval::{ApprovalManager, ApprovalRequest, ApprovalResponse};
+use crate::approval::{ApprovalManager, ApprovalRequest, ApprovalResponse, ClashApprovalCache, ClashApprovalDecision, ClashApprovalRequest, prompt_user};
 use crate::config::Config;
 use crate::cost::types::BudgetCheck;
 use crate::i18n::ToolDescriptions;
@@ -39,6 +39,47 @@ const STREAM_TOOL_MARKER_WINDOW_CHARS: usize = 512;
 /// Default maximum agentic tool-use iterations per user message to prevent runaway loops.
 /// Used as a safe fallback when `max_tool_iterations` is unset or configured as zero.
 const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
+
+// ── Clash observability counters ────────────────────────────────────────────────────
+// In-process atomic counters for the Clash policy engine.
+// Scraped by the observability layer (Prometheus / metrics endpoint).
+// Labels are encoded as `{action}:{verdict}` in the structured log.
+use std::sync::atomic::{AtomicU64, Ordering as AOrdering};
+
+/// Total policy evaluations (all verdicts).
+pub static CLASH_EVALUATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Policy evaluations that resulted in Allow.
+pub static CLASH_ALLOWS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Policy evaluations that resulted in Deny.
+pub static CLASH_DENIES_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Policy evaluations that resulted in Review (approval required).
+pub static CLASH_REVIEWS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Number of Review requests currently awaiting a human decision.
+/// Incremented when a Review fires, decremented when resolved.
+pub static CLASH_REVIEW_QUEUE_SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Record a Clash evaluation in the in-process counters and structured log.
+fn record_clash_evaluation(action: &str, verdict: &str, reason: Option<&str>) {
+    CLASH_EVALUATIONS_TOTAL.fetch_add(1, AOrdering::Relaxed);
+    match verdict {
+        "allow" => {
+            CLASH_ALLOWS_TOTAL.fetch_add(1, AOrdering::Relaxed);
+        }
+        "deny" => {
+            CLASH_DENIES_TOTAL.fetch_add(1, AOrdering::Relaxed);
+        }
+        "review" => {
+            CLASH_REVIEWS_TOTAL.fetch_add(1, AOrdering::Relaxed);
+        }
+        _ => {}
+    }
+    tracing::debug!(
+        action = %action,
+        verdict = %verdict,
+        reason = reason.unwrap_or(""),
+        "clash: policy evaluation"
+    );
+}
 
 // History management moved to `super::history`.
 pub(crate) use super::history::{
@@ -2159,6 +2200,8 @@ pub(crate) async fn agent_turn(
         0,    // max_tool_result_chars: 0 = disabled (legacy callers)
         0,    // context_token_budget: 0 = disabled (legacy callers)
         None, // shared_budget: no shared budget for legacy callers
+        None, // policy: no clash policy for legacy callers
+        "",   // policy_identity
     )
     .await
 }
@@ -2189,9 +2232,8 @@ pub(crate) async fn agent_turn_with_policy(
     _policy: Option<Arc<dyn clash::ClashPolicy>>,
     _policy_identity: &str,
 ) -> Result<String> {
-    // For now, policy is not enforced at this shim level. Call through to
-    // the existing agent_turn implementation which drives the tool loop.
-    agent_turn(
+    // Delegate to run_tool_call_loop with the policy wired in.
+    run_tool_call_loop(
         provider,
         history,
         tools_registry,
@@ -2200,15 +2242,24 @@ pub(crate) async fn agent_turn_with_policy(
         model,
         temperature,
         silent,
+        approval,
         channel_name,
         channel_reply_target,
         multimodal_config,
         max_tool_iterations,
-        approval,
+        None,
+        None,
+        None,
         excluded_tools,
         dedup_exempt_tools,
         activated_tools,
         model_switch_callback,
+        &crate::config::PacingConfig::default(),
+        0,
+        0,
+        None,
+        _policy.as_deref(),
+        _policy_identity,
     )
     .await
 }
@@ -2220,7 +2271,7 @@ pub async fn process_message_with_history_and_policy(
     config: Config,
     message: &str,
     prior_turns: Vec<crate::providers::ChatMessage>,
-    policy: Option<&dyn clash::ClashPolicy>,
+    _policy: Option<&dyn clash::ClashPolicy>,
     sender_key: &str,
     _pending_approvals: Option<()>,
 ) -> Result<(String, Vec<crate::providers::ChatMessage>)> {
@@ -2476,7 +2527,14 @@ pub(crate) async fn run_tool_call_loop(
     max_tool_result_chars: usize,
     context_token_budget: usize,
     shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    // Optional Clash policy engine. When `Some`, evaluated before every tool call.
+    policy: Option<&dyn clash::ClashPolicy>,
+    // Identity string passed to the policy `evaluate()` function.
+    // Typically the sender identity (e.g. `"owner"`, `"brian"`, channel user ID).
+    policy_identity: &str,
 ) -> Result<String> {
+    // Session-scoped Clash approval cache (for "always approve" decisions).
+    let clash_cache = ClashApprovalCache::new();
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
@@ -3235,6 +3293,141 @@ pub(crate) async fn run_tool_call_loop(
                             },
                         ));
                         continue;
+                    }
+                }
+            }
+
+            // ── Clash policy check ────────────────────────────────────────
+            if let Some(pol) = policy {
+                let action = format!("tool:{tool_name}");
+                let ctx = {
+                    let base = clash::PolicyContext::new(
+                        if policy_identity.is_empty() { "unknown" } else { policy_identity },
+                        "nonzeroclaw",
+                        &action,
+                    );
+                    if tool_name == "shell" {
+                        if let Some(cmd) = tool_args.get("command").and_then(|v| v.as_str()) {
+                            base.with_command(cmd)
+                        } else { base }
+                    } else if matches!(tool_name.as_str(), "file_write" | "file_read" | "file_edit" | "file_list" | "delete") {
+                        if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
+                            base.with_path(p)
+                        } else { base }
+                    } else if matches!(tool_name.as_str(), "web_fetch" | "http_request") {
+                        if let Some(url) = tool_args.get("url").and_then(|v| v.as_str()) {
+                            base.with_command(url)
+                        } else { base }
+                    } else {
+                        base
+                    }
+                };
+
+                match pol.evaluate(&action, &ctx) {
+                    clash::PolicyVerdict::Allow => {
+                        record_clash_evaluation(&action, "allow", None);
+                    }
+                    clash::PolicyVerdict::Deny(reason) => {
+                        record_clash_evaluation(&action, "deny", Some(&reason));
+                        let denied = format!("Policy denied: {reason}");
+                        tracing::warn!(
+                            tool = %tool_name,
+                            identity = %policy_identity,
+                            reason = %reason,
+                            "clash: tool call denied by policy"
+                        );
+                        runtime_trace::record_event(
+                            "tool_call_clash_denied",
+                            Some(channel_name),
+                            Some(provider_name),
+                            Some(model),
+                            Some(&turn_id),
+                            Some(false),
+                            Some(&denied),
+                            serde_json::json!({
+                                "iteration": iteration + 1,
+                                "tool": tool_name.clone(),
+                                "identity": policy_identity,
+                                "reason": reason,
+                            }),
+                        );
+                        if let Some(ref tx) = on_delta {
+                            let _ = tx.send(DraftEvent::Progress(format!(
+                                "\u{1f6ab} {} blocked by policy: {}\n",
+                                tool_name,
+                                truncate_with_ellipsis(&reason, 200)
+                            ))).await;
+                        }
+                        ordered_results[idx] = Some((
+                            tool_name.clone(),
+                            call.tool_call_id.clone(),
+                            ToolExecutionOutcome {
+                                output: denied.clone(),
+                                success: false,
+                                error_reason: Some(denied),
+                                duration: std::time::Duration::ZERO,
+                            },
+                        ));
+                        continue;
+                    }
+                    clash::PolicyVerdict::Review(reason) => {
+                        record_clash_evaluation(&action, "review", Some(&reason));
+                        if clash_cache.check_cached(&tool_name, &reason) {
+                            tracing::debug!(
+                                tool = %tool_name,
+                                reason = %reason,
+                                "clash: Review skipped (session cache hit)"
+                            );
+                        } else {
+                            CLASH_REVIEW_QUEUE_SIZE.fetch_add(1, AOrdering::Relaxed);
+                            let command_hint = tool_args
+                                .get("command")
+                                .or_else(|| tool_args.get("url"))
+                                .or_else(|| tool_args.get("path"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
+                            let clash_req = ClashApprovalRequest {
+                                tool_name: tool_name.clone(),
+                                arguments: tool_args.clone(),
+                                reason: reason.clone(),
+                                command_hint,
+                            };
+
+                            let decision = prompt_user(&clash_req);
+                            CLASH_REVIEW_QUEUE_SIZE.fetch_sub(1, AOrdering::Relaxed);
+
+                            match decision {
+                                ClashApprovalDecision::ApproveAlways => {
+                                    clash_cache.cache_decision(&tool_name, &reason);
+                                    tracing::info!(tool = %tool_name, "clash: Review approved (always)");
+                                }
+                                ClashApprovalDecision::Approve => {
+                                    tracing::info!(tool = %tool_name, "clash: Review approved");
+                                }
+                                ClashApprovalDecision::Deny => {
+                                    let denied = format!("Review denied: {reason}");
+                                    tracing::info!(tool = %tool_name, "clash: Review denied by user");
+                                    if let Some(ref tx) = on_delta {
+                                        let _ = tx.send(DraftEvent::Progress(format!(
+                                            "\u{1f6ab} {} blocked by policy review\n",
+                                            tool_name
+                                        ))).await;
+                                    }
+                                    ordered_results[idx] = Some((
+                                        tool_name.clone(),
+                                        call.tool_call_id.clone(),
+                                        ToolExecutionOutcome {
+                                            output: denied.clone(),
+                                            success: false,
+                                            error_reason: Some(denied),
+                                            duration: std::time::Duration::ZERO,
+                                        },
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -4159,6 +4352,8 @@ pub async fn run(
                 config.agent.max_tool_result_chars,
                 config.agent.max_context_tokens,
                 None, // shared_budget
+                None, // policy: no clash policy (run() call)
+                "",   // policy_identity
             )
             .await
             {
@@ -4465,6 +4660,8 @@ pub async fn run(
                     config.agent.max_tool_result_chars,
                     config.agent.max_context_tokens,
                     None, // shared_budget
+                    None, // policy: no clash policy (run() interactive)
+                    "",   // policy_identity
                 )
                 .await
                 {
@@ -5978,6 +6175,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -6033,6 +6232,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect_err("oversized payload must fail");
@@ -6082,6 +6283,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -6130,6 +6333,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect_err("should fail without vision_provider config");
@@ -6185,6 +6390,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect_err("should fail when vision provider cannot be created");
@@ -6240,6 +6447,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("text-only messages should succeed with default provider");
@@ -6296,6 +6505,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect_err("should fail due to nonexistent vision provider");
@@ -6350,6 +6561,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("empty image markers should not trigger vision routing");
@@ -6404,6 +6617,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect_err("should attempt vision provider creation for multiple images");
@@ -6541,6 +6756,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("parallel execution should complete");
@@ -6615,6 +6832,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("cron_add delivery defaults should be injected");
@@ -6681,6 +6900,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("explicit delivery mode should be preserved");
@@ -6742,6 +6963,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -6815,6 +7038,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("non-interactive shell should succeed for low-risk command");
@@ -6879,6 +7104,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("loop should finish with exempt tool executing twice");
@@ -6963,6 +7190,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("loop should complete");
@@ -7024,6 +7253,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("native fallback id flow should complete");
@@ -7109,6 +7340,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("native tool-call text should be relayed through on_delta");
@@ -7178,6 +7411,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("streaming provider should complete");
@@ -7249,6 +7484,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("streaming tool loop should execute tool and finish");
@@ -7324,6 +7561,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("native streaming events should preserve tool loop semantics");
@@ -7408,6 +7647,8 @@ mod tests {
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("routed streaming provider should complete");
@@ -9421,6 +9662,8 @@ Let me check the result."#;
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("tool loop should complete");
@@ -9578,6 +9821,8 @@ Let me check the result."#;
                     0,
                     0,
                     None,
+                    None, // policy
+                    "",   // policy_identity
                 ),
             )
             .await
@@ -9660,6 +9905,8 @@ Let me check the result."#;
                     0,
                     0,
                     None,
+                    None, // policy
+                    "",   // policy_identity
                 ),
             )
             .await
@@ -9718,6 +9965,8 @@ Let me check the result."#;
             0,
             0,
             None,
+            None, // policy
+            "",   // policy_identity
         )
         .await
         .expect("should succeed without cost scope");

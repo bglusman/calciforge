@@ -318,6 +318,37 @@ fn normalize_max_keys(configured: usize, fallback: usize) -> usize {
     }
 }
 
+// ── Clash approval flow ──────────────────────────────────────────────────────
+
+/// A pending approval waiting for a human decision.
+///
+/// Stored in `AppState::pending_approvals` keyed by `request_id` (UUID).
+/// When the Clash policy engine returns a `Review` verdict, `run_tool_call_loop`
+/// inserts one of these and blocks on `result_rx`.
+pub struct PendingApproval {
+    /// Human-readable reason from the `review:<reason>` verdict.
+    pub reason: String,
+    /// The command or file path being reviewed.
+    pub command: String,
+    /// Send `true` = approved, `false` = denied/timed-out.
+    /// The `/webhook/approve` endpoint takes this to signal the agent loop.
+    pub result_tx: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// A completed approval result stored for polling by PolyClaw.
+pub struct PendingResult {
+    /// Final agent response after approval/denial, or timeout message.
+    pub response: String,
+}
+
+/// Thread-safe map of pending approvals: request_id → PendingApproval.
+pub type PendingApprovals =
+    Arc<tokio::sync::Mutex<HashMap<String, PendingApproval>>>;
+
+/// Thread-safe map of completed results: request_id → PendingResult.
+pub type PendingResults =
+    Arc<tokio::sync::Mutex<HashMap<String, PendingResult>>>;
+
 /// Shared state for all axum handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -2354,6 +2385,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -2422,6 +2454,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -2816,6 +2849,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -2894,6 +2928,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -2984,6 +3019,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -3046,6 +3082,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -3113,6 +3150,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -3185,6 +3223,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };
@@ -3254,6 +3293,7 @@ mod tests {
             device_registry: None,
             pending_pairings: None,
             canvas_store: CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         };

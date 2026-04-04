@@ -3,6 +3,8 @@
 //! All `/api/*` routes require bearer token authentication (PairingGuard).
 
 use super::AppState;
+#[cfg(test)]
+use clash;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -1646,6 +1648,7 @@ mod tests {
             pending_pairings: None,
             path_prefix: String::new(),
             canvas_store: crate::tools::canvas::CanvasStore::new(),
+            policy: std::sync::Arc::new(clash::PermissivePolicy),
             #[cfg(feature = "webauthn")]
             webauthn: None,
         }

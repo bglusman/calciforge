@@ -16,6 +16,8 @@
 
 pub mod acp_server;
 pub mod bluesky;
+pub mod claude_acp;
+pub mod claude_api;
 pub mod clawdtalk;
 pub mod cli;
 pub mod debounce;
@@ -66,6 +68,8 @@ pub mod whatsapp_storage;
 pub mod whatsapp_web;
 
 pub use bluesky::BlueskyChannel;
+pub use claude_acp::ClaudeAcpChannel;
+pub use claude_api::ClaudeApiChannel;
 pub use clawdtalk::{ClawdTalkChannel, ClawdTalkConfig};
 pub use cli::CliChannel;
 pub use dingtalk::DingTalkChannel;
@@ -2923,6 +2927,8 @@ async fn process_channel_message(
                         ctx.max_tool_result_chars,
                         ctx.context_token_budget,
                         None, // shared_budget
+                        None, // policy: no clash policy (channel default)
+                        "",   // policy_identity
                     ),
                     ),
                     ),
@@ -4356,8 +4362,24 @@ fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Chan
                 qq.allowed_users.clone(),
             )))
         }
+        "claude_api" | "claude-api" => {
+            let ca = config
+                .channels_config
+                .claude_api
+                .as_ref()
+                .context("Claude API channel is not configured")?;
+            Ok(Arc::new(ClaudeApiChannel::from_config(ca)))
+        }
+        "claude_acp" | "claude-acp" | "claude_code" | "claude-code" => {
+            let acp = config
+                .channels_config
+                .claude_acp
+                .as_ref()
+                .context("Claude ACP channel is not configured")?;
+            Ok(Arc::new(ClaudeAcpChannel::from_config(acp)))
+        }
         other => anyhow::bail!(
-            "Unknown channel '{other}'. Supported: telegram, discord, slack, mattermost, signal, matrix, whatsapp, qq"
+            "Unknown channel '{other}'. Supported: telegram, discord, slack, mattermost, signal, matrix, whatsapp, qq, claude_api, claude_acp"
         ),
     }
 }
@@ -4893,6 +4915,24 @@ fn collect_configured_channels(
                 bs.app_password.clone(),
             )),
         });
+    }
+
+    if let Some(ref ca) = config.channels_config.claude_api {
+        if ca.enabled {
+            channels.push(ConfiguredChannel {
+                display_name: "Claude API",
+                channel: Arc::new(ClaudeApiChannel::from_config(ca)),
+            });
+        }
+    }
+
+    if let Some(ref acp) = config.channels_config.claude_acp {
+        if acp.enabled {
+            channels.push(ConfiguredChannel {
+                display_name: "Claude ACP",
+                channel: Arc::new(ClaudeAcpChannel::from_config(acp)),
+            });
+        }
     }
 
     #[cfg(feature = "voice-wake")]
