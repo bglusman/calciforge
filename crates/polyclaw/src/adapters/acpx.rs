@@ -138,9 +138,9 @@ impl AcpxAdapter {
         info!(agent = %self.agent_name, "Running acpx exec");
 
         let mut cmd = Command::new("acpx");
-        cmd.arg(&self.agent_name)
+        cmd.arg("--format").arg("text")
+            .arg(&self.agent_name)
             .arg("exec")
-            .arg("--format").arg("text")
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
@@ -185,9 +185,9 @@ impl AcpxAdapter {
         info!(agent = %self.agent_name, "Running acpx prompt with session");
 
         let mut cmd = Command::new("acpx");
-        cmd.arg(&self.agent_name)
+        cmd.arg("--format").arg("text")
+            .arg(&self.agent_name)
             .arg("prompt")
-            .arg("--format").arg("text")
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
