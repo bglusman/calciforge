@@ -38,7 +38,7 @@ use starlark::eval::Evaluator;
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::OwnedFrozenValue;
 
-use crate::{ClashPolicy, PolicyContext, PolicyVerdict};
+use crate::{ClashPolicy, ErrorBehaviour, PolicyContext, PolicyVerdict};
 
 /// Starlark-backed policy engine.
 ///
@@ -51,6 +51,8 @@ pub struct StarlarkPolicy {
     /// Directory containing per-identity profile `.star` files.
     /// When set, `ClashPolicy::evaluate` will chain base policy → profile policy.
     profiles_dir: Option<PathBuf>,
+    /// How to handle Starlark evaluation errors. Defaults to `Deny` (fail-closed).
+    error_behaviour: ErrorBehaviour,
 }
 
 enum Inner {
@@ -77,7 +79,7 @@ impl StarlarkPolicy {
                 path = %path.display(),
                 "clash: policy file not found — falling back to permissive mode"
             );
-            return Self { inner: Inner::Permissive, profiles_dir: None };
+            return Self { inner: Inner::Permissive, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny };
         }
 
         let source = match std::fs::read_to_string(&path) {
@@ -88,7 +90,7 @@ impl StarlarkPolicy {
                     error = %e,
                     "clash: failed to read policy file — falling back to permissive mode"
                 );
-                return Self { inner: Inner::Permissive, profiles_dir: None };
+                return Self { inner: Inner::Permissive, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny };
             }
         };
 
@@ -123,16 +125,25 @@ impl StarlarkPolicy {
     /// Falls back to permissive if the source fails to parse or compile.
     pub fn from_source(filename: &str, source: &str) -> Self {
         match Self::compile(filename, source) {
-            Ok(inner) => Self { inner, profiles_dir: None },
+            Ok(inner) => Self { inner, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny },
             Err(e) => {
                 tracing::error!(
                     filename = %filename,
                     error = %e,
                     "clash: policy compilation failed — falling back to permissive mode"
                 );
-                Self { inner: Inner::Permissive, profiles_dir: None }
+                Self { inner: Inner::Permissive, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny }
             }
         }
+    }
+
+    /// Set the error behaviour for this policy.
+    ///
+    /// By default, evaluation errors result in `Deny` (fail-closed). Set this
+    /// to `ErrorBehaviour::Allow` to fail-open on errors — useful for testing.
+    pub fn with_error_behaviour(mut self, behaviour: ErrorBehaviour) -> Self {
+        self.error_behaviour = behaviour;
+        self
     }
 
     fn compile(filename: &str, source: &str) -> anyhow::Result<Inner> {
@@ -195,9 +206,17 @@ impl StarlarkPolicy {
                     action = %action,
                     identity = %context.identity,
                     error = %e,
-                    "clash: Starlark evaluation error — failing open (Allow)"
+                    "clash: Starlark evaluation error — {} {}",
+                    match self.error_behaviour {
+                        ErrorBehaviour::Deny => "failing closed (Deny)",
+                        ErrorBehaviour::Allow => "failing open (Allow)",
+                    },
+                    e
                 );
-                PolicyVerdict::Allow
+                match self.error_behaviour {
+                    ErrorBehaviour::Deny => PolicyVerdict::Deny(format!("policy evaluation error: {e}")),
+                    ErrorBehaviour::Allow => PolicyVerdict::Allow,
+                }
             }
         }
     }

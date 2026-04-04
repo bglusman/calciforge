@@ -6664,41 +6664,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polyclaw"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum 0.7.9",
- "base64 0.22.1",
- "chrono",
- "console 0.15.11",
- "dialoguer",
- "futures-util",
- "hegeltest",
- "hex",
- "hmac",
- "home",
- "indicatif 0.17.11",
- "matrix-sdk",
- "outpost",
- "reqwest 0.12.28",
- "sacp",
- "sacp-tokio",
- "serde",
- "serde_json",
- "sha2",
- "teloxide",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12162,6 +12127,41 @@ dependencies = [
  "tokio-test",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "zeroclawed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "chrono",
+ "console 0.15.11",
+ "dialoguer",
+ "futures-util",
+ "hegeltest",
+ "hex",
+ "hmac",
+ "home",
+ "indicatif 0.17.11",
+ "matrix-sdk",
+ "outpost",
+ "reqwest 0.12.28",
+ "sacp",
+ "sacp-tokio",
+ "serde",
+ "serde_json",
+ "sha2",
+ "teloxide",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
