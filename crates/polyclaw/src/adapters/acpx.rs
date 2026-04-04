@@ -111,6 +111,26 @@ impl AcpxAdapter {
         Ok(())
     }
 
+    /// Strip acpx protocol noise — keep only clean assistant text lines
+    fn strip_acpx_noise(raw: &str) -> String {
+        raw.lines()
+            .filter(|line| {
+                let t = line.trim();
+                if t.is_empty() { return false; }
+                // Drop protocol scaffolding lines
+                if t.starts_with("[client]") { return false; }
+                if t.starts_with("[tool]") { return false; }
+                if t.starts_with("[thinking]") { return false; }
+                if t.starts_with("[done]") { return false; }
+                if t.starts_with("[error]") { return false; }
+                true
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string()
+    }
+
     /// Execute one-shot prompt (no session persistence)
     async fn exec_prompt(&self, message: &str) -> Result<String, AdapterError> {
         self.ensure_session_dir().await?;
@@ -120,6 +140,7 @@ impl AcpxAdapter {
         let mut cmd = Command::new("acpx");
         cmd.arg(&self.agent_name)
             .arg("exec")
+            .arg("--format").arg("text")
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
@@ -146,7 +167,7 @@ impl AcpxAdapter {
                     )));
                 }
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                Ok(stdout.trim().to_string())
+                Ok(Self::strip_acpx_noise(&stdout))
             }
             Ok(Err(e)) => Err(AdapterError::Unavailable(format!(
                 "Failed to run acpx: {}",
@@ -166,6 +187,7 @@ impl AcpxAdapter {
         let mut cmd = Command::new("acpx");
         cmd.arg(&self.agent_name)
             .arg("prompt")
+            .arg("--format").arg("text")
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
@@ -196,7 +218,7 @@ impl AcpxAdapter {
                     )));
                 }
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                Ok(stdout.trim().to_string())
+                Ok(Self::strip_acpx_noise(&stdout))
             }
             Ok(Err(e)) => Err(AdapterError::Unavailable(format!(
                 "Failed to run acpx: {}",
