@@ -171,5 +171,72 @@ cargo fmt --all
 ---
 
 ## License
+---
+
+## Roadmap
+
+> This is the single source of truth for what we're working on. GitHub issues are tracked here;
+> the internal workboard drives prioritization from these items.
+> Contributors: feel free to pick up any **[🟢 Ready]** item — just leave a comment so others
+> don't duplicate work. **[🚧 In Progress]** or **[📐 Design]** items may need coordination with
+> maintainers first.
+
+### 🟢 Ready
+
+### 🔐 Security
+- **CVE-2026-33579 fix — Clash policy fail-closed** ✅ Merged
+  - Starlark evaluation errors now `Deny` by default (was `Allow`)
+  - `admin_cn_pattern` missing now fails closed in host-agent
+  - Report: `docs/security-audit-cve-2026-33579.md`
+
+### 🧪 Testing
+- **Loom concurrency testing** — Add `#[cfg(loom)]` tests to clash and NZC for
+  memory ordering, data races, and deadlocks that pass on x86 TSO but fail on ARM.
+  CI: `RUSTFLAGS="--cfg loom" cargo test`
+- **QEMU cross-architecture testing** — Run NZC test suite under `qemu-aarch64`
+  user-mode from x86 CI. Catch ARM-specific bugs without physical hardware.
+  Also useful for endianness (s390x, PowerPC) if RobotKit targets embedded.
+
+### 🛠 CLI Improvements
+- **Model shortcut aliases** — Quick model switching for mobile users.
+  Config-defined aliases (`!sc sonnet` → `anthropic/claude-sonnet-4.6`),
+  history navigation (`/model -` for last model, `/model -2` for previous),
+  toggle between favorites with just `/model`.
+- **OpenAI-compatible provider** — Support `OPENAI_API_BASE` style routing
+  so users can point at any OpenAI-compatible endpoint (local Ollama, LMStudio, etc.).
+
+### 📦 Infrastructure
+- **PostgreSQL / SQLite session store** — Pluggable persistence for conversation history.
+- **Prometheus metrics** — Full observability: latency, token usage, error rates per
+  provider, model, and identity.
+
+### 📐 Design In Progress
+
+### 🤖 Agent Features
+- **ACP agent launcher** — Spawn Claude Code / Codex / Pi as child agents from NZC.
+  Already has `acp.rs` provider but needs `acpx` crate fix (Send/Sync traits).
+- **Clash policy engine v2** — Starlark profiles with per-identity policies.
+  Core trait is wired; identity-based profile chain is in progress.
+- **Web dashboard** — Admin UI for managing agents, channels, sessions, and policies.
+
+### 🌐 Channels
+- **WhatsApp connector** — Full WhatsApp channel support alongside Telegram and Signal.
+- **Self-hosted LLM** — Local inference with automatic fallback to cloud models.
+
+### 🤖 RobotKit
+- **Robot Kit integration** — Drive + vision + sensor toolkit for physical robotics.
+  Raspberry Pi / ROS2 target. Robot Kit crate exists, needs hardware integration docs.
+
+### 🔮 Future
+- **Outpost v2** — Multi-layer injection scanning (pattern + semantic + vision)
+  for safer agent-to-agent routing.
+- **Multi-agent orchestration** — Agent-to-agent communication via outpost HTTP.
+  Agent mesh networking with per-agent auth (already in auth.rs).
+- **Edge deployment** — Single binary that bundles router + agent for
+  Raspberry Pi / container edge nodes without cloud dependency.
+
+---
+
+## License
 
 MIT OR Apache-2.0 (see individual crate `Cargo.toml` for details)
