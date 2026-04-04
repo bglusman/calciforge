@@ -8,7 +8,17 @@ use crate::scanner::OutpostScanner;
 use crate::verdict::{OutpostVerdict, ScanContext};
 
 /// The set of tool names that the middleware intercepts.
-pub const INTERCEPTED_TOOLS: &[&str] = &["web_fetch", "safe_fetch", "web_search", "email_fetch", "exec"];
+///
+/// `safe_fetch` is listed here for backwards compatibility but is **deprecated**.
+/// All fetches now route through [`crate::proxy::OutpostProxy`], making `web_fetch`
+/// and `safe_fetch` semantically identical. New code should use `web_fetch` only.
+pub const INTERCEPTED_TOOLS: &[&str] = &[
+    "web_fetch",
+    "safe_fetch", // deprecated: equivalent to web_fetch; kept for backwards compat
+    "web_search",
+    "email_fetch",
+    "exec",
+];
 
 /// A tool result passed into the middleware.
 #[derive(Debug, Clone)]

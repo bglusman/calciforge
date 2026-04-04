@@ -3,27 +3,37 @@
 use crate::patterns::*;
 use crate::verdict::{OutpostVerdict, ScanContext};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
-/// Configuration for the outpost scanner.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Configuration for the outpost scanner and transparent proxy.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScannerConfig {
     /// Optional URL of the shared PolyClaw outpost HTTP service.
     /// If `None` or unreachable, layers 1+2 run locally only.
     pub service_url: Option<String>,
     /// Ratio threshold: if discussion_signals / injection_signals > this,
     /// downgrade Unsafe → Review. Default: 0.3
+    #[serde(default = "ScannerConfig::default_discussion_ratio")]
     pub discussion_ratio_threshold: f64,
     /// Minimum injection signal count before ratio heuristic applies. Default: 3
+    #[serde(default = "ScannerConfig::default_min_signals")]
     pub min_signals_for_ratio: usize,
+    /// Path to the persistent digest store JSON file.
+    /// Defaults to `~/.outpost/digests.json` when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest_store_path: Option<PathBuf>,
+    /// When `true`, `Review` verdicts from the proxy automatically pass through
+    /// (the caller does not need to explicitly approve them). Default: `false`.
+    #[serde(default)]
+    pub override_on_review: bool,
 }
 
-impl Default for ScannerConfig {
-    fn default() -> Self {
-        Self {
-            service_url: None,
-            discussion_ratio_threshold: 0.3,
-            min_signals_for_ratio: 3,
-        }
+impl ScannerConfig {
+    fn default_discussion_ratio() -> f64 {
+        0.3
+    }
+    fn default_min_signals() -> usize {
+        3
     }
 }
 
