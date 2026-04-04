@@ -2,6 +2,17 @@
 //!
 //! Provides a pre-execution hook that prompts the user before tool calls,
 //! with session-scoped "Always" allowlists and audit logging.
+//!
+//! # Clash approval flow
+//!
+//! When the Clash policy engine returns a `Review` verdict, the tool-call loop
+//! needs a way to suspend execution and wait for human approval. This is
+//! modelled with:
+//!
+//! - [`ClashApprovalRequest`] — the suspended call waiting for a decision.
+//! - [`ClashApprovalDecision`] — `Approve` or `Deny` (with an optional note).
+//! - [`ClashApprovalCache`] — session-scoped cache that remembers prior
+//!   "always approve this pattern" decisions so the user is not re-prompted.
 
 use crate::config::AutonomyConfig;
 use crate::security::AutonomyLevel;
@@ -243,6 +254,121 @@ fn summarize_args(args: &serde_json::Value) -> String {
             let s = other.to_string();
             truncate_for_summary(&s, 120)
         }
+    }
+}
+
+// ── Clash approval flow types ──────────────────────────────────────────────
+
+/// A tool call that has been suspended pending human approval.
+///
+/// Created by `run_tool_call_loop` when Clash returns a `Review` verdict.
+/// The caller either calls [`prompt_user`] (interactive) or defers to an
+/// out-of-band mechanism (gateway webhook).
+#[derive(Debug, Clone)]
+pub struct ClashApprovalRequest {
+    /// Tool name that triggered the review (e.g. `"shell"`).
+    pub tool_name: String,
+    /// Full tool arguments at the time of the review.
+    pub arguments: serde_json::Value,
+    /// Reason string from the `review:<reason>` verdict.
+    pub reason: String,
+    /// Optional human-readable command or path for display.
+    pub command_hint: Option<String>,
+}
+
+/// The human's decision on a [`ClashApprovalRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClashApprovalDecision {
+    /// Execute the tool call.
+    Approve,
+    /// Execute the tool call AND remember this pattern for the session.
+    ApproveAlways,
+    /// Block the tool call.
+    Deny,
+}
+
+impl std::fmt::Display for ClashApprovalDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approve => f.write_str("approve"),
+            Self::ApproveAlways => f.write_str("approve_always"),
+            Self::Deny => f.write_str("deny"),
+        }
+    }
+}
+
+/// Session-scoped cache for Clash approval decisions.
+///
+/// Stores `(tool_name, reason_prefix)` pairs that the user marked as
+/// `ApproveAlways`. Subsequent calls matching the same pair skip the prompt.
+pub struct ClashApprovalCache {
+    allowed: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
+}
+
+impl ClashApprovalCache {
+    /// Create an empty cache.
+    pub fn new() -> Self {
+        Self {
+            allowed: parking_lot::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// Check whether a previous `ApproveAlways` decision covers this call.
+    pub fn check_cached(&self, tool_name: &str, reason: &str) -> bool {
+        let key = (tool_name.to_string(), Self::reason_prefix(reason));
+        self.allowed.lock().contains(&key)
+    }
+
+    /// Record an `ApproveAlways` decision.
+    pub fn cache_decision(&self, tool_name: &str, reason: &str) {
+        let key = (tool_name.to_string(), Self::reason_prefix(reason));
+        self.allowed.lock().insert(key);
+    }
+
+    /// Extract a stable prefix from a reason string (up to the first `:` or 32 chars).
+    fn reason_prefix(reason: &str) -> String {
+        reason
+            .split_once(':')
+            .map(|(prefix, _)| prefix.to_string())
+            .unwrap_or_else(|| reason.chars().take(32).collect())
+    }
+}
+
+impl Default for ClashApprovalCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Prompt the user interactively for a Clash `Review` verdict.
+///
+/// Prints the request details to stderr and reads a single line from stdin.
+/// Returns the user's [`ClashApprovalDecision`].
+///
+/// Falls back to [`ClashApprovalDecision::Deny`] when stdin is not a terminal
+/// or the read fails.
+pub fn prompt_user(request: &ClashApprovalRequest) -> ClashApprovalDecision {
+    use std::io::{BufRead, Write};
+
+    eprintln!();
+    eprintln!("🔒 Clash policy: action requires approval");
+    eprintln!("   Tool:   {}", request.tool_name);
+    if let Some(ref hint) = request.command_hint {
+        eprintln!("   Cmd:    {hint}");
+    }
+    eprintln!("   Reason: {}", request.reason);
+    eprint!("   Approve? [Y]es / [N]o / [A]lways (remember this session): ");
+    let _ = std::io::stderr().flush();
+
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_err() {
+        return ClashApprovalDecision::Deny;
+    }
+    match line.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => ClashApprovalDecision::Approve,
+        "a" | "always" => ClashApprovalDecision::ApproveAlways,
+        _ => ClashApprovalDecision::Deny,
     }
 }
 

@@ -66,7 +66,28 @@ impl LeakDetector {
         self.check_jwt_tokens(content, &mut patterns, &mut redacted);
         self.check_database_urls(content, &mut patterns, &mut redacted);
         self.check_high_entropy_tokens(content, &mut patterns, &mut redacted);
+        // PII outbound scanning (Agents-of-Chaos CS3)
+        self.check_pii_outbound(content, &mut patterns, &mut redacted);
 
+        if patterns.is_empty() {
+            LeakResult::Clean
+        } else {
+            LeakResult::Detected { patterns, redacted }
+        }
+    }
+
+    /// Scan outbound content for PII that should not be sent externally.
+    ///
+    /// Unlike the inbound check in `PromptGuard`, this method redacts discovered
+    /// values so the caller can safely log or return sanitised content.
+    /// Physical-address patterns are warned about but not redacted (too many
+    /// false positives in free-text).
+    ///
+    /// Reference: Agents of Chaos CS3.
+    pub fn scan_outbound_pii(&self, content: &str) -> LeakResult {
+        let mut patterns = Vec::new();
+        let mut redacted = content.to_string();
+        self.check_pii_outbound(content, &mut patterns, &mut redacted);
         if patterns.is_empty() {
             LeakResult::Clean
         } else {
@@ -291,6 +312,54 @@ impl LeakDetector {
                     .replace_all(redacted, "[REDACTED_DATABASE_URL]")
                     .to_string();
             }
+        }
+    }
+
+    /// Scan for outbound PII: SSNs (redacted), credit card numbers (redacted),
+    /// and physical address patterns (warned but not redacted).
+    fn check_pii_outbound(
+        &self,
+        content: &str,
+        patterns: &mut Vec<String>,
+        redacted: &mut String,
+    ) {
+        static SSN_PATTERN: OnceLock<Regex> = OnceLock::new();
+        let ssn_re = SSN_PATTERN.get_or_init(|| {
+            // XXX-XX-XXXX or 9-digit run
+            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap()
+        });
+
+        static CC_PATTERN: OnceLock<Regex> = OnceLock::new();
+        let cc_re = CC_PATTERN.get_or_init(|| {
+            // 13-16 digit sequences with optional spaces/dashes between groups of 4
+            // (Luhn validation is deferred to the application layer to avoid false positives)
+            Regex::new(r"\b(?:\d{4}[- ]?){3}\d{4}\b|\b\d{13}\b").unwrap()
+        });
+
+        static ADDRESS_PATTERN: OnceLock<Regex> = OnceLock::new();
+        let addr_re = ADDRESS_PATTERN.get_or_init(|| {
+            // Heuristic: street number + street name + common suffix
+            Regex::new(
+                r"(?i)\b\d{1,5}\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,3}\s+(Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|Court|Ct|Place|Pl|Way)\b",
+            )
+            .unwrap()
+        });
+
+        if ssn_re.is_match(content) {
+            patterns.push("PII: Social Security Number".to_string());
+            *redacted = ssn_re.replace_all(redacted, "[SSN REDACTED]").to_string();
+        }
+
+        if cc_re.is_match(content) {
+            patterns.push("PII: Credit card number".to_string());
+            *redacted = cc_re
+                .replace_all(redacted, "[CC REDACTED]")
+                .to_string();
+        }
+
+        if addr_re.is_match(content) {
+            // Warn but do not redact — address patterns have high false-positive rate
+            patterns.push("PII: Physical address (warn only)".to_string());
         }
     }
 
@@ -590,5 +659,117 @@ MIIEowIBAAKCAQEA0ZPr5JeyVDonXsKhfq...
         // "ab" repeated: entropy = 1.0 bit
         let e = shannon_entropy("abab");
         assert!((e - 1.0).abs() < 0.001);
+    }
+
+    // -----------------------------------------------------------------------
+    // Agents-of-Chaos: outbound PII scanning (CS3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detects_ssn_outbound() {
+        let detector = LeakDetector::new();
+        let content = "Please process payment for customer SSN 123-45-6789";
+        match detector.scan(content) {
+            LeakResult::Detected { patterns, redacted } => {
+                assert!(
+                    patterns.iter().any(|p| p.contains("Social Security")),
+                    "Expected SSN pattern, got: {patterns:?}"
+                );
+                assert!(
+                    redacted.contains("[SSN REDACTED]"),
+                    "Expected SSN to be redacted in: {redacted}"
+                );
+                assert!(
+                    !redacted.contains("123-45-6789"),
+                    "SSN should not appear in redacted output"
+                );
+            }
+            LeakResult::Clean => panic!("Should detect SSN"),
+        }
+    }
+
+    #[test]
+    fn detects_credit_card_outbound() {
+        let detector = LeakDetector::new();
+        let content = "Charge card number 4111 1111 1111 1111 for $99";
+        match detector.scan(content) {
+            LeakResult::Detected { patterns, redacted } => {
+                assert!(
+                    patterns.iter().any(|p| p.contains("Credit card")),
+                    "Expected credit card pattern, got: {patterns:?}"
+                );
+                assert!(
+                    redacted.contains("[CC REDACTED]"),
+                    "Expected CC to be redacted in: {redacted}"
+                );
+            }
+            LeakResult::Clean => panic!("Should detect credit card number"),
+        }
+    }
+
+    #[test]
+    fn detects_credit_card_dashes() {
+        let detector = LeakDetector::new();
+        let content = "Card: 5500-0000-0000-0004";
+        match detector.scan(content) {
+            LeakResult::Detected { patterns, .. } => {
+                assert!(patterns.iter().any(|p| p.contains("Credit card")));
+            }
+            LeakResult::Clean => panic!("Should detect credit card with dashes"),
+        }
+    }
+
+    #[test]
+    fn detects_physical_address_outbound() {
+        let detector = LeakDetector::new();
+        let content = "Deliver to 123 Main Street, Springfield";
+        match detector.scan(content) {
+            LeakResult::Detected { patterns, redacted } => {
+                assert!(
+                    patterns.iter().any(|p| p.contains("Physical address")),
+                    "Expected address pattern, got: {patterns:?}"
+                );
+                // Address is warned but NOT redacted
+                assert!(
+                    redacted.contains("123 Main Street"),
+                    "Address should not be redacted (warn-only)"
+                );
+            }
+            LeakResult::Clean => panic!("Should warn about physical address"),
+        }
+    }
+
+    #[test]
+    fn scan_outbound_pii_ssn_redacted() {
+        let detector = LeakDetector::new();
+        let result = detector.scan_outbound_pii("User SSN: 987-65-4321 on record");
+        match result {
+            LeakResult::Detected { patterns, redacted } => {
+                assert!(patterns.iter().any(|p| p.contains("Social Security")));
+                assert!(redacted.contains("[SSN REDACTED]"));
+            }
+            LeakResult::Clean => panic!("Expected SSN detection"),
+        }
+    }
+
+    #[test]
+    fn scan_outbound_pii_clean_for_normal_text() {
+        let detector = LeakDetector::new();
+        // Normal text with numbers that look like parts of SSNs out of context
+        let result = detector.scan_outbound_pii("The temperature is 72 degrees and humidity is 45%");
+        assert!(matches!(result, LeakResult::Clean));
+    }
+
+    #[test]
+    fn ssn_not_flagged_in_url() {
+        let detector = LeakDetector::new();
+        // A URL segment that happens to look like a 9-digit sequence should not
+        // trigger SSN detection (the formatted XXX-XX-XXXX pattern is required)
+        let result = detector.scan_outbound_pii(
+            "See https://example.com/record/123456789 for details",
+        );
+        // The bare 9-digit form in a URL path should not match our SSN pattern
+        // (which requires the XXX-XX-XXXX dashes)
+        assert!(matches!(result, LeakResult::Clean));
     }
 }

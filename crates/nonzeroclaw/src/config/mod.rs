@@ -6,7 +6,8 @@ pub mod workspace;
 pub use schema::{
     AgentConfig, AssemblyAiSttConfig, AuditConfig, AutonomyConfig, BackupConfig,
     BrowserComputerUseConfig, BrowserConfig, BuiltinHooksConfig, ChannelsConfig,
-    ClassificationRule, ClaudeCodeConfig, ClaudeCodeRunnerConfig, CloudOpsConfig, CodexCliConfig,
+    ClassificationRule, ClaudeAcpConfig, ClaudeApiConfig, ClaudeCodeConfig, ClaudeCodeRunnerConfig,
+    CloudOpsConfig, CodexCliConfig,
     ComposioConfig, Config, ConversationalAiConfig, CostConfig, CronConfig, CronJobDecl,
     CronScheduleDecl, DEFAULT_GWS_SERVICES, DataRetentionConfig, DeepgramSttConfig,
     DelegateAgentConfig, DelegateToolConfig, DiscordConfig, DockerRuntimeConfig, EdgeTtsConfig,
