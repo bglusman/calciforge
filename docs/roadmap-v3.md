@@ -45,4 +45,4 @@ on_review = "annotate"
 - Leave as "outpost" with a `channel_mode` flag — consistent naming
 
 ### Priority
-Low — v3 planning item. No implementation needed yet. Document and revisit when ZeroClawed channel layer is stable.
+Low — planning item. No implementation needed yet. Document and revisit when ZeroClawed channel layer is stable.

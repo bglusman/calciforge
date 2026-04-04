@@ -6944,7 +6944,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ctx = ProjectContext {
             user_name: "José María".into(),
-            agent_name: "ZeroClaw-v2".into(),
+            agent_name: "ZeroClaw".into(),
             timezone: "Europe/Madrid".into(),
             communication_style: "Be direct.".into(),
         };
@@ -6960,7 +6960,7 @@ mod tests {
         let soul = tokio::fs::read_to_string(tmp.path().join("SOUL.md"))
             .await
             .unwrap();
-        assert!(soul.contains("ZeroClaw-v2"));
+        assert!(soul.contains("ZeroClaw"));
     }
 
     // ── scaffold_workspace: full personalization round-trip ─────

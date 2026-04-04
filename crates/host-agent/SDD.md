@@ -1,4 +1,4 @@
-# ZeroClawed v3 Host-Agent — SDD Specification (Round 2)
+# ZeroClawed Host-Agent — SDD Specification (Round 2)
 
 ## Document Control
 - **Version**: 0.2.0
@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-This SDD defines the security-hardened architecture for ZeroClawed v3 Host-Agent integrating with NonZeroClaw (NZC) as the primary policy engine. All P0-P4 requirements from the Opus 4.6 security review are addressed.
+This SDD defines the security-hardened architecture for ZeroClawed Host-Agent integrating with NonZeroClaw (NZC) as the primary policy engine. All P0-P4 requirements from the Opus 4.6 security review are addressed.
 
 ---
 

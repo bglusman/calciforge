@@ -1,4 +1,4 @@
-//! Channel adapters for ZeroClawed v3.
+//! Channel adapters for ZeroClawed.
 //!
 //! Currently active: Telegram.
 //! Scaffolded (needs bot account): Matrix.

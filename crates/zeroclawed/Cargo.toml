@@ -2,7 +2,7 @@
 name = "zeroclawed"
 version = "0.1.0"
 edition = "2021"
-description = "ZeroClawed v2 — Rust agent gateway (ZeroClaw fork)"
+description = "ZeroClawed — Rust agent gateway (ZeroClaw fork)"
 license = "MIT"
 
 [[bin]]

@@ -1,6 +1,6 @@
 //! Memory hook traits and no-op implementations.
 //!
-//! From the ZeroClawed v2 spec, Section 8.2:
+//! From the ZeroClawed spec, Section 8.2:
 //! > The hooks are **optional traits** — if no implementation is configured,
 //! > the hook is a no-op and the system behaves as today. When configured,
 //! > the hook is enforced regardless of the main agent's internal decisions.

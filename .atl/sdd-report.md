@@ -1,8 +1,8 @@
-# SDD: ZeroClawed v3 Host-Agent
+# SDD: ZeroClawed Host-Agent
 
 ## Phase 1: Init Summary
 
-**Project**: ZeroClawed v3 Host-Agent  
+**Project**: ZeroClawed Host-Agent  
 **Stack**: Rust (Axum, tokio-rustls)  
 **Persistence**: Engram  
 **Mode**: Standard (no strict TDD)  
@@ -29,7 +29,7 @@
 
 **Existing Patterns:**
 - Workspace structure under `crates/`
-- ZeroClawed v2 agent at `crates/zeroclawed/`
+- ZeroClawed agent at `crates/zeroclawed/`
 - NonZeroClaw agent at `crates/nonzeroclaw/`
 - Outpost security module at `crates/outpost/`
 
@@ -47,7 +47,7 @@
 
 ## Phase 2: Spec Summary
 
-**Source**: `/root/.openclaw/workspace/specs/ZEROCLAWED-V3-HOST-AGENT-SPEC.md`
+**Source**: `/root/.openclaw/workspace/specs/ZEROCLAWED-HOST-AGENT-SPEC.md`
 
 ### Core Requirements
 
@@ -216,7 +216,7 @@ crates/host-agent/src/
 
 **Status**: ✅ PASS WITH NOTES
 
-The ZeroClawed v3 Host-Agent implementation is complete and compliant with the specification. All core requirements are met:
+The ZeroClawed Host-Agent implementation is complete and compliant with the specification. All core requirements are met:
 
 - mTLS authentication is fully implemented
 - ZFS operations use proper delegation

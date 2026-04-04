@@ -1,4 +1,4 @@
-# ZeroClawed Host-Agent (v4 — Adapter-First)
+# ZeroClawed Host-Agent (Adapter-First)
 
 mTLS RPC server providing safe VM-to-host delegation via an adapter-first architecture.
 

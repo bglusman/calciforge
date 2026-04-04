@@ -1,7 +1,7 @@
 //! PolyConfig — TOML configuration loading and schema types.
 //!
-//! Reads from `~/.zeroclawed/config.toml`. Supports the full PolyConfig v2 schema
-//! as defined in the ZeroClawed v2 spec (Section 3).
+//! Reads from `~/.zeroclawed/config.toml`. Supports the full config schema
+//! as defined in the spec (Section 3).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

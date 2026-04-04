@@ -1,4 +1,4 @@
-//! Local command handler for ZeroClawed v3.
+//! Local command handler for ZeroClawed.
 //!
 //! Commands starting with `!` are handled locally — they never reach the agent.
 //! All other messages route to the agent as normal.
@@ -524,7 +524,7 @@ impl CommandHandler {
         };
 
         format!(
-            "ZeroClawed v3 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
+            "ZeroClawed status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -811,7 +811,7 @@ impl CommandHandler {
 
     fn cmd_help(&self) -> String {
         [
-            "ZeroClawed v3 — available commands:",
+            "ZeroClawed — available commands:",
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
             "  !agents  — list configured agents with endpoints",
@@ -871,7 +871,7 @@ impl CommandHandler {
             .unwrap_or_default();
 
         format!(
-            "ZeroClawed v3 status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
+            "ZeroClawed status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -910,7 +910,7 @@ impl CommandHandler {
             0
         };
 
-        format!("ZeroClawed v3 metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms")
+        format!("ZeroClawed metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms")
     }
 }
 

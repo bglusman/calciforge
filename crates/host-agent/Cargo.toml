@@ -2,7 +2,7 @@
 name = "host-agent"
 version = "0.2.0"
 edition = "2021"
-description = "ZeroClawed v3 Host-Agent — mTLS RPC server for ZFS/systemd/PCT delegation"
+description = "ZeroClawed Host-Agent — mTLS RPC server for ZFS/systemd/PCT delegation"
 license = "MIT"
 
 [[bin]]

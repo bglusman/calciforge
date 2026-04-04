@@ -1,4 +1,4 @@
-//! WhatsApp channel adapter for ZeroClawed v3.
+//! WhatsApp channel adapter for ZeroClawed.
 //!
 //! ## Architecture
 //!

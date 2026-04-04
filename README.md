@@ -8,7 +8,7 @@ A unified Cargo workspace containing the ZeroClawed router and NonZeroClaw nativ
 
 | Crate | Binary | Description |
 |-------|--------|-------------|
-| `crates/zeroclawed` | `zeroclawed` | **ZeroClawed v2** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
+| `crates/zeroclawed` | `zeroclawed` | **ZeroClawed** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
 | `crates/nonzeroclaw` | `nonzeroclaw` | **NonZeroClaw** — opinionated first-party OpenAI-compatible HTTP agent. ZeroClaw fork with outpost scanning, clash policy stubs, web dashboard, Prometheus metrics, and optional hardware/robotics support. |
 | `crates/outpost` | *(library)* | **Outpost** — shared content-scanning crate. Detects prompt injection, PII leakage, and unsafe content in external data before it reaches the model context. Used by both zeroclawed and nonzeroclaw. |
 | `crates/clash` | *(library)* | **Clash** — policy trait contracts and no-op implementation stubs. Provides the `PolicyEngine` interface for future conflict-resolution / approval-gate features. |
@@ -164,9 +164,9 @@ cargo fmt --all
 
 ## Origins
 
-- **ZeroClawed** is a from-scratch rewrite in Rust (was Zig in v1). See spec for design rationale.
+- **ZeroClawed** is a from-scratch rewrite in Rust (originally prototyped in Zig). See spec for design rationale.
 - **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with ZeroClawed-specific features.
-- **Outpost** was originally developed as part of ZeroClawed v2 and is now the shared scanning crate for the whole ecosystem.
+- **Outpost** was originally developed as part of ZeroClawed and is now the shared scanning crate for the whole ecosystem.
 
 ---
 
