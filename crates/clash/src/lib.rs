@@ -6,7 +6,7 @@
 //! # Design
 //!
 //! Clash policies are evaluated on every agent action before execution.
-//! The router (PolyClaw) or the agent runtime calls `ClashPolicy::evaluate`
+//! The router (NonZeroClawed) or the agent runtime calls `ClashPolicy::evaluate`
 //! with the action name and its context. If the verdict is `Deny` or `Review`,
 //! the agent must not proceed.
 

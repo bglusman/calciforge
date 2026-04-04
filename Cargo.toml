@@ -1,7 +1,7 @@
 [workspace]
 
 members = [
-    "crates/polyclaw",
+    "crates/nonzeroclawed",
     "crates/nonzeroclaw",
     "crates/outpost",
     "crates/clash",

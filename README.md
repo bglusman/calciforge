@@ -1,6 +1,6 @@
-# PolyClaw Monorepo
+# NonZeroClawed
 
-A unified Cargo workspace containing the PolyClaw router and NonZeroClaw native agent, plus their shared crates.
+A unified Cargo workspace containing the NonZeroClawed router and NonZeroClaw native agent, plus their shared crates.
 
 ---
 
@@ -8,9 +8,9 @@ A unified Cargo workspace containing the PolyClaw router and NonZeroClaw native 
 
 | Crate | Binary | Description |
 |-------|--------|-------------|
-| `crates/polyclaw` | `polyclaw` | **PolyClaw v2** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
+| `crates/nonzeroclawed` | `nonzeroclawed` | **NonZeroClawed v2** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
 | `crates/nonzeroclaw` | `nonzeroclaw` | **NonZeroClaw** — opinionated first-party OpenAI-compatible HTTP agent. ZeroClaw fork with outpost scanning, clash policy stubs, web dashboard, Prometheus metrics, and optional hardware/robotics support. |
-| `crates/outpost` | *(library)* | **Outpost** — shared content-scanning crate. Detects prompt injection, PII leakage, and unsafe content in external data before it reaches the model context. Used by both polyclaw and nonzeroclaw. |
+| `crates/outpost` | *(library)* | **Outpost** — shared content-scanning crate. Detects prompt injection, PII leakage, and unsafe content in external data before it reaches the model context. Used by both nonzeroclawed and nonzeroclaw. |
 | `crates/clash` | *(library)* | **Clash** — policy trait contracts and no-op implementation stubs. Provides the `PolicyEngine` interface for future conflict-resolution / approval-gate features. |
 | `crates/robot-kit` | *(library)* | **ZeroClaw Robot Kit** — optional robotics toolkit (drive, vision, speech, sensors, safety monitor). Raspberry Pi / ROS2 target. |
 
@@ -20,17 +20,17 @@ A unified Cargo workspace containing the PolyClaw router and NonZeroClaw native 
 
 ```
 [Telegram] ──┐
-[Matrix]   ──┤──▶ [PolyClaw boundary] ──▶ [Auth gate] ──▶ [Router] ──▶ [NonZeroClaw]
+[Matrix]   ──┤──▶ [NonZeroClawed boundary] ──▶ [Auth gate] ──▶ [Router] ──▶ [NonZeroClaw]
 [Signal]   ──┘          │                                                     │
                     [Outpost]                                             [Outpost]
                   (injection scan)                                      (response scan)
 ```
 
-- **PolyClaw** is the sole owner of every inbound channel. No agent connects directly to a channel.
-- **Outpost** scans content at both ingress (PolyClaw) and egress (NonZeroClaw) to catch injection and leakage.
+- **NonZeroClawed** is the sole owner of every inbound channel. No agent connects directly to a channel.
+- **Outpost** scans content at both ingress (NonZeroClawed) and egress (NonZeroClaw) to catch injection and leakage.
 - **Clash** provides a policy layer (currently no-op stubs) for future approval gates and conflict resolution.
 
-See the full architecture spec in `/docs` or run `polyclaw install --help` for the guided setup.
+See the full architecture spec in `/docs` or run `nonzeroclawed install --help` for the guided setup.
 
 ---
 
@@ -51,16 +51,16 @@ cargo check
 cargo build
 
 # Optimized release build (both binaries):
-cargo build --release -p polyclaw -p nonzeroclaw
+cargo build --release -p nonzeroclawed -p nonzeroclaw
 
 # Release binaries land in:
-#   target/release/polyclaw
+#   target/release/nonzeroclawed
 #   target/release/nonzeroclaw
 ```
 
 ### Configuration
 
-**PolyClaw** — config at `~/.polyclaw/config.toml`:
+**NonZeroClawed** — config at `~/.nonzeroclawed/config.toml`:
 
 ```toml
 version = 2
@@ -83,17 +83,17 @@ allow_list = ["brian"]
 
 ### Install (interactive wizard)
 
-PolyClaw includes a built-in installer that configures routing, agents, channels, and systemd services on local or remote hosts.
+NonZeroClawed includes a built-in installer that configures routing, agents, channels, and systemd services on local or remote hosts.
 
 ```bash
 # Interactive TUI wizard (default):
-polyclaw install
+nonzeroclawed install
 
 # Headless / non-interactive:
-polyclaw install --polyclaw-host <target> --claw <agent-spec>
+nonzeroclawed install --nonzeroclawed-host <target> --claw <agent-spec>
 
 # Dry-run (prints planned changes, touches nothing):
-polyclaw install --dry-run
+nonzeroclawed install --dry-run
 ```
 
 The installer is **idempotent** — safe to re-run. It:
@@ -102,25 +102,25 @@ The installer is **idempotent** — safe to re-run. It:
 - Auto-rolls back on failure
 - Supports SSH-based remote configuration of NZC and OpenClaw targets
 
-See `polyclaw install --help` for all options.
+See `nonzeroclawed install --help` for all options.
 
 ### Run
 
 ```bash
 # Router (foreground):
-polyclaw
+nonzeroclawed
 
 # Agent (foreground):
 nonzeroclaw serve
 
 # As systemd services:
-systemctl start polyclaw nonzeroclaw
-systemctl enable polyclaw nonzeroclaw
+systemctl start nonzeroclawed nonzeroclaw
+systemctl enable nonzeroclawed nonzeroclaw
 ```
 
 ### Agent adapters
 
-PolyClaw routes messages to agents via pluggable adapters:
+NonZeroClawed routes messages to agents via pluggable adapters:
 
 | Adapter | Description | Example agents |
 |---------|-------------|----------------|
@@ -138,11 +138,11 @@ See [docs/acpx-claude-setup.md](docs/acpx-claude-setup.md) for Claude Code integ
 
 ```bash
 # Build release binaries:
-cargo build --release -p polyclaw -p nonzeroclaw
+cargo build --release -p nonzeroclawed -p nonzeroclaw
 
 # Deploy to a remote host:
-scp target/release/polyclaw user@host:/usr/local/bin/polyclaw
-ssh user@host "systemctl restart polyclaw"
+scp target/release/nonzeroclawed user@host:/usr/local/bin/nonzeroclawed
+ssh user@host "systemctl restart nonzeroclawed"
 ```
 
 ---
@@ -164,9 +164,9 @@ cargo fmt --all
 
 ## Origins
 
-- **PolyClaw** is a from-scratch rewrite in Rust (was Zig in v1). See spec for design rationale.
-- **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with PolyClaw-specific features.
-- **Outpost** was originally developed as part of PolyClaw v2 and is now the shared scanning crate for the whole ecosystem.
+- **NonZeroClawed** is a from-scratch rewrite in Rust (was Zig in v1). See spec for design rationale.
+- **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with NonZeroClawed-specific features.
+- **Outpost** was originally developed as part of NonZeroClawed v2 and is now the shared scanning crate for the whole ecosystem.
 
 ---
 

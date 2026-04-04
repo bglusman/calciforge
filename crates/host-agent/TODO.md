@@ -1,4 +1,4 @@
-# PolyClaw Host-Agent — Phase 2 TODO
+# NonZeroClawed Host-Agent — Phase 2 TODO
 
 ## Signal Integration
 

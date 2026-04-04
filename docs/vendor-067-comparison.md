@@ -3,7 +3,7 @@
 **Date:** 2026-03-31  
 **Upstream:** `zeroclawlabs` crate v0.6.7, published 2026-03-29 on crates.io  
 **Upstream repo:** `github.com/zeroclaw-labs/zeroclaw` — **DELETED** (404 as of 2026-03-30)  
-**Our crate:** `polyclaw-mono/crates/nonzeroclaw/` (213 .rs files, 143K lines)  
+**Our crate:** `nonzeroclawed/crates/nonzeroclaw/` (213 .rs files, 143K lines)  
 **0.6.7 crate:** 386 .rs files, 288K lines  
 **License:** MIT OR Apache-2.0 (same as ours)  
 **Attribution:** Authors field: "theonlyhennygod". Lib name: "zeroclaw", bin name: "zeroclaw".
@@ -177,7 +177,7 @@ Our deps not in 0.6.7:
 
 ### Phase 4: Integration (30 min)
 15. Verify outpost and clash crates still compile against new nonzeroclaw
-16. Update polyclaw crate if it references any changed nonzeroclaw types
+16. Update nonzeroclawed crate if it references any changed nonzeroclaw types
 17. `cargo build --release` for full workspace
 
 ### Phase 5: Attribution & Docs

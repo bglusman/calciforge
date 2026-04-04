@@ -1,6 +1,6 @@
-# Signal Channel Configuration Example for PolyClaw
+# Signal Channel Configuration Example for NonZeroClawed
 #
-# Add this to your ~/.polyclaw/config.toml to enable Signal support.
+# Add this to your ~/.nonzeroclawed/config.toml to enable Signal support.
 # Signal uses the same webhook receiver pattern as WhatsApp.
 
 [[channels]]
@@ -8,7 +8,7 @@ kind = "signal"
 enabled = true
 
 # OpenClaw gateway endpoint that owns the Signal session
-# This is where PolyClaw will POST replies via /tools/invoke
+# This is where NonZeroClawed will POST replies via /tools/invoke
 nzc_endpoint = "http://127.0.0.1:18789"
 
 # Bearer token for the OpenClaw gateway

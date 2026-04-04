@@ -61,7 +61,7 @@ impl SignalClient {
         }
 
         let message = format!(
-            "🔐 PolyClaw Approval Request\n\n\
+            "🔐 NonZeroClawed Approval Request\n\n\
             Agent: {}\n\
             Operation: {}\n\
             Target: {}\n\n\

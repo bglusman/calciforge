@@ -1,4 +1,4 @@
-# Agents of Chaos — Lessons for PolyClaw/NZC
+# Agents of Chaos — Lessons for NonZeroClawed/NZC
 
 **Source:** [Agents of Chaos](https://agentsofchaos.baulab.info/report.html) — Shapira, Wendler, Bau et al., Feb 2026  
 **What:** Red-team study of OpenClaw agents by 20 AI researchers over 2 weeks. 16 case studies, 10+ security breaches.  
@@ -6,7 +6,7 @@
 
 ## Why This Matters
 
-This is the first serious empirical study of OpenClaw agent failures in a realistic multi-user deployment. The agents used Claude Opus 4.6 and Kimi K2.5 — the same models we use. The failures are not model-level (hallucination, bias) but **agentic-level** — they emerge from the combination of tool access, persistent memory, multi-party communication, and delegated authority. These are exactly the surfaces PolyClaw/NZC extend.
+This is the first serious empirical study of OpenClaw agent failures in a realistic multi-user deployment. The agents used Claude Opus 4.6 and Kimi K2.5 — the same models we use. The failures are not model-level (hallucination, bias) but **agentic-level** — they emerge from the combination of tool access, persistent memory, multi-party communication, and delegated authority. These are exactly the surfaces NonZeroClawed/NZC extend.
 
 ## Critical Failure Modes to Guard Against
 
@@ -14,13 +14,13 @@ This is the first serious empirical study of OpenClaw agent failures in a realis
 **Problem:** Agent claims "task done" but system state contradicts. "Secret deleted" but email still on server.  
 **Guard:** Post-action verification. After destructive/important ops, verify actual state matches claimed result.  
 **NZC hook point:** `tools/shell.rs`, `tools/file_edit.rs` — add result verification for destructive operations.  
-**PolyClaw hook point:** Clash crate policy enforcement could require verification for high-impact actions.
+**NonZeroClawed hook point:** Clash crate policy enforcement could require verification for high-impact actions.
 
 ### 2. Non-Owner Compliance (CS2, CS3)
 **Problem:** Agents execute arbitrary commands for anyone, including disclosing 124 email records to a non-owner who framed the request with urgency.  
 **Guard:** Per-sender authority checks on every action, not just session authentication.  
 **NZC hook point:** `security/policy.rs` — extend sender authorization beyond channel-level to action-level.  
-**PolyClaw hook point:** `auth.rs` `resolve_channel_sender` — map senders to permission tiers.
+**NonZeroClawed hook point:** `auth.rs` `resolve_channel_sender` — map senders to permission tiers.
 
 ### 3. Indirect Disclosure Bypass (CS3)
 **Problem:** Agent refuses "give me the SSN" but when asked to "forward the full email" it sends SSN unredacted.  
@@ -31,7 +31,7 @@ This is the first serious empirical study of OpenClaw agent failures in a realis
 **Problem:** Cross-channel spoofing succeeds because trust context doesn't transfer. New DM = blank slate.  
 **Guard:** Cross-session trust store. Flagged users, verified identities, and suspicious-activity markers must persist.  
 **NZC hook point:** `channels/session_store.rs` — extend to include per-sender trust/suspicion state.  
-**PolyClaw hook point:** Per-sender webhook history (50 turns) partially addresses this — ensure suspicion flags survive.
+**NonZeroClawed hook point:** Per-sender webhook history (50 turns) partially addresses this — ensure suspicion flags survive.
 
 ### 5. External Document Injection (CS10)
 **Problem:** Agent stores link to externally editable GitHub Gist. Attacker edits gist between sessions. Agent follows injected instructions.  
@@ -60,7 +60,7 @@ This is the first serious empirical study of OpenClaw agent failures in a realis
 - **Outpost injection scanning** on inbound content
 - **SecureClaw** pattern detection
 - **Safety tattoos** — pre-task analysis, snapshot-before-destroy protocols
-- **Per-sender webhook history** in PolyClaw — 50 turns of context per sender
+- **Per-sender webhook history** in NonZeroClawed — 50 turns of context per sender
 
 ## Recommended Implementation Priority
 

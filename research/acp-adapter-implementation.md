@@ -1,4 +1,4 @@
-# ACP Adapter for PolyClaw - Implementation Guide
+# ACP Adapter for NonZeroClawed - Implementation Guide
 
 **Date:** 2026-03-18  
 **Status:** Refactored to use existing ACP crates  
@@ -6,7 +6,7 @@
 
 ## Overview
 
-This implementation of the ACP adapter for PolyClaw leverages the existing Rust crate ecosystem instead of reinventing the wheel:
+This implementation of the ACP adapter for NonZeroClawed leverages the existing Rust crate ecosystem instead of reinventing the wheel:
 
 | Crate | Purpose | Used For |
 |-------|---------|----------|
@@ -22,13 +22,13 @@ This implementation of the ACP adapter for PolyClaw leverages the existing Rust 
 ### Without Middleware (Basic)
 
 ```
-PolyClaw -> acpx -> ACP Agent (stdio)
+NonZeroClawed -> acpx -> ACP Agent (stdio)
 ```
 
 ### With Middleware (Advanced)
 
 ```
-PolyClaw -> sacp-proxy -> sacp-tee -> ACP Agent
+NonZeroClawed -> sacp-proxy -> sacp-tee -> ACP Agent
                 ↓           ↓
            [routing]   [logging]
 ```
@@ -177,7 +177,7 @@ enable_middleware = true
 
 [[agents.middleware]]
 kind = "tee"
-log_file = "/var/log/polyclaw/acp-tee.log"
+log_file = "/var/log/nonzeroclawed/acp-tee.log"
 
 [[agents.middleware]]
 kind = "auth"

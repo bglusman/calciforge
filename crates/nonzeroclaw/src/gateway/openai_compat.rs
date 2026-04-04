@@ -1,7 +1,7 @@
 //! OpenAI-compatible `/v1/chat/completions` endpoint for NonZeroClaw.
 //!
 //! This module implements the OpenAI Chat Completions API surface so that
-//! PolyClaw (and any other OpenAI-compatible router) can route to NonZeroClaw
+//! NonZeroClawed (and any other OpenAI-compatible router) can route to NonZeroClaw
 //! via the existing `openclaw-http` adapter.
 //!
 //! # Supported endpoints
