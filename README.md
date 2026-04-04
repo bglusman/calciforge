@@ -30,7 +30,7 @@ A unified Cargo workspace containing the PolyClaw router and NonZeroClaw native 
 - **Outpost** scans content at both ingress (PolyClaw) and egress (NonZeroClaw) to catch injection and leakage.
 - **Clash** provides a policy layer (currently no-op stubs) for future approval gates and conflict resolution.
 
-See the full architecture spec: `/root/.openclaw/workspace/research/polyclaw-v2-spec.md`
+See the full architecture spec in `/docs` or run `polyclaw install --help` for the guided setup.
 
 ---
 
@@ -39,7 +39,7 @@ See the full architecture spec: `/root/.openclaw/workspace/research/polyclaw-v2-
 ### Prerequisites
 
 - Rust 1.87+ (`rustup update stable`)
-- SSH access to the deploy target (10.0.0.10)
+- SSH access to the deploy target (for remote install)
 
 ### Build
 
@@ -81,6 +81,29 @@ allow_list = ["brian"]
 
 **NonZeroClaw** — config at `~/.nonzeroclaw/config.toml` (run `nonzeroclaw config init` to scaffold).
 
+### Install (interactive wizard)
+
+PolyClaw includes a built-in installer that configures routing, agents, channels, and systemd services on local or remote hosts.
+
+```bash
+# Interactive TUI wizard (default):
+polyclaw install
+
+# Headless / non-interactive:
+polyclaw install --polyclaw-host <target> --claw <agent-spec>
+
+# Dry-run (prints planned changes, touches nothing):
+polyclaw install --dry-run
+```
+
+The installer is **idempotent** — safe to re-run. It:
+- Backs up configs before any write
+- Health-checks after apply
+- Auto-rolls back on failure
+- Supports SSH-based remote configuration of NZC and OpenClaw targets
+
+See `polyclaw install --help` for all options.
+
 ### Run
 
 ```bash
@@ -90,33 +113,36 @@ polyclaw
 # Agent (foreground):
 nonzeroclaw serve
 
-# As systemd services (on deploy target):
+# As systemd services:
 systemctl start polyclaw nonzeroclaw
 systemctl enable polyclaw nonzeroclaw
 ```
+
+### Agent adapters
+
+PolyClaw routes messages to agents via pluggable adapters:
+
+| Adapter | Description | Example agents |
+|---------|-------------|----------------|
+| `openclaw-http` | OpenAI-compatible HTTP endpoint | NonZeroClaw, OpenClaw proxy, any LLM API |
+| `acpx` | Agent Client Protocol via acpx CLI | Claude Code, OpenCode, Kilo, Gemini |
+| `cli` | Shell command with `{message}` substitution | Any CLI agent |
+| `openclaw-native` | OpenClaw hooks with `deliver:true` | OpenClaw agents (Telegram only) |
+| `openclaw-channel` | Bidirectional OpenClaw plugin (experimental) | OpenClaw agents |
+
+See [docs/acpx-claude-setup.md](docs/acpx-claude-setup.md) for Claude Code integration guide.
 
 ---
 
 ## Deploy
 
-Build and deploy to the production target (10.0.0.10):
-
 ```bash
-# Build
+# Build release binaries:
 cargo build --release -p polyclaw -p nonzeroclaw
 
-# Stop services on target
-ssh root@10.0.0.10 "systemctl stop polyclaw nonzeroclaw"
-
-# Copy binaries
-scp target/release/polyclaw root@10.0.0.10:/usr/local/bin/polyclaw
-scp target/release/nonzeroclaw root@10.0.0.10:/usr/local/bin/nonzeroclaw
-
-# Restart
-ssh root@10.0.0.10 "systemctl start polyclaw nonzeroclaw"
-
-# Verify
-ssh root@10.0.0.10 "journalctl -u polyclaw -n 5 --no-pager && journalctl -u nonzeroclaw -n 5 --no-pager"
+# Deploy to a remote host:
+scp target/release/polyclaw user@host:/usr/local/bin/polyclaw
+ssh user@host "systemctl restart polyclaw"
 ```
 
 ---
