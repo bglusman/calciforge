@@ -30,8 +30,6 @@ A unified Cargo workspace containing the ZeroClawed router and NonZeroClaw nativ
 - **Outpost** scans content at both ingress (ZeroClawed) and egress (NonZeroClaw) to catch injection and leakage.
 - **Clash** provides a policy layer (currently no-op stubs) for future approval gates and conflict resolution.
 
-See the full architecture spec in `/docs` or run `zeroclawed install --help` for the guided setup.
-
 ---
 
 ## Quick Start
@@ -81,44 +79,18 @@ allow_list = ["brian"]
 
 **NonZeroClaw** — config at `~/.nonzeroclaw/config.toml` (run `nonzeroclaw config init` to scaffold).
 
-### Install (interactive wizard)
-
-ZeroClawed includes a built-in installer that configures routing, agents, channels, and systemd services on local or remote hosts.
+### Deploy
 
 ```bash
-# Interactive TUI wizard (default):
-zeroclawed install
+# Build release binaries:
+cargo build --release -p zeroclawed -p nonzeroclaw
 
-# Headless / non-interactive:
-zeroclawed install --zeroclawed-host <target> --claw <agent-spec>
-
-# Dry-run (prints planned changes, touches nothing):
-zeroclawed install --dry-run
+# Deploy to a remote host:
+scp target/release/zeroclawed user@host:/usr/local/bin/zeroclawed
+ssh user@host "systemctl restart zeroclawed"
 ```
 
-The installer is **idempotent** — safe to re-run. It:
-- Backs up configs before any write
-- Health-checks after apply
-- Auto-rolls back on failure
-- Supports SSH-based remote configuration of NZC and OpenClaw targets
-
-See `zeroclawed install --help` for all options.
-
-### Run
-
-```bash
-# Router (foreground):
-zeroclawed
-
-# Agent (foreground):
-nonzeroclaw serve
-
-# As systemd services:
-systemctl start zeroclawed nonzeroclaw
-systemctl enable zeroclawed nonzeroclaw
-```
-
-### Agent adapters
+### Agent Adapters
 
 ZeroClawed routes messages to agents via pluggable adapters:
 
@@ -129,21 +101,6 @@ ZeroClawed routes messages to agents via pluggable adapters:
 | `cli` | Shell command with `{message}` substitution | Any CLI agent |
 | `openclaw-native` | OpenClaw hooks with `deliver:true` | OpenClaw agents (Telegram only) |
 | `openclaw-channel` | Bidirectional OpenClaw plugin (experimental) | OpenClaw agents |
-
-See [docs/acpx-claude-setup.md](docs/acpx-claude-setup.md) for Claude Code integration guide.
-
----
-
-## Deploy
-
-```bash
-# Build release binaries:
-cargo build --release -p zeroclawed -p nonzeroclaw
-
-# Deploy to a remote host:
-scp target/release/zeroclawed user@host:/usr/local/bin/zeroclawed
-ssh user@host "systemctl restart zeroclawed"
-```
 
 ---
 
@@ -164,40 +121,74 @@ cargo fmt --all
 
 ## Origins
 
-- **ZeroClawed** is a from-scratch rewrite in Rust (originally prototyped in Zig). See spec for design rationale.
+- **ZeroClawed** is a from-scratch rewrite in Rust (originally prototyped in Zig).
 - **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with ZeroClawed-specific features.
 - **Outpost** was originally developed as part of ZeroClawed and is now the shared scanning crate for the whole ecosystem.
+
+---
+
+## Roadmap
+
+This is the single source of truth for what we're working on. The internal workboard drives
+prioritization from these issues. Contributors: feel free to pick up **[Ready]** items; leave a
+comment so others don't duplicate work. **[Design]** items may need maintainer coordination.
+
+### Security
+
+- **[Done] CVE-2026-33579 — clash policy fail-closed by default.**
+  Starlark evaluation errors now return `Deny` instead of `Allow`, configurable via `ErrorBehaviour`.
+  Host-agent fails closed when `approval_admin_only=true` but `admin_cn_pattern` is not configured.
+  See `docs/security-audit-cve-2026-33579.md`.
+
+### Testing
+
+- **[Ready] Loom concurrency testing** — Add `#[cfg(loom)]` tests for data-race and memory-ordering bugs
+  that pass on x86 TSO but fail on ARM. CI: `RUSTFLAGS="--cfg loom" cargo test`.
+- **[Ready] QEMU cross-architecture testing** — Run tests under `qemu-aarch64` user-mode from x86 CI
+  to catch ARM-specific bugs without physical hardware.
+
+### CLI
+
+- **[Ready] Model shortcut aliases** — Quick model switching for mobile.
+  Config aliases (`sonnet` → `anthropic/claude-sonnet-4-6`), history navigation (`/model -`
+  for last model, `/model -2` for previous), toggle between favorites with just `/model`.
+- **[Ready] OpenAI-compatible provider** — Support `OPENAI_API_BASE` style routing
+  so users can point at any OpenAI-compatible endpoint (local Ollama, LMStudio, etc.).
+
+### Infrastructure
+
+- **[Ready] PostgreSQL / SQLite session store** — Pluggable persistence for conversation history.
+- **[Ready] Prometheus metrics** — Full observability: latency, token usage, error rates
+  per provider, model, and identity.
+
+### Agent
+
+- **[Design] ACP agent launcher** — Spawn Claude Code / Codex / Pi as child agents from NZC.
+  Needs `acpx` crate fix (Send/Sync trait bounds).
+- **[Design] Clash policy engine v2** — Starlark profiles with per-identity policies.
+  Core trait is wired; identity-based profile chain is in progress.
+- **[Design] Web dashboard** — Admin UI for managing agents, channels, sessions, and policies.
+
+### Channels
+
+- **[Ready] WhatsApp connector** — Full WhatsApp channel support alongside Telegram and Signal.
+
+### RobotKit
+
+- **[Ready] Robot Kit integration** — Drive, vision, sensor toolkit for physical robotics.
+  Raspberry Pi / ROS2 target. Crate scaffold exists, needs hardware integration.
+
+### Future
+
+- **[Future] Self-hosted LLM** — Local inference with automatic fallback to cloud models.
+- **[Future] Outpost v2** — Multi-layer injection scanning (pattern + semantic + vision
+  model) for safer agent-to-agent routing.
+- **[Future] Multi-agent orchestration** — Agent-to-agent communication via outpost HTTP.
+- **[Future] Edge deployment** — Single binary bundling router + agent for Raspberry Pi /
+  container edge nodes without cloud dependency.
 
 ---
 
 ## License
 
 MIT OR Apache-2.0 (see individual crate `Cargo.toml` for details)
-
----
-
-## Roadmap
-
-These are the features we're actively working on. Contributors are welcome to pick up any **🟢 Ready** item.
-
-### 🟢 Ready for Contributors
-- **OpenAI-compatible provider** — support `OPENAI_API_BASE` style routing
-- **PostgreSQL / SQLite session store** — pluggable persistence for conversation history
-- **Web dashboard** — admin UI for managing agents, channels, and sessions
-- **Prometheus metrics** — full observability (latency, token usage, error rates)
-
-### 📐 Design In Progress
-- **Clash policy engine** — Starlark-based rules for per-agent/per-channel access control, approval gates, tool-level permissions
-- **Model shortcut aliases** — quick model switching on mobile (`/model -` for last model, `/model sonnet` → `anthropic/claude-sonnet-4-6`)
-- **Loom-based concurrency testing** — verify data-race freedom across platform architectures
-
-### 🔮 Future
-- **ACP agent launcher** — spawn Claude Code / Codex / Pi as child agents from the router
-- **Robot Kit integration** — drive + vision + sensor toolkit for physical robotics builds
-- **Self-hosted LLM** — local inference via Ollama, with automatic fallback to cloud models
-
----
-
-## License
-
-MIT — see `LICENSE`.
