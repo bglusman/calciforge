@@ -1,4 +1,4 @@
-# Vault + PolyClaw Groundwork — Research Summary
+# Vault + NonZeroClawed Groundwork — Research Summary
 
 _Date: 2026-03-30_
 _Covers: vault-integration-plan.md Workstreams 1, 2, and 3_
@@ -12,7 +12,7 @@ Three workstreams, three different readiness levels:
 | Workstream | Topic | Status | First Milestone |
 |------------|-------|--------|-----------------|
 | 1 | Vault Integration | ✅ Feasible now | `EnvAdapter` + approval relay skeleton |
-| 2 | PolyClaw OpenClaw Adapter | ⚠️ Design work needed | Version-gated safe installer |
+| 2 | NonZeroClawed OpenClaw Adapter | ⚠️ Design work needed | Version-gated safe installer |
 | 3 | OpenClaw Migration + Fallback | ✅ Partially feasible now | Chat completions pass-through |
 
 ---
@@ -27,7 +27,7 @@ Three workstreams, three different readiness levels:
 
 The SDK does not call Bitwarden's vault APIs directly. Vaultwarden compatibility is therefore **not the right question** — Vaultwarden runs fine with `bw` CLI which is what the user-client uses.
 
-**The real gap**: the SDK's approval flow is interactive CLI. It does not support async/chat-based approval. PolyClaw must build its own approval relay.
+**The real gap**: the SDK's approval flow is interactive CLI. It does not support async/chat-based approval. NonZeroClawed must build its own approval relay.
 
 **OneCLI** is a sidecar service (not an embeddable Rust crate) that sits in front of outbound HTTP calls and injects credentials at the network layer. Apache-2.0 licensed. Currently does rate limiting; async approval workflows are on their roadmap but not available. Good reference architecture and usable as a sidecar today.
 
@@ -51,17 +51,17 @@ No external SDK dependency. Works end-to-end. Replaces `~/credentials/` plaintex
 
 ---
 
-## Workstream 2: PolyClaw OpenClaw Adapter
+## Workstream 2: NonZeroClawed OpenClaw Adapter
 
 ### What We Found
 
-**No native PolyClaw channel type exists** in OpenClaw's schema. The integration options, in order of risk:
+**No native NonZeroClawed channel type exists** in OpenClaw's schema. The integration options, in order of risk:
 
 1. **Chat completions proxy** (`POST /v1/chat/completions`) — works today, confirmed on live instance, requires only one config field to enable
 2. **Hooks ingress** (`POST /hooks/agent`) — requires `hooks.*` config block, lower risk than channel additions
-3. **Native plugin channel** (`channels.polyclaw`) — best long-term architecture, highest install risk
+3. **Native plugin channel** (`channels.nonzeroclawed`) — best long-term architecture, highest install risk
 
-**Schema versioning**: There's no `openclaw config schema` command or HTTP schema endpoint. Version is detectable via `openclaw --version` (SSH) or `meta.lastTouchedVersion` in `openclaw.json`. PolyClaw must maintain its own compatibility matrix.
+**Schema versioning**: There's no `openclaw config schema` command or HTTP schema endpoint. Version is detectable via `openclaw --version` (SSH) or `meta.lastTouchedVersion` in `openclaw.json`. NonZeroClawed must maintain its own compatibility matrix.
 
 **The 2026-03-30 incident** was caused by adding a channel config entry without installing the corresponding plugin first. The fix is the proposed safe installer flow: backup → version check → matrix lookup → doctor validate → confirm → apply → health check → rollback.
 
@@ -73,13 +73,13 @@ No external SDK dependency. Works end-to-end. Replaces `~/credentials/` plaintex
 
 ### What Needs Design Work
 
-- **PolyClaw plugin**: the TypeScript plugin that registers `channels.polyclaw` — needs to be written and packaged
+- **NonZeroClawed plugin**: the TypeScript plugin that registers `channels.nonzeroclawed` — needs to be written and packaged
 - **Full installer with rollback**: needs SSH access to target instance to run `openclaw doctor` and `gateway restart`
 - **Multi-instance targeting**: installer needs to handle "I have 3 claws, apply to all" safely (one at a time!)
 
 ### Suggested First Milestone
 
-> **Milestone A1**: Safe pass-through adapter — PolyClaw enables `chatCompletions` endpoint on a target claw (with backup + version check + confirm), then relays messages via `/v1/chat/completions`. No plugin installation required.
+> **Milestone A1**: Safe pass-through adapter — NonZeroClawed enables `chatCompletions` endpoint on a target claw (with backup + version check + confirm), then relays messages via `/v1/chat/completions`. No plugin installation required.
 
 ---
 
@@ -127,7 +127,7 @@ No external SDK dependency. Works end-to-end. Replaces `~/credentials/` plaintex
 | Agent Access SDK is early preview, API unstable | Medium | Workstream 1 (BitwardenAdapter) | Use `bw` CLI subprocess instead; watch SDK for stable release |
 | No OpenClaw HTTP schema endpoint | Medium | Workstream 2 | Maintain compatibility matrix; rely on `doctor` for validation |
 | OneCLI async approval not available | Low | Workstream 1 (OneCLI integration) | Use retry-after-403 pattern instead; OneCLI callback on roadmap |
-| `channels.polyclaw` needs plugin installed first | High | Workstream 2 (native channel) | Use chat completions pass-through for Phase 1; plugin is Phase 3 |
+| `channels.nonzeroclawed` needs plugin installed first | High | Workstream 2 (native channel) | Use chat completions pass-through for Phase 1; plugin is Phase 3 |
 | WA session not portable | Low | Workstream 3 | Document: WA users must re-pair; this is expected and unavoidable |
 | OpenClaw version not exposed via HTTP | Low | Workstream 2, 3 | Use `meta.lastTouchedVersion` in config; SSH for accurate version |
 
@@ -135,7 +135,7 @@ No external SDK dependency. Works end-to-end. Replaces `~/credentials/` plaintex
 
 ## Cross-Cutting: Credential Flow During Install
 
-The planning doc notes these workstreams connect: when the PolyClaw adapter installer generates credentials (e.g. `hooks.token`, shared secret between PolyClaw and the claw), those credentials should go into vault, not written to a config file.
+The planning doc notes these workstreams connect: when the NonZeroClawed adapter installer generates credentials (e.g. `hooks.token`, shared secret between NonZeroClawed and the claw), those credentials should go into vault, not written to a config file.
 
 **Recommended flow**:
 ```
@@ -170,7 +170,7 @@ Week 5-6: Migration Tool
   └── Fallback session continuity (session key pinning)
 
 Later: Phase 2/3
-  ├── PolyClaw plugin (native channels.polyclaw)
+  ├── NonZeroClawed plugin (native channels.nonzeroclawed)
   ├── BitwardenAdapter (Agent Access SDK, when stable)
   └── Full session history import
 ```

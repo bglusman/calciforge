@@ -1,6 +1,6 @@
 # VENDORING.md — Upstream Attribution
 
-This crate is a **vendored fork** of the `zeroclawlabs` crate, adapted for the PolyClaw ecosystem.
+This crate is a **vendored fork** of the `zeroclawlabs` crate, adapted for the NonZeroClawed ecosystem.
 
 ## Source
 
@@ -20,14 +20,14 @@ This crate is a **vendored fork** of the `zeroclawlabs` crate, adapted for the P
 | **Crate name** | `nonzeroclaw` (renamed from `zeroclawlabs`) |
 | **Vendored version** | `0.6.7-nzc.1` |
 | **Vendored date** | 2026-03-31 |
-| **Vendored by** | PolyClaw Contributors |
+| **Vendored by** | NonZeroClawed Contributors |
 
 ## License
 
 The original source code is dual-licensed under **MIT OR Apache-2.0**.
 Both `LICENSE-MIT` and `LICENSE-APACHE` files from the upstream crate are included in this directory.
 
-PolyClaw additions and modifications (vault module, Anthropic patches, etc.) are also
+NonZeroClawed additions and modifications (vault module, Anthropic patches, etc.) are also
 released under the same **MIT OR Apache-2.0** dual license.
 
 ## Our Modifications
@@ -43,7 +43,7 @@ released under the same **MIT OR Apache-2.0** dual license.
    Exposed via `pub mod vault;` in `lib.rs`.
 
 3. **Workspace integration**: 
-   - Removed upstream `[workspace]` section (we're inside `polyclaw-mono`)
+   - Removed upstream `[workspace]` section (we're inside `nonzeroclawed`)
    - Added `outpost = { path = "../outpost" }` and `clash = { path = "../clash" }` path deps
    - Added `aardvark-sys` stub crate (upstream uses a path dep not published to crates.io)
    
@@ -51,7 +51,7 @@ released under the same **MIT OR Apache-2.0** dual license.
    subprocess adapter code without external crate dependencies.
 
 5. **Cargo.toml metadata**: Updated version to `0.6.7-nzc.1`, removed dead repository URL,
-   added PolyClaw attribution and vendoring comment.
+   added NonZeroClawed attribution and vendoring comment.
 
 ### Pending — TODO (not yet applied)
 
@@ -82,7 +82,7 @@ changed/added in the vision/multimodal handling code.
 ## Upstream New Modules (available for use)
 
 The following modules are new in 0.6.7 and not present in our pre-vendoring codebase.
-They are included in the vendored source but not yet wired into PolyClaw configuration:
+They are included in the vendored source but not yet wired into NonZeroClawed configuration:
 
 | Module | Purpose |
 |--------|---------|

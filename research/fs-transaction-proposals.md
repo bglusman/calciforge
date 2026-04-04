@@ -1,7 +1,7 @@
 # Filesystem Transaction Interface Design Proposals
 
 _Research date: 2026-03-30_
-_Context: Three concrete interface proposals for the NZC/PolyClaw transaction system_
+_Context: Three concrete interface proposals for the NZC/NonZeroClawed transaction system_
 
 ---
 
@@ -47,10 +47,10 @@ transaction_diff(handle: TxnHandle) → Diff { changed: list[FileDiff] }
 **Worked example: editing OpenClaw config**
 
 ```
-// Agent is about to edit openclaw.json for the PolyClaw adapter installation
+// Agent is about to edit openclaw.json for the NonZeroClawed adapter installation
 
 txn = transaction_start(
-    label="polyclaw adapter installation - openclaw.json edit",
+    label="nonzeroclawed adapter installation - openclaw.json edit",
     backend="auto",
     scope=["/root/.openclaw/openclaw.json"]
 )
@@ -63,7 +63,7 @@ exec("openclaw gateway restart")
 // ... health check: poll /health for 30s ...
 
 if health_check_passes:
-    transaction_commit(txn, message="Added polyclaw channel adapter")
+    transaction_commit(txn, message="Added nonzeroclawed channel adapter")
     // Backup files cleaned up or kept per config
 else:
     transaction_rollback(txn, reason="Gateway failed to start after config edit")
@@ -216,11 +216,11 @@ ssh_snapshot_before = true  # Take ZFS snapshot before SSHing to known ZFS hosts
 
 ---
 
-## Proposal B: PolyClaw Meta-Command Interface
+## Proposal B: NonZeroClawed Meta-Command Interface
 
 ### The API
 
-PolyClaw exposes meta-commands that operators (human or automated) can invoke:
+NonZeroClawed exposes meta-commands that operators (human or automated) can invoke:
 
 ```
 !txn start [label] [--backend auto|backup-copy|jai|zfs]
@@ -231,32 +231,32 @@ PolyClaw exposes meta-commands that operators (human or automated) can invoke:
 !txn diff
 ```
 
-These are delivered as PolyClaw-level messages, not agent tool calls. PolyClaw intercepts them before routing to the underlying claw.
+These are delivered as NonZeroClawed-level messages, not agent tool calls. NonZeroClawed intercepts them before routing to the underlying claw.
 
-### How PolyClaw Coordinates with the Active Claw
+### How NonZeroClawed Coordinates with the Active Claw
 
-**Problem:** PolyClaw knows `!txn start` was invoked, but how does it know what filesystem operations the claw subsequently performed?
+**Problem:** NonZeroClawed knows `!txn start` was invoked, but how does it know what filesystem operations the claw subsequently performed?
 
 **Options:**
 
 **Option B1: Agent self-reports (lightweight)**
-- `!txn start` instructs PolyClaw to inject a system prompt addition into the agent's context: "You are now inside transaction TXN-123. Before modifying any file, call `transaction_file_declare(path)` to register it with the transaction."
-- The agent declares files it intends to modify; PolyClaw/NZC backs them up before the write.
-- On `!txn rollback`: PolyClaw sends a tool call to NZC to restore all declared files.
+- `!txn start` instructs NonZeroClawed to inject a system prompt addition into the agent's context: "You are now inside transaction TXN-123. Before modifying any file, call `transaction_file_declare(path)` to register it with the transaction."
+- The agent declares files it intends to modify; NonZeroClawed/NZC backs them up before the write.
+- On `!txn rollback`: NonZeroClawed sends a tool call to NZC to restore all declared files.
 
-**Option B2: PolyClaw intercepts tool calls (strong)**
-- PolyClaw wraps every outbound tool call through its routing layer.
-- When `write(path, ...)` or `edit(path, ...)` passes through while a transaction is active, PolyClaw triggers a pre-write backup.
+**Option B2: NonZeroClawed intercepts tool calls (strong)**
+- NonZeroClawed wraps every outbound tool call through its routing layer.
+- When `write(path, ...)` or `edit(path, ...)` passes through while a transaction is active, NonZeroClawed triggers a pre-write backup.
 - No agent cooperation needed.
 
-Option B2 is architecturally better but requires PolyClaw to understand NZC's tool call format, which couples them. For now, B1 is more realistic.
+Option B2 is architecturally better but requires NonZeroClawed to understand NZC's tool call format, which couples them. For now, B1 is more realistic.
 
 ### How It Works Across Different Claw Types
 
 | Claw | Interception | Rollback |
 |---|---|---|
 | NZC | Native (backup-copy/jai backend in-process) | Reliable |
-| OpenClaw | PolyClaw cannot intercept OpenClaw's file writes | Only if agent declared files via B1 |
+| OpenClaw | NonZeroClawed cannot intercept OpenClaw's file writes | Only if agent declared files via B1 |
 | Other | Not supported in v1 | |
 
 **Cross-claw limitation:** For OpenClaw claws, `!txn start` would have to inject a "please declare your file operations" instruction into the agent context — trust-based, not enforced.
@@ -264,28 +264,28 @@ Option B2 is architecturally better but requires PolyClaw to understand NZC's to
 ### Worked Example
 
 ```
-[Human to PolyClaw]
-!txn start "add PolyClaw channel to Librarian"
+[Human to NonZeroClawed]
+!txn start "add NonZeroClawed channel to Librarian"
 
-[PolyClaw responds]
+[NonZeroClawed responds]
 Transaction started: TXN-abc123 (backup-copy backend)
 Claw: NZC / Librarian@10.0.0.20
 Note: all file writes will be backed up before modification.
 Use !txn commit or !txn rollback when done.
 
 [Human]
-Now edit /root/.openclaw/openclaw.json to add the polyclaw channel.
+Now edit /root/.openclaw/openclaw.json to add the nonzeroclawed channel.
 
-[Agent executes tool calls; PolyClaw intercepts write(openclaw.json, ...)]
-[PolyClaw auto-backs up openclaw.json before write proceeds]
+[Agent executes tool calls; NonZeroClawed intercepts write(openclaw.json, ...)]
+[NonZeroClawed auto-backs up openclaw.json before write proceeds]
 
 [Agent]
 Done. Gateway restarted. Health check passed.
 
 [Human]
-!txn commit --message "PolyClaw adapter added successfully"
+!txn commit --message "NonZeroClawed adapter added successfully"
 
-[PolyClaw]
+[NonZeroClawed]
 Transaction TXN-abc123 committed.
 Files changed: /root/.openclaw/openclaw.json
 Backups archived to: ~/.nzc/txn-archives/TXN-abc123/
@@ -293,28 +293,28 @@ Backups archived to: ~/.nzc/txn-archives/TXN-abc123/
 
 ### Composition and Nesting
 
-**Human-initiated nesting is not recommended.** `!txn start` while another is active: PolyClaw prompts "Transaction TXN-abc123 is already active. Nest inside it? [yes/no]"
+**Human-initiated nesting is not recommended.** `!txn start` while another is active: NonZeroClawed prompts "Transaction TXN-abc123 is already active. Nest inside it? [yes/no]"
 
 Nesting semantics mirror Proposal A: inner rollback doesn't affect outer; outer rollback restores everything.
 
-**Cross-SSH:** Not supported. `!txn start` protects the local claw's filesystem. When the agent SSHes away, PolyClaw should emit: "⚠️ Agent is crossing SSH boundary to 10.0.0.40. Remote operations are NOT covered by the active transaction. Consider !txn ssh-guard 10.0.0.40 to take a remote ZFS snapshot first."
+**Cross-SSH:** Not supported. `!txn start` protects the local claw's filesystem. When the agent SSHes away, NonZeroClawed should emit: "⚠️ Agent is crossing SSH boundary to 10.0.0.40. Remote operations are NOT covered by the active transaction. Consider !txn ssh-guard 10.0.0.40 to take a remote ZFS snapshot first."
 
 ### Crash Mid-Transaction
 
-Same SQLite durability as Proposal A, but persisted in PolyClaw's database (which spans multiple claws). On PolyClaw restart:
+Same SQLite durability as Proposal A, but persisted in NonZeroClawed's database (which spans multiple claws). On NonZeroClawed restart:
 1. Finds orphaned transactions
 2. Routes recovery message to the appropriate claw: "Transaction TXN-abc123 was interrupted. Please resolve: `!txn status TXN-abc123`"
 
 ### Configuration Surface
 
 ```toml
-[polyclaw.transactions]
+[nonzeroclawed.transactions]
 enabled = true
-intercept_writes = true   # Intercept tool calls automatically (requires PolyClaw to understand NZC tool format)
+intercept_writes = true   # Intercept tool calls automatically (requires NonZeroClawed to understand NZC tool format)
 inject_on_start = true    # Inject "you are in a transaction" into agent context
 default_backend = "auto"
 
-[polyclaw.transactions.ssh_guard]
+[nonzeroclawed.transactions.ssh_guard]
 auto_snapshot_zfs_hosts = ["10.0.0.70", "10.0.0.40"]  # ZFS snapshot before SSH to these hosts
 warn_on_ssh_boundary = true
 ```
@@ -328,9 +328,9 @@ warn_on_ssh_boundary = true
 - Good for production operations where a human is present and watching
 
 **Cons:**
-- Requires human to initiate — no automation benefit unless PolyClaw auto-starts on certain triggers
+- Requires human to initiate — no automation benefit unless NonZeroClawed auto-starts on certain triggers
 - Cross-claw support is trust-based for non-NZC claws
-- PolyClaw must understand NZC tool call format for B2 interception — tight coupling
+- NonZeroClawed must understand NZC tool call format for B2 interception — tight coupling
 - Clunkier for routine operations where a human isn't watching
 
 ---
@@ -498,7 +498,7 @@ safe = ["~/.nzc/workspace/**", "~/.nzc/memory/**", "/tmp/**"]
 
 ## Comparison
 
-| Dimension | Proposal A (Explicit NZC) | Proposal B (PolyClaw Meta) | Proposal C (Implicit) |
+| Dimension | Proposal A (Explicit NZC) | Proposal B (NonZeroClawed Meta) | Proposal C (Implicit) |
 |---|---|---|---|
 | Agent opt-in required | Yes | Human-in-loop | No |
 | Works without human | ✅ | ❌ (human initiates) | ✅ |
@@ -519,11 +519,11 @@ safe = ["~/.nzc/workspace/**", "~/.nzc/memory/**", "/tmp/**"]
 Specifically:
 1. Implement Proposal A's tool-call interface (`transaction_start`, `transaction_commit`, `transaction_rollback`) in NZC.
 2. Implement the path-based detection from Proposal C as the `transactions.mode = "suggest"` behavior — when a write hits a sensitive path and no transaction is active, warn/auto-backup.
-3. Defer Proposal B (PolyClaw meta-commands) until PolyClaw's adapter layer is built (Session 3). The coordination mechanism depends on PolyClaw architecture that doesn't exist yet.
+3. Defer Proposal B (NonZeroClawed meta-commands) until NonZeroClawed's adapter layer is built (Session 3). The coordination mechanism depends on NonZeroClawed architecture that doesn't exist yet.
 
 This gives:
 - Agents can be explicit and correct (Proposal A)
 - Agents that forget get a safety net (Proposal C's suggest mode)
-- No over-engineering before PolyClaw is built
+- No over-engineering before NonZeroClawed is built
 
 **Do NOT ship `mode = "require"` until agent prompts reliably include transaction instructions.** Blocking agent operations without a clear path to resolution will frustrate users. Ship `"suggest"` first, measure, then graduate to `"require"` for sensitive operations.

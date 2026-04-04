@@ -6,7 +6,7 @@
 set -euo pipefail
 
 UPSTREAM_DIR="/root/projects/nonzeroclaw"
-MONO_DIR="/root/projects/polyclaw-mono"
+MONO_DIR="/root/projects/nonzeroclawed"
 SINCE="${1:-aa45c30}"     # Our fork point
 UNTIL="${2:-v0.3.2}"      # Latest upstream release tag available locally
 

@@ -10,7 +10,7 @@
 
 **Verdict: Partially feasible with significant workarounds.**
 
-ACP (Agent Communication Protocol) provides session persistence and distributed session capabilities, but **does not natively support multi-client attachment or real-time session handoff** between clients. The use case of seamlessly handing off a live coding session from desktop (Claude Code/OpenCode) to mobile (PolyClaw) and back is **not directly supported** by the protocol as currently implemented.
+ACP (Agent Communication Protocol) provides session persistence and distributed session capabilities, but **does not natively support multi-client attachment or real-time session handoff** between clients. The use case of seamlessly handing off a live coding session from desktop (Claude Code/OpenCode) to mobile (NonZeroClawed) and back is **not directly supported** by the protocol as currently implemented.
 
 However, there are viable workaround architectures that could achieve similar functionality.
 
@@ -113,12 +113,12 @@ This indicates **resuming existing sessions is not straightforward** in current 
 ┌─────────────┐      ┌──────────────┐      ┌─────────────┐
 │   Desktop   │◄────►│ Session      │◄────►│  ACP Agent  │
 │ (Claude Code│      │ Proxy        │      │ (OpenCode)  │
-│ /OpenCode)  │      │ (PolyClaw?)  │      │             │
+│ /OpenCode)  │      │ (NonZeroClawed?)  │      │             │
 └─────────────┘      └──────┬───────┘      └─────────────┘
                             │
                      ┌──────┴──────┐
                      │    Mobile   │
-                     │  (PolyClaw) │
+                     │  (NonZeroClawed) │
                      └─────────────┘
 ```
 
@@ -214,9 +214,9 @@ This indicates **resuming existing sessions is not straightforward** in current 
 
 ### Recommended Architecture: Hybrid Approach
 
-For the PolyClaw use case, a **Session Proxy with Snapshot Fallback** architecture is recommended:
+For the NonZeroClawed use case, a **Session Proxy with Snapshot Fallback** architecture is recommended:
 
-1. **Primary flow**: PolyClaw runs a lightweight session proxy that both desktop and mobile connect to
+1. **Primary flow**: NonZeroClawed runs a lightweight session proxy that both desktop and mobile connect to
 2. **Fallback flow**: When proxy unavailable, use explicit session export/import via share URLs
 3. **Sync mechanism**: Use ACP's distributed session storage with external S3-compatible backend
 
@@ -224,7 +224,7 @@ For the PolyClaw use case, a **Session Proxy with Snapshot Fallback** architectu
 
 ## 6. Open Questions / Further Research Needed
 
-1. **Does PolyClaw already implement any session proxy functionality?** The Big Hat Group blog mentions using `sessions_spawn` with `runtime: "acp"` for persistent sessions - investigate if this can be leveraged.
+1. **Does NonZeroClawed already implement any session proxy functionality?** The Big Hat Group blog mentions using `sessions_spawn` with `runtime: "acp"` for persistent sessions - investigate if this can be leveraged.
 
 2. **What is the exact session storage format?** Need to examine the ACP Python SDK's `context.session.load_history()` and `context.session.store_state()` implementations.
 
@@ -240,7 +240,7 @@ For the PolyClaw use case, a **Session Proxy with Snapshot Fallback** architectu
 
 **Research Date:** 2026-03-17 (Addendum)
 
-This section documents practical, client-specific mechanisms for session handoff that can be leveraged by PolyClaw, regardless of ACP protocol limitations.
+This section documents practical, client-specific mechanisms for session handoff that can be leveraged by NonZeroClawed, regardless of ACP protocol limitations.
 
 ---
 
@@ -272,7 +272,7 @@ Claude Code has a **built-in session handoff mechanism** called "Remote Control"
         │  4. API relays messages bidirectionally          │
 ```
 
-#### Key Findings for PolyClaw Integration
+#### Key Findings for NonZeroClawed Integration
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -282,20 +282,20 @@ Claude Code has a **built-in session handoff mechanism** called "Remote Control"
 | **Concurrent access** | ❌ No | Only one controlling client at a time |
 | **Subscription required** | ⚠️ Max tier only | $100-200/month (Pro access rumored) |
 
-#### PolyClaw Integration Path
+#### NonZeroClawed Integration Path
 
 **Cannot directly integrate** - Claude Code Remote Control is a closed, proprietary system that requires:
 - Claude Max subscription
 - Claude mobile app or claude.ai/code access
 - No API for third-party clients
 
-**Workaround:** Use Claude Code's `--remote` flag to create web sessions, then access via PolyClaw's browser capabilities if it has web view support.
+**Workaround:** Use Claude Code's `--remote` flag to create web sessions, then access via NonZeroClawed's browser capabilities if it has web view support.
 
 ---
 
 ### A.2 OpenCode: Native HTTP Server + Multi-Client Support
 
-OpenCode has **excellent support for session sharing** through its HTTP server mode, which is **directly exploitable** by PolyClaw.
+OpenCode has **excellent support for session sharing** through its HTTP server mode, which is **directly exploitable** by NonZeroClawed.
 
 #### Server Mode Capabilities
 
@@ -354,27 +354,27 @@ $ opencode serve --port 4096 --hostname 0.0.0.0
 # Terminal 2: Attach TUI to server (optional)
 $ opencode attach http://localhost:4096
 
-# Mobile: Connect to server via PolyClaw tunnel
+# Mobile: Connect to server via NonZeroClawed tunnel
 # Access http://desktop-ip:4096 or tunneled URL
 ```
 
 **Critical:** OpenCode v1.2.0+ migrated session storage to SQLite, enabling persistence across reconnections.
 
-#### PolyClaw Integration Path
+#### NonZeroClawed Integration Path
 
 | Approach | Feasibility | Implementation |
 |----------|-------------|----------------|
-| **Direct HTTP proxy** | ✅ High | Proxy OpenCode's HTTP API through PolyClaw |
+| **Direct HTTP proxy** | ✅ High | Proxy OpenCode's HTTP API through NonZeroClawed |
 | **Tailscale integration** | ✅ High | Use Tailscale for secure mobile→desktop routing |
-| **SSE event streaming** | ✅ High | PolyClaw can consume real-time event stream |
+| **SSE event streaming** | ✅ High | NonZeroClawed can consume real-time event stream |
 | **Session import/export** | ✅ Built-in | `opencode export` / `opencode import` commands |
 
 **Recommended Architecture:**
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐
-│   Mobile     │◄───►│   PolyClaw   │◄───►│  OpenCode Server │
-│  (PolyClaw)  │     │   (proxy)    │     │  (desktop)       │
+│   Mobile     │◄───►│   NonZeroClawed   │◄───►│  OpenCode Server │
+│  (NonZeroClawed)  │     │   (proxy)    │     │  (desktop)       │
 └──────────────┘     └──────────────┘     └──────────────────┘
                            │                         │
                            │    ┌────────────────────┘
@@ -403,7 +403,7 @@ Separate from Remote Control, Claude Code can spawn **web sessions** that run on
 From the docs:
 > "The `&` prefix creates a new web session with your current conversation context."
 
-#### Limitations for PolyClaw
+#### Limitations for NonZeroClawed
 
 | Limitation | Impact |
 |------------|--------|
@@ -416,7 +416,7 @@ From the docs:
 
 ### A.4 Practical Integration Matrix
 
-| Client | Mechanism | Multi-Client | Bidirectional Handoff | PolyClaw Integration |
+| Client | Mechanism | Multi-Client | Bidirectional Handoff | NonZeroClawed Integration |
 |--------|-----------|--------------|----------------------|---------------------|
 | **Claude Code** | Remote Control | ❌ No | ❌ One-way | ❌ Not possible (closed) |
 | **Claude Code** | `--remote` flag | N/A | ❌ One-way | ⚠️ Browser-only |
@@ -425,14 +425,14 @@ From the docs:
 
 ---
 
-### A.5 Recommended PolyClaw Architecture
+### A.5 Recommended NonZeroClawed Architecture
 
-Based on this research, the optimal approach for PolyClaw:
+Based on this research, the optimal approach for NonZeroClawed:
 
 #### Phase 1: OpenCode Integration (Immediate)
 
 ```yaml
-# PolyClaw configuration snippet
+# NonZeroClawed configuration snippet
 opencode:
   enabled: true
   # Auto-detect local OpenCode servers via mDNS
@@ -495,8 +495,8 @@ acp_proxy:
 
 **Implementation:**
 1. User runs `opencode serve` on desktop
-2. PolyClaw discovers server via mDNS or explicit config
-3. PolyClaw proxies HTTP API to mobile interface
+2. NonZeroClawed discovers server via mDNS or explicit config
+3. NonZeroClawed proxies HTTP API to mobile interface
 4. User switches between desktop TUI and mobile seamlessly
 
 ### Option 2: Session Snapshot/Restore (Universal)
@@ -504,7 +504,7 @@ acp_proxy:
 **Best for:** Supporting any ACP-compatible agent
 
 **Implementation:**
-1. PolyClaw monitors session state via ACP
+1. NonZeroClawed monitors session state via ACP
 2. On handoff request, exports session to shared storage
 3. Mobile client imports session and continues
 4. Desktop can re-import when returning
@@ -526,7 +526,7 @@ acp session load session.json
 
 **Implementation:**
 1. Desktop: `claude --remote` or `claude remote-control`
-2. Mobile: Access claude.ai/code via PolyClaw browser
+2. Mobile: Access claude.ai/code via NonZeroClawed browser
 3. **Limitation:** No return path to desktop terminal
 
 ---
@@ -569,7 +569,7 @@ acp session load session.json
 
 **Verdict: Highly feasible for OpenCode, limited for Claude Code.**
 
-| Client | Handoff Support | PolyClaw Integration |
+| Client | Handoff Support | NonZeroClawed Integration |
 |--------|----------------|---------------------|
 | **OpenCode** | ✅ Native multi-client via HTTP server | ✅ Direct API proxy |
 | **Claude Code** | ⚠️ One-way to web only | ❌ Closed proprietary system |
@@ -579,7 +579,7 @@ acp session load session.json
 
 **For immediate results:**
 1. **Target OpenCode first** — its `serve` + `attach` commands provide exactly the session handoff capability needed
-2. Use HTTP API proxying through PolyClaw for mobile access
+2. Use HTTP API proxying through NonZeroClawed for mobile access
 3. Leverage existing session persistence (SQLite in v1.2.0+)
 
 **For Claude Code users:**
@@ -597,7 +597,7 @@ acp session load session.json
 1. **Prototype OpenCode integration:**
    ```bash
    opencode serve --port 4096 --hostname 0.0.0.0 --mdns
-   # Test mobile access via PolyClaw proxy
+   # Test mobile access via NonZeroClawed proxy
    ```
 
 2. **Evaluate Tailscale Funnel** for secure mobile→desktop routing without VPN

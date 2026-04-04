@@ -1,4 +1,4 @@
-# PolyClaw Host-Agent (v4 — Adapter-First)
+# NonZeroClawed Host-Agent (v4 — Adapter-First)
 
 mTLS RPC server providing safe VM-to-host delegation via an adapter-first architecture.
 
@@ -129,14 +129,14 @@ approval_required = true
 ### Build
 
 ```bash
-cd /root/projects/polyclaw-mono
+cd /root/projects/nonzeroclawed
 cargo build --release -p host-agent
 ```
 
 ### Install on Target System
 
 ```bash
-cd /root/projects/polyclaw-mono/crates/host-agent
+cd /root/projects/nonzeroclawed/crates/host-agent
 scp target/release/clash-host-agent root@10.0.0.80:/tmp/
 ssh root@10.0.0.80
 cd /tmp

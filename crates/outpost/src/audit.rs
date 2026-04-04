@@ -1,4 +1,4 @@
-//! Audit logging: append JSONL events to `~/.polyclaw/logs/outpost-audit.jsonl`.
+//! Audit logging: append JSONL events to `~/.nonzeroclawed/logs/outpost-audit.jsonl`.
 
 use crate::verdict::{OutpostVerdict, ScanContext};
 use chrono::Utc;
@@ -34,7 +34,7 @@ impl AuditEntry {
     }
 }
 
-/// Async audit logger that appends JSONL to `~/.polyclaw/logs/outpost-audit.jsonl`.
+/// Async audit logger that appends JSONL to `~/.nonzeroclawed/logs/outpost-audit.jsonl`.
 pub struct AuditLogger {
     log_path: PathBuf,
     claw_id: String,
@@ -45,7 +45,7 @@ impl AuditLogger {
     pub fn new(claw_id: impl Into<String>) -> Self {
         let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
         Self {
-            log_path: home.join(".polyclaw/logs/outpost-audit.jsonl"),
+            log_path: home.join(".nonzeroclawed/logs/outpost-audit.jsonl"),
             claw_id: claw_id.into(),
         }
     }

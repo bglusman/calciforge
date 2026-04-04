@@ -1,5 +1,5 @@
 #!/bin/bash
-# PolyClaw v3 Host-Agent Test Script
+# NonZeroClawed v3 Host-Agent Test Script
 # Tests the host-agent endpoints
 
 set -euo pipefail
@@ -423,7 +423,7 @@ print_summary() {
 
 # Main execution
 main() {
-    echo "PolyClaw v3 Host-Agent Test Suite"
+    echo "NonZeroClawed v3 Host-Agent Test Suite"
     echo "=================================="
     echo "Testing against: $BASE_URL"
     echo ""

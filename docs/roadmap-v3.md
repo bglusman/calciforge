@@ -26,7 +26,7 @@ Current outpost (outpost-lite at 127.0.0.1:9800) scans *tool result content* —
                     [Configurable actions: pass / annotate / redact / block]
 ```
 
-Config would live in PolyClaw config.toml per-channel or per-identity:
+Config would live in NonZeroClawed config.toml per-channel or per-identity:
 ```toml
 [[channels.intercept]]
 enabled = true
@@ -45,4 +45,4 @@ on_review = "annotate"
 - Leave as "outpost" with a `channel_mode` flag — consistent naming
 
 ### Priority
-Low — v3 planning item. No implementation needed yet. Document and revisit when PolyClaw channel layer is stable.
+Low — v3 planning item. No implementation needed yet. Document and revisit when NonZeroClawed channel layer is stable.

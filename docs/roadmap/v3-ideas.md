@@ -11,7 +11,7 @@
 - DMs: useful if untrusted users have physical access to devices (phone/computer/iPad) and can craft messages
 - Closes the gap between "scan what the LLM sees from tools" and "scan what the LLM sees from all inputs"
 
-**Proposed placement:** PolyClaw ingress pipeline, between channel receive and identity/router dispatch. Every message would pass through a configurable scan policy before reaching the agent.
+**Proposed placement:** NonZeroClawed ingress pipeline, between channel receive and identity/router dispatch. Every message would pass through a configurable scan policy before reaching the agent.
 
 **Naming:** "Outpost" is overloaded (OpenClaw tool result scanner + outpost-lite service). This feature deserves a new name. Candidates:
 - **Censor** — Brian's suggestion; accurate, clear, slightly heavy-handed connotation
@@ -35,4 +35,4 @@
 - Should scanned-and-modified messages be flagged to the user transparently?
 - Privacy: scanning DM content means the scanner sees everything — audit logging must be opt-in
 
-**Priority:** Low/research. Capture in v3 roadmap. Revisit after PolyClaw v3 core (policy + approval plumbing) is stable.
+**Priority:** Low/research. Capture in v3 roadmap. Revisit after NonZeroClawed v3 core (policy + approval plumbing) is stable.

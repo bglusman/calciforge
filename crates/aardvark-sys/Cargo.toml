@@ -2,7 +2,7 @@
 name = "aardvark-sys"
 version = "0.1.0"
 edition = "2024"
-authors = ["theonlyhennygod", "PolyClaw Contributors"]
+authors = ["theonlyhennygod", "NonZeroClawed Contributors"]
 license = "MIT OR Apache-2.0"
 description = "Stub bindings for Total Phase Aardvark USB adapter SDK. Real SDK requires proprietary binary."
 rust-version = "1.87"

@@ -87,7 +87,7 @@ The test suite for `VaultManager` is comprehensive: auto/per-use/session/time-bo
 
 ### C4 + D1 — JSON5 comment stripping fixed ✅ CORRECT
 
-The new `json5.rs` module in `polyclaw/src/install/` correctly implements the `escape_next` boolean pattern:
+The new `json5.rs` module in `nonzeroclawed/src/install/` correctly implements the `escape_next` boolean pattern:
 
 ```rust
 if ch == '\\' {
@@ -131,7 +131,7 @@ The OpenClaw config patching flow is well-structured:
 
 **Token generation weakness is documented** but still a concern: `generate_hook_token` uses `DefaultHasher` seeded with time + PID, which is deterministic given the same inputs and not cryptographically random. The function produces a 48-char hex string from three cascaded hashes. Two calls in the same millisecond from the same PID produce identical tokens. This is flagged in the docstring but worth reiterating: replace with `getrandom` before any production use.
 
-**NZC stub is appropriately limited:** `patch_nzc_config_stub` does a string-contains check for `[polyclaw]` and appends if absent. It's idempotent and clearly marked as a stub.
+**NZC stub is appropriately limited:** `patch_nzc_config_stub` does a string-contains check for `[nonzeroclawed]` and appends if absent. It's idempotent and clearly marked as a stub.
 
 **Verdict: Implementation is correct. Token generation weakness is known. Tests adequately cover the patching logic.**
 
@@ -157,7 +157,7 @@ Line 1182: `assert_eq!(h.active_agent_for("brian"), Some("librarian".to_string()
 
 ### Root cause: shared filesystem state between test runs
 
-`CommandHandler::new()` calls `load_active_agents()` which reads `~/.polyclaw/state/active-agents.json`. This is a real file on disk, shared across all test invocations.
+`CommandHandler::new()` calls `load_active_agents()` which reads `~/.nonzeroclawed/state/active-agents.json`. This is a real file on disk, shared across all test invocations.
 
 The test `test_switch_updates_active_agent_for_identity` (which runs before or concurrently) calls `h.handle_switch("!switch custodian", "brian")`, which calls `save_active_agents` and writes `{"brian": "custodian"}` to that file.
 
@@ -181,7 +181,7 @@ Add a field to `CommandHandler` for the state directory, and use it in `load_act
 ```rust
 pub struct CommandHandler {
     // ... existing fields ...
-    /// Directory for state persistence. Defaults to ~/.polyclaw/state/.
+    /// Directory for state persistence. Defaults to ~/.nonzeroclawed/state/.
     /// Overridable for tests.
     state_dir: PathBuf,
 }
@@ -236,7 +236,7 @@ This is a one-liner that fixes the immediate problem but leaves a race condition
 
 | Component | Location | Relationship |
 |-----------|----------|-------------|
-| polyclaw-mono | `/root/projects/polyclaw-mono` | Brian's monorepo. Contains `nonzeroclaw` and `polyclaw` crates. Not a fork. |
+| nonzeroclawed | `/root/projects/nonzeroclawed` | Brian's monorepo. Contains `nonzeroclaw` and `nonzeroclawed` crates. Not a fork. |
 | nonzeroclaw fork | `/root/projects/nonzeroclaw` | Fork of `zeroclaw-labs/zeroclaw` at `upstream-fork/zeroclaw` |
 | matrix-rust-sdk fork | git dep in `Cargo.toml` | `upstream-fork/matrix-rust-sdk`, pinned by commit |
 
@@ -246,13 +246,13 @@ This is a one-liner that fixes the immediate problem but leaves a race condition
 - `origin` → `git@github.com:upstream-fork/zeroclaw.git` (Brian's fork)
 - `upstream` → `https://github.com/zeroclaw-labs/zeroclaw.git` (canonical)
 
-**Branch:** `polyclaw-patches` is the active branch. It has **9 commits** ahead of the merge base (commit `314e1d3`, the channel-approval-manager merge from upstream).
+**Branch:** `nonzeroclawed-patches` is the active branch. It has **9 commits** ahead of the merge base (commit `314e1d3`, the channel-approval-manager merge from upstream).
 
 **Commit breakdown:**
 
 | Commit | Author | Description | Upstreamable? |
 |--------|--------|-------------|---------------|
-| `a40218a` | Librarian | polyclaw: initial patches (anthropic fixes, approval flow, openai_compat, clash crate) | Partly — anthropic fixes yes, polyclaw-specific no |
+| `a40218a` | Librarian | nonzeroclawed: initial patches (anthropic fixes, approval flow, openai_compat, clash crate) | Partly — anthropic fixes yes, nonzeroclawed-specific no |
 | `e6d286f` | Librarian | chore: remove nested zeroclaw-review git repo, add to .gitignore | Infra-specific |
 | `4650e5d` | Librarian | chore: regenerate Cargo.lock, fix nonzeroclaw:: → zeroclaw:: in main.rs | Infra-specific |
 | `6f47e20` | imu | fix(config): support socks proxy scheme for Clash Verge | ✅ Upstreamable |
@@ -262,33 +262,33 @@ This is a one-liner that fixes the immediate problem but leaves a race condition
 | `7f428c6` | I329802 | style: cargo fmt to Anthropic MCP image blocks | ✅ Upstreamable |
 | `cb7bf6e` | panviktor | fix(provider): harden Anthropic vision — MIME validation, cache-control walk | ✅ Upstreamable |
 
-**Summary:** 6 of 9 commits are upstream bug fixes that happened to land on this branch first. 3 are polyclaw-specific infrastructure. **Upstream is 498 commits ahead** of `origin/main` (Brian's fork main isn't tracking latest upstream).
+**Summary:** 6 of 9 commits are upstream bug fixes that happened to land on this branch first. 3 are nonzeroclawed-specific infrastructure. **Upstream is 498 commits ahead** of `origin/main` (Brian's fork main isn't tracking latest upstream).
 
-### Is polyclaw-mono's `nonzeroclaw` crate the same as the fork?
+### Is nonzeroclawed's `nonzeroclaw` crate the same as the fork?
 
-**No.** The `polyclaw-mono/crates/nonzeroclaw/` is a **separate codebase** — a reimplementation/fork-of-a-fork. It:
+**No.** The `nonzeroclawed/crates/nonzeroclaw/` is a **separate codebase** — a reimplementation/fork-of-a-fork. It:
 - Has its own `Cargo.toml` with `name = "nonzeroclaw"` (not `zeroclaw`)
 - Lists `zeroclawlabs = { version = "0.4", optional = true }` as an optional dep (passthrough modules)
 - Contains the vault module, migration module, and wizard changes — none of which exist in `/root/projects/nonzeroclaw`
 - Is ~436 lines in `lib.rs` with a different module structure
 
-The `/root/projects/nonzeroclaw` fork is the zeroclaw codebase with patches. The `polyclaw-mono/nonzeroclaw` crate is a new, separate implementation that can optionally depend on the upstream `zeroclawlabs` crate for passthrough.
+The `/root/projects/nonzeroclaw` fork is the zeroclaw codebase with patches. The `nonzeroclawed/nonzeroclaw` crate is a new, separate implementation that can optionally depend on the upstream `zeroclawlabs` crate for passthrough.
 
 ### Rebase risk
 
 **High for `/root/projects/nonzeroclaw`:** 498 commits behind upstream. The 6 upstreamable fixes may already be fixed differently upstream. Rebase will be painful. The 3 infra commits touch `main.rs` and `Cargo.lock` which have certainly changed.
 
-**Low for `polyclaw-mono/nonzeroclaw`:** Since it's a separate crate that optionally depends on `zeroclawlabs = "0.4"`, upstream releases don't break it. The risk is API surface drift: if upstream changes the types that NZC wraps in passthrough modules, those modules need updating.
+**Low for `nonzeroclawed/nonzeroclaw`:** Since it's a separate crate that optionally depends on `zeroclawlabs = "0.4"`, upstream releases don't break it. The risk is API surface drift: if upstream changes the types that NZC wraps in passthrough modules, those modules need updating.
 
 **matrix-rust-sdk fork:** Unknown risk without examining the fork. Pinned by commit, so it's stable until someone bumps it.
 
 ### Recommendation
 
-1. **Upstream the 6 bug-fix commits** from `polyclaw-patches` to zeroclaw-labs via PRs. They're clean, authored by various contributors, and fix real bugs. This reduces fork maintenance burden and gives back to the project. Do this before the rebase becomes impossible.
+1. **Upstream the 6 bug-fix commits** from `nonzeroclawed-patches` to zeroclaw-labs via PRs. They're clean, authored by various contributors, and fix real bugs. This reduces fork maintenance burden and gives back to the project. Do this before the rebase becomes impossible.
 
-2. **Rebase `polyclaw-patches` onto latest `upstream/master`** after the PRs are merged. This will likely conflict on `Cargo.lock` and the `main.rs` namespace changes. Budget a half-day.
+2. **Rebase `nonzeroclawed-patches` onto latest `upstream/master`** after the PRs are merged. This will likely conflict on `Cargo.lock` and the `main.rs` namespace changes. Budget a half-day.
 
-3. **For `polyclaw-mono/nonzeroclaw`:** keep it as-is. It's a separate crate, not a fork. The optional `zeroclawlabs` passthrough dep means it can track upstream releases at its own pace. When `zeroclawlabs` 0.5 ships, bump the dep and update passthrough modules.
+3. **For `nonzeroclawed/nonzeroclaw`:** keep it as-is. It's a separate crate, not a fork. The optional `zeroclawlabs` passthrough dep means it can track upstream releases at its own pace. When `zeroclawlabs` 0.5 ships, bump the dep and update passthrough modules.
 
 4. **For `matrix-rust-sdk`:** audit why the fork exists (likely a fix not yet merged upstream). If the fix has been merged, drop the fork and use the upstream crate. If not, submit the fix upstream and maintain the pin until it's merged.
 
@@ -300,43 +300,43 @@ The `/root/projects/nonzeroclaw` fork is the zeroclaw codebase with patches. The
 
 ### 1. `strip_json_comments` round-trip: valid JSON is preserved
 
-**File:** `crates/polyclaw/src/install/json5.rs` — `strip_json_comments`
+**File:** `crates/nonzeroclawed/src/install/json5.rs` — `strip_json_comments`
 **Property:** For any valid JSON string `s` (no comments), `serde_json::from_str(&strip_json_comments(s))` produces the same value as `serde_json::from_str(s)`.
 **Why unit tests miss it:** The existing `plain_json_unchanged` test uses a single hardcoded input. A property test would explore strings with backslashes, nested quotes, unicode, empty objects, deeply nested structures — any of which could confuse the state machine.
 
 ### 2. `strip_json_comments` never adds content
 
-**File:** `crates/polyclaw/src/install/json5.rs` — `strip_json_comments`
+**File:** `crates/nonzeroclawed/src/install/json5.rs` — `strip_json_comments`
 **Property:** `strip_json_comments(s).len() <= s.len()` for all inputs. Comment stripping should only remove characters, never add them.
 **Why unit tests miss it:** No existing test checks length invariants. A pathological input (e.g., unmatched `/*` at end of input) could theoretically trigger unexpected behavior in the while loop.
 
 ### 3. `shell_quote` ∘ POSIX eval = identity
 
-**File:** `crates/polyclaw/src/install/ssh.rs` — `shell_quote`
+**File:** `crates/nonzeroclawed/src/install/ssh.rs` — `shell_quote`
 **Property:** For any ASCII string `s`, `eval echo $(shell_quote(s))` produces exactly `s`. This is strictly stronger than the existing structural test.
 **Why unit tests miss it:** The existing hegel test (`prop_shell_quote_safe`) verifies structural properties (starts/ends with `'`, uses `'\''` for embedded quotes) but doesn't verify semantic correctness — that a real shell interprets the quoted string as the original value. A property test with `std::process::Command::new("sh").args(["-c", &format!("printf '%s' {}", quoted)])` would catch semantic bugs that structural tests miss.
 
 ### 4. `resolve_channel_sender` — exactly one match per (channel, id) pair
 
-**File:** `crates/polyclaw/src/auth.rs` — `resolve_channel_sender`
+**File:** `crates/nonzeroclawed/src/auth.rs` — `resolve_channel_sender`
 **Property:** For any `PolyConfig` where no two identities share the same `(channel, id)` alias, `resolve_channel_sender` returns at most one result AND it's the correct identity.
 **Why unit tests miss it:** Unit tests use a fixed config with 2 identities. They don't test what happens with duplicate aliases, empty aliases, aliases with special characters, or configs with 100+ identities. A property test generating random configs would catch precedence bugs (e.g., first-match vs wrong-match).
 
 ### 5. `patch_openclaw_config` preserves existing config fields
 
-**File:** `crates/polyclaw/src/install/executor.rs` — `patch_openclaw_config`
+**File:** `crates/nonzeroclawed/src/install/executor.rs` — `patch_openclaw_config`
 **Property:** For any valid JSON config object `c` and any claw_name/endpoint, all keys in `c` are present in the output of `patch_openclaw_config(c, name, endpoint)` (except `hooks` which is modified).
 **Why unit tests miss it:** Existing tests use small, fixed configs. A property test with arbitrary JSON objects would catch field-dropping bugs (e.g., `serde_json` serialization losing keys due to `as_object_mut` aliasing).
 
 ### 6. `active_agent_for` defaults are consistent with config
 
-**File:** `crates/polyclaw/src/commands.rs` — `active_agent_for`
+**File:** `crates/nonzeroclawed/src/commands.rs` — `active_agent_for`
 **Property:** For any `PolyConfig` and any identity in `config.routing`, `active_agent_for(identity)` returns either the `default_agent` (if no switch has occurred) or a value from `config.agents[].id`.
 **Why unit tests miss it:** Current tests use a fixed 2-agent config. A property test generating random configs would verify the invariant holds for arbitrary numbers of agents, identities, and routing rules.
 
 ### 7. `backup_filename` parsing round-trip
 
-**File:** `crates/polyclaw/src/install/model.rs` — `backup_filename`
+**File:** `crates/nonzeroclawed/src/install/model.rs` — `backup_filename`
 **Property:** For any `(path, timestamp)`, the backup filename can be parsed back to extract the original path and timestamp: `split at last ".bak."` recovers both.
 **Why unit tests miss it:** The existing property tests check uniqueness and prefix, but not recoverability. If the original path contains `.bak.` (e.g., `/path/to/file.bak.old/config.json`), parsing becomes ambiguous. A property test would discover this edge case.
 
@@ -348,7 +348,7 @@ The `/root/projects/nonzeroclaw` fork is the zeroclaw codebase with patches. The
 
 ### 9. `check_version_compatibility` — known versions are always Compatible
 
-**File:** `crates/polyclaw/src/install/model.rs` — `check_version_compatibility`
+**File:** `crates/nonzeroclawed/src/install/model.rs` — `check_version_compatibility`
 **Property:** For every `(adapter, version)` in the hardcoded `OPENCLAW_COMPATIBLE_VERSIONS` and `NZC_COMPATIBLE_VERSIONS` lists, the result is `Compatible`. For any string NOT in those lists, the result is `Unknown` (never `Incompatible`, since that variant is reserved).
 **Why unit tests miss it:** The tests check 2 representative versions. A property test generating arbitrary strings would verify the function never returns `Incompatible` (which would be a bug, since no incompatibility rules are defined yet).
 
@@ -362,7 +362,7 @@ The `/root/projects/nonzeroclaw` fork is the zeroclaw codebase with patches. The
 
 ## TODO/Stub Prioritization
 
-### From `crates/polyclaw/src/install/`
+### From `crates/nonzeroclawed/src/install/`
 
 | Location | What | Gap Type | Priority | Effort |
 |----------|------|----------|----------|--------|
@@ -389,7 +389,7 @@ No TODOs found in vault code. The `zeroize` integration and `master_password` li
 ### Prioritized list
 
 **P0 — blocks real use:**
-1. **NZC TOML patching** (`executor.rs:697`): The installer can't actually configure NZC targets. Anyone trying to install PolyClaw with NZC agents hits a stub that appends raw text to TOML. Use `toml_edit` crate for proper in-place TOML modification.
+1. **NZC TOML patching** (`executor.rs:697`): The installer can't actually configure NZC targets. Anyone trying to install NonZeroClawed with NZC agents hits a stub that appends raw text to TOML. Use `toml_edit` crate for proper in-place TOML modification.
 2. **`apply_migration_changes` stub** (`migration.rs:399`): The migration wizard can detect channels, plan config changes, and generate a migration report — but it can't actually apply the changes. This means the `nzc migrate` command goes through the entire wizard flow and then does nothing.
 
 **P1 — needed soon:**
@@ -408,9 +408,9 @@ In priority order:
 
 1. **Fix C2 (`--passwordstdin` → `--passwordenv`)** — this is a runtime breakage in the vault unlock path. 15-minute fix. Change the flag, update the docstring, tests already pass.
 
-2. **Fix the test failure** — `rm ~/.polyclaw/state/active-agents.json` immediately, then add the `make_handler()` cleanup (Option C). 5-minute fix. Follow up with Option A (state_dir injection) when refactoring commands.rs.
+2. **Fix the test failure** — `rm ~/.nonzeroclawed/state/active-agents.json` immediately, then add the `make_handler()` cleanup (Option C). 5-minute fix. Follow up with Option A (state_dir injection) when refactoring commands.rs.
 
-3. **NZC TOML patching** — the stub is the biggest functional gap. Add `toml_edit` dep, implement proper `[polyclaw]` section insertion/update. Half-day.
+3. **NZC TOML patching** — the stub is the biggest functional gap. Add `toml_edit` dep, implement proper `[nonzeroclawed]` section insertion/update. Half-day.
 
 4. **`apply_migration_changes` real implementation** — the other P0 stub. This is larger (writes multiple files, restarts services). Separate session.
 
