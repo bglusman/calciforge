@@ -239,6 +239,10 @@ const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
+type ModelHistoryMap = Arc<Mutex<HashMap<String, std::collections::VecDeque<String>>>>;
+
+/// Maximum number of model switch entries remembered per sender key.
+const MODEL_HISTORY_DEPTH: usize = 10;
 
 fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
     configured.max(MIN_CHANNEL_MESSAGE_TIMEOUT_SECS)
@@ -391,6 +395,9 @@ struct ChannelRuntimeContext {
     autonomy_level: AutonomyLevel,
     tool_call_dedup_exempt: Arc<Vec<String>>,
     model_routes: Arc<Vec<crate::config::ModelRouteConfig>>,
+    model_shortcuts: Arc<Vec<crate::config::ModelShortcutConfig>>,
+    /// Per-sender model switch history (ring buffer, newest-first after push).
+    model_history: ModelHistoryMap,
     query_classification: crate::config::QueryClassificationConfig,
     ack_reactions: bool,
     show_tool_calls: bool,
@@ -1058,6 +1065,65 @@ fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: Chan
     }
 }
 
+/// Push the current model onto the per-sender history ring buffer before switching.
+/// This is called with the *old* (about-to-be-replaced) model.
+fn push_model_history(ctx: &ChannelRuntimeContext, sender_key: &str, model: &str) {
+    let mut map = ctx
+        .model_history
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let history = map.entry(sender_key.to_string()).or_default();
+    // Avoid consecutive duplicates (e.g. switching to the same model twice).
+    if history.front().map(|m| m.as_str()) != Some(model) {
+        history.push_front(model.to_string());
+        if history.len() > MODEL_HISTORY_DEPTH {
+            history.pop_back();
+        }
+    }
+}
+
+/// Return the Nth previous model for a sender (1-indexed, 1 = last model).
+/// Returns `None` if history is shorter than requested depth.
+fn get_model_history(ctx: &ChannelRuntimeContext, sender_key: &str, n: usize) -> Option<String> {
+    let map = ctx
+        .model_history
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let history = map.get(sender_key)?;
+    history.get(n.saturating_sub(1)).cloned()
+}
+
+/// Resolve a shortcut alias to its full model string.
+/// Returns `None` if no matching shortcut is configured.
+fn resolve_model_shortcut(
+    shortcuts: &[crate::config::ModelShortcutConfig],
+    alias: &str,
+) -> Option<String> {
+    shortcuts
+        .iter()
+        .find(|s| s.alias.eq_ignore_ascii_case(alias))
+        .map(|s| s.model.clone())
+}
+
+/// Parse `/model -` or `/model -N` into a history depth N (1-indexed).
+/// Returns `Some(n)` if the input is `-` (→ 1) or `-<digits>` (→ digits).
+/// Returns `None` for anything else.
+fn parse_history_nav(s: &str) -> Option<usize> {
+    let s = s.trim();
+    if s == "-" {
+        return Some(1);
+    }
+    if let Some(rest) = s.strip_prefix('-') {
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            let n: usize = rest.parse().ok()?;
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
 fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
     ctx.conversation_histories
         .lock()
@@ -1524,6 +1590,8 @@ fn build_models_help_response(
     current: &ChannelRouteSelection,
     workspace_dir: &Path,
     model_routes: &[crate::config::ModelRouteConfig],
+    model_shortcuts: &[crate::config::ModelShortcutConfig],
+    model_history: &[String],
 ) -> String {
     let mut response = String::new();
     let _ = writeln!(
@@ -1531,7 +1599,23 @@ fn build_models_help_response(
         "Current provider: `{}`\nCurrent model: `{}`",
         current.provider, current.model
     );
-    response.push_str("\nSwitch model with `/model <model-id>` or `/model <hint>`.\n");
+    response.push_str("\nSwitch model with `/model <model-id>`, `/model <alias>`, or `/model <hint>`.\n");
+    response.push_str("Use `/model -` to switch back to the previously used model.\n");
+    response.push_str("Use `/model -N` to switch back N steps in history.\n");
+
+    if !model_shortcuts.is_empty() {
+        response.push_str("\nModel shortcuts:\n");
+        for sc in model_shortcuts {
+            let _ = writeln!(response, "  `{}` → {}", sc.alias, sc.model);
+        }
+    }
+
+    if !model_history.is_empty() {
+        response.push_str("\nRecent model history:\n");
+        for (i, m) in model_history.iter().enumerate() {
+            let _ = writeln!(response, "  `-{}` → {}", i + 1, m);
+        }
+    }
 
     if !model_routes.is_empty() {
         response.push_str("\nConfigured model routes:\n");
@@ -1802,22 +1886,74 @@ async fn handle_runtime_command_if_needed(
             }
         }
         ChannelRuntimeCommand::ShowModel => {
-            build_models_help_response(&current, ctx.workspace_dir.as_path(), &ctx.model_routes)
+            let history: Vec<String> = ctx
+                .model_history
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&sender_key)
+                .map(|d| d.iter().cloned().collect())
+                .unwrap_or_default();
+            build_models_help_response(
+                &current,
+                ctx.workspace_dir.as_path(),
+                &ctx.model_routes,
+                &ctx.model_shortcuts,
+                &history,
+            )
         }
         ChannelRuntimeCommand::SetModel(raw_model) => {
-            let model = raw_model.trim().trim_matches('`').to_string();
-            if model.is_empty() {
+            let model_input = raw_model.trim().trim_matches('`').to_string();
+            if model_input.is_empty() {
                 "Model ID cannot be empty. Use `/model <model-id>`.".to_string()
             } else {
+                // 1. Check for history navigation: `-` or `-N`
+                let resolved_model: Option<String> =
+                    if let Some(depth) = parse_history_nav(&model_input) {
+                        match get_model_history(ctx, &sender_key, depth) {
+                            Some(prev) => Some(prev),
+                            None => {
+                                // History too short — report error without changing model.
+                                return channel
+                                    .send(
+                                        &SendMessage::new(
+                                            format!(
+                                                "No model at history position -{depth}. Use `/model` to see available history."
+                                            ),
+                                            &msg.reply_target,
+                                        )
+                                        .in_thread(msg.thread_ts.clone()),
+                                    )
+                                    .await
+                                    .map(|_| true)
+                                    .unwrap_or(true);
+                            }
+                        }
+                    } else if let Some(expanded) =
+                        resolve_model_shortcut(&ctx.model_shortcuts, &model_input)
+                    {
+                        // 2. Shortcut alias expansion
+                        Some(expanded)
+                    } else {
+                        // 3. Full model string / route hint (existing behaviour)
+                        Some(model_input.clone())
+                    };
+
+                // SAFETY: resolved_model is always Some here; the None path returns early above.
+                let resolved_model = resolved_model.expect("resolved_model is always Some");
+
+                // Push old model to history before switching.
+                push_model_history(ctx, &sender_key, &current.model);
+
                 // Resolve provider+model from model_routes (match by model name or hint)
                 if let Some(route) = ctx.model_routes.iter().find(|r| {
-                    r.model.eq_ignore_ascii_case(&model) || r.hint.eq_ignore_ascii_case(&model)
+                    r.model.eq_ignore_ascii_case(&resolved_model)
+                        || r.hint.eq_ignore_ascii_case(&resolved_model)
                 }) {
                     current.provider = route.provider.clone();
                     current.model = route.model.clone();
                     current.api_key = route.api_key.clone();
                 } else {
-                    current.model = model.clone();
+                    current.model = resolved_model.clone();
                 }
                 set_route_selection(ctx, &sender_key, current.clone());
 
@@ -5506,6 +5642,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
         autonomy_level: config.autonomy.level,
         tool_call_dedup_exempt: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
         model_routes: Arc::new(config.model_routes.clone()),
+        model_shortcuts: Arc::new(config.model_shortcuts.clone()),
+        model_history: Arc::new(Mutex::new(HashMap::new())),
         query_classification: config.query_classification.clone(),
         ack_reactions: config.channels_config.ack_reactions,
         show_tool_calls: config.channels_config.show_tool_calls,
@@ -5960,6 +6098,8 @@ mod tests {
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -6084,6 +6224,8 @@ mod tests {
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -6165,6 +6307,8 @@ mod tests {
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -6263,6 +6407,8 @@ mod tests {
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -6862,6 +7008,8 @@ BTC is currently around $65,000 based on latest tool output."#
             transcription_config: crate::config::TranscriptionConfig::default(),
             hooks: None,
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -6952,6 +7100,8 @@ BTC is currently around $65,000 based on latest tool output."#
             transcription_config: crate::config::TranscriptionConfig::default(),
             hooks: None,
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7056,6 +7206,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7145,6 +7297,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7244,6 +7398,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7364,6 +7520,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7465,6 +7623,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7581,6 +7741,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7682,6 +7844,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7776,6 +7940,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -7996,6 +8162,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -8108,6 +8276,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -8242,6 +8412,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8367,6 +8539,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -8473,6 +8647,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -8560,6 +8736,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -8647,6 +8825,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -9439,6 +9619,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -9580,6 +9762,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -9764,6 +9948,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -9880,6 +10066,8 @@ BTC is currently around $65,000 based on latest tool output."#
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -10467,6 +10655,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -10563,6 +10753,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -10691,6 +10883,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -10867,6 +11061,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(model_routes),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: classification_config,
             ack_reactions: true,
             show_tool_calls: true,
@@ -10987,6 +11183,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(model_routes),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: classification_config,
             ack_reactions: true,
             show_tool_calls: true,
@@ -11099,6 +11297,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(model_routes),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: classification_config,
             ack_reactions: true,
             show_tool_calls: true,
@@ -11231,6 +11431,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(model_routes),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: classification_config,
             ack_reactions: true,
             show_tool_calls: true,
@@ -11504,6 +11706,8 @@ This is an example JSON object for profile settings."#;
             autonomy_level: AutonomyLevel::default(),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
             query_classification: crate::config::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
@@ -11663,5 +11867,217 @@ This is an example JSON object for profile settings."#;
     fn default_keep_tool_context_turns_is_two() {
         let config = crate::config::schema::AgentConfig::default();
         assert_eq!(config.keep_tool_context_turns, 2);
+    }
+
+    // ── model shortcut alias tests ──────────────────────────────────────────
+
+    fn make_shortcuts() -> Vec<crate::config::ModelShortcutConfig> {
+        vec![
+            crate::config::ModelShortcutConfig {
+                alias: "sonnet".to_string(),
+                model: "anthropic/claude-sonnet-4.6".to_string(),
+            },
+            crate::config::ModelShortcutConfig {
+                alias: "opus".to_string(),
+                model: "anthropic/claude-opus-4.6".to_string(),
+            },
+            crate::config::ModelShortcutConfig {
+                alias: "qwen".to_string(),
+                model: "qwen/qwen3-235b-a22b".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn resolve_model_shortcut_exact_match() {
+        let shortcuts = make_shortcuts();
+        assert_eq!(
+            resolve_model_shortcut(&shortcuts, "sonnet"),
+            Some("anthropic/claude-sonnet-4.6".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_model_shortcut_case_insensitive() {
+        let shortcuts = make_shortcuts();
+        assert_eq!(
+            resolve_model_shortcut(&shortcuts, "OPUS"),
+            Some("anthropic/claude-opus-4.6".to_string())
+        );
+        assert_eq!(
+            resolve_model_shortcut(&shortcuts, "Qwen"),
+            Some("qwen/qwen3-235b-a22b".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_model_shortcut_no_match_returns_none() {
+        let shortcuts = make_shortcuts();
+        assert_eq!(resolve_model_shortcut(&shortcuts, "gpt-4"), None);
+        assert_eq!(resolve_model_shortcut(&shortcuts, ""), None);
+    }
+
+    #[test]
+    fn resolve_model_shortcut_empty_list_returns_none() {
+        assert_eq!(resolve_model_shortcut(&[], "sonnet"), None);
+    }
+
+    // ── parse_history_nav tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_history_nav_bare_dash_is_one() {
+        assert_eq!(parse_history_nav("-"), Some(1));
+        assert_eq!(parse_history_nav(" - "), Some(1));
+    }
+
+    #[test]
+    fn parse_history_nav_dash_n() {
+        assert_eq!(parse_history_nav("-2"), Some(2));
+        assert_eq!(parse_history_nav("-10"), Some(10));
+    }
+
+    #[test]
+    fn parse_history_nav_rejects_non_nav_strings() {
+        assert_eq!(parse_history_nav("anthropic/claude-sonnet-4.6"), None);
+        assert_eq!(parse_history_nav(""), None);
+        assert_eq!(parse_history_nav("sonnet"), None);
+        assert_eq!(parse_history_nav("-0"), None); // zero is not a valid depth
+        assert_eq!(parse_history_nav("-abc"), None);
+    }
+
+    // ── model history ring buffer tests ──────────────────────────────────
+
+    fn make_model_history_ctx() -> ChannelRuntimeContext {
+        // Minimal context with shared model_history; other fields are dummies.
+        ChannelRuntimeContext {
+            channels_by_name: Arc::new(HashMap::new()),
+            provider: Arc::new(DummyProvider) as Arc<dyn Provider>,
+            default_provider: Arc::new("openrouter".to_string()),
+            prompt_config: Arc::new(crate::config::Config::default()),
+            memory: Arc::new(NoopMemory),
+            tools_registry: Arc::new(Vec::new()),
+            observer: Arc::new(NoopObserver),
+            system_prompt: Arc::new(String::new()),
+            model: Arc::new("anthropic/claude-sonnet-4.6".to_string()),
+            temperature: 0.7,
+            auto_save_memory: false,
+            max_tool_iterations: 1,
+            min_relevance_score: 0.0,
+            conversation_histories: Arc::new(Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(10).unwrap(),
+            ))),
+            pending_new_sessions: Arc::new(Mutex::new(HashSet::new())),
+            provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            api_key: None,
+            api_url: None,
+            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            workspace_dir: Arc::new(std::env::temp_dir()),
+            message_timeout_secs: 120,
+            interrupt_on_new_message: InterruptOnNewMessageConfig {
+                telegram: false,
+                slack: false,
+                discord: false,
+                mattermost: false,
+                matrix: false,
+            },
+            multimodal: crate::config::MultimodalConfig::default(),
+            media_pipeline: crate::config::MediaPipelineConfig::default(),
+            transcription_config: crate::config::TranscriptionConfig::default(),
+            hooks: None,
+            non_cli_excluded_tools: Arc::new(Vec::new()),
+            autonomy_level: AutonomyLevel::default(),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
+            model_routes: Arc::new(Vec::new()),
+            model_shortcuts: Arc::new(Vec::new()),
+            model_history: Arc::new(Mutex::new(HashMap::new())),
+            query_classification: crate::config::QueryClassificationConfig::default(),
+            ack_reactions: false,
+            show_tool_calls: false,
+            session_store: None,
+            approval_manager: Arc::new(ApprovalManager::for_non_interactive(
+                &crate::config::AutonomyConfig::default(),
+            )),
+            activated_tools: None,
+            cost_tracking: None,
+            pacing: crate::config::PacingConfig::default(),
+            max_tool_result_chars: 10_000,
+            context_token_budget: 100_000,
+            debouncer: Arc::new(debounce::MessageDebouncer::new(
+                std::time::Duration::from_millis(0),
+            )),
+        }
+    }
+
+    #[test]
+    fn model_history_push_and_get() {
+        let ctx = make_model_history_ctx();
+        let key = "test_sender";
+
+        // Initially no history.
+        assert_eq!(get_model_history(&ctx, key, 1), None);
+
+        push_model_history(&ctx, key, "model-a");
+        assert_eq!(
+            get_model_history(&ctx, key, 1),
+            Some("model-a".to_string())
+        );
+
+        push_model_history(&ctx, key, "model-b");
+        // Most recent push is model-b, so -1 = model-b, -2 = model-a.
+        assert_eq!(
+            get_model_history(&ctx, key, 1),
+            Some("model-b".to_string())
+        );
+        assert_eq!(
+            get_model_history(&ctx, key, 2),
+            Some("model-a".to_string())
+        );
+    }
+
+    #[test]
+    fn model_history_deduplicates_consecutive_same_model() {
+        let ctx = make_model_history_ctx();
+        let key = "test_sender";
+
+        push_model_history(&ctx, key, "model-a");
+        push_model_history(&ctx, key, "model-a"); // duplicate, should not add
+        push_model_history(&ctx, key, "model-b");
+
+        assert_eq!(
+            get_model_history(&ctx, key, 1),
+            Some("model-b".to_string())
+        );
+        assert_eq!(
+            get_model_history(&ctx, key, 2),
+            Some("model-a".to_string())
+        );
+        assert_eq!(get_model_history(&ctx, key, 3), None);
+    }
+
+    #[test]
+    fn model_history_respects_depth_limit() {
+        let ctx = make_model_history_ctx();
+        let key = "depth_test";
+
+        // Push MODEL_HISTORY_DEPTH + 2 distinct models.
+        for i in 0..=(MODEL_HISTORY_DEPTH + 1) {
+            push_model_history(&ctx, key, &format!("model-{i}"));
+        }
+
+        // The ring buffer should cap at MODEL_HISTORY_DEPTH entries.
+        assert!(get_model_history(&ctx, key, MODEL_HISTORY_DEPTH).is_some());
+        assert_eq!(get_model_history(&ctx, key, MODEL_HISTORY_DEPTH + 1), None);
+    }
+
+    #[test]
+    fn model_history_get_beyond_history_returns_none() {
+        let ctx = make_model_history_ctx();
+        let key = "test_sender";
+
+        push_model_history(&ctx, key, "model-a");
+        assert_eq!(get_model_history(&ctx, key, 2), None);
+        assert_eq!(get_model_history(&ctx, key, 0), None); // 0 is invalid (saturates to index usize::MAX)
     }
 }
