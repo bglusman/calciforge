@@ -1,4 +1,4 @@
-//! ZeroClawed v3 — Rust agent gateway
+//! ZeroClawed — Rust agent gateway
 //!
 //! Entry point: loads config, starts Telegram bot, routes messages to
 //! the downstream OpenClaw HTTP agent.
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("zeroclawed=info".parse()?))
         .init();
 
-    info!("ZeroClawed v3 starting");
+    info!("ZeroClawed starting");
 
     // Load config
     let config_path = config::config_path()?;

@@ -35,4 +35,4 @@
 - Should scanned-and-modified messages be flagged to the user transparently?
 - Privacy: scanning DM content means the scanner sees everything — audit logging must be opt-in
 
-**Priority:** Low/research. Capture in v3 roadmap. Revisit after ZeroClawed v3 core (policy + approval plumbing) is stable.
+**Priority:** Low/research. Capture in roadmap. Revisit after ZeroClawed core (policy + approval plumbing) is stable.

@@ -47,4 +47,4 @@ Follow Spec-Driven Development phases:
 - Audit: append-only with `chattr +a`
 
 ## Spec Reference
-`/root/.openclaw/workspace/specs/ZEROCLAWED-V3-HOST-AGENT-SPEC.md`
+`/root/.openclaw/workspace/specs/ZEROCLAWED-HOST-AGENT-SPEC.md`

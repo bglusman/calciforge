@@ -1,4 +1,4 @@
-//! Matrix channel adapter for ZeroClawed v3.
+//! Matrix channel adapter for ZeroClawed.
 //!
 //! ## Architecture
 //!

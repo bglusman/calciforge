@@ -1,4 +1,4 @@
-//! Signal channel adapter for ZeroClawed v3.
+//! Signal channel adapter for ZeroClawed.
 //!
 //! ## Architecture
 //!

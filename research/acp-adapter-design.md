@@ -368,6 +368,6 @@ See `acp-adapter-implementation.md` for detailed middleware architecture.
 ## References
 
 - [ACP Specification](https://github.com/i-am-bee/acp)
-- [ZeroClawed v2 Spec](/root/.openclaw/workspace/research/zeroclawed-v2-spec.md)
+- [ZeroClawed Spec](/root/.openclaw/workspace/research/zeroclawed-spec.md)
 - [Adapter Trait](/root/.openclaw/workspace/crates/zeroclawed/src/adapters.rs)
 - [ACP Implementation](/root/.openclaw/workspace/crates/zeroclawed/src/providers/acp.rs)

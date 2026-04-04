@@ -1,4 +1,4 @@
-//! ZeroClawed v3 Host-Agent
+//! ZeroClawed Host-Agent
 //!
 //! mTLS RPC server providing safe VM-to-host delegation for ZFS, systemd, and PCT.
 //!
@@ -58,7 +58,7 @@ use adapters::{AdapterRegistry, HostOp, PolicyDecision};
 /// ZeroClawed Host-Agent CLI
 #[derive(Parser, Debug)]
 #[command(name = "clash-host-agent")]
-#[command(about = "ZeroClawed v3 Host-Agent — mTLS RPC server for host delegation")]
+#[command(about = "ZeroClawed Host-Agent — mTLS RPC server for host delegation")]
 struct Cli {
     /// Path to configuration file
     #[arg(short, long, default_value = "/etc/clash/host-agent.toml")]
