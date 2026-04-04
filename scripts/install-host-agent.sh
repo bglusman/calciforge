@@ -1,5 +1,5 @@
 #!/bin/bash
-# NonZeroClawed v3 Host-Agent Installation Script
+# ZeroClawed v3 Host-Agent Installation Script
 # Run on Proxmox host (10.0.0.70) as root
 
 set -euo pipefail
@@ -135,7 +135,7 @@ build_binary() {
     
     log_info "Building host-agent binary..."
     
-    local project_dir="/root/projects/nonzeroclawed"
+    local project_dir="/root/projects/zeroclawed"
     
     if [[ ! -d "$project_dir" ]]; then
         log_error "Project directory not found: $project_dir"
@@ -155,7 +155,7 @@ build_binary() {
 install_binary() {
     log_info "Installing binary..."
     
-    local binary_path="/root/projects/nonzeroclawed/target/release/${BINARY_NAME}"
+    local binary_path="/root/projects/zeroclawed/target/release/${BINARY_NAME}"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         dry_run_echo "cp $binary_path $INSTALL_DIR/"
@@ -181,7 +181,7 @@ generate_certs() {
     
     if [[ "$DRY_RUN" == "true" ]]; then
         dry_run_echo "openssl genrsa -out ${CERT_DIR}/ca.key 4096"
-        dry_run_echo "openssl req -new -x509 -days 3650 -key ${CERT_DIR}/ca.key -out ${CERT_DIR}/ca.crt -subj '/CN=NonZeroClawed CA'"
+        dry_run_echo "openssl req -new -x509 -days 3650 -key ${CERT_DIR}/ca.key -out ${CERT_DIR}/ca.crt -subj '/CN=ZeroClawed CA'"
         return 0
     fi
     
@@ -197,7 +197,7 @@ generate_certs() {
     
     # Generate CA
     openssl genrsa -out "${CERT_DIR}/ca.key" 4096
-    openssl req -new -x509 -days 3650 -key "${CERT_DIR}/ca.key" -out "${CERT_DIR}/ca.crt" -subj "/CN=NonZeroClawed CA"
+    openssl req -new -x509 -days 3650 -key "${CERT_DIR}/ca.key" -out "${CERT_DIR}/ca.crt" -subj "/CN=ZeroClawed CA"
     
     # Generate server cert
     openssl genrsa -out "${CERT_DIR}/server.key" 2048
@@ -293,7 +293,7 @@ configure_sudoers() {
     local sudoers_file="/etc/sudoers.d/${CLASH_USER}"
     
     cat > /tmp/clash-sudoers << EOF
-# NonZeroClawed Host-Agent sudoers configuration
+# ZeroClawed Host-Agent sudoers configuration
 # Destructive operations require sudo
 $CLASH_USER ALL=(root) NOPASSWD: /sbin/zfs destroy *
 $CLASH_USER ALL=(root) NOPASSWD: /sbin/zfs rollback *
@@ -354,7 +354,7 @@ create_systemd_service() {
     
     cat > /tmp/clash-host-agent.service << 'EOF'
 [Unit]
-Description=NonZeroClawed Host-Agent
+Description=ZeroClawed Host-Agent
 After=network.target
 
 [Service]
@@ -433,7 +433,7 @@ print_summary() {
 
 # Main execution
 main() {
-    echo "NonZeroClawed v3 Host-Agent Installer"
+    echo "ZeroClawed v3 Host-Agent Installer"
     echo "================================="
     
     if [[ "$DRY_RUN" == "true" ]]; then

@@ -2,7 +2,7 @@
 name = "outpost"
 version = "0.1.0"
 edition = "2021"
-description = "NonZeroClawed v2 — Outpost external content scanning module"
+description = "ZeroClawed v2 — Outpost external content scanning module"
 license = "MIT"
 
 [dependencies]

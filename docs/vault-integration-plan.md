@@ -1,4 +1,4 @@
-# Vault Integration + NonZeroClawed Native OpenClaw Adapter — Planning Notes
+# Vault Integration + ZeroClawed Native OpenClaw Adapter — Planning Notes
 
 _Created: 2026-03-30 by Librarian_
 _Context: Post-incident planning after a bad OpenClaw config edit broke Librarian entirely_
@@ -10,7 +10,7 @@ _Context: Post-incident planning after a bad OpenClaw config edit broke Libraria
 Two related but distinct workstreams:
 
 1. **Vault Integration** — credential management via Bitwarden/Vaultwarden (or adapters)
-2. **NonZeroClawed Native OpenClaw Adapter** — safe, versioned, installation-time integration with downstream OpenClaw instances
+2. **ZeroClawed Native OpenClaw Adapter** — safe, versioned, installation-time integration with downstream OpenClaw instances
 
 These belong together because the adapter installation story is where vault-stored credentials (SSH keys, API keys generated during setup) first come into play.
 
@@ -58,7 +58,7 @@ Future:
 ### Approval Flow for Agents
 Bitwarden's SDK approval is CLI-based — doesn't fit async agent workflows.
 Need: approval requests delivered over configured channel (Signal/Telegram), user approves in chat.
-- NZC/NonZeroClawed owns the approval relay (it's the channel layer)
+- NZC/ZeroClawed owns the approval relay (it's the channel layer)
 - OneCLI or NZC intercepts outbound API calls, checks if credential needs approval, relays request
 
 ### Approval Policy — Per-Secret, Not Global
@@ -90,11 +90,11 @@ The vault master password never stays in memory long-term. Pattern:
 3. Token expires → re-unlock automatically (if unlock key stored) or prompt user over channel
 4. Bitwarden CLI already works this way: `bw unlock` → session key → TTL-scoped access
 
-NZC/NonZeroClawed holds the session token only. Master password handled at unlock time.
+NZC/ZeroClawed holds the session token only. Master password handled at unlock time.
 
 ### Phase 1: No Agent Access SDK Required
 
-Use `bw` CLI subprocess for vault access first. Build the approval relay directly in NonZeroClawed.
+Use `bw` CLI subprocess for vault access first. Build the approval relay directly in ZeroClawed.
 Agent Access SDK integration can come later once the core flow is proven.
 
 ### Open Questions
@@ -104,17 +104,17 @@ Agent Access SDK integration can come later once the core flow is proven.
 
 ---
 
-## Workstream 2: NonZeroClawed Native OpenClaw Adapter
+## Workstream 2: ZeroClawed Native OpenClaw Adapter
 
 ### Motivation
-- NonZeroClawed needs to integrate with downstream OpenClaw instances (add channel, configure routing)
+- ZeroClawed needs to integrate with downstream OpenClaw instances (add channel, configure routing)
 - This requires editing OpenClaw's config — which is **dangerous if done wrong**
-- 2026-03-30: Librarian tried to add a NonZeroClawed channel adapter manually → broke config → gateway crashed → Custodian couldn't fix it → required manual recovery
+- 2026-03-30: Librarian tried to add a ZeroClawed channel adapter manually → broke config → gateway crashed → Custodian couldn't fix it → required manual recovery
 
 ### Core Principle
-> **Config changes to a downstream claw must be initiated by NonZeroClawed's installer, not by the claw itself.**
+> **Config changes to a downstream claw must be initiated by ZeroClawed's installer, not by the claw itself.**
 
-The claw should never edit its own config in response to a NonZeroClawed integration request. NonZeroClawed owns that process.
+The claw should never edit its own config in response to a ZeroClawed integration request. ZeroClawed owns that process.
 
 ### Safety Requirements (non-negotiable)
 
@@ -141,7 +141,7 @@ Adapter must:
 ### Proposed Adapter Flow
 
 ```
-nonzeroclawed install-adapter --target <claw-endpoint> --adapter openclaw
+zeroclawed install-adapter --target <claw-endpoint> --adapter openclaw
   1. Connect to target claw gateway
   2. GET /version — check compatibility
   3. GET /config — read current config
@@ -154,15 +154,15 @@ nonzeroclawed install-adapter --target <claw-endpoint> --adapter openclaw
 ```
 
 ### What the Adapter Actually Adds
-Minimal footprint — just enough for NonZeroClawed to receive messages from/send to the claw:
-- Add a `nonzeroclawed` channel entry (once OpenClaw supports this natively — don't hack it in)
-- OR: configure a webhook/hook endpoint that NonZeroClawed calls
+Minimal footprint — just enough for ZeroClawed to receive messages from/send to the claw:
+- Add a `zeroclawed` channel entry (once OpenClaw supports this natively — don't hack it in)
+- OR: configure a webhook/hook endpoint that ZeroClawed calls
 - The right shape depends on what OpenClaw exposes; check docs/schema before designing
 
 **Key lesson from 2026-03-30:** Don't try to add config keys that don't exist in the running version's schema. This is what broke things.
 
 ### Relation to Vault
-During adapter installation, any credentials generated (e.g. a shared secret between NonZeroClawed and the claw) should be stored in vault, not written to a config file or handed back in plaintext.
+During adapter installation, any credentials generated (e.g. a shared secret between ZeroClawed and the claw) should be stored in vault, not written to a config file or handed back in plaintext.
 
 ---
 
@@ -170,13 +170,13 @@ During adapter installation, any credentials generated (e.g. a shared secret bet
 
 1. **Vaultwarden + Agent Access SDK parity** — does Vaultwarden implement the endpoints the SDK needs? Check GitHub issues/docs.
 2. **OneCLI architecture** — is it a standalone proxy, a library, or both? What's the embedding story for NZC?
-3. **OpenClaw plugin/channel API** — what's the right hook point for NonZeroClawed integration? Webhook? Native channel plugin? Check OpenClaw docs/source.
+3. **OpenClaw plugin/channel API** — what's the right hook point for ZeroClawed integration? Webhook? Native channel plugin? Check OpenClaw docs/source.
 4. **OpenClaw config schema versioning** — is there a machine-readable compatibility manifest? How do we detect version safely?
-5. **Approval relay design** — sketch the flow for "agent requests credential → NonZeroClawed relays approval request to user → user approves in Signal → credential released"
+5. **Approval relay design** — sketch the flow for "agent requests credential → ZeroClawed relays approval request to user → user approves in Signal → credential released"
 
 ---
 
-## Workstream 3: OpenClaw → NonZeroClawed/NZC Migration
+## Workstream 3: OpenClaw → ZeroClawed/NZC Migration
 
 ### Motivation
 Many early adopters will be coming from OpenClaw. Installation is the time to make key decisions and migrate what makes sense. This is less "copy everything over" and more "assign ownership and import history."
@@ -190,20 +190,20 @@ Migration direction: OpenClaw's markdown memory is human-readable and straightfo
 Note: NZC memory architecture is also under consideration for redesign (more dynamic/relevance-based injection scanning conversation context). Migration just gets the content in; the new system decides how to use it.
 
 ### Channel Assignment (not migration)
-Each channel has exactly one owner at a time: OpenClaw, NonZeroClawed, or NZC. This is a **decision**, not a copy operation.
+Each channel has exactly one owner at a time: OpenClaw, ZeroClawed, or NZC. This is a **decision**, not a copy operation.
 
-Installation question: "Which channels do you want NonZeroClawed to own?"
-- NonZeroClawed-owned channels: NonZeroClawed is the router, downstream claws are receivers
+Installation question: "Which channels do you want ZeroClawed to own?"
+- ZeroClawed-owned channels: ZeroClawed is the router, downstream claws are receivers
 - OpenClaw-owned channels: OpenClaw handles them directly, unchanged
 - NZC-owned channels: NZC handles them directly
 
-The installer walks through each configured channel and asks who owns it. Credentials for NonZeroClawed-owned channels get moved to vault. OpenClaw's config for those channels gets disabled (safely, with backup).
+The installer walks through each configured channel and asks who owns it. Credentials for ZeroClawed-owned channels get moved to vault. OpenClaw's config for those channels gets disabled (safely, with backup).
 
 ### Context Continuity on Channel Reassignment
-If a user later reassigns a channel from NZC back to OpenClaw (or vice versa), NonZeroClawed handles it:
+If a user later reassigns a channel from NZC back to OpenClaw (or vice versa), ZeroClawed handles it:
 - User requests reassignment ("switch Signal back to OpenClaw")
-- NonZeroClawed updates its routing table
-- NonZeroClawed passes relevant recent history to the newly-assigned claw so it's not starting cold
+- ZeroClawed updates its routing table
+- ZeroClawed passes relevant recent history to the newly-assigned claw so it's not starting cold
 - No transparent runtime fallback — explicit manual reassignment with context handoff
 
 ### Memory Migration
@@ -213,7 +213,7 @@ If a user later reassigns a channel from NZC back to OpenClaw (or vice versa), N
 - Flag anything that didn't import cleanly for manual review
 
 ### Config Migration
-- Read `openclaw.json`, map known fields to NZC/NonZeroClawed equivalents
+- Read `openclaw.json`, map known fields to NZC/ZeroClawed equivalents
 - Fields with clear analogs: models, agent list, hooks, approval targets
 - Channels: don't migrate directly — handled by channel assignment step above
 - Fields that don't map: flagged for manual review, never silently dropped
@@ -221,20 +221,20 @@ If a user later reassigns a channel from NZC back to OpenClaw (or vice versa), N
 
 ### Installer UX (proposed)
 ```
-nonzeroclawed install
+zeroclawed install
   → Detect existing OpenClaw installation? [yes/no]
   → If yes:
-      → Channel assignment: for each channel, who owns it? (NonZeroClawed / OpenClaw / NZC)
+      → Channel assignment: for each channel, who owns it? (ZeroClawed / OpenClaw / NZC)
       → Memory import: import OpenClaw markdown memory into NZC? [yes/no]
       → Config migration: show diff of mapped settings, confirm
-      → Vault setup: store credentials for NonZeroClawed-owned channels
+      → Vault setup: store credentials for ZeroClawed-owned channels
       → Disable migrated channels in OpenClaw config (with backup)
       → Health check all active claws
 ```
 
 ### Open Questions
-- [ ] What's the right data format for NonZeroClawed's routing table (channel → owner)?
-- [ ] How does NonZeroClawed pass history context on channel reassignment — full dump or summarized?
+- [ ] What's the right data format for ZeroClawed's routing table (channel → owner)?
+- [ ] How does ZeroClawed pass history context on channel reassignment — full dump or summarized?
 - [ ] NZC memory redesign status — should import target the current schema or wait for the new one?
 - [ ] What OpenClaw config fields map cleanly to NZC equivalents? (needs NZC config schema reference)
 
@@ -267,9 +267,9 @@ Semantically: filesystem SQL transaction. Rollback is free (discard overlay). Co
 - Con: requires agent to correctly identify dangerous operations — exactly when agents make mistakes
 - Mitigation: make it easy enough that agents default to wrapping anything touching config/data files
 
-**Option B: NonZeroClawed meta-commands**
-- `!transaction start` / `!transaction commit` / `!transaction rollback` at NonZeroClawed level
-- Human or agent invokes; NonZeroClawed coordinates with underlying claw's system
+**Option B: ZeroClawed meta-commands**
+- `!transaction start` / `!transaction commit` / `!transaction rollback` at ZeroClawed level
+- Human or agent invokes; ZeroClawed coordinates with underlying claw's system
 - Pro: human-in-the-loop control point
 - Con: must hook into every claw's underlying system; complex; doesn't compose across SSH boundaries
 
@@ -306,7 +306,7 @@ Could ship v1, upgrade to v2/v3 as needed. The interface stays the same.
 - These are the same primitives jai uses — NZC could implement this natively rather than depending on jai binary
 
 ### Decision Point for Current Sprint
-Session 3 (NonZeroClawed adapter installation) is the highest-risk session — it edits live OpenClaw config. For that session, use **Backend v1** (backup copy) as the safety mechanism. That's already in the safety requirements. The fuller transaction abstraction can come after.
+Session 3 (ZeroClawed adapter installation) is the highest-risk session — it edits live OpenClaw config. For that session, use **Backend v1** (backup copy) as the safety mechanism. That's already in the safety requirements. The fuller transaction abstraction can come after.
 
 ### Research Tasks
 1. Read jai source — does it expose upper dir / commit concept?

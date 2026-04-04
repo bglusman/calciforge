@@ -1,4 +1,4 @@
-# AGENTS.md — NonZeroClawed Host-Agent
+# AGENTS.md — ZeroClawed Host-Agent
 
 ## Project
 Build a Rust host-agent for safe RPC access to host resources (ZFS, systemd, PCT) using Unix permissions as the enforcement layer.
@@ -47,4 +47,4 @@ Follow Spec-Driven Development phases:
 - Audit: append-only with `chattr +a`
 
 ## Spec Reference
-`/root/.openclaw/workspace/specs/NONZEROCLAWED-V3-HOST-AGENT-SPEC.md`
+`/root/.openclaw/workspace/specs/ZEROCLAWED-V3-HOST-AGENT-SPEC.md`

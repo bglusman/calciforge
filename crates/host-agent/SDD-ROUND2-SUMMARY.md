@@ -1,8 +1,8 @@
-# NonZeroClawed v3 Host-Agent — SDD Round 2 Complete
+# ZeroClawed v3 Host-Agent — SDD Round 2 Complete
 
 ## Summary
 
-Completed comprehensive security hardening and NonZeroClaw integration framework for NonZeroClawed v3 Host-Agent. All P0 and P1 security fixes have been implemented, along with the P2 operational readiness improvements. The P3 NZC integration framework is in place with traits and adapters defined.
+Completed comprehensive security hardening and NonZeroClaw integration framework for ZeroClawed v3 Host-Agent. All P0 and P1 security fixes have been implemented, along with the P2 operational readiness improvements. The P3 NZC integration framework is in place with traits and adapters defined.
 
 ## Security Fixes Implemented (P0-P1)
 
@@ -140,7 +140,7 @@ POST /webhook/signal
 ### Quick Install on .50
 ```bash
 # Build binary (on dev machine)
-cd /root/projects/nonzeroclawed
+cd /root/projects/zeroclawed
 cargo build --release -p host-agent
 
 # Copy to .50 and install

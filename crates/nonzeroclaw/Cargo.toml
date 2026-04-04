@@ -8,9 +8,9 @@
 name = "nonzeroclaw"
 version = "0.6.7-nzc.1"
 edition = "2024"
-authors = ["theonlyhennygod", "NonZeroClawed Contributors"]
+authors = ["theonlyhennygod", "ZeroClawed Contributors"]
 license = "MIT OR Apache-2.0"
-description = "Zero overhead. Zero compromise. 100% Rust. The fastest, smallest AI assistant. (Vendored fork for NonZeroClawed.)"
+description = "Zero overhead. Zero compromise. 100% Rust. The fastest, smallest AI assistant. (Vendored fork for ZeroClawed.)"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "assistant", "chatbot"]
 categories = ["command-line-utilities", "api-bindings"]
@@ -35,7 +35,7 @@ name = "nonzeroclaw"
 path = "src/lib.rs"
 
 [dependencies]
-# NonZeroClawed workspace internal crates
+# ZeroClawed workspace internal crates
 outpost = { path = "../outpost" }
 clash   = { path = "../clash" }
 

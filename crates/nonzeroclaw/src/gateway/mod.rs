@@ -335,7 +335,7 @@ pub struct PendingApproval {
     pub result_tx: tokio::sync::oneshot::Sender<bool>,
 }
 
-/// A completed approval result stored for polling by NonZeroClawed.
+/// A completed approval result stored for polling by ZeroClawed.
 pub struct PendingResult {
     /// Final agent response after approval/denial, or timeout message.
     pub response: String,

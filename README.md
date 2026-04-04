@@ -1,6 +1,6 @@
-# NonZeroClawed
+# ZeroClawed
 
-A unified Cargo workspace containing the NonZeroClawed router and NonZeroClaw native agent, plus their shared crates.
+A unified Cargo workspace containing the ZeroClawed router and NonZeroClaw native agent, plus their shared crates.
 
 ---
 
@@ -8,9 +8,9 @@ A unified Cargo workspace containing the NonZeroClawed router and NonZeroClaw na
 
 | Crate | Binary | Description |
 |-------|--------|-------------|
-| `crates/nonzeroclawed` | `nonzeroclawed` | **NonZeroClawed v2** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
+| `crates/zeroclawed` | `zeroclawed` | **ZeroClawed v2** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
 | `crates/nonzeroclaw` | `nonzeroclaw` | **NonZeroClaw** — opinionated first-party OpenAI-compatible HTTP agent. ZeroClaw fork with outpost scanning, clash policy stubs, web dashboard, Prometheus metrics, and optional hardware/robotics support. |
-| `crates/outpost` | *(library)* | **Outpost** — shared content-scanning crate. Detects prompt injection, PII leakage, and unsafe content in external data before it reaches the model context. Used by both nonzeroclawed and nonzeroclaw. |
+| `crates/outpost` | *(library)* | **Outpost** — shared content-scanning crate. Detects prompt injection, PII leakage, and unsafe content in external data before it reaches the model context. Used by both zeroclawed and nonzeroclaw. |
 | `crates/clash` | *(library)* | **Clash** — policy trait contracts and no-op implementation stubs. Provides the `PolicyEngine` interface for future conflict-resolution / approval-gate features. |
 | `crates/robot-kit` | *(library)* | **ZeroClaw Robot Kit** — optional robotics toolkit (drive, vision, speech, sensors, safety monitor). Raspberry Pi / ROS2 target. |
 
@@ -20,17 +20,17 @@ A unified Cargo workspace containing the NonZeroClawed router and NonZeroClaw na
 
 ```
 [Telegram] ──┐
-[Matrix]   ──┤──▶ [NonZeroClawed boundary] ──▶ [Auth gate] ──▶ [Router] ──▶ [NonZeroClaw]
+[Matrix]   ──┤──▶ [ZeroClawed boundary] ──▶ [Auth gate] ──▶ [Router] ──▶ [NonZeroClaw]
 [Signal]   ──┘          │                                                     │
                     [Outpost]                                             [Outpost]
                   (injection scan)                                      (response scan)
 ```
 
-- **NonZeroClawed** is the sole owner of every inbound channel. No agent connects directly to a channel.
-- **Outpost** scans content at both ingress (NonZeroClawed) and egress (NonZeroClaw) to catch injection and leakage.
+- **ZeroClawed** is the sole owner of every inbound channel. No agent connects directly to a channel.
+- **Outpost** scans content at both ingress (ZeroClawed) and egress (NonZeroClaw) to catch injection and leakage.
 - **Clash** provides a policy layer (currently no-op stubs) for future approval gates and conflict resolution.
 
-See the full architecture spec in `/docs` or run `nonzeroclawed install --help` for the guided setup.
+See the full architecture spec in `/docs` or run `zeroclawed install --help` for the guided setup.
 
 ---
 
@@ -51,16 +51,16 @@ cargo check
 cargo build
 
 # Optimized release build (both binaries):
-cargo build --release -p nonzeroclawed -p nonzeroclaw
+cargo build --release -p zeroclawed -p nonzeroclaw
 
 # Release binaries land in:
-#   target/release/nonzeroclawed
+#   target/release/zeroclawed
 #   target/release/nonzeroclaw
 ```
 
 ### Configuration
 
-**NonZeroClawed** — config at `~/.nonzeroclawed/config.toml`:
+**ZeroClawed** — config at `~/.zeroclawed/config.toml`:
 
 ```toml
 version = 2
@@ -83,17 +83,17 @@ allow_list = ["brian"]
 
 ### Install (interactive wizard)
 
-NonZeroClawed includes a built-in installer that configures routing, agents, channels, and systemd services on local or remote hosts.
+ZeroClawed includes a built-in installer that configures routing, agents, channels, and systemd services on local or remote hosts.
 
 ```bash
 # Interactive TUI wizard (default):
-nonzeroclawed install
+zeroclawed install
 
 # Headless / non-interactive:
-nonzeroclawed install --nonzeroclawed-host <target> --claw <agent-spec>
+zeroclawed install --zeroclawed-host <target> --claw <agent-spec>
 
 # Dry-run (prints planned changes, touches nothing):
-nonzeroclawed install --dry-run
+zeroclawed install --dry-run
 ```
 
 The installer is **idempotent** — safe to re-run. It:
@@ -102,25 +102,25 @@ The installer is **idempotent** — safe to re-run. It:
 - Auto-rolls back on failure
 - Supports SSH-based remote configuration of NZC and OpenClaw targets
 
-See `nonzeroclawed install --help` for all options.
+See `zeroclawed install --help` for all options.
 
 ### Run
 
 ```bash
 # Router (foreground):
-nonzeroclawed
+zeroclawed
 
 # Agent (foreground):
 nonzeroclaw serve
 
 # As systemd services:
-systemctl start nonzeroclawed nonzeroclaw
-systemctl enable nonzeroclawed nonzeroclaw
+systemctl start zeroclawed nonzeroclaw
+systemctl enable zeroclawed nonzeroclaw
 ```
 
 ### Agent adapters
 
-NonZeroClawed routes messages to agents via pluggable adapters:
+ZeroClawed routes messages to agents via pluggable adapters:
 
 | Adapter | Description | Example agents |
 |---------|-------------|----------------|
@@ -138,11 +138,11 @@ See [docs/acpx-claude-setup.md](docs/acpx-claude-setup.md) for Claude Code integ
 
 ```bash
 # Build release binaries:
-cargo build --release -p nonzeroclawed -p nonzeroclaw
+cargo build --release -p zeroclawed -p nonzeroclaw
 
 # Deploy to a remote host:
-scp target/release/nonzeroclawed user@host:/usr/local/bin/nonzeroclawed
-ssh user@host "systemctl restart nonzeroclawed"
+scp target/release/zeroclawed user@host:/usr/local/bin/zeroclawed
+ssh user@host "systemctl restart zeroclawed"
 ```
 
 ---
@@ -164,9 +164,9 @@ cargo fmt --all
 
 ## Origins
 
-- **NonZeroClawed** is a from-scratch rewrite in Rust (was Zig in v1). See spec for design rationale.
-- **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with NonZeroClawed-specific features.
-- **Outpost** was originally developed as part of NonZeroClawed v2 and is now the shared scanning crate for the whole ecosystem.
+- **ZeroClawed** is a from-scratch rewrite in Rust (was Zig in v1). See spec for design rationale.
+- **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with ZeroClawed-specific features.
+- **Outpost** was originally developed as part of ZeroClawed v2 and is now the shared scanning crate for the whole ecosystem.
 
 ---
 

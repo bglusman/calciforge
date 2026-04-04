@@ -1,4 +1,4 @@
-# jai Integration Levels for NZC / NonZeroClawed
+# jai Integration Levels for NZC / ZeroClawed
 
 _Research date: 2026-03-30_
 _Context: Three integration levels given that NZC already has `sandbox-bubblewrap` and `sandbox-landlock` feature flags_
@@ -75,7 +75,7 @@ No configuration offered. Backup-copy is always available. The installer does:
 
 ### Recommendation
 
-**This is the implementation target for Session 3 (NonZeroClawed adapter installation).** It's already captured in the safety requirements: "backup config locally before any modification." Level 0 just formalizes and automates what we already planned to do manually.
+**This is the implementation target for Session 3 (ZeroClawed adapter installation).** It's already captured in the safety requirements: "backup config locally before any modification." Level 0 just formalizes and automates what we already planned to do manually.
 
 Build this first. It's three days of work, not three weeks.
 
@@ -263,7 +263,7 @@ This is ~300–500 lines of Rust. It's the same work whether it's for jai (L1) o
 
 ### Implementation Path
 
-**Now (Session 3 + immediate after):** Implement Level 0. Ship backup-copy backend with the full transaction API. This is what the NonZeroClawed adapter installer needs and it's the correct "safe default that works everywhere."
+**Now (Session 3 + immediate after):** Implement Level 0. Ship backup-copy backend with the full transaction API. This is what the ZeroClawed adapter installer needs and it's the correct "safe default that works everywhere."
 
 **Phase 2 (3–6 months):** Implement Level 2 (native overlayfs via bwrap extension OR pure-Rust fsmount). This covers exec-level writes and removes the "only write/edit tool calls are intercepted" limitation. Do NOT go through Level 1 first — there's no point adding a jai subprocess dependency when the bwrap path gets us the same capability with better portability.
 

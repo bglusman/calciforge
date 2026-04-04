@@ -1,13 +1,13 @@
 # Claude Code via acpx — Setup Guide
 
-NonZeroClawed supports routing messages to [Claude Code](https://code.claude.com) via the `acpx` CLI adapter. This lets you chat with Claude through WhatsApp, Signal, Telegram, or any other NonZeroClawed channel.
+ZeroClawed supports routing messages to [Claude Code](https://code.claude.com) via the `acpx` CLI adapter. This lets you chat with Claude through WhatsApp, Signal, Telegram, or any other ZeroClawed channel.
 
 ## How it works
 
 ```
 [WhatsApp/Signal/Telegram]
         ↓
-   [NonZeroClawed router]
+   [ZeroClawed router]
         ↓
   [acpx adapter]  →  acpx CLI  →  Claude Code (claude binary)
         ↓
@@ -32,7 +32,7 @@ npm install -g acpx
 npm install -g @anthropic-ai/claude-code
 ```
 
-> **Note:** Claude Code cannot run as root. If NonZeroClawed runs as root, create a dedicated user:
+> **Note:** Claude Code cannot run as root. If ZeroClawed runs as root, create a dedicated user:
 > ```bash
 > useradd -m -s /bin/bash claude
 > su - claude -c 'npm install -g @anthropic-ai/claude-code'
@@ -51,14 +51,14 @@ Run interactively as the user that will own the credentials:
 claude  # follow OAuth prompt to authenticate with your Claude subscription
 ```
 
-Credentials are stored in `~/.claude/.credentials.json`. If NonZeroClawed runs as a different user (e.g. root), copy the credentials:
+Credentials are stored in `~/.claude/.credentials.json`. If ZeroClawed runs as a different user (e.g. root), copy the credentials:
 
 ```bash
 mkdir -p /root/.claude
 cp ~/.claude/.credentials.json /root/.claude/.credentials.json
 ```
 
-### 3. Configure NonZeroClawed
+### 3. Configure ZeroClawed
 
 Add a `claude-acpx` agent to your `config.toml`:
 
@@ -113,13 +113,13 @@ Once configured, messages routed to `claude-acpx` go directly to Claude Code. Us
 ## Troubleshooting
 
 **`acpx exec failed: Authentication required`**
-Claude Code credentials aren't accessible to the user running NonZeroClawed. Copy `~/.claude/.credentials.json` to the home dir of the running user.
+Claude Code credentials aren't accessible to the user running ZeroClawed. Copy `~/.claude/.credentials.json` to the home dir of the running user.
 
 **Raw `[client]`/`[tool]`/`[thinking]` output sent to users**
-This is filtered by NonZeroClawed's acpx adapter (`strip_acpx_noise()`). If you see it, you may be running an older build.
+This is filtered by ZeroClawed's acpx adapter (`strip_acpx_noise()`). If you see it, you may be running an older build.
 
 **Slow first response**
 acpx creates a new session on first use. Subsequent messages in the same cwd reuse the session and are faster.
 
 **`--format` flag errors**
-The `--format` flag must come before the agent name: `acpx --format text claude exec "..."`. NonZeroClawed handles this correctly as of commit 5f9d9bb.
+The `--format` flag must come before the agent name: `acpx --format text claude exec "..."`. ZeroClawed handles this correctly as of commit 5f9d9bb.
