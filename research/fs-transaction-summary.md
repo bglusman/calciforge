@@ -8,11 +8,11 @@ _References: jai-analysis.md, fs-transaction-alternatives.md, fs-transaction-pro
 
 ## What We're Building and Why
 
-The 2026-03-30 incident: Librarian tried to add a NonZeroClawed channel adapter to `openclaw.json` manually, wrote invalid config, the gateway crashed, and Custodian couldn't recover it. Manual intervention required.
+The 2026-03-30 incident: Librarian tried to add a ZeroClawed channel adapter to `openclaw.json` manually, wrote invalid config, the gateway crashed, and Custodian couldn't recover it. Manual intervention required.
 
 The core problem: **agents make dangerous file writes with no ability to roll back.** The solution: a transaction system that backs up files before modification and restores them if something goes wrong.
 
-This is Workstream 4 from the vault integration plan. It's a research/design task for now; implementation goes into Session 3 (NonZeroClawed adapter) and beyond.
+This is Workstream 4 from the vault integration plan. It's a research/design task for now; implementation goes into Session 3 (ZeroClawed adapter) and beyond.
 
 ---
 
@@ -27,7 +27,7 @@ transaction_commit(txn)   // or transaction_rollback(txn)
 ```
 
 **Why A wins over B and C:**
-- **vs Proposal B (NonZeroClawed meta-commands):** NonZeroClawed doesn't exist yet as a working adapter layer. We need safety now, for Session 3. B requires NonZeroClawed to intercept tool calls or inject context — complex to build and test before the adapter is done. Defer B until Session 3 is shipped.
+- **vs Proposal B (ZeroClawed meta-commands):** ZeroClawed doesn't exist yet as a working adapter layer. We need safety now, for Session 3. B requires ZeroClawed to intercept tool calls or inject context — complex to build and test before the adapter is done. Defer B until Session 3 is shipped.
 - **vs Proposal C (fully implicit):** Implicit transactions are powerful but the heuristics are hard to get right. False positives (auto-backing up files that don't need it) add noise. False negatives (missing a dangerous operation) give false confidence. More importantly, implicit behavior is harder to reason about — the agent needs injected context to know what happened, which adds token overhead.
 
 **Safety net: Proposal C's detection layer**
@@ -55,7 +55,7 @@ The backup-copy backend is:
 
 It just needs to be automated, tracked in SQLite, and exposed via the `transaction_start` API.
 
-**This is the only thing that needs to be shipped for Session 3.** The NonZeroClawed adapter installer needs to:
+**This is the only thing that needs to be shipped for Session 3.** The ZeroClawed adapter installer needs to:
 1. Take a backup of `openclaw.json` before editing
 2. Edit it
 3. Verify the gateway comes up
@@ -74,9 +74,9 @@ Use bwrap (`sandbox-bubblewrap` feature already in Cargo.toml) to create overlay
 
 ---
 
-## What Should Go Into Session 3 (NonZeroClawed Adapter)
+## What Should Go Into Session 3 (ZeroClawed Adapter)
 
-Session 3 is the NonZeroClawed adapter installation — editing live OpenClaw config. This is the highest-risk operation in the current sprint.
+Session 3 is the ZeroClawed adapter installation — editing live OpenClaw config. This is the highest-risk operation in the current sprint.
 
 **Minimum for Session 3:**
 
@@ -88,11 +88,11 @@ Session 3 is the NonZeroClawed adapter installation — editing live OpenClaw co
 
 4. **SQLite persistence of transaction state** — crash recovery for orphaned transactions.
 
-5. **The NonZeroClawed adapter installer uses `transaction_start` explicitly** — don't rely on the auto-backup safety net for the most dangerous operation. Be explicit.
+5. **The ZeroClawed adapter installer uses `transaction_start` explicitly** — don't rely on the auto-backup safety net for the most dangerous operation. Be explicit.
 
 **Defer to after Session 3:**
 
-- Proposal B (NonZeroClawed meta-commands) — needs NonZeroClawed adapter architecture first
+- Proposal B (ZeroClawed meta-commands) — needs ZeroClawed adapter architecture first
 - Level 2 overlayfs backend — adds complexity, not needed for config-file editing
 - ZFS remote snapshot auto-guard — useful, but not blocking Session 3
 - `transactions.mode = "require"` — wait until agent prompts are updated
@@ -102,7 +102,7 @@ Session 3 is the NonZeroClawed adapter installation — editing live OpenClaw co
 
 ## SSH Boundaries: What to Tell Brian
 
-The core constraint: **local transactions do not protect remote hosts.** When the NonZeroClawed adapter installer SSHes to Librarian at 10.0.0.20 to edit `openclaw.json`, the transaction is running on the machine where NZC is running (the NonZeroClawed host). If NZC is on a different host from Librarian, the transaction doesn't cover the edit.
+The core constraint: **local transactions do not protect remote hosts.** When the ZeroClawed adapter installer SSHes to Librarian at 10.0.0.20 to edit `openclaw.json`, the transaction is running on the machine where NZC is running (the ZeroClawed host). If NZC is on a different host from Librarian, the transaction doesn't cover the edit.
 
 **For the immediate use case (Session 3):**
 The adapter installer runs on the same host as the target OpenClaw instance. Transaction is local, protection is full. No SSH boundary issue for Session 3.
@@ -116,7 +116,7 @@ Configure `transactions.ssh_guard.auto_snapshot_zfs_hosts` to include Proxmox (.
 
 ### Immediate (Session 3)
 
-1. **Which machine runs the NonZeroClawed adapter installer?** If it's a separate NZC instance SSHing to Librarian, then the transaction protection is for local files only (see SSH boundaries). If it's running on the same machine as OpenClaw (Librarian's VM at 10.0.0.20), then it's fully local and the backup-copy backend works perfectly. This affects whether we need the SSH guard for Session 3.
+1. **Which machine runs the ZeroClawed adapter installer?** If it's a separate NZC instance SSHing to Librarian, then the transaction protection is for local files only (see SSH boundaries). If it's running on the same machine as OpenClaw (Librarian's VM at 10.0.0.20), then it's fully local and the backup-copy backend works perfectly. This affects whether we need the SSH guard for Session 3.
 
 2. **NZC's current transaction tooling status:** Does NZC already have any `transaction_*` tool stubs, or is this a from-scratch implementation? Need to know what's already in the codebase before estimating Session 3 effort.
 
@@ -150,4 +150,4 @@ Configure `transactions.ssh_guard.auto_snapshot_zfs_hosts` to include Proxmox (.
 
 ## One-Line Summary
 
-Build Proposal A (explicit transaction API) + Level 0 (backup copy) for Session 3. Ship with `mode = "suggest"` auto-protection. Upgrade to Level 2 (native overlayfs via bwrap) after Session 3. Add Proposal B (NonZeroClawed meta-commands) when the NonZeroClawed adapter layer exists. Configure ZFS snapshot guards for known ZFS hosts. Accept that non-ZFS remote hosts are a persistent gap and document it clearly.
+Build Proposal A (explicit transaction API) + Level 0 (backup copy) for Session 3. Ship with `mode = "suggest"` auto-protection. Upgrade to Level 2 (native overlayfs via bwrap) after Session 3. Add Proposal B (ZeroClawed meta-commands) when the ZeroClawed adapter layer exists. Configure ZFS snapshot guards for known ZFS hosts. Accept that non-ZFS remote hosts are a persistent gap and document it clearly.

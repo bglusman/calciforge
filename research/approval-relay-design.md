@@ -13,7 +13,7 @@ Bitwarden's Agent Access SDK approval flow is interactive CLI:
 
 This is synchronous, terminal-dependent, and completely wrong for async agent workflows over Signal/Telegram.
 
-**What we need**: agent requests a credential → NonZeroClawed/NZC routes the approval request to the user as a chat message → user taps "Approve" → credential is released.
+**What we need**: agent requests a credential → ZeroClawed/NZC routes the approval request to the user as a chat message → user taps "Approve" → credential is released.
 
 ---
 
@@ -21,7 +21,7 @@ This is synchronous, terminal-dependent, and completely wrong for async agent wo
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                           NonZeroClawed / NZC                             │
+│                           ZeroClawed / NZC                             │
 │                                                                       │
 │  ┌─────────────┐    ┌──────────────────┐    ┌────────────────────┐  │
 │  │  Channel    │    │  Approval Relay   │    │   Vault Adapter    │  │
@@ -57,7 +57,7 @@ Or if using OneCLI as the proxy layer — the agent's HTTP call through the OneC
 
 ### Step 2: Approval Relay Creates Pending Request
 
-NonZeroClawed's Approval Relay:
+ZeroClawed's Approval Relay:
 1. Generates a short-lived approval token (UUID, e.g. `apr_abc123`)
 2. Stores state:
    ```json
@@ -76,7 +76,7 @@ NonZeroClawed's Approval Relay:
 
 ### Step 3: Route Approval Request to User
 
-NonZeroClawed sends a message to the user's configured approval channel (Signal, Telegram, etc.):
+ZeroClawed sends a message to the user's configured approval channel (Signal, Telegram, etc.):
 
 ```
 🔐 Credential Request
@@ -105,19 +105,19 @@ Context: git push to main branch
 **Path A — Text command**:
 ```
 User: /approve apr_abc123
-NonZeroClawed: ✅ Approved. Credential released.
+ZeroClawed: ✅ Approved. Credential released.
 ```
 
 **Path B — Inline button (Telegram)**:
 ```
 User: [taps ✅ Approve]
-NonZeroClawed: ✅ Approved. Credential released.
+ZeroClawed: ✅ Approved. Credential released.
 ```
 
 **Path C — Timeout**:
 ```
 [5 minutes elapse — no response]
-NonZeroClawed: ⏱️ Approval request apr_abc123 expired. Credential not released.
+ZeroClawed: ⏱️ Approval request apr_abc123 expired. Credential not released.
 → Agent receives: ApprovalError::Expired
 ```
 
@@ -174,7 +174,7 @@ pub enum ApprovalOutcome {
     Expired,
 }
 
-/// The relay trait — NonZeroClawed implements this
+/// The relay trait — ZeroClawed implements this
 #[async_trait]
 pub trait ApprovalRelay: Send + Sync {
     /// Send approval request to user, return outcome (blocking until resolved or expired)
@@ -260,10 +260,10 @@ The `context` field is critical. A bare "github.com" is not helpful. The agent s
 vault_adapter.request_approval("github.com", "API call")
 
 // Good  
-vault_adapter.request_approval("github.com", "git push: 3 files changed in nonzeroclawed/src/")
+vault_adapter.request_approval("github.com", "git push: 3 files changed in zeroclawed/src/")
 ```
 
-NonZeroClawed should validate that context is non-empty and meaningful before forwarding the request.
+ZeroClawed should validate that context is non-empty and meaningful before forwarding the request.
 
 ### Approval Channel vs Agent Channel
 The approval should go to the **operator/owner**, not to whoever the agent is currently talking to.
@@ -272,7 +272,7 @@ The approval should go to the **operator/owner**, not to whoever the agent is cu
 - When Librarian needs a credential, the approval goes to Brian's configured admin channel
 - Not to a random user who might be in a group chat with Librarian
 
-Config: `nonzeroclawed.approval.channel = "telegram"` + `nonzeroclawed.approval.to = "+15551234567"`
+Config: `zeroclawed.approval.channel = "telegram"` + `zeroclawed.approval.to = "+15551234567"`
 
 ---
 
@@ -304,13 +304,13 @@ OneCLI (as a sidecar) handles **injection** but not async approval. The integrat
 
 ---
 
-## Wire Protocol (NZC ↔ NonZeroClawed Approval Relay)
+## Wire Protocol (NZC ↔ ZeroClawed Approval Relay)
 
-If NZC and NonZeroClawed are separate processes, they need a protocol:
+If NZC and ZeroClawed are separate processes, they need a protocol:
 
 ```rust
-// NZC → NonZeroClawed: request approval
-POST http://nonzeroclawed-relay/approvals/request
+// NZC → ZeroClawed: request approval
+POST http://zeroclawed-relay/approvals/request
 {
   "agent_id": "main",
   "credential_key": "github.com",
@@ -319,16 +319,16 @@ POST http://nonzeroclawed-relay/approvals/request
 }
 → { "approval_id": "apr_abc123", "status": "pending" }
 
-// NZC polls (or NonZeroClawed webhooks back to NZC)
-GET http://nonzeroclawed-relay/approvals/apr_abc123
+// NZC polls (or ZeroClawed webhooks back to NZC)
+GET http://zeroclawed-relay/approvals/apr_abc123
 → { "status": "pending" | "approved" | "denied" | "expired" }
 
 // On approval: NZC retrieves credential
-POST http://nonzeroclawed-relay/approvals/apr_abc123/claim
+POST http://zeroclawed-relay/approvals/apr_abc123/claim
 → { "status": "approved", "credential": { ... } }  // credential delivered once
 ```
 
-Or for in-process integration (NonZeroClawed embedded in NZC):
+Or for in-process integration (ZeroClawed embedded in NZC):
 - Use a `tokio::sync::oneshot::channel` per approval
 - Approval relay holds the sender; agent task holds the receiver
 - When user approves → send(ApprovalOutcome::Approved(token))

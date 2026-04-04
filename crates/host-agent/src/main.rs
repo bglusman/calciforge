@@ -1,4 +1,4 @@
-//! NonZeroClawed v3 Host-Agent
+//! ZeroClawed v3 Host-Agent
 //!
 //! mTLS RPC server providing safe VM-to-host delegation for ZFS, systemd, and PCT.
 //!
@@ -55,10 +55,10 @@ use tls::IdentityExtractingAcceptor;
 use zfs::{ZfsEntry, ZfsExecutor, ZfsOp};
 use adapters::{AdapterRegistry, HostOp, PolicyDecision};
 
-/// NonZeroClawed Host-Agent CLI
+/// ZeroClawed Host-Agent CLI
 #[derive(Parser, Debug)]
 #[command(name = "clash-host-agent")]
-#[command(about = "NonZeroClawed v3 Host-Agent — mTLS RPC server for host delegation")]
+#[command(about = "ZeroClawed v3 Host-Agent — mTLS RPC server for host delegation")]
 struct Cli {
     /// Path to configuration file
     #[arg(short, long, default_value = "/etc/clash/host-agent.toml")]
@@ -936,7 +936,7 @@ async fn main() -> Result<()> {
         .with_line_number(false)
         .init();
 
-    info!("Starting NonZeroClawed Host-Agent v{}", env!("CARGO_PKG_VERSION"));
+    info!("Starting ZeroClawed Host-Agent v{}", env!("CARGO_PKG_VERSION"));
 
     // Load configuration
     let config = Config::load(&cli.config)

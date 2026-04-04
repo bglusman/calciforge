@@ -133,7 +133,7 @@ This is a real deployment constraint:
 
 `COPYING` file header: `Copyright (C) 2026 David Mazieres. All rights reserved. Distribution permitted under the GNU General Public License (GPL) version 3 or later.`
 
-**Implications for NZC/NonZeroClawed:**
+**Implications for NZC/ZeroClawed:**
 - GPL v3 is copyleft. If we **statically link** or **embed** jai's code, the entire codebase would need to be GPL v3.
 - GPL v3 is **compatible with NZC's MIT OR Apache-2.0** license only if jai is used as a **separate process** (subprocess invocation), NOT as a linked library.
 - **Conclusion: We can shell out to `jai` binary but cannot embed or statically link its code.** The subprocess model is fine and is how jai is designed to be used anyway.

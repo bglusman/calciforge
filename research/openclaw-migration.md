@@ -1,7 +1,7 @@
 # OpenClaw Migration Research
 
 _Research date: 2026-03-30_
-_Note: Sections 7-8 from original draft removed — "transparent runtime fallback" framing was incorrect. See vault-integration-plan.md Workstream 3 for correct framing: NonZeroClawed routes channels, reassignment is explicit with context handoff._
+_Note: Sections 7-8 from original draft removed — "transparent runtime fallback" framing was incorrect. See vault-integration-plan.md Workstream 3 for correct framing: ZeroClawed routes channels, reassignment is explicit with context handoff._
 
 ---
 
@@ -84,7 +84,7 @@ Message event structure:
 
 Each channel has exactly one owner. Installation is where you decide.
 
-**What can be migrated**: channel credentials (bot tokens, account IDs, allowlists) for channels NonZeroClawed/NZC will own.
+**What can be migrated**: channel credentials (bot tokens, account IDs, allowlists) for channels ZeroClawed/NZC will own.
 
 **What cannot be migrated**:
 - WhatsApp (Baileys) session auth — not portable, user must re-link
@@ -92,7 +92,7 @@ Each channel has exactly one owner. Installation is where you decide.
 
 Field map for channel credentials:
 
-| OpenClaw field | NonZeroClawed/NZC equivalent |
+| OpenClaw field | ZeroClawed/NZC equivalent |
 |----------------|------------------------|
 | `channels.telegram.botToken` | `channels.telegram.token` |
 | `channels.telegram.allowFrom` | `channels.telegram.allow_from` |
@@ -136,9 +136,9 @@ Field map for channel credentials:
 
 ## 6. Context Handoff on Channel Reassignment
 
-When NonZeroClawed reassigns a channel from OpenClaw to NZC (or vice versa), the new owner needs context. Options:
+When ZeroClawed reassigns a channel from OpenClaw to NZC (or vice versa), the new owner needs context. Options:
 
-1. **Recent transcript dump**: NonZeroClawed reads last N turns from the old claw's session and passes them to the new claw on first message
+1. **Recent transcript dump**: ZeroClawed reads last N turns from the old claw's session and passes them to the new claw on first message
 2. **Memory snapshot**: export the workspace MEMORY.md + recent daily file and inject as system context
 3. **Cold start**: new claw starts fresh, user re-establishes context naturally
 
@@ -154,7 +154,7 @@ Confirmed working endpoints on live gateway:
 - `POST /v1/chat/completions` — OpenAI-compatible (auth required, must be enabled in config)
 - `POST /tools/invoke` — invoke any allowed tool including `memory_search`, `sessions_history`
 
-These could be used by NonZeroClawed to fetch context from an OpenClaw instance during reassignment.
+These could be used by ZeroClawed to fetch context from an OpenClaw instance during reassignment.
 
 ---
 

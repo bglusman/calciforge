@@ -14,7 +14,7 @@ LLMs handle typos reasonably well via emergent behavior, but mobile keyboard aut
 
 ### Layer 1: Channel input_device metadata (low-risk, high value)
 
-Add optional `input_device` hint to NonZeroClawed channel config:
+Add optional `input_device` hint to ZeroClawed channel config:
 
 ```toml
 [channels.signal_mobile]
@@ -25,7 +25,7 @@ input_device = "mobile"   # "mobile" | "desktop" | "unknown" (default)
 input_device = "desktop"
 ```
 
-NonZeroClawed passes this as envelope metadata to downstream claws. Claws can use it to:
+ZeroClawed passes this as envelope metadata to downstream claws. Claws can use it to:
 - Adjust typo tolerance in interpretation
 - Include in system prompt: "User is on mobile — expect autocomplete errors, interpret charitably"
 - Inform response style (shorter if mobile, etc.)
@@ -38,7 +38,7 @@ Encourage/document: use different channels for different input contexts. e.g.:
 - Signal = mobile (short, typo-prone, casual)
 - Telegram = desktop (longer, deliberate, precise)
 
-This is free — NonZeroClawed already routes per-channel. Just needs documentation and possibly a wizard step: "Is this channel primarily used from mobile?"
+This is free — ZeroClawed already routes per-channel. Just needs documentation and possibly a wizard step: "Is this channel primarily used from mobile?"
 
 ### Layer 3: Platform detection from channel metadata
 
@@ -81,7 +81,7 @@ The LLM then decides whether to apply corrections based on context. This is safe
 Store a per-user correction map:
 
 ```toml
-# ~/.nonzeroclawed/typo-profiles/brian.toml
+# ~/.zeroclawed/typo-profiles/brian.toml
 [corrections]
 "teh" = "the"
 "hte" = "the"
@@ -109,17 +109,17 @@ Rules:
 
 ---
 
-## Implementation in NonZeroClawed vs NZC
+## Implementation in ZeroClawed vs NZC
 
-**NonZeroClawed:** Best place for layer 1 (channel metadata), layer 2 (convention documentation), layer 3 (platform detection), layer 4 (pre-pass annotator). NonZeroClawed sees all messages before dispatch and has channel context.
+**ZeroClawed:** Best place for layer 1 (channel metadata), layer 2 (convention documentation), layer 3 (platform detection), layer 4 (pre-pass annotator). ZeroClawed sees all messages before dispatch and has channel context.
 
-**NZC:** Could implement layer 4 as a message pre-processor, layer 5 as a workspace file. But better to keep correction logic in NonZeroClawed and have NZC just receive already-annotated messages.
+**NZC:** Could implement layer 4 as a message pre-processor, layer 5 as a workspace file. But better to keep correction logic in ZeroClawed and have NZC just receive already-annotated messages.
 
 ---
 
 ## Open Questions for Brian
 
-1. Should correction profiles be per-channel or per-user-identity? (User identity is more useful but NonZeroClawed needs identity resolution first)
+1. Should correction profiles be per-channel or per-user-identity? (User identity is more useful but ZeroClawed needs identity resolution first)
 2. Should the annotated typo hints be visible to the user in replies? ("I interpreted X as Y — let me know if I'm wrong") or silent?
 3. Any prior art worth looking at? (iOS/macOS have system-level autocorrect APIs; Android has similar)
 4. Is this worth a small research spike to check what messaging platform metadata is actually available?

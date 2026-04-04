@@ -29,7 +29,7 @@ The credential injection engine. Written in Rust.
 - Applies rate limiting rules per-agent-identity per-host
 - Fast + memory-safe — designed for high-throughput agent usage
 
-**This is the piece that could be embedded or run alongside NZC/NonZeroClawed.**
+**This is the piece that could be embedded or run alongside NZC/ZeroClawed.**
 
 ### 2. Web Dashboard (`apps/web`, port 10254)
 
@@ -88,7 +88,7 @@ Everything starts as a single Docker stack: Rust gateway + Next.js app + Postgre
 
 **OneCLI is fundamentally a sidecar/service, not a library.**
 
-### What this means for NZC/NonZeroClawed integration:
+### What this means for NZC/ZeroClawed integration:
 
 1. **The Rust gateway binary is a standalone process** — it's not a crate you can embed in a Cargo workspace. The `apps/gateway` source is a full binary application, not a library crate.
 
@@ -96,16 +96,16 @@ Everything starts as a single Docker stack: Rust gateway + Next.js app + Postgre
 
 3. **Dependency story for NZC**: NZC cannot link OneCLI's gateway as a Rust library dependency. The options are:
    - **Run OneCLI as a sidecar** alongside NZC (docker-compose or systemd)
-   - **Implement the same proxy pattern natively** in NZC/NonZeroClawed (build a credential-injecting HTTP proxy from scratch in Rust)
+   - **Implement the same proxy pattern natively** in NZC/ZeroClawed (build a credential-injecting HTTP proxy from scratch in Rust)
    - **Use OneCLI as a managed service** (their cloud offering at app.onecli.sh, or self-hosted)
 
 4. **License**: Apache-2.0 — permissive, so the code can be referenced/adapted freely, but the architecture is designed as a service, not an embedded library.
 
 ---
 
-## Relevance to NonZeroClawed's Design
+## Relevance to ZeroClawed's Design
 
-### What NonZeroClawed Could Borrow Conceptually
+### What ZeroClawed Could Borrow Conceptually
 
 OneCLI's architecture shows the **correct pattern** for agent credential injection:
 
@@ -115,25 +115,25 @@ OneCLI's architecture shows the **correct pattern** for agent credential injecti
 4. Gateway swaps in real credential, forwards request
 5. No real credential ever touches agent memory/context
 
-This pattern can be implemented natively in NonZeroClawed/NZC without using OneCLI at all.
+This pattern can be implemented natively in ZeroClawed/NZC without using OneCLI at all.
 
-### What NonZeroClawed Might Actually Use
+### What ZeroClawed Might Actually Use
 
-For early implementation, running OneCLI as a sidecar alongside NonZeroClawed is the **fastest path to get credential injection working**. The integration surface is small:
+For early implementation, running OneCLI as a sidecar alongside ZeroClawed is the **fastest path to get credential injection working**. The integration surface is small:
 - Configure an agent's HTTP proxy to point at `localhost:10255`
 - Set `Proxy-Authorization: Bearer <agent-token>` 
 - Let OneCLI handle the rest
 
 This does not require Rust embedding, library dependencies, or building a proxy from scratch.
 
-### What's Missing from OneCLI for NonZeroClawed's Use Case
+### What's Missing from OneCLI for ZeroClawed's Use Case
 
 OneCLI's current approval workflow (as of 2026-03-30) is:
 - Rate limiting: **available now**
 - Time-bound credentials: **on roadmap, not available**
 - Human approval via chat (Signal/Telegram): **not available, not on roadmap**
 
-OneCLI's blog post explicitly says "approval workflows" (pause + ask human) are "coming next" for high-risk actions — but the implementation will be through their own UI, not via Signal/Telegram. **NonZeroClawed's chat-based approval relay is genuinely novel and not served by OneCLI.**
+OneCLI's blog post explicitly says "approval workflows" (pause + ask human) are "coming next" for high-risk actions — but the implementation will be through their own UI, not via Signal/Telegram. **ZeroClawed's chat-based approval relay is genuinely novel and not served by OneCLI.**
 
 ---
 
@@ -141,7 +141,7 @@ OneCLI's blog post explicitly says "approval workflows" (pause + ask human) are 
 
 **Phase 1**: Use OneCLI as a sidecar for the basic credential injection + rate limiting layer. Quick to integrate, no Rust work needed.
 
-**Phase 2**: NonZeroClawed implements its own approval relay on top — when an agent requests a credential that requires human approval, NonZeroClawed intercepts (either via OneCLI webhook/API or by implementing its own proxy) and sends an approval request to the user via Signal/Telegram. Once approved, credential is released.
+**Phase 2**: ZeroClawed implements its own approval relay on top — when an agent requests a credential that requires human approval, ZeroClawed intercepts (either via OneCLI webhook/API or by implementing its own proxy) and sends an approval request to the user via Signal/Telegram. Once approved, credential is released.
 
 **Phase 3** (if OneCLI sidecar is too heavy): implement the credential injection proxy natively in NZC using Rust, possibly adapting OneCLI's gateway approach. Apache-2.0 license makes this straightforward legally.
 
@@ -155,7 +155,7 @@ The OneCLI blog confirms NanoClaw (25k stars, multi-agent framework) adopted One
 - Agents in the group use a shared access token scoped to that identity
 - Human approval workflows (when they ship) will apply at the identity level
 
-This is directly applicable to NonZeroClawed's multi-claw design.
+This is directly applicable to ZeroClawed's multi-claw design.
 
 ---
 
