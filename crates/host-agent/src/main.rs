@@ -553,24 +553,35 @@ async fn submit_approval(
         .unwrap_or(false);
 
     if is_admin_required {
-        // Check if caller CN matches admin_cn_pattern
-        let admin_pattern = config.approval.admin_cn_pattern.as_deref().unwrap_or("");
-        if !admin_pattern.is_empty() {
-            let pattern_matches = if admin_pattern.ends_with('*') {
-                identity.cn.starts_with(&admin_pattern[..admin_pattern.len()-1])
-            } else {
-                identity.cn == admin_pattern
-            };
+        // P0: fail-closed — if admin_cn_pattern is not configured, deny.
+        // Missing config must NOT silently disable the admin check.
+        match config.approval.admin_cn_pattern.as_deref().filter(|p| !p.is_empty()) {
+            Some(admin_pattern) => {
+                let pattern_matches = if admin_pattern.ends_with('*') {
+                    identity.cn.starts_with(&admin_pattern[..admin_pattern.len()-1])
+                } else {
+                    identity.cn == admin_pattern
+                };
 
-            if !pattern_matches {
+                if !pattern_matches {
+                    warn!(
+                        cn = %identity.cn,
+                        required_pattern = %admin_pattern,
+                        "Approval rejected: caller CN does not match admin_cn_pattern"
+                    );
+                    state.metrics.increment_policy_denials();
+                    return Err(AppError::PolicyDenied(
+                        format!("Approver identity '{}' does not match admin_cn_pattern", identity.cn)
+                    ));
+                }
+            }
+            None => {
                 warn!(
-                    cn = %identity.cn,
-                    required_pattern = %admin_pattern,
-                    "Approval rejected: caller CN does not match admin_cn_pattern"
+                    "P0: approval_admin_only=true but admin_cn_pattern not configured — denying (fail-closed)"
                 );
                 state.metrics.increment_policy_denials();
                 return Err(AppError::PolicyDenied(
-                    format!("Approver identity '{}' does not match admin_cn_pattern", identity.cn)
+                    "approval_admin_only requires admin_cn_pattern to be configured".to_string()
                 ));
             }
         }
