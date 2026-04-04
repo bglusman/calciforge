@@ -109,7 +109,7 @@ After channel assignment, the plan calls for disabling migrated channels in Open
 - Version compatibility check
 - Rollback path
 
-Session 3 (NonZeroClawed adapter installation) owns this. The `ChannelAssignment` data from session 2 is the handoff artifact.
+Session 3 (ZeroClawed adapter installation) owns this. The `ChannelAssignment` data from session 2 is the handoff artifact.
 
 ---
 
@@ -127,7 +127,7 @@ pub struct MigrationWizardResult {
 ```
 
 Specifically:
-- `channel_assignments` where `owner == ChannelOwner::OpenClaw` → these channels should be **disabled** in OpenClaw's config by the NonZeroClawed adapter
+- `channel_assignments` where `owner == ChannelOwner::OpenClaw` → these channels should be **disabled** in OpenClaw's config by the ZeroClawed adapter
 - `install.config_path` → path to OpenClaw config for the adapter to modify (with backup first)
 - `config_migration_confirmed` → if true, apply the mapped fields to NZC config
 

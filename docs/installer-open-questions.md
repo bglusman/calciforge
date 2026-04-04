@@ -1,4 +1,4 @@
-# NonZeroClawed Installer — Open Questions & Scope Not Yet Implemented
+# ZeroClawed Installer — Open Questions & Scope Not Yet Implemented
 
 _Captured 2026-03-30 during session 4 kickoff. These were discovered AFTER the session prompt was written._
 _Session 4 will NOT cover these. They need to be addressed in follow-on sessions after Opus review._
@@ -30,16 +30,16 @@ A truly external claw (someone else's hosted service) might not need SSH. But an
 ### 1. Clash/permissions policy sync
 - The installer should offer to deploy and idempotently synchronize a clash policy to each target
 - Central policy defined once, scoped versions pushed to each claw
-- This is a `nonzeroclawed sync-policy` concern as much as install-time
+- This is a `zeroclawed sync-policy` concern as much as install-time
 - Needs its own design: what does the policy format look like? how are per-claw scopes defined?
 
 ### 2. System user/account provisioning
 - Installer generates a dedicated user account on each remote host
 - SSH keypair generated, stored in vault, deployed to remote `authorized_keys`
-- This is the "secure by default" story: NonZeroClawed never uses root SSH
+- This is the "secure by default" story: ZeroClawed never uses root SSH
 
 ### 3. Service install/management
-- Installing NZC or NonZeroClawed binary on remote hosts
+- Installing NZC or ZeroClawed binary on remote hosts
 - Writing systemd service files
 - Enable/start/restart/stop service as part of install
 - Health check after service restart (different from health check after config change)
@@ -58,8 +58,8 @@ A truly external claw (someone else's hosted service) might not need SSH. But an
 ## Architecture question for Opus review
 
 Session 2 defined `ChannelAssignment` and `OpenClawInstallation` structs in NZC crate.
-Session 4 needs similar structs in the NonZeroClawed crate.
-**Should these be in a shared `nonzeroclawed-common` crate?** Currently they'd be duplicated.
+Session 4 needs similar structs in the ZeroClawed crate.
+**Should these be in a shared `zeroclawed-common` crate?** Currently they'd be duplicated.
 
 ---
 
@@ -69,6 +69,6 @@ Session 4 needs similar structs in the NonZeroClawed crate.
 > "clash-nono/or whatever we landed on as our central permissions system offers to also coordinate and idempotently synchronize custom scoped versions of central permissions across any number of targets"
 > "it does need to SSH in actually to install the permissions layer/users/ssh keys we generate"
 > "all of that is optional but..."
-> "the name is nonzeroclawed so we need to assume many [claws]"
+> "the name is zeroclawed so we need to assume many [claws]"
 > "installer running on one machine while targeting a remote machine, in fact several remote machines"
-> "NZC target, nonzeroclawed target and openclaw target need to be separately configurable endpoints (and separately configured SSH keys/user accounts)"
+> "NZC target, zeroclawed target and openclaw target need to be separately configurable endpoints (and separately configured SSH keys/user accounts)"

@@ -1,7 +1,7 @@
 # Filesystem Transaction Alternatives Survey
 
 _Research date: 2026-03-30_
-_Context: Alternatives to jai for providing "filesystem transaction" semantics in NZC/NonZeroClawed_
+_Context: Alternatives to jai for providing "filesystem transaction" semantics in NZC/ZeroClawed_
 
 ---
 

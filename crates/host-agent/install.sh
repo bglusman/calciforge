@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-host-agent.sh - Install NonZeroClawed Host-Agent on a target system
+# install-host-agent.sh - Install ZeroClawed Host-Agent on a target system
 # Usage: ./install-host-agent.sh [options]
 # 
 # Options:
@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "NonZeroClawed Host-Agent Installer"
+            echo "ZeroClawed Host-Agent Installer"
             echo ""
             echo "Usage: $0 [options]"
             echo ""
@@ -134,7 +134,7 @@ generate_certs() {
     # Generate CA
     openssl genrsa -out ca.key 4096 2>/dev/null
     openssl req -new -x509 -key ca.key -sha256 \
-        -subj '/C=US/O=NonZeroClawed/CN=NonZeroClawed CA' \
+        -subj '/C=US/O=ZeroClawed/CN=ZeroClawed CA' \
         -days 3650 -out ca.crt 2>/dev/null
     
     # Generate server cert
@@ -288,7 +288,7 @@ install_sudoers() {
     if [[ ! -f "$template" ]]; then
         log_warn "Sudoers template not found at $template; writing minimal fallback"
         cat > "$dst" << SUDOERS_EOF
-# NonZeroClawed Host-Agent sudoers — minimal fallback
+# ZeroClawed Host-Agent sudoers — minimal fallback
 ${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/pct-create-wrapper
 ${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/zfs-destroy-wrapper
 ${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/git-safe-wrapper
@@ -325,7 +325,7 @@ create_service() {
     
     cat > /etc/systemd/system/clash-host-agent.service << 'EOF'
 [Unit]
-Description=NonZeroClawed Host-Agent mTLS RPC Server
+Description=ZeroClawed Host-Agent mTLS RPC Server
 After=network.target
 
 [Service]
@@ -393,7 +393,7 @@ test_installation() {
 
 # Main installation
 main() {
-    log_info "NonZeroClawed Host-Agent Installer"
+    log_info "ZeroClawed Host-Agent Installer"
     log_info "=============================="
     
     check_prerequisites

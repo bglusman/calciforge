@@ -1,4 +1,4 @@
-//! NonZeroClawed v2 — Outpost external content scanning module.
+//! ZeroClawed v2 — Outpost external content scanning module.
 //!
 //! Provides injection-resistant scanning of external content before it reaches
 //! the model context. Three-layer defence: structural → semantic → HTTP service.

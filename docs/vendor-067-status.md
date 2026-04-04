@@ -1,7 +1,7 @@
 # Vendor 0.6.7 Status Report
 
 **Date:** 2026-03-31  
-**Executed by:** Subagent (nonzeroclawed vendoring task)  
+**Executed by:** Subagent (zeroclawed vendoring task)  
 **Status:** ✅ Phase 1–5 COMPLETE — `cargo check -p nonzeroclaw` passes with zero errors
 
 ---
@@ -23,7 +23,7 @@
 - Renamed: `name = "zeroclawlabs"` → `name = "nonzeroclaw"`
 - Renamed bin: `name = "zeroclaw"` → `name = "nonzeroclaw"`
 - Renamed lib: `name = "zeroclaw"` → `name = "nonzeroclaw"`
-- Removed `[workspace]` section (we're inside nonzeroclawed workspace)
+- Removed `[workspace]` section (we're inside zeroclawed workspace)
 - Added `outpost = { path = "../outpost" }` and `clash = { path = "../clash" }` path deps
 - Kept `bitwarden-cli` feature from our old Cargo.toml
 - Removed repository URL (repo is dead), added vendoring comment header
@@ -90,7 +90,7 @@ Patches documented in `VENDORING.md`. Not attempted as instructed.
    but nonzeroclaw doesn't yet call into them. Review `src-backup/` for how we previously
    used these crates and restore those call sites.
 
-4. **Explore new 0.6.7 modules** for NonZeroClawed use:
+4. **Explore new 0.6.7 modules** for ZeroClawed use:
    - `trust/` — sender trust scoring (directly useful for Agents of Chaos defenses)
    - `verifiable_intent/` — cryptographic action authorization
    - `sop/` — structured safety procedures
@@ -98,7 +98,7 @@ Patches documented in `VENDORING.md`. Not attempted as instructed.
 
 5. **Run `cargo test -p nonzeroclaw`** to see which integration tests pass/fail
 
-6. **Run full workspace build** `cargo check` to verify outpost/clash/nonzeroclawed still OK
+6. **Run full workspace build** `cargo check` to verify outpost/clash/zeroclawed still OK
 
 ### LOW PRIORITY
 

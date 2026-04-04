@@ -40,7 +40,7 @@ pub trait ApprovalRelay: Send + Sync {
     /// Request operator approval for accessing `key`.
     ///
     /// `context` is a human-readable description of *why* the secret is needed
-    /// (e.g. `"git push: 3 files changed in nonzeroclawed/src/"`).
+    /// (e.g. `"git push: 3 files changed in zeroclawed/src/"`).
     ///
     /// The call blocks until a decision arrives or the relay's internal timeout
     /// fires, at which point it returns `ApprovalDecision::TimedOut`.

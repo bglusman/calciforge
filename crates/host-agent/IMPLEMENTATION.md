@@ -1,7 +1,7 @@
 # SDD Round 2 Implementation Summary
 
 ## Overview
-Completed comprehensive security hardening and NonZeroClaw integration preparation for NonZeroClawed v3 Host-Agent.
+Completed comprehensive security hardening and NonZeroClaw integration preparation for ZeroClawed v3 Host-Agent.
 
 ## Files Modified/Created
 

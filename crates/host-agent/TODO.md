@@ -1,4 +1,4 @@
-# NonZeroClawed Host-Agent — Phase 2 TODO
+# ZeroClawed Host-Agent — Phase 2 TODO
 
 ## Signal Integration
 

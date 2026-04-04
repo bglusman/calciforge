@@ -241,7 +241,7 @@ For Claude Code integration:
 Run the clash integration test suite:
 
 ```bash
-cd /root/projects/nonzeroclawed
+cd /root/projects/zeroclawed
 cargo test -p nonzeroclaw --test clash_integration_tests
 ```
 
