@@ -173,3 +173,31 @@ cargo fmt --all
 ## License
 
 MIT OR Apache-2.0 (see individual crate `Cargo.toml` for details)
+
+---
+
+## Roadmap
+
+These are the features we're actively working on. Contributors are welcome to pick up any **🟢 Ready** item.
+
+### 🟢 Ready for Contributors
+- **OpenAI-compatible provider** — support `OPENAI_API_BASE` style routing
+- **PostgreSQL / SQLite session store** — pluggable persistence for conversation history
+- **Web dashboard** — admin UI for managing agents, channels, and sessions
+- **Prometheus metrics** — full observability (latency, token usage, error rates)
+
+### 📐 Design In Progress
+- **Clash policy engine** — Starlark-based rules for per-agent/per-channel access control, approval gates, tool-level permissions
+- **Model shortcut aliases** — quick model switching on mobile (`/model -` for last model, `/model sonnet` → `anthropic/claude-sonnet-4-6`)
+- **Loom-based concurrency testing** — verify data-race freedom across platform architectures
+
+### 🔮 Future
+- **ACP agent launcher** — spawn Claude Code / Codex / Pi as child agents from the router
+- **Robot Kit integration** — drive + vision + sensor toolkit for physical robotics builds
+- **Self-hosted LLM** — local inference via Ollama, with automatic fallback to cloud models
+
+---
+
+## License
+
+MIT — see `LICENSE`.
