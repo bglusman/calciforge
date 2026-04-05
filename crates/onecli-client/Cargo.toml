@@ -1,0 +1,28 @@
+[package]
+name = "onecli-client"
+version = "0.1.0"
+edition = "2024"
+description = "OneCLI integration client for ZeroClawed - credential proxy and policy enforcement"
+license = "MIT"
+
+[dependencies]
+# Workspace deps
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+
+# Crate-specific
+tower = { version = "0.5", features = ["retry", "util"] }
+tower-http = { version = "0.6", features = ["trace", "timeout"] }
+http = "1"
+url = "2"
+humantime = "2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"

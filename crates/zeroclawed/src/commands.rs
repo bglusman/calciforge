@@ -170,6 +170,8 @@ impl CommandHandler {
             "!switch" => None,
             // !default needs auth — switches back to the configured default agent.
             "!default" => None,
+            // !model shows model shortcuts — no auth needed for list, auth needed for set
+            "!model" => Some(self.cmd_model(trimmed)),
             _ => None, // Unknown !command — fall through to agent
         }
     }
@@ -192,6 +194,13 @@ impl CommandHandler {
         let trimmed = text.trim();
         let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
         cmd == "!switch"
+    }
+
+    /// Returns `true` if the text is a `!model` command (case-insensitive).
+    pub fn is_model_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        cmd == "!model"
     }
 
     /// Returns `true` if the text is a `!default` command (case-insensitive).
@@ -820,10 +829,38 @@ impl CommandHandler {
             "  !ping    — connectivity check (replies: pong)",
             "  !switch <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
+            "  !model [alias] — show model shortcuts or resolve an alias",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
         .join("\n")
+    }
+
+    /// Handle the `!model` command — show shortcuts or resolve an alias.
+    fn cmd_model(&self, text: &str) -> String {
+        // Parse: "!model" or "!model <alias>"
+        let args: Vec<&str> = text.trim().splitn(2, ' ').collect();
+        
+        if args.len() == 1 || args[1].trim().is_empty() {
+            // No alias provided — list all shortcuts
+            if self.config.model_shortcuts.is_empty() {
+                return "No model shortcuts configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string();
+            }
+            
+            let mut lines = vec!["Model shortcuts:".to_string()];
+            for shortcut in &self.config.model_shortcuts {
+                lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
+            }
+            lines.push("\nUsage: !model <alias>".to_string());
+            lines.join("\n")
+        } else {
+            // Resolve the alias
+            let alias = args[1].trim();
+            match self.config.model_shortcuts.iter().find(|s| s.alias == alias) {
+                Some(shortcut) => format!("{} → {}", shortcut.alias, shortcut.model),
+                None => format!("Unknown alias: '{}'\n\nUse !model to see available shortcuts.", alias),
+            }
+        }
     }
 
     /// Fallback status without identity context.
