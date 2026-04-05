@@ -39,6 +39,21 @@ pub struct PolyConfig {
     /// Omit from config to use defaults (buffer_size=20, inject_depth=5).
     #[serde(default)]
     pub context: ContextConfig,
+
+    /// `[model_shortcuts]` — aliases for provider/model combos.
+    /// Use `!model <alias>` to quickly switch models.
+    /// Example: `!model sonnet` expands to `anthropic/claude-sonnet-4.6`
+    #[serde(default)]
+    pub model_shortcuts: Vec<ModelShortcutConfig>,
+}
+
+/// A model shortcut entry (`[[model_shortcuts]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelShortcutConfig {
+    /// Short alias name (e.g. "sonnet", "opus", "fast")
+    pub alias: String,
+    /// Full provider/model string this alias expands to (e.g. "anthropic/claude-sonnet-4.6")
+    pub model: String,
 }
 
 /// `[zeroclawed]` header section.
