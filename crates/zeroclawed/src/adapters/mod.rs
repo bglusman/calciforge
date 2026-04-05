@@ -161,6 +161,17 @@ pub trait AgentAdapter: Send + Sync {
     async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
         None
     }
+
+    /// Set the model for this adapter.
+    ///
+    /// Adapters that support dynamic model selection (e.g. openclaw-http, acpx)
+    /// override this to update their model configuration. Adapters that don't
+    /// support model switching return `false`.
+    ///
+    /// Returns `true` if the model was successfully updated.
+    fn set_model(&mut self, _model: &str) -> bool {
+        false // Default: model switching not supported
+    }
 }
 
 // ---------------------------------------------------------------------------

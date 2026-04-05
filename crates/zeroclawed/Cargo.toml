@@ -14,6 +14,9 @@ channel-matrix = ["dep:matrix-sdk"]
 
 [dependencies]
 axum = "0.7"
+
+# OneCLI client integration
+onecli-client = { path = "../onecli-client" }
 # Async runtime
 tokio = { version = "1", features = ["full", "net"] }
 
@@ -72,3 +75,4 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust" }
 tempfile = "3"
+loom = { version = "0.7", features = ["checkpoint"] }
