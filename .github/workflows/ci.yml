@@ -53,7 +53,7 @@ jobs:
           - nonzeroclaw
           - outpost
           - clash
-          - robot-kit
+          - zeroclaw-robot-kit
     steps:
       - uses: actions/checkout@v4
 
@@ -104,29 +104,30 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Loom concurrency testing (for zeroclawed)
+  # TODO: Re-enable when loom.rs test file is added
   # ─────────────────────────────────────────────────────────────────────────────
-  loom:
-    name: Loom Concurrency Tests
-    runs-on: ubuntu-latest
-    env:
-      LOOM_MAX_PREEMPTIONS: 2
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-loom-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run Loom tests
-        run: RUSTFLAGS="--cfg loom" cargo test --test loom -p zeroclawed
+  # loom:
+  #   name: Loom Concurrency Tests
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     LOOM_MAX_PREEMPTIONS: 2
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install Rust toolchain
+  #       uses: dtolnay/rust-toolchain@stable
+  #
+  #     - name: Cache Cargo registry
+  #       uses: actions/cache@v4
+  #       with:
+  #         path: |
+  #           ~/.cargo/registry
+  #           ~/.cargo/git
+  #           target
+  #         key: ${{ runner.os }}-cargo-loom-${{ hashFiles('**/Cargo.lock') }}
+  #
+  #     - name: Run Loom tests
+  #       run: RUSTFLAGS="--cfg loom" cargo test --test loom -p zeroclawed
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Cross-compilation for ARM64
