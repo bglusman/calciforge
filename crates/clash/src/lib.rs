@@ -339,17 +339,16 @@ def evaluate(action, identity, agent, command="", path=""):
         }
     }
 
-    /// Non-protected paths for Lucien now return Allow (not Review).
-    /// The new model only blocks the 5 specific PROTECTED_FILES.
+    /// Workspace paths for Lucien require review per profile policy.
     #[test]
-    fn lucien_non_protected_file_write_is_allow() {
+    fn lucien_workspace_file_write_requires_review() {
         let policy = load_example_policy();
         let ctx = PolicyContext::new("lucien", "nzc", "tool:file_write")
             .with_path("/etc/nonzeroclaw/workspace/notes.md");
         let verdict = policy.evaluate("tool:file_write", &ctx);
         assert!(
-            matches!(verdict, PolicyVerdict::Allow),
-            "Expected Allow for lucien writing to non-protected path, got non-Allow"
+            matches!(verdict, PolicyVerdict::Review(_)),
+            "Expected Review for lucien writing to workspace path, got non-Review"
         );
     }
 
