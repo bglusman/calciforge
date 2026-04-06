@@ -475,13 +475,10 @@ fn test_path_traversal_no_suffix_match() {
     assert_not_allow(&verdict, traversal_path);
 }
 
-/// T3.3 — Adjacent filename (.bak extension) bypasses suffix match.
-/// This is a low-risk gap since .bak files don't affect policy execution directly.
+/// T3.3 — Adjacent filename (.bak extension) in workspace requires review.
+/// Workspace paths require review per lucien.star profile.
 #[test]
-fn test_adjacent_filename_bak_is_not_protected() {
-    // DOCUMENTED BEHAVIOR: policy.star.bak is NOT protected.
-    // This is acceptable — .bak files don't affect policy execution.
-    // Document: if a deploy script uses .bak, this could become a risk.
+fn test_adjacent_filename_bak_requires_review() {
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
@@ -490,10 +487,10 @@ fn test_adjacent_filename_bak_is_not_protected() {
             "/etc/nonzeroclaw/workspace/.clash/policy.star.bak",
         ),
     );
-    // This ALLOWS — document that it's intentionally not blocked.
+    // Workspace paths require review (profile policy)
     assert!(
-        matches!(verdict, PolicyVerdict::Allow),
-        "policy.star.bak should be allowed (intentional — not protected)"
+        matches!(verdict, PolicyVerdict::Review(_)),
+        "policy.star.bak in workspace should require review"
     );
 }
 

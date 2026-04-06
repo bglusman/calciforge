@@ -665,15 +665,16 @@ fn profile_lucien_non_protected_file_is_allowed() {
 }
 
 #[test]
-fn profile_lucien_workspace_memory_allowed() {
+fn profile_lucien_workspace_memory_requires_review() {
+    // /etc/nonzeroclaw/workspace/ paths require review per lucien.star profile
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/MEMORY.md"),
     );
-    assert_allow(
+    assert_review(
         verdict,
-        "lucien + write to MEMORY.md → allow (not protected)",
+        "lucien + write to MEMORY.md → review (workspace path)",
     );
 }
 
@@ -852,17 +853,16 @@ fn file_write_lucien_tmp_is_allowed() {
 }
 
 #[test]
-fn file_write_lucien_workspace_config_toml_is_allowed() {
-    // /etc/nonzeroclaw/workspace/config.toml is NOT in PROTECTED_FILES.
-    // (The protected one is /etc/nonzeroclaw/config.toml without /workspace/)
+fn file_write_lucien_workspace_config_toml_requires_review() {
+    // /etc/nonzeroclaw/workspace/ paths require review per lucien.star profile
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/config.toml"),
     );
-    assert_allow(
+    assert_review(
         verdict,
-        "lucien writing to /etc/nonzeroclaw/workspace/config.toml → allow (not protected)",
+        "lucien writing to /etc/nonzeroclaw/workspace/config.toml → review (workspace path)",
     );
 }
 
@@ -893,15 +893,16 @@ fn file_write_lucien_opt_is_allowed() {
 }
 
 #[test]
-fn file_write_lucien_workspace_memory_is_allowed() {
+fn file_write_lucien_workspace_memory_requires_review() {
+    // /etc/nonzeroclaw/workspace/ paths require review per lucien.star profile
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/MEMORY.md"),
     );
-    assert_allow(
+    assert_review(
         verdict,
-        "lucien writing to /etc/nonzeroclaw/workspace/MEMORY.md → allow (not protected)",
+        "lucien writing to /etc/nonzeroclaw/workspace/MEMORY.md → review (workspace path)",
     );
 }
 
