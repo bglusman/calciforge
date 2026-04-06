@@ -3,10 +3,7 @@
 members = [
     "crates/zeroclawed",
     "crates/outpost",
-    "crates/clash",
-    "crates/robot-kit",
     "crates/host-agent",
-    "crates/aardvark-sys",
     "crates/onecli-client",
 ]
 
@@ -15,6 +12,7 @@ resolver = "2"
 [workspace.dependencies]
 # External agent dependencies
 zeroclawlabs = "0.6.7"
+clash = "0.5.1"
 claw-code = { git = "https://github.com/instructkr/claw-code" }
 
 # Async runtime
@@ -52,7 +50,6 @@ uuid = { version = "1", features = ["v4", "std"] }
 
 # Shared workspace crates
 outpost = { path = "crates/outpost" }
-clash   = { path = "crates/clash" }
 
 [profile.release]
 opt-level = "z"
