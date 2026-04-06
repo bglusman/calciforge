@@ -647,10 +647,10 @@ async fn save_tui_config(app: &App) -> Result<()> {
 
     // Model
     let model = app.selected_model();
-    if model != "Auto (recommended)" {
-        config.default_model = Some(model.to_string());
-    } else {
+    if model == "Auto (recommended)" {
         config.default_model = None; // Let provider pick default
+    } else {
+        config.default_model = Some(model.to_string());
     }
 
     // Web search provider
@@ -755,7 +755,7 @@ async fn find_docker_container() -> Option<String> {
         .unwrap_or("")
         .trim()
         .to_string();
-    if !name.is_empty() { Some(name) } else { None }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 // ── Main loop ───────────────────────────────────────────────────────
@@ -820,11 +820,11 @@ fn handle_input(app: &mut App, key: KeyCode) {
         },
 
         Screen::SecurityWarning => match key {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 app.security_accepted = true;
                 app.screen = Screen::SetupMode;
             }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 app.should_quit = true;
             }
             _ => {}

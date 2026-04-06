@@ -891,7 +891,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         pending_pairings,
         path_prefix: path_prefix.unwrap_or("").to_string(),
         canvas_store,
-        policy: policy,
+        policy,
         #[cfg(feature = "webauthn")]
         webauthn: if config.security.webauthn.enabled {
             let secret_store = Arc::new(crate::security::SecretStore::new(

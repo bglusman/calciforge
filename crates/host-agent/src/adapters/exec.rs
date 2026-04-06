@@ -181,7 +181,7 @@ impl Adapter for ExecAdapter {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::adapters::HostOp;
 
     #[test]

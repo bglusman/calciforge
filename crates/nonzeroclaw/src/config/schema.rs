@@ -7931,7 +7931,7 @@ impl ChannelConfig for BlueskyConfig {
 /// max_tokens = 4096
 /// conversation_ttl_hours = 24
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ClaudeApiConfig {
     /// Enable the Claude API channel.
     #[serde(default)]
@@ -7956,20 +7956,6 @@ pub struct ClaudeApiConfig {
     pub webhook_secret: Option<String>,
 }
 
-impl Default for ClaudeApiConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: String::new(),
-            model: String::new(),
-            max_tokens: 0,
-            conversation_ttl_hours: 0,
-            system_prompt: None,
-            webhook_secret: None,
-        }
-    }
-}
-
 /// Claude Code ACP (Agent Communication Protocol) channel configuration.
 ///
 /// Spawns the `claude` CLI subprocess to handle coding tasks via the
@@ -7983,7 +7969,7 @@ impl Default for ClaudeApiConfig {
 /// workspace_dir = "/home/user/workspace"
 /// permission_mode = "bypassPermissions"
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ClaudeAcpConfig {
     /// Enable the Claude Code ACP channel.
     #[serde(default)]
@@ -8003,19 +7989,6 @@ pub struct ClaudeAcpConfig {
     /// Extra CLI arguments passed to `claude`.
     #[serde(default)]
     pub extra_args: Vec<String>,
-}
-
-impl Default for ClaudeAcpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            claude_path: String::new(),
-            workspace_dir: String::new(),
-            permission_mode: String::new(),
-            timeout_secs: 0,
-            extra_args: Vec::new(),
-        }
-    }
 }
 
 /// Voice wake word detection channel configuration.

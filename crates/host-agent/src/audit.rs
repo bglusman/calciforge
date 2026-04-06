@@ -79,7 +79,6 @@ impl AuditLogger {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
-            
             .open(&current_file_path)
             .with_context(|| format!("Failed to open audit log: {:?}", current_file_path))?;
 
@@ -150,7 +149,6 @@ impl AuditLogger {
             let new_file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                
                 .open(&new_path)
                 .with_context(|| format!("Failed to open new audit log: {:?}", new_path))?;
 
@@ -248,7 +246,6 @@ impl AuditLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_rotated_path() {

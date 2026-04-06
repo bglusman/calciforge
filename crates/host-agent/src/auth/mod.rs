@@ -4,10 +4,7 @@ mod adapter;
 mod identity;
 
 pub use adapter::AgentRegistry;
-pub use identity::{
-    build_identity, cert_fingerprint, is_cert_revoked,
-    ClientIdentity,
-};
+pub use identity::{build_identity, cert_fingerprint, is_cert_revoked, ClientIdentity};
 
 use axum::body::Body;
 use axum::extract::{Request, State};

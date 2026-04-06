@@ -170,13 +170,14 @@ fn detect_all_all_all(line: &str) -> Option<String> {
     // Look for the triple-ALL pattern (excluding NOPASSWD variants which are caught above)
     if (upper.contains("ALL=(ALL") && upper.ends_with(") ALL")
         || (upper.contains("ALL=(ALL)") && upper.ends_with("ALL")))
-        && !upper.contains("NOPASSWD") {
-            return Some(
-                "ALL=(ALL) ALL grants unrestricted sudo with a password prompt; \
+        && !upper.contains("NOPASSWD")
+    {
+        return Some(
+            "ALL=(ALL) ALL grants unrestricted sudo with a password prompt; \
                  consider scoping to specific wrapper paths"
-                    .to_string(),
-            );
-        }
+                .to_string(),
+        );
+    }
     None
 }
 

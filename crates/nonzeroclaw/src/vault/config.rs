@@ -12,18 +12,14 @@ use std::collections::HashMap;
 /// Which vault backend to use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum VaultBackend {
     /// Disabled — vault calls return `VaultError::NotConfigured`.
+    #[default]
     None,
     /// Use the `bw` CLI subprocess to talk to Bitwarden / Vaultwarden.
     #[serde(rename = "bitwarden-cli")]
     BitwardenCli,
-}
-
-impl Default for VaultBackend {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 // ── SecretPolicyConfig ───────────────────────────────────────────────────────
