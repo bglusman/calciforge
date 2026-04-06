@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 description = "OneCLI integration client for ZeroClawed - credential proxy and policy enforcement"
 license = "MIT"
+default-run = "onecli"
+
+[[bin]]
+name = "onecli"
+path = "src/main.rs"
+
+[lib]
+name = "onecli_client"
+path = "src/lib.rs"
 
 [dependencies]
 # Workspace deps
@@ -13,15 +22,19 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
 
 # Crate-specific
+axum = "0.7"
 tower = { version = "0.5", features = ["retry", "util"] }
 tower-http = { version = "0.6", features = ["trace", "timeout"] }
 http = "1"
 url = "2"
 humantime = "2"
+humantime-serde = "1"
+toml = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"

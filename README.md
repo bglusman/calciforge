@@ -1,194 +1,186 @@
-# ZeroClawed
+# 🐾 ZeroClawed
 
-A unified Cargo workspace containing the ZeroClawed router and NonZeroClaw native agent, plus their shared crates.
-
----
-
-## Crates
-
-| Crate | Binary | Description |
-|-------|--------|-------------|
-| `crates/zeroclawed` | `zeroclawed` | **ZeroClawed** — channel-agnostic router. Owns all inbound channels (Telegram, Matrix, Signal, etc.), enforces auth/allow-lists, and routes messages to downstream agents via outpost-scanned HTTP. |
-| `crates/nonzeroclaw` | `nonzeroclaw` | **NonZeroClaw** — opinionated first-party OpenAI-compatible HTTP agent. ZeroClaw fork with outpost scanning, clash policy stubs, web dashboard, Prometheus metrics, and optional hardware/robotics support. |
-| `crates/outpost` | *(library)* | **Outpost** — shared content-scanning crate. Detects prompt injection, PII leakage, and unsafe content in external data before it reaches the model context. Used by both zeroclawed and nonzeroclaw. |
-| `crates/clash` | *(library)* | **Clash** — policy trait contracts and no-op implementation stubs. Provides the `PolicyEngine` interface for future conflict-resolution / approval-gate features. |
-| `crates/robot-kit` | *(library)* | **ZeroClaw Robot Kit** — optional robotics toolkit (drive, vision, speech, sensors, safety monitor). Raspberry Pi / ROS2 target. |
+> *The Claw without the scratch.*
+> 
+> A secure, channel-agnostic agent gateway — declawed for safety, but still sharp where it counts.
 
 ---
 
-## Architecture
+## 🤔 What is this?
 
-```
-[Telegram] ──┐
-[Matrix]   ──┤──▶ [ZeroClawed boundary] ──▶ [Auth gate] ──▶ [Router] ──▶ [NonZeroClaw]
-[Signal]   ──┘          │                                                     │
-                    [Outpost]                                             [Outpost]
-                  (injection scan)                                      (response scan)
-```
+**ZeroClawed** is an agent gateway that lets you chat with AI from **any** channel (Telegram, WhatsApp, Signal, Matrix) while keeping your credentials locked away and your tools sandboxed.
 
-- **ZeroClawed** is the sole owner of every inbound channel. No agent connects directly to a channel.
-- **Outpost** scans content at both ingress (ZeroClawed) and egress (NonZeroClaw) to catch injection and leakage.
-- **Clash** provides a policy layer (currently no-op stubs) for future approval gates and conflict resolution.
+Think of it as a universal remote for AI agents — but one that won't accidentally delete your hard drive because it routes everything through a policy engine first.
+
+### Why "ZeroClawed"?
+
+Because it wraps [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) with safety features.
+
+- ✅ Wraps the ZeroClaw agent for safety
+- ✅ Adds multi-channel support (Telegram, WhatsApp, Signal, Matrix)
+- ✅ Routes through credential proxy + policy enforcement
+- ❌ Won't run `rm -rf /` because you typo'd "please"
 
 ---
 
-## Quick Start
-
-### Prerequisites
-
-- Rust 1.87+ (`rustup update stable`)
-- SSH access to the deploy target (for remote install)
-
-### Build
+## 🚀 Quick Start
 
 ```bash
-# Check (fast, no codegen):
-cargo check
+# Clone it
+git clone https://github.com/bglusman/zeroclawed
+cd zeroclawed
 
-# Debug build:
-cargo build
+# Build the router
+cargo build --release -p zeroclawed
 
-# Optimized release build (both binaries):
-cargo build --release -p zeroclawed -p nonzeroclaw
+# Build the credential proxy (optional but recommended)
+cargo build --release -p onecli-client
 
-# Release binaries land in:
-#   target/release/zeroclawed
-#   target/release/nonzeroclaw
+# Deploy to your server
+./infra/deploy-210.sh --with-zeroclaw --with-claw-code
 ```
 
-### Configuration
+---
 
-**ZeroClawed** — config at `~/.zeroclawed/config.toml`:
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      ZeroClawed Router                      │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────────┐  │
+│  │Telegram │ │WhatsApp │ │ Signal  │ │ Matrix          │  │
+│  └────┬────┘ └────┬────┘ └────┬────┘ └────────┬────────┘  │
+│       └─────────────┴───────────┴────────────────┘          │
+│                         │                                   │
+│              ┌──────────▼──────────┐                        │
+│              │   Message Router    │                        │
+│              └──────────┬──────────┘                        │
+│                         │                                   │
+│       ┌─────────────────┼─────────────────┐                 │
+│       │                 │                 │                 │
+│  ┌────▼────┐      ┌─────▼─────┐    ┌────▼────┐             │
+│  │claw-code│      │zeroclawlabs│   │ Any CLI │             │
+│  │(Claude) │      │(Kimi/Gemini)│   │  agent  │             │
+│  └────┬────┘      └─────┬─────┘    └────┬────┘             │
+│       │                 │                 │                 │
+│       └──────────┬──────┴─────────────────┘                 │
+│                  │                                          │
+│         ┌────────▼────────┐                                 │
+│         │   OneCLI Proxy  │  ← Credentials live here       │
+│         └────────┬────────┘                                 │
+│                  │                                          │
+│         ┌────────▼────────┐                                 │
+│         │  Clash Policy   │  ← Sandboxing happens here     │
+│         └─────────────────┘                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔐 Security First
+
+| Feature | What it does |
+|---------|--------------|
+| **OneCLI** | Keeps API keys in VaultWarden, not in agent configs |
+| **Clash** | Enforces policy on every tool call — no surprise `curl` to shady domains |
+| **Identity-aware** | Different users get different agents, different permissions |
+| **Unified identity** | Same conversation context across Telegram/WhatsApp/Signal/Matrix |
+| **No secrets in repo** | Deploy scripts live in `infra/` (gitignored) |
+
+---
+
+## 🎛️ Configuration
 
 ```toml
-version = 2
+# /etc/zeroclawed/config.toml
 
-[[identity]]
+[[identities]]
 id = "brian"
-telegram_id = 12345678
+aliases = [
+  { channel = "telegram", id = "123456789" },
+  { channel = "whatsapp", id = "+12155551234" },
+]
+role = "owner"
 
-[[agent]]
-id = "librarian"
-url = "http://127.0.0.1:3000"
-model = "anthropic/claude-sonnet-4-5"
+[[agents]]
+id = "claw-code"
+kind = "cli"
+command = "/usr/local/bin/claw-wrapped"
+timeout_ms = 120000
 
-[[channel.telegram]]
-token = "BOT_TOKEN_HERE"
-allow_list = ["brian"]
+[[agents]]
+id = "zeroclawlabs"
+kind = "cli"  
+command = "/usr/local/bin/zeroclaw-wrapped"
+timeout_ms = 90000
+
+[[routing]]
+identity = "brian"
+default_agent = "claw-code"
+allowed_agents = ["claw-code", "zeroclawlabs", "librarian"]
+
+[[channels]]
+kind = "telegram"
+bot_token_file = "/etc/zeroclawed/secrets/telegram-token"
+enabled = true
 ```
-
-**NonZeroClaw** — config at `~/.nonzeroclaw/config.toml` (run `nonzeroclaw config init` to scaffold).
-
-### Deploy
-
-```bash
-# Build release binaries:
-cargo build --release -p zeroclawed -p nonzeroclaw
-
-# Deploy to a remote host:
-scp target/release/zeroclawed user@host:/usr/local/bin/zeroclawed
-ssh user@host "systemctl restart zeroclawed"
-```
-
-### Agent Adapters
-
-ZeroClawed routes messages to agents via pluggable adapters:
-
-| Adapter | Description | Example agents |
-|---------|-------------|----------------|
-| `openclaw-http` | OpenAI-compatible HTTP endpoint | NonZeroClaw, OpenClaw proxy, any LLM API |
-| `acpx` | Agent Client Protocol via acpx CLI | Claude Code, OpenCode, Kilo, Gemini |
-| `cli` | Shell command with `{message}` substitution | Any CLI agent |
-| `openclaw-native` | OpenClaw hooks with `deliver:true` | OpenClaw agents (Telegram only) |
-| `openclaw-channel` | Bidirectional OpenClaw plugin (experimental) | OpenClaw agents |
 
 ---
 
-## Development
+## 🧪 Development
 
 ```bash
-# Lint
-cargo clippy --all-targets
-
-# Test
+# Run tests
 cargo test
 
-# Format
-cargo fmt --all
+# Run specific crate tests
+cargo test -p zeroclawed
+cargo test -p onecli-client
+
+# Check formatting
+cargo fmt --all -- --check
+
+# Run clippy
+cargo clippy --all-targets
 ```
 
 ---
 
-## Origins
+## 📦 Components
 
-- **ZeroClawed** is a from-scratch rewrite in Rust (originally prototyped in Zig).
-- **NonZeroClaw** is a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), extended with ZeroClawed-specific features.
-- **Outpost** was originally developed as part of ZeroClawed and is now the shared scanning crate for the whole ecosystem.
-
----
-
-## Roadmap
-
-This is the single source of truth for what we're working on. The internal workboard drives
-prioritization from these issues. Contributors: feel free to pick up **[Ready]** items; leave a
-comment so others don't duplicate work. **[Design]** items may need maintainer coordination.
-
-### Security
-
-- **[Done] CVE-2026-33579 — clash policy fail-closed by default.**
-  Starlark evaluation errors now return `Deny` instead of `Allow`, configurable via `ErrorBehaviour`.
-  Host-agent fails closed when `approval_admin_only=true` but `admin_cn_pattern` is not configured.
-  See `docs/security-audit-cve-2026-33579.md`.
-
-### Testing
-
-- **[Ready] Loom concurrency testing** — Add `#[cfg(loom)]` tests for data-race and memory-ordering bugs
-  that pass on x86 TSO but fail on ARM. CI: `RUSTFLAGS="--cfg loom" cargo test`.
-- **[Ready] QEMU cross-architecture testing** — Run tests under `qemu-aarch64` user-mode from x86 CI
-  to catch ARM-specific bugs without physical hardware.
-
-### CLI
-
-- **[Ready] Model shortcut aliases** — Quick model switching for mobile.
-  Config aliases (`sonnet` → `anthropic/claude-sonnet-4-6`), history navigation (`/model -`
-  for last model, `/model -2` for previous), toggle between favorites with just `/model`.
-- **[Ready] OpenAI-compatible provider** — Support `OPENAI_API_BASE` style routing
-  so users can point at any OpenAI-compatible endpoint (local Ollama, LMStudio, etc.).
-
-### Infrastructure
-
-- **[Ready] PostgreSQL / SQLite session store** — Pluggable persistence for conversation history.
-- **[Ready] Prometheus metrics** — Full observability: latency, token usage, error rates
-  per provider, model, and identity.
-
-### Agent
-
-- **[Design] ACP agent launcher** — Spawn Claude Code / Codex / Pi as child agents from NZC.
-  Needs `acpx` crate fix (Send/Sync trait bounds).
-- **[Design] Clash policy engine v2** — Starlark profiles with per-identity policies.
-  Core trait is wired; identity-based profile chain is in progress.
-- **[Design] Web dashboard** — Admin UI for managing agents, channels, sessions, and policies.
-
-### Channels
-
-- **[Ready] WhatsApp connector** — Full WhatsApp channel support alongside Telegram and Signal.
-
-### RobotKit
-
-- **[Ready] Robot Kit integration** — Drive, vision, sensor toolkit for physical robotics.
-  Raspberry Pi / ROS2 target. Crate scaffold exists, needs hardware integration.
-
-### Future
-
-- **[Future] Self-hosted LLM** — Local inference with automatic fallback to cloud models.
-- **[Future] Outpost v2** — Multi-layer injection scanning (pattern + semantic + vision
-  model) for safer agent-to-agent routing.
-- **[Future] Multi-agent orchestration** — Agent-to-agent communication via outpost HTTP.
-- **[Future] Edge deployment** — Single binary bundling router + agent for Raspberry Pi /
-  container edge nodes without cloud dependency.
+| Crate | Purpose |
+|-------|---------|
+| `zeroclawed` | The main router/gateway binary |
+| `onecli-client` | Credential proxy service |
+| `host-agent` | System management agent (ZFS, systemd, Proxmox) |
+| `outpost` | Content scanning & injection detection |
 
 ---
 
-## License
+## 🤝 Related Projects
 
-MIT OR Apache-2.0 (see individual crate `Cargo.toml` for details)
+- **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** — The upstream agent framework
+- **[claw-code](https://github.com/instructkr/claw-code)** — Claude Code integration
+- **[clash](https://crates.io/crates/clash)** — Policy enforcement engine
+
+---
+
+## 📝 License
+
+MIT — See [LICENSE](LICENSE)
+
+---
+
+## 🙏 Acknowledgments
+
+Built with:
+- ☕ Too much coffee
+- 🦀 Rust's borrow checker (our enemy and our friend)
+- 🤖 A healthy fear of un-sandboxed AI agents
+
+> *"The best code is code that doesn't accidentally delete your home directory."*
+> — Ancient Proverb
+
+---
+
+**ZeroClawed** — *Chat safely. Route wisely. Keep your claws retracted.* 🐾
