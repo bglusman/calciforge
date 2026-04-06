@@ -132,7 +132,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   # Cross-compilation for ARM64
   # TODO: Re-enable when cross-compilation issues are resolved
-  # Currently failing due to dependency/system library issues
+  # Fails at "Cross compile for ARM64" step - likely missing ARM system libs
+  # or linking issues with native dependencies (openssl, ring, etc.)
+  # Needs investigation of cross build error logs
   # ─────────────────────────────────────────────────────────────────────────────
   # cross-compile-arm:
   #   name: Cross Compile (ARM64)
