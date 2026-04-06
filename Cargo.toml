@@ -2,16 +2,21 @@
 
 members = [
     "crates/zeroclawed",
-    "crates/nonzeroclaw",
     "crates/outpost",
     "crates/clash",
     "crates/robot-kit",
     "crates/host-agent",
     "crates/aardvark-sys",
+    "crates/onecli-client",
 ]
+
 resolver = "2"
 
 [workspace.dependencies]
+# External agent dependencies
+zeroclaw = { git = "https://github.com/zeroclaw-labs/zeroclaw" }
+claw-code = { git = "https://github.com/instructkr/claw-code" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
