@@ -5,3 +5,4 @@ vendor/
 mutants.out/
 mutants.out.old/
 src-backup/
+infra/
