@@ -94,12 +94,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binaries
-        run: cargo build --release -p zeroclawed -p nonzeroclaw
+        run: cargo build --release -p zeroclawed -p onecli-client
 
       - name: Check binary sizes
         run: |
           ls -lh target/release/zeroclawed
-          ls -lh target/release/nonzeroclaw
+          ls -lh target/release/onecli
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Loom concurrency testing (for zeroclawed)
