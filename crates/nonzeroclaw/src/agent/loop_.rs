@@ -2331,7 +2331,7 @@ pub async fn process_message_with_history_and_policy(
 
     // Build system prompt
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
-    let mut tool_descs: Vec<(&str, &str)> = vec![
+    let tool_descs: Vec<(&str, &str)> = vec![
         ("shell", "Execute terminal commands."),
         ("file_read", "Read file contents."),
         ("file_write", "Write file contents."),
@@ -2343,7 +2343,7 @@ pub async fn process_message_with_history_and_policy(
     };
 
     let native_tools = false;
-    let mut system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
+    let system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
         &config.workspace_dir,
         &model_name,
         &tool_descs,
@@ -2371,7 +2371,7 @@ pub async fn process_message_with_history_and_policy(
     history.push(crate::providers::ChatMessage::user(&enriched_message));
 
     // Convert to provider ChatMessage vector
-    let mut provider_history: Vec<crate::providers::ChatMessage> = history.clone();
+    let provider_history: Vec<crate::providers::ChatMessage> = history.clone();
 
     // Call agent_turn_with_policy (shim) — note we ignore policy enforcement here.
     let mut provider_chat_history: Vec<crate::providers::ChatMessage> = provider_history;

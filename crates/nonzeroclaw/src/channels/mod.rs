@@ -1921,7 +1921,7 @@ async fn handle_runtime_command_if_needed(
                                         .in_thread(msg.thread_ts.clone()),
                                     )
                                     .await
-                                    .map(|_| true)
+                                    .map(|()| true)
                                     .unwrap_or(true);
                         }
                     }

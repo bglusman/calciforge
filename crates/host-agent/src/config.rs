@@ -194,7 +194,6 @@ pub enum AutonomyLevel {
     Full,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
     pub operation: String,

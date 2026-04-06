@@ -126,9 +126,10 @@ impl std::fmt::Debug for SessionToken {
 ///
 /// Controls when (and if) a human operator must approve before the vault
 /// releases a secret to the agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SecretPolicy {
     /// Inject silently — no human approval required.
+    #[default]
     Auto,
 
     /// Require explicit approval on every access.
@@ -139,10 +140,4 @@ pub enum SecretPolicy {
 
     /// Approve once; the decision is valid for `ttl` duration.
     TimeBound { ttl: Duration },
-}
-
-impl Default for SecretPolicy {
-    fn default() -> Self {
-        Self::Auto
-    }
 }

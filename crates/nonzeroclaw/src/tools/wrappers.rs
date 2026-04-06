@@ -117,7 +117,7 @@ impl<T: Tool> PathGuardedTool<T> {
         self
     }
 
-    fn extract_path_string<'a>(&self, args: &'a serde_json::Value) -> Option<String> {
+    fn extract_path_string(&self, args: &serde_json::Value) -> Option<String> {
         if let Some(ref f) = self.extractor {
             return f(args);
         }
