@@ -48,8 +48,11 @@ async fn main() -> anyhow::Result<()> {
     
     let app = Router::new()
         .route("/health", get(health_handler))
+        // Proxy routes - must capture provider and the rest separately
         .route("/proxy/:provider", any(proxy_handler))
+        .route("/proxy/:provider/*rest", any(proxy_handler))
         .route("/proxy-url", any(generic_proxy_handler))
+        // Vault endpoint - use sparingly, only when proxy can't handle it
         .route("/vault/:secret", get(vault_handler))
         .route("/policy/check", post(policy_check_handler))
         .with_state(state);
@@ -88,16 +91,119 @@ fn get_provider_url(provider: &str) -> Option<&'static str> {
 
 async fn proxy_handler(
     State(state): State<AppState>,
-    axum::extract::Path(provider): axum::extract::Path<String>,
+    axum::extract::Path(params): axum::extract::Path<ProxyParams>,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Result<Response, StatusCode> {
-    debug!(provider = %provider, "Proxying request");
+    let provider = params.provider;
+    let rest_path = params.rest.unwrap_or_default();
+    
+    debug!(provider = %provider, rest = %rest_path, "Proxying request");
     
     let target_url = get_provider_url(&provider)
         .ok_or(StatusCode::BAD_REQUEST)?;
     
-    proxy_to_target(state, target_url, &provider, headers, request).await
+    // Build full target path
+    let query = request.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let full_path = format!("/{}{}", rest_path, query);
+    
+    info!("Proxy: {} /proxy/{}/{} -> {}{}", request.method(), provider, rest_path, target_url, full_path);
+    
+    proxy_with_path(state, target_url, &provider, &full_path, headers, request).await
+}
+
+#[derive(Deserialize)]
+struct ProxyParams {
+    provider: String,
+    rest: Option<String>,
+}
+
+async fn proxy_with_path(
+    state: AppState,
+    target_url: &str,
+    secret_name: &str,
+    target_path: &str,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Result<Response, StatusCode> {
+    let mut forwarded_req = state.http_client.request(
+        request.method().clone(),
+        format!("{}{}", target_url, target_path)
+    );
+    
+    // Forward headers (except host and x-onecli-*)
+    for (key, value) in headers.iter() {
+        let key_str = key.as_str().to_lowercase();
+        if key_str != "host" && !key_str.starts_with("x-onecli-") {
+            forwarded_req = forwarded_req.header(key, value);
+        }
+    }
+    
+    // Try to inject credentials from vault
+    let mut cred_injected = false;
+    match vault::get_secret(secret_name).await {
+        Ok(token) => {
+            debug!("Injected credentials for {}", secret_name);
+            // Use provider-specific auth header
+            if secret_name == "brave" || secret_name == "Brave" {
+                forwarded_req = forwarded_req.header("X-Subscription-Token", token);
+            } else {
+                forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+            }
+            cred_injected = true;
+        }
+        Err(_) => {
+            // Try common variations
+            let variations = vec![
+                secret_name.to_lowercase(),
+                secret_name.to_uppercase(),
+                format!("{} API", secret_name),
+                format!("{} API Key", secret_name),
+            ];
+            for var in variations {
+                if let Ok(token) = vault::get_secret(&var).await {
+                    debug!("Injected credentials for {} (matched as {})", secret_name, var);
+                    if var.to_lowercase().contains("brave") {
+                        forwarded_req = forwarded_req.header("X-Subscription-Token", token);
+                    } else {
+                        forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+                    }
+                    cred_injected = true;
+                    break;
+                }
+            }
+        }
+    }
+    
+    if !cred_injected {
+        warn!("No credentials found for {}", secret_name);
+    }
+    
+    // Add body if present
+    let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !body_bytes.is_empty() {
+        forwarded_req = forwarded_req.body(body_bytes);
+    }
+    
+    match forwarded_req.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = response.bytes().await.unwrap_or_default();
+            
+            let mut builder = Response::builder().status(status);
+            for (key, value) in headers.iter() {
+                builder = builder.header(key, value);
+            }
+            Ok(builder.body(Body::from(body)).unwrap())
+        }
+        Err(e) => {
+            error!("Proxy error: {}", e);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -131,81 +237,12 @@ async fn generic_proxy_handler(
             .to_string()
     });
     
-    proxy_to_target(state, &query.target, &secret_name, headers, request).await
-}
-
-async fn proxy_to_target(
-    state: AppState,
-    target_url: &str,
-    secret_name: &str,
-    headers: HeaderMap,
-    request: Request<Body>,
-) -> Result<Response, StatusCode> {
+    // Build full path with query string
     let target_path = request.uri().path();
     let target_query = request.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let full_path = format!("{}{}", target_path, target_query);
     
-    let mut forwarded_req = state.http_client.request(
-        request.method().clone(),
-        format!("{}{}{}", target_url, target_path, target_query)
-    );
-    
-    // Forward headers (except host and x-onecli-*)
-    for (key, value) in headers.iter() {
-        let key_str = key.as_str().to_lowercase();
-        if key_str != "host" && !key_str.starts_with("x-onecli-") {
-            forwarded_req = forwarded_req.header(key, value);
-        }
-    }
-    
-    // Try to inject credentials from vault
-    match vault::get_secret(secret_name).await {
-        Ok(token) => {
-            debug!("Injected credentials for {}", secret_name);
-            forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
-        }
-        Err(_) => {
-            // Try common variations
-            let variations = vec![
-                secret_name.to_lowercase(),
-                secret_name.to_uppercase(),
-                format!("{} API", secret_name),
-                format!("{} API Key", secret_name),
-            ];
-            for var in variations {
-                if let Ok(token) = vault::get_secret(&var).await {
-                    debug!("Injected credentials for {} (matched as {})", secret_name, var);
-                    forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
-                    break;
-                }
-            }
-        }
-    }
-    
-    // Add body if present
-    let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
-        .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-    if !body_bytes.is_empty() {
-        forwarded_req = forwarded_req.body(body_bytes);
-    }
-    
-    match forwarded_req.send().await {
-        Ok(response) => {
-            let status = response.status();
-            let headers = response.headers().clone();
-            let body = response.bytes().await.unwrap_or_default();
-            
-            let mut builder = Response::builder().status(status);
-            for (key, value) in headers.iter() {
-                builder = builder.header(key, value);
-            }
-            Ok(builder.body(Body::from(body)).unwrap())
-        }
-        Err(e) => {
-            error!("Proxy error: {}", e);
-            Err(StatusCode::BAD_GATEWAY)
-        }
-    }
+    proxy_with_path(state, &query.target, &secret_name, &full_path, headers, request).await
 }
 
 async fn vault_handler(
