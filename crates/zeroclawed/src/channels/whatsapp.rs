@@ -802,11 +802,7 @@ pub async fn run(
 /// Strips spaces/dashes; adds `+` prefix if missing.
 fn normalise_phone(raw: &str) -> String {
     let digits_only: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
-    if raw.starts_with('+') {
-        format!("+{digits_only}")
-    } else {
-        format!("+{digits_only}")
-    }
+    format!("+{digits_only}")
 }
 
 /// Check whether a normalised E.164 phone number is in the allowlist.
@@ -835,7 +831,7 @@ fn verify_hmac_sha256(secret: &str, body: &[u8], sig_header: &str) -> bool {
     // Strip "sha256=" prefix
     let expected_hex = match sig_header.strip_prefix("sha256=") {
         Some(h) => h,
-        None => return sig_header.is_empty() && false,
+        None => return false,
     };
 
     // Compute HMAC-SHA256 using a constant-time implementation.
