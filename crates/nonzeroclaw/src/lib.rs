@@ -81,6 +81,10 @@ pub(crate) mod util;
 pub mod vault;
 pub mod verifiable_intent;
 
+// Clash upstream adapter — bridge to empathic/clash
+// TODO: Fix upstream clash adapter in follow-up PR
+// pub(crate) mod clash_upstream_adapter;
+
 #[cfg(feature = "plugins-wasm")]
 pub mod plugins;
 

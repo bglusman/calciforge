@@ -87,9 +87,7 @@ impl Adapter for PctAdapter {
 
         if !is_valid_vmid(vmid) {
             return Ok(PolicyDecision::Deny {
-                reason: format!(
-                    "PctAdapter: invalid vmid '{vmid}' (must be numeric 100–999999)"
-                ),
+                reason: format!("PctAdapter: invalid vmid '{vmid}' (must be numeric 100–999999)"),
             });
         }
 
@@ -98,9 +96,7 @@ impl Adapter for PctAdapter {
         if command == "destroy" {
             // Destroy always requires approval regardless of config (always_ask semantics)
             return Ok(PolicyDecision::RequiresApproval {
-                message: format!(
-                    "pct destroy/{vmid} is destructive and always requires approval"
-                ),
+                message: format!("pct destroy/{vmid} is destructive and always requires approval"),
             });
         }
 

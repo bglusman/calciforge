@@ -7,10 +7,7 @@ pub type Result<T> = std::result::Result<T, OneCliError>;
 #[derive(Error, Debug)]
 pub enum OneCliError {
     #[error("OneCLI not reachable at {url}: {source}")]
-    Unreachable {
-        url: String,
-        source: reqwest::Error,
-    },
+    Unreachable { url: String, source: reqwest::Error },
 
     #[error("Policy denied: {0}")]
     PolicyDenied(String),
@@ -37,10 +34,11 @@ pub enum OneCliError {
 impl OneCliError {
     /// Check if the error is retryable
     pub fn is_retryable(&self) -> bool {
-        matches!(self, 
-            OneCliError::Unreachable { .. } |
-            OneCliError::RateLimited { .. } |
-            OneCliError::Http(_) 
+        matches!(
+            self,
+            OneCliError::Unreachable { .. }
+                | OneCliError::RateLimited { .. }
+                | OneCliError::Http(_)
         )
     }
 

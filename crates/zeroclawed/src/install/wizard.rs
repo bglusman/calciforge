@@ -30,7 +30,7 @@ use super::{
     cli::InstallArgs,
     executor::{run_install_with_deps, ExecutorDeps, StepOutcome},
     health::{health_check_claw, HttpHealthChecker},
-    model::{ClawKind, ClawTarget, InstallTarget, ZeroClawedTarget, WebhookFormat},
+    model::{ClawKind, ClawTarget, InstallTarget, WebhookFormat, ZeroClawedTarget},
     ssh::{test_connectivity, RealSshClient},
 };
 
@@ -63,7 +63,10 @@ pub async fn run_wizard() -> Result<()> {
     println!("{}", style(WIZARD_BANNER).cyan().bold());
 
     // ── Step 1: ZeroClawed host ─────────────────────────────────────────────
-    println!("{}", style("Step 1/8 — ZeroClawed Host").bold().underlined());
+    println!(
+        "{}",
+        style("Step 1/8 — ZeroClawed Host").bold().underlined()
+    );
     let zeroclawed = collect_zeroclawed_host()?;
 
     // ── Step 2: Add claws ─────────────────────────────────────────────────
@@ -524,7 +527,10 @@ fn display_routing_summary(routing: &[ChannelRouting]) {
 // ---------------------------------------------------------------------------
 
 fn display_install_review(target: &InstallTarget) {
-    println!("  ZeroClawed host: {}", style(&target.zeroclawed.host).bold());
+    println!(
+        "  ZeroClawed host: {}",
+        style(&target.zeroclawed.host).bold()
+    );
     println!("  Claws to configure ({}):", target.claws.len());
     for claw in &target.claws {
         println!(

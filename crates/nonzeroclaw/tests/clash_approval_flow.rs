@@ -38,7 +38,6 @@ use nonzeroclaw::tools::{Tool, ToolResult};
 
 // Suppress dead code warnings for test helpers that may not be used in all configurations
 #[allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Policy loading helper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,8 +140,7 @@ fn policy_fires_review_for_admin_rm_rf() {
 #[test]
 fn policy_always_deny_for_root_wipe() {
     let policy = nzc_policy();
-    let ctx = PolicyContext::new("brian", "nzc", "tool:shell")
-        .with_command("rm -rf /");
+    let ctx = PolicyContext::new("brian", "nzc", "tool:shell").with_command("rm -rf /");
     let verdict = policy.evaluate("tool:shell", &ctx);
 
     match verdict {
@@ -194,13 +192,10 @@ async fn approval_flow_approve_signal_passes_through_channel() {
     pending.result_tx.send(true).unwrap();
 
     // The agent loop would be waiting on result_rx — verify it receives the signal
-    let decision = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        result_rx,
-    )
-    .await
-    .expect("Channel receive timed out")
-    .expect("Oneshot sender dropped unexpectedly");
+    let decision = tokio::time::timeout(std::time::Duration::from_secs(1), result_rx)
+        .await
+        .expect("Channel receive timed out")
+        .expect("Oneshot sender dropped unexpectedly");
 
     assert!(decision, "Expected approved=true from channel");
 }
@@ -218,13 +213,10 @@ async fn approval_flow_deny_signal_passes_through_channel() {
     // Simulate denial
     pending.result_tx.send(false).unwrap();
 
-    let decision = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        result_rx,
-    )
-    .await
-    .expect("Channel receive timed out")
-    .expect("Oneshot sender dropped");
+    let decision = tokio::time::timeout(std::time::Duration::from_secs(1), result_rx)
+        .await
+        .expect("Channel receive timed out")
+        .expect("Oneshot sender dropped");
 
     assert!(!decision, "Expected approved=false (denial) from channel");
 }
@@ -253,7 +245,10 @@ async fn approval_flow_consumed_entry_is_removed() {
 
     // Should be gone now
     let second_attempt = pending_approvals.lock().await.remove(&request_id);
-    assert!(second_attempt.is_none(), "Approval should be consumed (removed) after first take");
+    assert!(
+        second_attempt.is_none(),
+        "Approval should be consumed (removed) after first take"
+    );
 }
 
 /// Verify PendingResults store correctly persists and retrieves responses.
@@ -283,7 +278,10 @@ async fn pending_results_store_and_retrieve() {
 
     // After consumption, should be gone
     let second = pending_results.lock().await.remove(&request_id);
-    assert!(second.is_none(), "Result should be consumed after retrieval");
+    assert!(
+        second.is_none(),
+        "Result should be consumed after retrieval"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,13 +314,19 @@ async fn agent_loop_review_falls_through_in_cli_context() {
         reasoning_content: None,
     };
 
-    let provider: Box<dyn Provider> = Box::new(ScriptedProvider::new(vec![tool_call_response, final_response]));
+    let provider: Box<dyn Provider> = Box::new(ScriptedProvider::new(vec![
+        tool_call_response,
+        final_response,
+    ]));
 
     // Mock memory
-    let mem_config = MemoryConfig { backend: "none".into(), ..Default::default() };
+    let mem_config = MemoryConfig {
+        backend: "none".into(),
+        ..Default::default()
+    };
     let mem: Arc<dyn Memory> = Arc::from(
         memory::create_memory(&mem_config, &std::path::PathBuf::from("/tmp"), None)
-            .expect("memory creation failed")
+            .expect("memory creation failed"),
     );
 
     // Mock shell tool that records what was called
@@ -335,8 +339,12 @@ async fn agent_loop_review_falls_through_in_cli_context() {
 
     #[async_trait]
     impl Tool for RecordingShellTool {
-        fn name(&self) -> &str { "shell" }
-        fn description(&self) -> &str { "Execute a shell command" }
+        fn name(&self) -> &str {
+            "shell"
+        }
+        fn description(&self) -> &str {
+            "Execute a shell command"
+        }
         fn parameters_schema(&self) -> serde_json::Value {
             json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]})
         }
@@ -351,9 +359,9 @@ async fn agent_loop_review_falls_through_in_cli_context() {
         }
     }
 
-    let tools: Vec<Box<dyn Tool>> = vec![
-        Box::new(RecordingShellTool { called: called_cmds_clone }),
-    ];
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(RecordingShellTool {
+        called: called_cmds_clone,
+    })];
 
     let observer: Arc<dyn nonzeroclaw::observability::Observer> = Arc::new(NoopObserver);
 
@@ -373,7 +381,11 @@ async fn agent_loop_review_falls_through_in_cli_context() {
 
     // In CLI context, the agent loop allows Review verdicts through (fallback behavior).
     // The tool SHOULD have been called.
-    assert!(result.is_ok(), "Agent turn should not error in CLI context: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Agent turn should not error in CLI context: {:?}",
+        result
+    );
     let called = called_cmds.lock().unwrap();
     assert!(
         !called.is_empty(),
@@ -395,8 +407,7 @@ async fn agent_loop_review_falls_through_in_cli_context() {
 #[test]
 fn policy_catches_double_space_rm_rf_after_fix() {
     let policy = nzc_policy();
-    let ctx = PolicyContext::new("brian", "nzc", "tool:shell")
-        .with_command("rm  -rf /tmp/foo");
+    let ctx = PolicyContext::new("brian", "nzc", "tool:shell").with_command("rm  -rf /tmp/foo");
     let verdict = policy.evaluate("tool:shell", &ctx);
     assert!(
         matches!(verdict, PolicyVerdict::Review(_)),
@@ -410,8 +421,7 @@ fn policy_catches_double_space_rm_rf_after_fix() {
 #[test]
 fn policy_catches_tab_rm_rf_after_fix() {
     let policy = nzc_policy();
-    let ctx = PolicyContext::new("brian", "nzc", "tool:shell")
-        .with_command("rm\t-rf /tmp/foo");
+    let ctx = PolicyContext::new("brian", "nzc", "tool:shell").with_command("rm\t-rf /tmp/foo");
     let verdict = policy.evaluate("tool:shell", &ctx);
     assert!(
         matches!(verdict, PolicyVerdict::Review(_)),
@@ -425,8 +435,7 @@ fn policy_catches_tab_rm_rf_after_fix() {
 #[test]
 fn policy_catches_double_space_zfs_destroy_r_after_fix() {
     let policy = nzc_policy();
-    let ctx = PolicyContext::new("brian", "nzc", "tool:shell")
-        .with_command("zfs destroy  -r pool");
+    let ctx = PolicyContext::new("brian", "nzc", "tool:shell").with_command("zfs destroy  -r pool");
     let verdict = policy.evaluate("tool:shell", &ctx);
     assert!(
         matches!(verdict, PolicyVerdict::Deny(_)),
@@ -521,7 +530,11 @@ fn file_write_lucien_other_path_review() {
 #[test]
 fn file_write_brian_any_path_allowed() {
     let policy = nzc_policy();
-    let paths = &["/tmp/foo", "/etc/nonzeroclaw/workspace/config.toml", "/root/test.md"];
+    let paths = &[
+        "/tmp/foo",
+        "/etc/nonzeroclaw/workspace/config.toml",
+        "/root/test.md",
+    ];
     for path in paths {
         let ctx = PolicyContext::new("brian", "nzc", "tool:file_write").with_path(path);
         let verdict = policy.evaluate("tool:file_write", &ctx);
@@ -547,4 +560,3 @@ fn file_write_renee_any_path_review() {
         );
     }
 }
-

@@ -317,12 +317,7 @@ impl LeakDetector {
 
     /// Scan for outbound PII: SSNs (redacted), credit card numbers (redacted),
     /// and physical address patterns (warned but not redacted).
-    fn check_pii_outbound(
-        &self,
-        content: &str,
-        patterns: &mut Vec<String>,
-        redacted: &mut String,
-    ) {
+    fn check_pii_outbound(&self, content: &str, patterns: &mut Vec<String>, redacted: &mut String) {
         static SSN_PATTERN: OnceLock<Regex> = OnceLock::new();
         let ssn_re = SSN_PATTERN.get_or_init(|| {
             // XXX-XX-XXXX or 9-digit run
@@ -352,9 +347,7 @@ impl LeakDetector {
 
         if cc_re.is_match(content) {
             patterns.push("PII: Credit card number".to_string());
-            *redacted = cc_re
-                .replace_all(redacted, "[CC REDACTED]")
-                .to_string();
+            *redacted = cc_re.replace_all(redacted, "[CC REDACTED]").to_string();
         }
 
         if addr_re.is_match(content) {
@@ -756,7 +749,8 @@ MIIEowIBAAKCAQEA0ZPr5JeyVDonXsKhfq...
     fn scan_outbound_pii_clean_for_normal_text() {
         let detector = LeakDetector::new();
         // Normal text with numbers that look like parts of SSNs out of context
-        let result = detector.scan_outbound_pii("The temperature is 72 degrees and humidity is 45%");
+        let result =
+            detector.scan_outbound_pii("The temperature is 72 degrees and humidity is 45%");
         assert!(matches!(result, LeakResult::Clean));
     }
 
@@ -765,9 +759,8 @@ MIIEowIBAAKCAQEA0ZPr5JeyVDonXsKhfq...
         let detector = LeakDetector::new();
         // A URL segment that happens to look like a 9-digit sequence should not
         // trigger SSN detection (the formatted XXX-XX-XXXX pattern is required)
-        let result = detector.scan_outbound_pii(
-            "See https://example.com/record/123456789 for details",
-        );
+        let result =
+            detector.scan_outbound_pii("See https://example.com/record/123456789 for details");
         // The bare 9-digit form in a URL path should not match our SSN pattern
         // (which requires the XXX-XX-XXXX dashes)
         assert!(matches!(result, LeakResult::Clean));

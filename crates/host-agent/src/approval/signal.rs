@@ -83,7 +83,8 @@ impl SignalClient {
             "Sending Signal approval request"
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.webhook_url)
             .json(&payload)
             .send()
@@ -108,14 +109,20 @@ impl SignalClient {
     }
 
     /// Validate a webhook callback from Signal
-    pub fn validate_callback(&self, payload: &SignalWebhookPayload) -> anyhow::Result<ValidatedApproval> {
+    pub fn validate_callback(
+        &self,
+        payload: &SignalWebhookPayload,
+    ) -> anyhow::Result<ValidatedApproval> {
         // Check if approver is in allowlist
         if !self.allowed_approvers.contains(&payload.approver) {
             warn!(
                 approver = %payload.approver,
                 "Approval attempt from unauthorized Signal number"
             );
-            return Err(anyhow::anyhow!("Unauthorized approver: {}", payload.approver));
+            return Err(anyhow::anyhow!(
+                "Unauthorized approver: {}",
+                payload.approver
+            ));
         }
 
         // Validate confirmation code (case-insensitive)
@@ -130,7 +137,9 @@ impl SignalClient {
         // Check timestamp is recent (5 minute window)
         let age = Utc::now() - payload.timestamp;
         if age.num_seconds() > 300 {
-            return Err(anyhow::anyhow!("Confirmation expired (older than 5 minutes)"));
+            return Err(anyhow::anyhow!(
+                "Confirmation expired (older than 5 minutes)"
+            ));
         }
 
         // Hash the token for storage
@@ -216,8 +225,10 @@ mod tests {
     #[test]
     fn test_validate_callback_case_insensitive() {
         let client = test_client();
-        
-        for code in &["confirm", "Confirm", "CONFIRM", "yes", "YES", "approve", "APPROVE"] {
+
+        for code in &[
+            "confirm", "Confirm", "CONFIRM", "yes", "YES", "approve", "APPROVE",
+        ] {
             let payload = SignalWebhookPayload {
                 token: "X7K9M2P4Q8R5N6V3".to_string(),
                 confirmation_code: code.to_string(),

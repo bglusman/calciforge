@@ -123,9 +123,15 @@ pub struct RateLimitConfig {
     pub endpoints: Vec<String>,
 }
 
-fn default_rate_limit_enabled() -> bool { true }
-fn default_rate_limit_max() -> u32 { 5 }
-fn default_rate_limit_window() -> u64 { 60 }
+fn default_rate_limit_enabled() -> bool {
+    true
+}
+fn default_rate_limit_max() -> u32 {
+    5
+}
+fn default_rate_limit_window() -> u64 {
+    60
+}
 fn default_rate_limited_endpoints() -> Vec<String> {
     vec![
         "/zfs/destroy".to_string(),
@@ -264,7 +270,10 @@ impl Default for Config {
                     unix_user: "clash-agent".to_string(),
                     autonomy: AutonomyLevel::Supervised,
                     allowed_operations: vec!["zfs-list".to_string()],
-                    requires_approval_for: vec!["zfs-snapshot".to_string(), "zfs-destroy".to_string()],
+                    requires_approval_for: vec![
+                        "zfs-snapshot".to_string(),
+                        "zfs-destroy".to_string(),
+                    ],
                     pattern_rules: vec![],
                     allow_full_autonomy_bypass: false,
                 },
@@ -275,7 +284,7 @@ impl Default for Config {
                     operation: "zfs-destroy".to_string(),
                     approval_required: true,
                     pattern: None,
-                    always_ask: true,        // destroy always requires approval
+                    always_ask: true, // destroy always requires approval
                     approval_admin_only: false,
                 },
                 RuleConfig {
@@ -486,7 +495,7 @@ impl Config {
     pub fn find_agent(&self, cn: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|a| {
             if a.cn_pattern.ends_with('*') {
-                let prefix = &a.cn_pattern[..a.cn_pattern.len()-1];
+                let prefix = &a.cn_pattern[..a.cn_pattern.len() - 1];
                 cn.starts_with(prefix)
             } else {
                 a.cn_pattern == cn
@@ -549,10 +558,10 @@ mod tests {
     #[test]
     fn test_requires_approval() {
         let config = Config::default();
-        
+
         // zfs-destroy requires approval
         assert!(config.requires_approval("zfs-destroy", "tank/media"));
-        
+
         // zfs-list does not
         assert!(!config.requires_approval("zfs-list", "tank/media"));
     }
@@ -560,16 +569,16 @@ mod tests {
     #[test]
     fn test_find_agent() {
         let config = Config::default();
-        
+
         // Should find librarian config
         let agent = config.find_agent("librarian");
         assert!(agent.is_some());
         assert_eq!(agent.unwrap().agent_type, "librarian");
-        
+
         // Should find librarian-main via wildcard
         let agent = config.find_agent("librarian-main");
         assert!(agent.is_some());
-        
+
         // Should not find unknown agent
         let agent = config.find_agent("unknown-agent");
         assert!(agent.is_none());
@@ -580,7 +589,9 @@ mod tests {
         // AutonomyLevel is used as the value for the `autonomy` field in AgentConfig.
         // Test via a wrapper struct to mimic TOML deserialization.
         #[derive(serde::Deserialize)]
-        struct Wrapper { autonomy: AutonomyLevel }
+        struct Wrapper {
+            autonomy: AutonomyLevel,
+        }
 
         let w: Wrapper = toml::from_str(r#"autonomy = "supervised""#).unwrap();
         assert_eq!(w.autonomy, AutonomyLevel::Supervised);
@@ -596,7 +607,7 @@ mod tests {
     #[test]
     fn test_full_autonomy_cannot_bypass_always_ask() {
         let config = Config::default();
-        
+
         // zfs-destroy has always_ask = true in default rules
         let full_agent = AgentConfig {
             cn_pattern: "full-agent*".to_string(),
@@ -648,7 +659,9 @@ mod tests {
         // With bypass enabled: skip approval
         assert!(
             !config.requires_approval_for_agent(
-                "zfs-snapshot-protected", "tank/data", Some(&full_agent_with_bypass)
+                "zfs-snapshot-protected",
+                "tank/data",
+                Some(&full_agent_with_bypass)
             ),
             "Full autonomy with bypass=true should skip approval when always_ask=false"
         );
@@ -656,7 +669,9 @@ mod tests {
         // Without bypass: still require approval
         assert!(
             config.requires_approval_for_agent(
-                "zfs-snapshot-protected", "tank/data", Some(&full_agent_no_bypass)
+                "zfs-snapshot-protected",
+                "tank/data",
+                Some(&full_agent_no_bypass)
             ),
             "Full autonomy with bypass=false should still require approval"
         );
@@ -679,7 +694,11 @@ mod tests {
         };
 
         assert!(
-            config.requires_approval_for_agent("zfs-destroy", "tank/media", Some(&supervised_agent)),
+            config.requires_approval_for_agent(
+                "zfs-destroy",
+                "tank/media",
+                Some(&supervised_agent)
+            ),
             "Supervised agent should require approval"
         );
     }

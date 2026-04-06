@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-use super::identity::{ClientIdentity, resolve_unix_user};
+use super::identity::{resolve_unix_user, ClientIdentity};
 use crate::config::{AgentConfig, AutonomyLevel};
 
 /// Supported agent types
@@ -139,7 +139,7 @@ impl AgentAdapter for ConfigAgentAdapter {
         let config = configs.iter().find(|c| {
             // Simple glob-style matching: librarian* matches librarian, librarian-main, etc.
             if c.cn_pattern.ends_with('*') {
-                let prefix = &c.cn_pattern[..c.cn_pattern.len()-1];
+                let prefix = &c.cn_pattern[..c.cn_pattern.len() - 1];
                 cn.starts_with(prefix)
             } else {
                 c.cn_pattern == cn
@@ -169,7 +169,9 @@ impl AgentAdapter for ConfigAgentAdapter {
             autonomy_level: config.autonomy.clone(),
             auto_approve: config.allowed_operations.clone(),
             always_ask: config.requires_approval_for.clone(),
-            pattern_rules: config.pattern_rules.iter()
+            pattern_rules: config
+                .pattern_rules
+                .iter()
                 .map(|r| (r.operation.clone(), r.pattern.clone()))
                 .collect(),
         };
@@ -247,7 +249,9 @@ impl AgentRegistry {
     /// Returns None if no configs are registered.
     pub fn resolve_cn_placeholder(&self) -> Option<String> {
         // Return the first registered CN pattern (stripped of '*') as a placeholder
-        self.configs.first().map(|c| c.cn_pattern.trim_end_matches('*').to_string())
+        self.configs
+            .first()
+            .map(|c| c.cn_pattern.trim_end_matches('*').to_string())
     }
 }
 
@@ -270,22 +274,31 @@ mod tests {
 
     #[test]
     fn test_agent_type_from_str() {
-        assert!(matches!(AgentType::from_str("librarian"), AgentType::Librarian));
-        assert!(matches!(AgentType::from_str("codex"), AgentType::AcpHarness));
-        assert!(matches!(AgentType::from_str("claude-code"), AgentType::AcpHarness));
+        assert!(matches!(
+            AgentType::from_str("librarian"),
+            AgentType::Librarian
+        ));
+        assert!(matches!(
+            AgentType::from_str("codex"),
+            AgentType::AcpHarness
+        ));
+        assert!(matches!(
+            AgentType::from_str("claude-code"),
+            AgentType::AcpHarness
+        ));
     }
 
     #[test]
     fn test_policy_requires_approval() {
         let mut profile = PolicyProfile::default();
-        
+
         // Default: supervised requires approval
         assert!(profile.requires_approval("zfs-destroy", "tank/media"));
-        
+
         // auto_approve skips approval
         profile.auto_approve.push("zfs-snapshot".to_string());
         assert!(!profile.requires_approval("zfs-snapshot", "tank/media"));
-        
+
         // always_ask overrides auto_approve
         profile.always_ask.push("zfs-snapshot".to_string());
         assert!(profile.requires_approval("zfs-snapshot", "tank/media"));
@@ -298,7 +311,7 @@ mod tests {
             always_ask: vec!["zfs-destroy".to_string()],
             ..Default::default()
         };
-        
+
         // Full autonomy should not require approval even for always_ask
         // (though these will be handled differently at the policy engine level)
         assert!(!profile.requires_approval("zfs-destroy", "tank/media"));

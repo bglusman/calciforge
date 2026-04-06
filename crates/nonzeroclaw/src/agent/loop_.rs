@@ -1,4 +1,7 @@
-use crate::approval::{ApprovalManager, ApprovalRequest, ApprovalResponse, ClashApprovalCache, ClashApprovalDecision, ClashApprovalRequest, prompt_user};
+use crate::approval::{
+    ApprovalManager, ApprovalRequest, ApprovalResponse, ClashApprovalCache, ClashApprovalDecision,
+    ClashApprovalRequest, prompt_user,
+};
 use crate::config::Config;
 use crate::cost::types::BudgetCheck;
 use crate::i18n::ToolDescriptions;
@@ -2276,13 +2279,26 @@ pub async fn process_message_with_history_and_policy(
     _pending_approvals: Option<()>,
 ) -> Result<(String, Vec<crate::providers::ChatMessage>)> {
     // Build tools and provider like process_message does (minimal path).
-    let observer: Arc<dyn Observer> = Arc::from(observability::create_observer(&config.observability));
-    let runtime: Arc<dyn runtime::RuntimeAdapter> = Arc::from(runtime::create_runtime(&config.runtime)?);
-    let security = Arc::new(SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir));
-    let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage(&config.memory, Some(&config.storage.provider.config), &config.workspace_dir, config.api_key.as_deref())?);
+    let observer: Arc<dyn Observer> =
+        Arc::from(observability::create_observer(&config.observability));
+    let runtime: Arc<dyn runtime::RuntimeAdapter> =
+        Arc::from(runtime::create_runtime(&config.runtime)?);
+    let security = Arc::new(SecurityPolicy::from_config(
+        &config.autonomy,
+        &config.workspace_dir,
+    ));
+    let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage(
+        &config.memory,
+        Some(&config.storage.provider.config),
+        &config.workspace_dir,
+        config.api_key.as_deref(),
+    )?);
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
-        (config.composio.api_key.as_deref(), Some(config.composio.entity_id.as_str()))
+        (
+            config.composio.api_key.as_deref(),
+            Some(config.composio.entity_id.as_str()),
+        )
     } else {
         (None, None)
     };
@@ -2303,11 +2319,15 @@ pub async fn process_message_with_history_and_policy(
         &config,
         None,
     );
-    let peripheral_tools: Vec<Box<dyn Tool>> = crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
+    let peripheral_tools: Vec<Box<dyn Tool>> =
+        crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
     tools_registry.extend(peripheral_tools);
 
     let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
-    let model_name = config.default_model.clone().unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+    let model_name = config
+        .default_model
+        .clone()
+        .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
 
     // Build system prompt
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
@@ -2316,7 +2336,11 @@ pub async fn process_message_with_history_and_policy(
         ("file_read", "Read file contents."),
         ("file_write", "Write file contents."),
     ];
-    let bootstrap_max_chars = if config.agent.compact_context { Some(6000) } else { None };
+    let bootstrap_max_chars = if config.agent.compact_context {
+        Some(6000)
+    } else {
+        None
+    };
 
     let native_tools = false;
     let mut system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
@@ -2340,7 +2364,8 @@ pub async fn process_message_with_history_and_policy(
         message.to_string()
     };
 
-    let mut history: Vec<crate::providers::ChatMessage> = Vec::with_capacity(1 + prior_turns.len() + 1);
+    let mut history: Vec<crate::providers::ChatMessage> =
+        Vec::with_capacity(1 + prior_turns.len() + 1);
     history.push(crate::providers::ChatMessage::system(&system_prompt));
     history.extend(prior_turns.clone());
     history.push(crate::providers::ChatMessage::user(&enriched_message));
@@ -3302,22 +3327,35 @@ pub(crate) async fn run_tool_call_loop(
                 let action = format!("tool:{tool_name}");
                 let ctx = {
                     let base = clash::PolicyContext::new(
-                        if policy_identity.is_empty() { "unknown" } else { policy_identity },
+                        if policy_identity.is_empty() {
+                            "unknown"
+                        } else {
+                            policy_identity
+                        },
                         "nonzeroclaw",
                         &action,
                     );
                     if tool_name == "shell" {
                         if let Some(cmd) = tool_args.get("command").and_then(|v| v.as_str()) {
                             base.with_command(cmd)
-                        } else { base }
-                    } else if matches!(tool_name.as_str(), "file_write" | "file_read" | "file_edit" | "file_list" | "delete") {
+                        } else {
+                            base
+                        }
+                    } else if matches!(
+                        tool_name.as_str(),
+                        "file_write" | "file_read" | "file_edit" | "file_list" | "delete"
+                    ) {
                         if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
                             base.with_path(p)
-                        } else { base }
+                        } else {
+                            base
+                        }
                     } else if matches!(tool_name.as_str(), "web_fetch" | "http_request") {
                         if let Some(url) = tool_args.get("url").and_then(|v| v.as_str()) {
                             base.with_command(url)
-                        } else { base }
+                        } else {
+                            base
+                        }
                     } else {
                         base
                     }
@@ -3352,11 +3390,13 @@ pub(crate) async fn run_tool_call_loop(
                             }),
                         );
                         if let Some(ref tx) = on_delta {
-                            let _ = tx.send(DraftEvent::Progress(format!(
-                                "\u{1f6ab} {} blocked by policy: {}\n",
-                                tool_name,
-                                truncate_with_ellipsis(&reason, 200)
-                            ))).await;
+                            let _ = tx
+                                .send(DraftEvent::Progress(format!(
+                                    "\u{1f6ab} {} blocked by policy: {}\n",
+                                    tool_name,
+                                    truncate_with_ellipsis(&reason, 200)
+                                )))
+                                .await;
                         }
                         ordered_results[idx] = Some((
                             tool_name.clone(),
@@ -3409,10 +3449,12 @@ pub(crate) async fn run_tool_call_loop(
                                     let denied = format!("Review denied: {reason}");
                                     tracing::info!(tool = %tool_name, "clash: Review denied by user");
                                     if let Some(ref tx) = on_delta {
-                                        let _ = tx.send(DraftEvent::Progress(format!(
-                                            "\u{1f6ab} {} blocked by policy review\n",
-                                            tool_name
-                                        ))).await;
+                                        let _ = tx
+                                            .send(DraftEvent::Progress(format!(
+                                                "\u{1f6ab} {} blocked by policy review\n",
+                                                tool_name
+                                            )))
+                                            .await;
                                     }
                                     ordered_results[idx] = Some((
                                         tool_name.clone(),

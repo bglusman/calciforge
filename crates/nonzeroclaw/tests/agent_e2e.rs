@@ -9,8 +9,6 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::json;
-use std::sync::{Arc, Mutex};
 use nonzeroclaw::agent::agent::Agent;
 use nonzeroclaw::agent::dispatcher::{NativeToolDispatcher, XmlToolDispatcher};
 use nonzeroclaw::agent::memory_loader::MemoryLoader;
@@ -23,6 +21,8 @@ use nonzeroclaw::providers::{
     ChatRequest, ChatResponse, ConversationMessage, Provider, ProviderRuntimeOptions, ToolCall,
 };
 use nonzeroclaw::tools::{Tool, ToolResult};
+use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock infrastructure
@@ -214,7 +214,12 @@ impl StaticMemoryLoader {
 
 #[async_trait]
 impl MemoryLoader for StaticMemoryLoader {
-    async fn load_context(&self, _memory: &dyn Memory, _user_message: &str) -> Result<String> {
+    async fn load_context(
+        &self,
+        _memory: &dyn Memory,
+        _user_message: &str,
+        _session_id: Option<&str>,
+    ) -> Result<String> {
         Ok(self.context.clone())
     }
 }
@@ -667,7 +672,8 @@ async fn e2e_live_openai_codex_multi_turn() {
     use nonzeroclaw::providers::openai_codex::OpenAiCodexProvider;
     use nonzeroclaw::providers::traits::Provider;
 
-    let provider = OpenAiCodexProvider::new(&ProviderRuntimeOptions::default());
+    let provider = OpenAiCodexProvider::new(&ProviderRuntimeOptions::default(), None)
+        .expect("failed to create OpenAiCodexProvider");
     let model = "gpt-5.3-codex";
 
     // Turn 1: establish a fact

@@ -37,7 +37,14 @@ path = "src/lib.rs"
 [dependencies]
 # ZeroClawed workspace internal crates
 outpost = { path = "../outpost" }
+
+# Local clash (simplified Starlark evaluator) — will migrate to upstream
 clash   = { path = "../clash" }
+
+# Upstream clash — Command Line Agent Safety Harness
+# Provides OS-level sandboxing (Landlock/Seatbelt) + multi-layer policies
+clash_upstream = { package = "clash", git = "https://github.com/empathic/clash" }
+clash_starlark_upstream = { package = "clash_starlark", git = "https://github.com/empathic/clash" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
@@ -331,6 +338,7 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 wiremock = "0.6"
 scopeguard = "1.2"
 rcgen = "0.13"
+hegeltest = "0.4"
 
 # Note: 0.6.7 upstream test files (test_component, test_integration, test_system, test_live)
 # were not included in the crates.io package. Our own integration tests are in tests/

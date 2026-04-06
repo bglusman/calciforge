@@ -433,7 +433,11 @@ impl PromptGuard {
         let has_editable_url = url_regexes.iter().any(|r| r.is_match(content));
         if has_editable_url {
             // Higher confidence when paired with instruction language
-            let score = if instruction_kw.is_match(content) { 0.9 } else { 0.8 };
+            let score = if instruction_kw.is_match(content) {
+                0.9
+            } else {
+                0.8
+            };
             patterns.push("external_editable_reference".to_string());
             return score;
         }

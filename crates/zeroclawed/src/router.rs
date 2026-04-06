@@ -111,6 +111,7 @@ mod tests {
             permissions: None,
             memory: None,
             context: Default::default(),
+            model_shortcuts: vec![],
         }
     }
 
@@ -131,9 +132,6 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
-        openclaw_agent_id: None,
-        reply_port: None,
-        reply_auth_token: None,
         }
     }
 
@@ -154,9 +152,6 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
-        openclaw_agent_id: None,
-        reply_port: None,
-        reply_auth_token: None,
         }
     }
 
@@ -177,9 +172,6 @@ mod tests {
             env: Some(HashMap::new()),
             registry: None,
             aliases: vec![],
-        openclaw_agent_id: None,
-        reply_port: None,
-        reply_auth_token: None,
         }
     }
 
@@ -206,9 +198,6 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
-        openclaw_agent_id: None,
-        reply_port: None,
-        reply_auth_token: None,
         };
         // build_adapter is synchronous — test it directly
         let result = build_adapter(&agent);
@@ -262,9 +251,6 @@ mod tests {
             env: Some(HashMap::new()),
             registry: None,
             aliases: vec![],
-        openclaw_agent_id: None,
-        reply_port: None,
-        reply_auth_token: None,
         };
         let cfg = base_config();
         let result = router.dispatch("ping", &agent, &cfg).await;

@@ -1,5 +1,5 @@
-use hegel::generators::integers;
 use hegel::TestCase;
+use hegel::generators::integers;
 
 #[hegel::test]
 fn smoke_addition_commutative(tc: TestCase) {

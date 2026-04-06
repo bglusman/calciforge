@@ -22,7 +22,7 @@
 //! Reuse the same conversation ID across calls to maintain context.
 
 use super::traits::{Channel, ChannelMessage, SendMessage};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -476,9 +476,7 @@ impl Channel for ClaudeApiChannel {
         });
         state.touch();
 
-        let (response_text, tool_uses) = self
-            .call_api(&state.messages, &state.tools)
-            .await?;
+        let (response_text, tool_uses) = self.call_api(&state.messages, &state.tools).await?;
 
         if !tool_uses.is_empty() {
             tracing::debug!(
@@ -657,8 +655,8 @@ mod tests {
         let config = crate::config::schema::ClaudeApiConfig {
             enabled: true,
             api_key: "sk-ant-test".to_string(),
-            model: String::new(), // empty → default
-            max_tokens: 0,        // zero → default
+            model: String::new(),      // empty → default
+            max_tokens: 0,             // zero → default
             conversation_ttl_hours: 0, // zero → default
             system_prompt: None,
             webhook_secret: None,

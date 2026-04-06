@@ -73,10 +73,13 @@ impl RateLimiter {
         let now = Instant::now();
 
         // DashMap entry API gives us per-key locking — no global lock needed.
-        let mut entry = self.buckets.entry(cn.to_string()).or_insert_with(|| Bucket {
-            count: 0,
-            window_start: now,
-        });
+        let mut entry = self
+            .buckets
+            .entry(cn.to_string())
+            .or_insert_with(|| Bucket {
+                count: 0,
+                window_start: now,
+            });
 
         let elapsed = now.duration_since(entry.window_start);
 
@@ -105,7 +108,8 @@ impl RateLimiter {
     /// Call this periodically (e.g., every 5 minutes from a background task).
     pub fn evict_expired(&self) {
         let now = Instant::now();
-        self.buckets.retain(|_, v| now.duration_since(v.window_start) < self.window * 2);
+        self.buckets
+            .retain(|_, v| now.duration_since(v.window_start) < self.window * 2);
     }
 }
 
@@ -124,7 +128,10 @@ pub fn rate_limit_response(retry_after: u64) -> axum::response::Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
         [
-            ("Retry-After", HeaderValue::from_str(&retry_after.to_string()).unwrap()),
+            (
+                "Retry-After",
+                HeaderValue::from_str(&retry_after.to_string()).unwrap(),
+            ),
             ("Content-Type", HeaderValue::from_static("application/json")),
         ],
         axum::Json(body),

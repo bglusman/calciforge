@@ -67,9 +67,8 @@ impl AuditLogger {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create audit log directory: {:?}", parent)
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create audit log directory: {:?}", parent))?;
         }
 
         let base_path = path.to_path_buf();
@@ -104,15 +103,15 @@ impl AuditLogger {
         // Check if rotation needed
         self.check_rotation()?;
 
-        let json = serde_json::to_string(&event).with_context(|| "Failed to serialize audit event")?;
+        let json =
+            serde_json::to_string(&event).with_context(|| "Failed to serialize audit event")?;
 
-        let mut file = self.current_file.lock().map_err(|e| {
-            anyhow::anyhow!("Failed to lock audit file: {}", e)
-        })?;
+        let mut file = self
+            .current_file
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock audit file: {}", e))?;
 
-        writeln!(file, "{}", json).with_context(|| {
-            format!("Failed to write to audit log")
-        })?;
+        writeln!(file, "{}", json).with_context(|| format!("Failed to write to audit log"))?;
 
         file.flush().with_context(|| "Failed to flush audit log")?;
 
@@ -134,9 +133,10 @@ impl AuditLogger {
         }
 
         let new_date = Self::current_date_string();
-        let mut current_date = self.current_date.lock().map_err(|e| {
-            anyhow::anyhow!("Failed to lock current_date: {}", e)
-        })?;
+        let mut current_date = self
+            .current_date
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock current_date: {}", e))?;
 
         if new_date != *current_date {
             info!(
@@ -155,9 +155,10 @@ impl AuditLogger {
                 .with_context(|| format!("Failed to open new audit log: {:?}", new_path))?;
 
             // Replace file handle
-            let mut file = self.current_file.lock().map_err(|e| {
-                anyhow::anyhow!("Failed to lock file: {}", e)
-            })?;
+            let mut file = self
+                .current_file
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock file: {}", e))?;
             *file = new_file;
             *current_date = new_date;
 
@@ -179,21 +180,30 @@ impl AuditLogger {
     fn rotated_path(base: &Path, date: &str) -> PathBuf {
         let stem = base.file_stem().unwrap_or_default();
         let ext = base.extension().unwrap_or_default();
-        
+
         let rotated_name = if ext.is_empty() {
             format!("{}.{}", stem.to_string_lossy(), date)
         } else {
-            format!("{}.{}.{}", stem.to_string_lossy(), date, ext.to_string_lossy())
+            format!(
+                "{}.{}.{}",
+                stem.to_string_lossy(),
+                date,
+                ext.to_string_lossy()
+            )
         };
-        
+
         base.with_file_name(rotated_name)
     }
 
     /// Clean up audit logs older than retention period
     fn cleanup_old_logs(&self) -> Result<()> {
-        let parent = self.base_path.parent()
+        let parent = self
+            .base_path
+            .parent()
             .ok_or_else(|| anyhow::anyhow!("Cannot get parent directory"))?;
-        let base_stem = self.base_path.file_stem()
+        let base_stem = self
+            .base_path
+            .file_stem()
             .ok_or_else(|| anyhow::anyhow!("Cannot get file stem"))?
             .to_string_lossy();
 
@@ -202,7 +212,7 @@ impl AuditLogger {
         for entry in std::fs::read_dir(parent)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
                 // Check if this is a rotated log file
                 if filename.starts_with(&*base_stem) && filename.contains('.') {
@@ -244,7 +254,10 @@ mod tests {
     fn test_rotated_path() {
         let base = Path::new("/var/log/clash/audit.jsonl");
         let rotated = AuditLogger::rotated_path(base, "2024-01-15");
-        assert_eq!(rotated, PathBuf::from("/var/log/clash/audit.2024-01-15.jsonl"));
+        assert_eq!(
+            rotated,
+            PathBuf::from("/var/log/clash/audit.2024-01-15.jsonl")
+        );
     }
 
     #[test]
@@ -269,10 +282,25 @@ mod tests {
 
     #[test]
     fn test_rotation_strategy_from_str() {
-        assert!(matches!(RotationStrategy::from("daily"), RotationStrategy::Daily));
-        assert!(matches!(RotationStrategy::from("DAILY"), RotationStrategy::Daily));
-        assert!(matches!(RotationStrategy::from("hourly"), RotationStrategy::Hourly));
-        assert!(matches!(RotationStrategy::from("never"), RotationStrategy::Never));
-        assert!(matches!(RotationStrategy::from("unknown"), RotationStrategy::Never));
+        assert!(matches!(
+            RotationStrategy::from("daily"),
+            RotationStrategy::Daily
+        ));
+        assert!(matches!(
+            RotationStrategy::from("DAILY"),
+            RotationStrategy::Daily
+        ));
+        assert!(matches!(
+            RotationStrategy::from("hourly"),
+            RotationStrategy::Hourly
+        ));
+        assert!(matches!(
+            RotationStrategy::from("never"),
+            RotationStrategy::Never
+        ));
+        assert!(matches!(
+            RotationStrategy::from("unknown"),
+            RotationStrategy::Never
+        ));
     }
 }

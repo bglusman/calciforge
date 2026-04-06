@@ -172,7 +172,7 @@ mod tests {
         metrics.increment_approvals_created();
 
         let output = metrics.render();
-        
+
         assert!(output.contains("host_agent_requests_total 1"));
         assert!(output.contains("host_agent_zfs_snapshots_total 1"));
         assert!(output.contains("host_agent_approvals_created_total 1"));
@@ -181,11 +181,11 @@ mod tests {
     #[test]
     fn test_zfs_operation_types() {
         let metrics = Metrics::new();
-        
+
         metrics.increment_zfs_operation("snapshot");
         metrics.increment_zfs_operation("destroy");
         metrics.increment_zfs_operation("list");
-        
+
         assert_eq!(metrics.zfs_snapshots_total.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.zfs_destroys_total.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.zfs_lists_total.load(Ordering::Relaxed), 1);

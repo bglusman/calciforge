@@ -15,15 +15,13 @@ use crate::{ClashPolicy, PolicyContext, PolicyVerdict, StarlarkPolicy};
 
 /// Load the shared production policy (base only, no profile chain).
 fn nzc_policy() -> StarlarkPolicy {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/policy.star");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/policy.star");
     StarlarkPolicy::load(path)
 }
 
 /// Load the base policy WITH profile chain support (for identity-specific tests).
 fn nzc_policy_with_profiles() -> StarlarkPolicy {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/policy.star");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/policy.star");
     StarlarkPolicy::load_with_profiles(path)
 }
 
@@ -453,10 +451,12 @@ fn test_path_traversal_via_endswith() {
     // (without the leading "/etc/") — the `..` component breaks the suffix match.
     // Mitigation: canonicalize paths in Rust before passing to policy.
     let policy = nzc_policy_with_profiles();
-    let traversal_path =
-        "/etc/nonzeroclaw/../nonzeroclaw/workspace/.clash/policy.star";
+    let traversal_path = "/etc/nonzeroclaw/../nonzeroclaw/workspace/.clash/policy.star";
     let verdict = policy.evaluate("tool:file_write", &file_write_ctx("lucien", traversal_path));
-    assert_not_allow(&verdict, "path traversal via .. that breaks endswith suffix match");
+    assert_not_allow(
+        &verdict,
+        "path traversal via .. that breaks endswith suffix match",
+    );
 }
 
 /// T3.2b — Path traversal that does NOT suffix-match.
@@ -485,7 +485,10 @@ fn test_adjacent_filename_bak_is_not_protected() {
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
-        &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/.clash/policy.star.bak"),
+        &file_write_ctx(
+            "lucien",
+            "/etc/nonzeroclaw/workspace/.clash/policy.star.bak",
+        ),
     );
     // This ALLOWS — document that it's intentionally not blocked.
     assert!(
@@ -502,10 +505,7 @@ fn test_adjacent_filename_bak_is_not_protected() {
 #[test]
 fn test_compound_command_semicolon_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "true; rm -rf /tmp/foo"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "true; rm -rf /tmp/foo"));
     assert_review(verdict, "true; rm -rf /tmp/foo");
 }
 
@@ -524,10 +524,7 @@ fn test_compound_command_and_operator_is_caught() {
 #[test]
 fn test_subshell_compound_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "(rm -rf /tmp/foo)"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "(rm -rf /tmp/foo)"));
     assert_review(verdict, "(rm -rf /tmp/foo)");
 }
 
@@ -535,10 +532,7 @@ fn test_subshell_compound_is_caught() {
 #[test]
 fn test_command_group_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "{ rm -rf /tmp/foo; }"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "{ rm -rf /tmp/foo; }"));
     assert_review(verdict, "{ rm -rf /tmp/foo; }");
 }
 
@@ -557,10 +551,7 @@ fn test_heredoc_rm_rf_is_caught_if_single_line() {
 #[test]
 fn test_nohup_rm_rf_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "nohup rm -rf /tmp/foo &"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "nohup rm -rf /tmp/foo &"));
     assert_review(verdict, "nohup rm -rf /tmp/foo &");
 }
 
@@ -572,10 +563,7 @@ fn test_nohup_rm_rf_is_caught() {
 #[test]
 fn test_sudo_rm_rf_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "sudo rm -rf /tmp/foo"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "sudo rm -rf /tmp/foo"));
     assert_review(verdict, "sudo rm -rf /tmp/foo");
 }
 
@@ -583,10 +571,7 @@ fn test_sudo_rm_rf_is_caught() {
 #[test]
 fn test_su_c_rm_rf_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "su -c 'rm -rf /tmp/foo'"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "su -c 'rm -rf /tmp/foo'"));
     assert_review(verdict, "su -c 'rm -rf /tmp/foo'");
 }
 
@@ -594,10 +579,7 @@ fn test_su_c_rm_rf_is_caught() {
 #[test]
 fn test_pkexec_rm_rf_is_caught() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "pkexec rm -rf /tmp"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "pkexec rm -rf /tmp"));
     assert_review(verdict, "pkexec rm -rf /tmp");
 }
 
@@ -709,10 +691,7 @@ fn test_double_space_rm_rf_is_caught_regression() {
     // FIXED (was a gap before normalize() was introduced).
     // normalize("rm  -rf /tmp") = "rm -rf /tmp" — "rm -rf" IS a substring.
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "rm  -rf /tmp/foo"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "rm  -rf /tmp/foo"));
     assert_review(verdict, "rm  -rf (double space) — fixed by normalize()");
 }
 
@@ -721,10 +700,7 @@ fn test_double_space_rm_rf_is_caught_regression() {
 fn test_tab_whitespace_rm_rf_is_caught_regression() {
     // FIXED: normalize("rm\t-rf /tmp") = "rm -rf /tmp" — caught.
     let policy = nzc_policy();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("brian", "rm\t-rf /tmp/foo"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "rm\t-rf /tmp/foo"));
     assert_review(verdict, "rm\\t-rf (tab) — fixed by normalize()");
 }
 
@@ -737,7 +713,10 @@ fn test_zfs_destroy_extra_space_is_caught_regression() {
         "tool:shell",
         &shell_ctx("brian", "zfs destroy  -r pool/data"),
     );
-    assert_deny(verdict, "zfs destroy  -r (double space) — fixed by normalize()");
+    assert_deny(
+        verdict,
+        "zfs destroy  -r (double space) — fixed by normalize()",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -855,11 +834,11 @@ fn test_bash_c_without_dangerous_keyword_not_caught() {
 fn test_research_user_full_path_rm_is_denied() {
     // first_word("/bin/rm") = "rm" (basename extraction) → NOT in RESEARCH_ALLOWED → deny.
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("renee", "/bin/rm /tmp/foo"),
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "/bin/rm /tmp/foo"));
+    assert_deny(
+        verdict,
+        "renee + /bin/rm /tmp/foo → deny (rm not in RESEARCH_ALLOWED)",
     );
-    assert_deny(verdict, "renee + /bin/rm /tmp/foo → deny (rm not in RESEARCH_ALLOWED)");
 }
 
 /// Research user tries sudo to escalate.
@@ -867,10 +846,7 @@ fn test_research_user_full_path_rm_is_denied() {
 fn test_research_user_sudo_is_denied() {
     // first_word("sudo rm /tmp/foo") = "sudo" → NOT in RESEARCH_ALLOWED → deny.
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate(
-        "tool:shell",
-        &shell_ctx("renee", "sudo rm /tmp/foo"),
-    );
+    let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "sudo rm /tmp/foo"));
     assert_deny(verdict, "renee + sudo rm /tmp/foo → deny");
 }
 
@@ -883,7 +859,10 @@ fn test_research_user_bash_is_denied() {
         "tool:shell",
         &shell_ctx("renee", "bash -c 'cat /etc/passwd'"),
     );
-    assert_deny(verdict, "renee + bash -c → deny (bash not in RESEARCH_ALLOWED)");
+    assert_deny(
+        verdict,
+        "renee + bash -c → deny (bash not in RESEARCH_ALLOWED)",
+    );
 }
 
 /// Research user tries fullwidth bash to escape first_word check.
@@ -901,6 +880,6 @@ fn test_research_user_fullwidth_bash_bypasses_first_word() {
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", cmd));
     assert_deny(
         verdict,
-        "renee + fullwidth bash → deny (not in RESEARCH_ALLOWED, even though fullwidth)"
+        "renee + fullwidth bash → deny (not in RESEARCH_ALLOWED, even though fullwidth)",
     );
 }

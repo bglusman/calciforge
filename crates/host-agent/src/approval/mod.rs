@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::approval::signal::{SignalClient, SignalWebhookPayload, ValidatedApproval};
-use crate::approval::token::{hash_token, generate_token, TokenAuditInfo};
+use crate::approval::token::{generate_token, hash_token, TokenAuditInfo};
 use crate::auth::ClientIdentity;
 
 pub mod identity_plugin;
@@ -89,7 +89,7 @@ impl ApprovalManager {
     }
 
     /// Create a new approval request and return the token (P1-5: 16-char token)
-    /// 
+    ///
     /// Returns the plaintext token (give to user) and stores only the hash.
     pub async fn create_approval(&self, request: ApprovalRequest) -> String {
         // Generate high-entropy token
@@ -127,19 +127,21 @@ impl ApprovalManager {
 
         // Send Signal notification if configured
         if let Some(ref signal) = self.signal {
-            let _ = signal.notify_approval_request(
-                &token_audit,
-                &request.caller,
-                &request.operation,
-                &request.target,
-            ).await;
+            let _ = signal
+                .notify_approval_request(
+                    &token_audit,
+                    &request.caller,
+                    &request.operation,
+                    &request.target,
+                )
+                .await;
         }
 
         token
     }
 
     /// Validate a token and return the approval_id if valid
-    /// 
+    ///
     /// Note: token is consumed here to prevent replay attacks.
     pub async fn validate_and_consume_token(
         &self,
@@ -206,11 +208,17 @@ impl ApprovalManager {
     }
 
     /// Handle Signal webhook confirmation (P3-18)
-    pub async fn handle_signal_confirmation(&self, payload: &SignalWebhookPayload) -> Result<(), crate::error::ApprovalError> {
+    pub async fn handle_signal_confirmation(
+        &self,
+        payload: &SignalWebhookPayload,
+    ) -> Result<(), crate::error::ApprovalError> {
         // Validate the callback
-        let validation = self.signal
+        let validation = self
+            .signal
             .as_ref()
-            .ok_or_else(|| crate::error::ApprovalError::NotFound("Signal not configured".to_string()))?
+            .ok_or_else(|| {
+                crate::error::ApprovalError::NotFound("Signal not configured".to_string())
+            })?
             .validate_callback(payload)
             .map_err(|e| crate::error::ApprovalError::InvalidToken)?;
 
@@ -222,9 +230,7 @@ impl ApprovalManager {
                 return Err(crate::error::ApprovalError::AlreadyUsed);
             }
             if entry.expires_at < Utc::now() {
-                return Err(crate::error::ApprovalError::Expired(
-                    payload.token.clone()
-                ));
+                return Err(crate::error::ApprovalError::Expired(payload.token.clone()));
             }
 
             entry.approved = true;
@@ -239,9 +245,10 @@ impl ApprovalManager {
 
             Ok(())
         } else {
-            Err(crate::error::ApprovalError::NotFound(
-                format!("Token hash: {}", &token_hash[..8])
-            ))
+            Err(crate::error::ApprovalError::NotFound(format!(
+                "Token hash: {}",
+                &token_hash[..8]
+            )))
         }
     }
 
@@ -253,10 +260,8 @@ impl ApprovalManager {
         tokens
             .values()
             .filter(|e| {
-                !e.used && 
-                !e.approved && 
-                e.expires_at > now &&
-                e.request.caller == caller // Filter by caller
+                !e.used && !e.approved && e.expires_at > now && e.request.caller == caller
+                // Filter by caller
             })
             .map(|e| ApprovalResponse {
                 approval_id: e.request.id.clone(),
@@ -377,16 +382,18 @@ mod tests {
         };
 
         let token = manager.create_approval(request).await;
-        
+
         // Can't validate with wrong caller
-        let result = manager.validate_and_consume_token(&token, "tank/media@old", "attacker").await;
+        let result = manager
+            .validate_and_consume_token(&token, "tank/media@old", "attacker")
+            .await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_list_pending_filters_by_caller() {
         let manager = test_manager();
-        
+
         // Create approval for librarian
         let request1 = ApprovalRequest {
             id: "id1".to_string(),

@@ -39,7 +39,7 @@ pub mod ssh;
 pub mod wizard;
 
 pub use cli::InstallArgs;
-pub use model::{ClawKind, ClawTarget, InstallTarget, ZeroClawedTarget, WebhookFormat};
+pub use model::{ClawKind, ClawTarget, InstallTarget, WebhookFormat, ZeroClawedTarget};
 
 use anyhow::Result;
 use tracing::info;
