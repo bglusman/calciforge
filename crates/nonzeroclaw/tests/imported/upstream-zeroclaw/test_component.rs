@@ -1,2 +1,0 @@
-mod component;
-mod support;
