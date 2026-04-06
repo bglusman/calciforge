@@ -49,7 +49,7 @@ impl OneCliClient {
     /// for credential injection.
     pub fn request(&self, method: reqwest::Method, url: &str) -> RequestBuilder {
         // Route through OneCLI proxy
-        let proxy_url = format!("{}", self.config.url.trim_end_matches('/'));
+        let proxy_url = self.config.url.trim_end_matches('/').to_string();
         self.client
             .request(method, &proxy_url)
             .header("X-Target-URL", url)
