@@ -50,7 +50,6 @@ jobs:
       matrix:
         crate:
           - zeroclawed
-          - nonzeroclaw
           - outpost
           - clash
           - zeroclaw-robot-kit
