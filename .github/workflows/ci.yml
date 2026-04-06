@@ -51,8 +51,8 @@ jobs:
         crate:
           - zeroclawed
           - outpost
-          - clash
-          - zeroclaw-robot-kit
+          - host-agent
+          - onecli-client
     steps:
       - uses: actions/checkout@v4
 
