@@ -28,7 +28,6 @@ use tracing::{error, info, warn};
 
 // Install rustls crypto provider early
 use rustls::crypto::ring::default_provider;
-use rustls::crypto::CryptoProvider;
 
 mod adapters;
 mod approval;
@@ -961,7 +960,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize tracing
-    let _subscriber = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_env_filter(
             std::env::var("RUST_LOG")
                 .unwrap_or_else(|_| if cli.debug { "debug" } else { "info" }.into()),

@@ -144,8 +144,8 @@ pub fn is_cert_revoked(
 /// In axum-server with rustls, we use a custom acceptor to extract certs
 /// and inject them into the request extensions.
 pub async fn auth_middleware(
-    State(state): State<Arc<crate::AppState>>,
-    mut request: Request<Body>,
+    State(_state): State<Arc<crate::AppState>>,
+    request: Request<Body>,
     next: Next,
 ) -> Response {
     // Check if identity was injected by TLS layer

@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Audit event structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ impl AuditLogger {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
-            .write(true)
+            
             .open(&current_file_path)
             .with_context(|| format!("Failed to open audit log: {:?}", current_file_path))?;
 
@@ -111,7 +111,7 @@ impl AuditLogger {
             .lock()
             .map_err(|e| anyhow::anyhow!("Failed to lock audit file: {}", e))?;
 
-        writeln!(file, "{}", json).with_context(|| format!("Failed to write to audit log"))?;
+        writeln!(file, "{}", json).with_context(|| "Failed to write to audit log".to_string())?;
 
         file.flush().with_context(|| "Failed to flush audit log")?;
 
@@ -150,7 +150,7 @@ impl AuditLogger {
             let new_file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .write(true)
+                
                 .open(&new_path)
                 .with_context(|| format!("Failed to open new audit log: {:?}", new_path))?;
 
@@ -248,7 +248,7 @@ impl AuditLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+    
 
     #[test]
     fn test_rotated_path() {

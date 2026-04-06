@@ -3,12 +3,10 @@
 mod adapter;
 mod identity;
 
-pub use adapter::{
-    AgentAdapter, AgentIdentity, AgentRegistry, AgentType, ConfigAgentAdapter, PolicyProfile,
-};
+pub use adapter::AgentRegistry;
 pub use identity::{
-    build_identity, cert_fingerprint, extract_cn, is_cert_revoked, resolve_unix_user,
-    ClientIdentity, IdentityError,
+    build_identity, cert_fingerprint, is_cert_revoked,
+    ClientIdentity,
 };
 
 use axum::body::Body;
@@ -25,7 +23,7 @@ use tracing::{debug, warn};
 /// and inject them into the request extensions.
 pub async fn auth_middleware(
     State(_state): State<Arc<crate::AppState>>,
-    mut request: Request<Body>,
+    request: Request<Body>,
     next: Next,
 ) -> Response {
     // Check if identity was injected by TLS layer

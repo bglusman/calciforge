@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,20 +183,17 @@ pub struct PatternRule {
 /// Autonomy levels for agents
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AutonomyLevel {
     /// No destructive operations allowed
     ReadOnly,
     /// Requires approval for sensitive operations (default)
+    #[default]
     Supervised,
     /// Full autonomy (careful!)
     Full,
 }
 
-impl Default for AutonomyLevel {
-    fn default() -> Self {
-        AutonomyLevel::Supervised
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {

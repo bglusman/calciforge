@@ -14,7 +14,6 @@
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use std::fmt::Write;
 use subtle::ConstantTimeEq;
 
 // HMAC-SHA256 for token generation

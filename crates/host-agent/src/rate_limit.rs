@@ -8,15 +8,12 @@
 //! - Applied to: /zfs/destroy, /approve, /pending
 //! - On rate-limit: increments `rate_limited` counter and returns HTTP 429.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tracing::warn;
 
 use crate::config::RateLimitConfig;
-use crate::metrics::Metrics;
 
 /// Token bucket state per CN
 #[derive(Debug)]
