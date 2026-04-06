@@ -6,9 +6,9 @@ use rustls::ServerConfig;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
-use crate::auth::{build_identity, cert_fingerprint, is_cert_revoked, ClientIdentity};
+use crate::auth::{build_identity, is_cert_revoked, ClientIdentity};
 
 /// Create mTLS server configuration
 pub fn create_mtls_config<P: AsRef<Path>>(
@@ -34,7 +34,7 @@ pub fn create_mtls_config<P: AsRef<Path>>(
         .with_context(|| format!("Failed to load client CA: {:?}", client_ca_path))?;
 
     // Load CRL if provided
-    let crl_data = if let Some(crl_path) = crl_path {
+    let _crl_data = if let Some(crl_path) = crl_path {
         Some(fs::read(crl_path).with_context(|| "Failed to read CRL file")?)
     } else {
         None
@@ -76,7 +76,7 @@ fn load_certs<P: AsRef<Path>>(path: P) -> Result<Vec<CertificateDer<'static>>> {
     for item in rustls_pemfile::read_all(&mut reader) {
         match item? {
             rustls_pemfile::Item::X509Certificate(cert) => {
-                certs.push(cert.into());
+                certs.push(cert);
             }
             _ => {
                 // Skip non-certificate items

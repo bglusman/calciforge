@@ -39,7 +39,7 @@ const PCT_BIN: &str = "/usr/sbin/pct";
 /// Validate a Proxmox VM/CT ID: numeric, 100–999999.
 pub fn is_valid_vmid(id: &str) -> bool {
     match id.parse::<u32>() {
-        Ok(n) => n >= 100 && n <= 999999,
+        Ok(n) => (100..=999999).contains(&n),
         Err(_) => false,
     }
 }

@@ -9,9 +9,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::approval::signal::{SignalClient, SignalWebhookPayload, ValidatedApproval};
+use crate::approval::signal::{SignalClient, SignalWebhookPayload};
 use crate::approval::token::{generate_token, hash_token, TokenAuditInfo};
-use crate::auth::ClientIdentity;
 
 pub mod identity_plugin;
 pub mod signal;
@@ -220,7 +219,7 @@ impl ApprovalManager {
                 crate::error::ApprovalError::NotFound("Signal not configured".to_string())
             })?
             .validate_callback(payload)
-            .map_err(|e| crate::error::ApprovalError::InvalidToken)?;
+            .map_err(|_e| crate::error::ApprovalError::InvalidToken)?;
 
         let token_hash = validation.token_hash;
         let mut tokens = self.tokens.write().await;

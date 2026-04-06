@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-use super::identity::{resolve_unix_user, ClientIdentity};
+use super::identity::resolve_unix_user;
 use crate::config::{AgentConfig, AutonomyLevel};
 
 /// Supported agent types
@@ -152,7 +152,7 @@ impl AgentAdapter for ConfigAgentAdapter {
             .ok()?;
 
         // Build instance name from CN (e.g., "librarian-main" -> "main")
-        let instance = if cn.starts_with(&config.cn_pattern.trim_end_matches('*')) {
+        let instance = if cn.starts_with(config.cn_pattern.trim_end_matches('*')) {
             let prefix_len = config.cn_pattern.trim_end_matches('*').len();
             if cn.len() > prefix_len {
                 cn[prefix_len..].trim_start_matches('-').to_string()

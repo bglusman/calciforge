@@ -1,7 +1,7 @@
 //! Signal webhook integration for human-in-the-loop approvals (P3-18)
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 
 use crate::approval::token::{hash_token, TokenAuditInfo};

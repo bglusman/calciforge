@@ -118,8 +118,7 @@ impl Adapter for ExecAdapter {
             .ok_or_else(|| AppError::Internal("exec: resource required".into()))?;
 
         // Ansible stub
-        if resource.starts_with("ansible://") {
-            let playbook = &resource["ansible://".len()..];
+        if let Some(playbook) = resource.strip_prefix("ansible://") {
             if let Some(ref exec_cfg) = config.exec {
                 if let Some(ref queue_dir) = exec_cfg.ansible_job_queue {
                     // Write a job spec to the queue directory (stub)
@@ -182,7 +181,7 @@ impl Adapter for ExecAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
     use crate::adapters::HostOp;
 
     #[test]

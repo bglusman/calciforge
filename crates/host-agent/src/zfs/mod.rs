@@ -5,7 +5,7 @@ use crate::error::ZfsError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// ZFS operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
