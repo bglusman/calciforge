@@ -188,10 +188,7 @@ impl OpenClawChannelAdapter {
     }
 
     fn inbound_url(&self) -> String {
-        format!(
-            "{}/zeroclawed/inbound",
-            self.endpoint.trim_end_matches('/')
-        )
+        format!("{}/zeroclawed/inbound", self.endpoint.trim_end_matches('/'))
     }
 
     fn session_key_for(&self, sender: &str) -> String {
@@ -373,7 +370,7 @@ mod tests {
 
     async fn start_inbound_server(state: CaptureState) -> u16 {
         let app = Router::new()
-            .route("/hooks/zeroclawed/inbound", post(inbound_handler))
+            .route("/zeroclawed/inbound", post(inbound_handler))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

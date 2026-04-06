@@ -1,5 +1,5 @@
 //! OneCLI Client for ZeroClawed
-//! 
+//!
 //! Provides credential proxy integration with OneCLI Agent Vault.
 //! Routes outbound HTTP requests through OneCLI for credential injection
 //! and policy enforcement.

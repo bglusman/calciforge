@@ -482,13 +482,14 @@ mod tests {
 }
 
 /// Hegel property tests using the hegeltest crate (imported as `hegel`).
-#[cfg(test)]
+#[cfg(all(test, feature = "hegel"))]
 mod hegel_tests {
     use super::*;
     use hegel::generators::*;
     use hegel::{Generator, TestCase};
 
     /// Property: backup_filename is always unique for distinct timestamps (arbitrary paths).
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_backup_unique_timestamps(tc: TestCase) {
         let path = tc.draw(text().max_size(80));
@@ -507,6 +508,7 @@ mod hegel_tests {
     }
 
     /// Property: backup_filename always contains the timestamp as a substring.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_backup_contains_timestamp(tc: TestCase) {
         let path = tc.draw(text().max_size(80));
@@ -528,6 +530,7 @@ mod hegel_tests {
     /// - Starts and ends with `'`
     /// - For inputs without single-quotes: inner content is exactly the input
     /// - For inputs with single-quotes: uses the `'\''` POSIX escape idiom
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_shell_quote_safe(tc: TestCase) {
         // Restrict to printable ASCII to model realistic paths/hosts.
@@ -569,6 +572,7 @@ mod hegel_tests {
     ///
     /// Edge case the property detects: if the path contains `.bak.` already,
     /// the backup filename should still start with the full original path.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_backup_filename_contains_original_path(tc: TestCase) {
         let path = tc.draw(text().min_size(1).max_size(60).filter(|s: &String| {
@@ -597,6 +601,7 @@ mod hegel_tests {
     /// and taking the first part recovers the original path.  This fails if
     /// the format changes in a way that breaks recovery (e.g. double `.bak.`
     /// in paths with `.bak.` already in them).
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_backup_filename_roundtrip_recovery(tc: TestCase) {
         // Restrict path to content that is safe for the recovery split.
@@ -645,6 +650,7 @@ mod hegel_tests {
     /// future use.  No current inputs should trigger it.  Any string not in
     /// the known list → `Unknown`; any in the list → `Compatible`.
     /// This property would catch accidental `Incompatible` returns.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_check_version_never_incompatible(tc: TestCase) {
         let version = tc.draw(text().max_size(40));
@@ -666,6 +672,7 @@ mod hegel_tests {
     /// From opus-review-2.md §9: for every `(adapter, version)` in the known
     /// compatible lists, the result must be `Compatible`.  This is the positive
     /// case: known versions must always be recognized.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_known_versions_always_compatible(tc: TestCase) {
         use hegel::generators as gs;

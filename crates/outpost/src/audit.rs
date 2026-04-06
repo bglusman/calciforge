@@ -21,7 +21,13 @@ pub struct AuditEntry {
 }
 
 impl AuditEntry {
-    pub fn new(claw_id: &str, ctx: ScanContext, url: &str, verdict: &OutpostVerdict, cached: bool) -> Self {
+    pub fn new(
+        claw_id: &str,
+        ctx: ScanContext,
+        url: &str,
+        verdict: &OutpostVerdict,
+        cached: bool,
+    ) -> Self {
         Self {
             ts: Utc::now().to_rfc3339(),
             claw_id: claw_id.to_string(),

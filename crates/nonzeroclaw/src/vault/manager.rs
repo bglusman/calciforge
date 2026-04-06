@@ -71,8 +71,8 @@ impl VaultManager {
     /// For production use, call `new()` directly and supply the relay of your
     /// choice (e.g. `ChannelApprovalRelay` wired to Signal/Telegram).
     pub fn from_config(config: VaultConfig) -> Self {
-        use crate::vault::{NoopApprovalRelay, VaultBackend};
         use crate::vault::adapter::NoopVaultAdapter;
+        use crate::vault::{NoopApprovalRelay, VaultBackend};
 
         let relay: Arc<dyn ApprovalRelay> = Arc::new(NoopApprovalRelay);
         let config = Arc::new(config);
@@ -80,9 +80,9 @@ impl VaultManager {
         let adapter: Arc<dyn VaultAdapter> = match config.backend {
             VaultBackend::None => Arc::new(NoopVaultAdapter),
             #[cfg(feature = "bitwarden-cli")]
-            VaultBackend::BitwardenCli => Arc::new(
-                crate::vault::BitwardenCliAdapter::from_config(&config),
-            ),
+            VaultBackend::BitwardenCli => {
+                Arc::new(crate::vault::BitwardenCliAdapter::from_config(&config))
+            }
             #[cfg(not(feature = "bitwarden-cli"))]
             VaultBackend::BitwardenCli => {
                 warn!(
@@ -287,11 +287,11 @@ impl std::fmt::Debug for VaultManager {
 mod tests {
     use super::*;
     use crate::vault::{
+        VaultAdapter, VaultError,
         adapter::{NoopVaultAdapter, VaultResult},
         approval::{ApprovalDecision, NoopApprovalRelay},
         config::{SecretPolicyConfig, VaultBackend, VaultConfig, VaultSecretConfig},
         types::{Secret, SecretValue, SessionToken},
-        VaultAdapter, VaultError,
     };
     use async_trait::async_trait;
     use std::collections::HashMap;
@@ -381,7 +381,12 @@ mod tests {
     impl CountingRelay {
         fn new() -> (Arc<Self>, Arc<AtomicUsize>) {
             let count = Arc::new(AtomicUsize::new(0));
-            (Arc::new(Self { count: count.clone() }), count)
+            (
+                Arc::new(Self {
+                    count: count.clone(),
+                }),
+                count,
+            )
         }
     }
 
@@ -435,60 +440,105 @@ mod tests {
     /// Auto policy — no relay invocation, direct fetch.
     #[tokio::test]
     async fn auto_policy_no_approval_needed() {
-        let cfg = make_config("anthropic_key", "anthropic-api-key", SecretPolicyConfig::Auto, None);
+        let cfg = make_config(
+            "anthropic_key",
+            "anthropic-api-key",
+            SecretPolicyConfig::Auto,
+            None,
+        );
         let adapter = make_adapter();
         let (relay, relay_count) = CountingRelay::new();
         let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
-        let secret = mgr.access_secret("anthropic_key").await.expect("should succeed");
+        let secret = mgr
+            .access_secret("anthropic_key")
+            .await
+            .expect("should succeed");
         assert_eq!(secret.expose(), "sk-ant-test");
-        assert_eq!(relay_count.load(Ordering::SeqCst), 0, "relay should NOT be called for auto policy");
+        assert_eq!(
+            relay_count.load(Ordering::SeqCst),
+            0,
+            "relay should NOT be called for auto policy"
+        );
         assert_eq!(adapter.get_count(), 1);
     }
 
     /// PerUse policy — relay called on every access.
     #[tokio::test]
     async fn per_use_policy_relay_called_every_time() {
-        let cfg = make_config("stripe_key", "stripe-live-key", SecretPolicyConfig::PerUse, None);
+        let cfg = make_config(
+            "stripe_key",
+            "stripe-live-key",
+            SecretPolicyConfig::PerUse,
+            None,
+        );
         let (relay, relay_count) = CountingRelay::new();
         let adapter = make_adapter();
         let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
         for _ in 0..3 {
-            mgr.access_secret("stripe_key").await.expect("should succeed");
+            mgr.access_secret("stripe_key")
+                .await
+                .expect("should succeed");
         }
-        assert_eq!(relay_count.load(Ordering::SeqCst), 3, "relay called once per access");
+        assert_eq!(
+            relay_count.load(Ordering::SeqCst),
+            3,
+            "relay called once per access"
+        );
         assert_eq!(adapter.get_count(), 3);
     }
 
     /// Session policy — relay called once; subsequent accesses use cache.
     #[tokio::test]
     async fn session_policy_relay_called_once() {
-        let cfg = make_config("stripe_key", "stripe-key", SecretPolicyConfig::Session, None);
+        let cfg = make_config(
+            "stripe_key",
+            "stripe-key",
+            SecretPolicyConfig::Session,
+            None,
+        );
         let (relay, relay_count) = CountingRelay::new();
         let adapter = make_adapter();
         let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
         for _ in 0..5 {
-            mgr.access_secret("stripe_key").await.expect("should succeed");
+            mgr.access_secret("stripe_key")
+                .await
+                .expect("should succeed");
         }
-        assert_eq!(relay_count.load(Ordering::SeqCst), 1, "relay called only once for session policy");
+        assert_eq!(
+            relay_count.load(Ordering::SeqCst),
+            1,
+            "relay called only once for session policy"
+        );
         assert_eq!(adapter.get_count(), 5);
     }
 
     /// Session policy — relay invalidation forces re-approval.
     #[tokio::test]
     async fn session_policy_cache_invalidation_re_approves() {
-        let cfg = make_config("stripe_key", "stripe-key", SecretPolicyConfig::Session, None);
+        let cfg = make_config(
+            "stripe_key",
+            "stripe-key",
+            SecretPolicyConfig::Session,
+            None,
+        );
         let (relay, relay_count) = CountingRelay::new();
         let adapter = make_adapter();
         let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
         mgr.access_secret("stripe_key").await.expect("first access");
         mgr.invalidate_approval("stripe_key").await;
-        mgr.access_secret("stripe_key").await.expect("second access after invalidation");
+        mgr.access_secret("stripe_key")
+            .await
+            .expect("second access after invalidation");
 
-        assert_eq!(relay_count.load(Ordering::SeqCst), 2, "relay called again after invalidation");
+        assert_eq!(
+            relay_count.load(Ordering::SeqCst),
+            2,
+            "relay called again after invalidation"
+        );
     }
 
     /// TimeBound policy — relay called once; after TTL expires, re-approves.
@@ -512,7 +562,9 @@ mod tests {
         mgr.invalidate_approval("deploy_key").await;
 
         // Second access — should call relay again.
-        mgr.access_secret("deploy_key").await.expect("second access after expiry");
+        mgr.access_secret("deploy_key")
+            .await
+            .expect("second access after expiry");
         assert_eq!(relay_count.load(Ordering::SeqCst), 2);
     }
 
@@ -524,7 +576,10 @@ mod tests {
         let adapter = make_adapter();
         let mgr = VaultManager::new(adapter, relay, Arc::new(cfg));
 
-        let err = mgr.access_secret("stripe_key").await.expect_err("should be denied");
+        let err = mgr
+            .access_secret("stripe_key")
+            .await
+            .expect_err("should be denied");
         assert!(matches!(err, VaultError::Denied(_)));
     }
 
@@ -536,7 +591,10 @@ mod tests {
         let adapter = make_adapter();
         let mgr = VaultManager::new(adapter, relay, Arc::new(cfg));
 
-        let err = mgr.access_secret("stripe_key").await.expect_err("should time out");
+        let err = mgr
+            .access_secret("stripe_key")
+            .await
+            .expect_err("should time out");
         assert!(matches!(err, VaultError::TimedOut(_)));
     }
 
@@ -548,7 +606,10 @@ mod tests {
         let relay = Arc::new(NoopApprovalRelay);
         let mgr = VaultManager::new(adapter, relay, Arc::new(cfg));
 
-        let err = mgr.access_secret("does_not_exist").await.expect_err("should fail");
+        let err = mgr
+            .access_secret("does_not_exist")
+            .await
+            .expect_err("should fail");
         assert!(matches!(err, VaultError::UnknownKey(_)));
     }
 
@@ -567,14 +628,21 @@ mod tests {
     /// clear_approval_cache clears all entries.
     #[tokio::test]
     async fn clear_approval_cache_forces_reapproval() {
-        let cfg = make_config("stripe_key", "stripe-key", SecretPolicyConfig::Session, None);
+        let cfg = make_config(
+            "stripe_key",
+            "stripe-key",
+            SecretPolicyConfig::Session,
+            None,
+        );
         let (relay, relay_count) = CountingRelay::new();
         let adapter = make_adapter();
         let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
         mgr.access_secret("stripe_key").await.expect("first");
         mgr.clear_approval_cache().await;
-        mgr.access_secret("stripe_key").await.expect("second after clear");
+        mgr.access_secret("stripe_key")
+            .await
+            .expect("second after clear");
 
         assert_eq!(relay_count.load(Ordering::SeqCst), 2);
     }
@@ -589,8 +657,8 @@ mod tests {
     /// large N or after cache expiry.
     #[hegel::test]
     fn prop_auto_policy_relay_never_called(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Generate N accesses: 1 to 20.
         let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
@@ -612,7 +680,9 @@ mod tests {
             let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
             for _ in 0..n {
-                mgr.access_secret("anthropic_key").await.expect("auto policy must succeed");
+                mgr.access_secret("anthropic_key")
+                    .await
+                    .expect("auto policy must succeed");
             }
 
             let calls = relay_count.load(Ordering::SeqCst);
@@ -621,7 +691,11 @@ mod tests {
                 "Auto policy: relay called {calls} times after {n} accesses (must be 0)"
             );
             // Adapter should be called exactly N times (no caching of fetches).
-            assert_eq!(adapter.get_count(), n, "Auto policy: adapter should be called {n} times");
+            assert_eq!(
+                adapter.get_count(),
+                n,
+                "Auto policy: adapter should be called {n} times"
+            );
         });
     }
 
@@ -631,8 +705,8 @@ mod tests {
     /// An off-by-one or caching bug could make relay_count < N.
     #[hegel::test]
     fn prop_per_use_policy_relay_called_n_times(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
 
@@ -653,7 +727,9 @@ mod tests {
             let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
             for _ in 0..n {
-                mgr.access_secret("stripe_key").await.expect("per-use must succeed");
+                mgr.access_secret("stripe_key")
+                    .await
+                    .expect("per-use must succeed");
             }
 
             let calls = relay_count.load(Ordering::SeqCst);
@@ -671,8 +747,8 @@ mod tests {
     /// prematurely.
     #[hegel::test]
     fn prop_session_policy_relay_called_once(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
 
@@ -693,7 +769,9 @@ mod tests {
             let mgr = VaultManager::new(adapter.clone(), relay, Arc::new(cfg));
 
             for _ in 0..n {
-                mgr.access_secret("stripe_key").await.expect("session policy must succeed");
+                mgr.access_secret("stripe_key")
+                    .await
+                    .expect("session policy must succeed");
             }
 
             let calls = relay_count.load(Ordering::SeqCst);
@@ -703,7 +781,8 @@ mod tests {
             );
             // All N fetches must succeed.
             assert_eq!(
-                adapter.get_count(), n,
+                adapter.get_count(),
+                n,
                 "Session policy: adapter must be called {n} times"
             );
         });
@@ -718,8 +797,8 @@ mod tests {
     /// it tests arbitrary M invalidations and verifies the relay count equals M+1.
     #[hegel::test]
     fn prop_session_policy_invalidation_causes_reapproval(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Number of invalidations (each resets the session cache).
         let invalidations = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
@@ -745,7 +824,9 @@ mod tests {
 
             for _ in 0..invalidations {
                 mgr.invalidate_approval("stripe_key").await;
-                mgr.access_secret("stripe_key").await.expect("access after invalidation");
+                mgr.access_secret("stripe_key")
+                    .await
+                    .expect("access after invalidation");
             }
 
             // Relay must have been called once for the initial access +

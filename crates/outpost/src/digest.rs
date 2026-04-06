@@ -181,7 +181,9 @@ mod tests {
 
         // Reload from disk to verify persistence
         let store2 = DigestStore::open(path).await;
-        let entry = store2.get("https://example.com").expect("entry should persist");
+        let entry = store2
+            .get("https://example.com")
+            .expect("entry should persist");
         assert_eq!(entry.sha256, digest);
         assert!(entry.verdict.is_clean());
     }
@@ -196,16 +198,30 @@ mod tests {
                 "https://example.com/page",
                 ContentDigest {
                     sha256: digest.clone(),
-                    verdict: OutpostVerdict::Unsafe { reason: "test".into() },
+                    verdict: OutpostVerdict::Unsafe {
+                        reason: "test".into(),
+                    },
                     timestamp: Utc::now(),
                     override_approved: false,
                 },
             )
             .await;
 
-        assert!(!store.get("https://example.com/page").unwrap().override_approved);
-        store.mark_override("https://example.com/page", &digest).await;
-        assert!(store.get("https://example.com/page").unwrap().override_approved);
+        assert!(
+            !store
+                .get("https://example.com/page")
+                .unwrap()
+                .override_approved
+        );
+        store
+            .mark_override("https://example.com/page", &digest)
+            .await;
+        assert!(
+            store
+                .get("https://example.com/page")
+                .unwrap()
+                .override_approved
+        );
     }
 
     #[tokio::test]
@@ -218,7 +234,9 @@ mod tests {
                 "https://example.com",
                 ContentDigest {
                     sha256: digest,
-                    verdict: OutpostVerdict::Unsafe { reason: "test".into() },
+                    verdict: OutpostVerdict::Unsafe {
+                        reason: "test".into(),
+                    },
                     timestamp: Utc::now(),
                     override_approved: false,
                 },
@@ -226,7 +244,9 @@ mod tests {
             .await;
 
         // Wrong digest — should not flip flag
-        store.mark_override("https://example.com", &sha256_hex("content b")).await;
+        store
+            .mark_override("https://example.com", &sha256_hex("content b"))
+            .await;
         assert!(!store.get("https://example.com").unwrap().override_approved);
     }
 
@@ -237,6 +257,9 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, sha256_hex("world"));
         // Known SHA-256 of "hello"
-        assert_eq!(a, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            a,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 }

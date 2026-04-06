@@ -9,8 +9,6 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::json;
-use std::sync::{Arc, Mutex};
 use nonzeroclaw::agent::agent::Agent;
 use nonzeroclaw::agent::dispatcher::NativeToolDispatcher;
 use nonzeroclaw::config::MemoryConfig;
@@ -19,6 +17,8 @@ use nonzeroclaw::memory::Memory;
 use nonzeroclaw::observability::{NoopObserver, Observer};
 use nonzeroclaw::providers::{ChatRequest, ChatResponse, Provider, ToolCall};
 use nonzeroclaw::tools::{Tool, ToolResult};
+use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock infrastructure

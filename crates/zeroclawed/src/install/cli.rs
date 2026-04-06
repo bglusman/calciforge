@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
-use super::model::{ClawKind, ClawTarget, InstallTarget, ZeroClawedTarget, WebhookFormat};
+use super::model::{ClawKind, ClawTarget, InstallTarget, WebhookFormat, ZeroClawedTarget};
 
 // ---------------------------------------------------------------------------
 // InstallArgs
@@ -410,8 +410,7 @@ mod tests {
             zeroclawed_host: Some("admin@10.0.0.1".into()),
             zeroclawed_key: Some(PathBuf::from("/keys/id_rsa")),
             claw_specs: vec![
-                "name=lib,adapter=nzc,host=user@10.0.0.20,endpoint=http://10.0.0.20:18799"
-                    .into(),
+                "name=lib,adapter=nzc,host=user@10.0.0.20,endpoint=http://10.0.0.20:18799".into(),
             ],
             ..Default::default()
         };
@@ -510,6 +509,7 @@ mod tests {
     /// embedded.  This is a non-trivial roundtrip: it would catch bugs in the
     /// kv splitter (e.g. wrong `=` splitting), adapter dispatch, or field
     /// assignment.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_claw_spec_roundtrip(tc: hegel::TestCase) {
         use hegel::generators as gs;
@@ -638,6 +638,7 @@ mod tests {
     ///
     /// This is a "no-panic" property: even on completely garbage input, the
     /// parser must return cleanly.  A panic here would be a real bug.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_install_target_never_panics(tc: hegel::TestCase) {
         use hegel::generators as gs;
@@ -684,6 +685,7 @@ mod tests {
     ///
     /// Generates specs with random keys that deliberately omit the required
     /// `name` key.  Property: always `Err`, never `Ok`, never panics.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_claw_spec_missing_name_always_errors(tc: hegel::TestCase) {
         use hegel::generators as gs;

@@ -3,13 +3,13 @@
 //! All `/api/*` routes require bearer token authentication (PairingGuard).
 
 use super::AppState;
-#[cfg(test)]
-use clash;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Json},
 };
+#[cfg(test)]
+use clash;
 use serde::Deserialize;
 
 const MASKED_SECRET: &str = "***MASKED***";

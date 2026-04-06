@@ -93,15 +93,14 @@ impl ToolHook for OutpostMiddleware {
             .scan(&result.url, &result.content, result.context)
             .await;
 
-        self.logger.log(result.context, &result.url, &verdict, false).await;
+        self.logger
+            .log(result.context, &result.url, &verdict, false)
+            .await;
 
         match &verdict {
             OutpostVerdict::Clean => HookOutcome::PassThrough(result.content),
             OutpostVerdict::Review { reason } => {
-                let annotated = format!(
-                    "[⚠ OUTPOST REVIEW: {reason}]\n{}",
-                    result.content
-                );
+                let annotated = format!("[⚠ OUTPOST REVIEW: {reason}]\n{}", result.content);
                 HookOutcome::Annotated(annotated)
             }
             OutpostVerdict::Unsafe { reason } => HookOutcome::Blocked(format!(
@@ -150,8 +149,10 @@ mod tests {
         match mw.on_tool_result(result).await {
             HookOutcome::Blocked(msg) => {
                 assert!(msg.contains("OUTPOST BLOCKED"));
-                assert!(!msg.contains("IGNORE PREVIOUS INSTRUCTIONS"),
-                    "blocked content must not appear in error message");
+                assert!(
+                    !msg.contains("IGNORE PREVIOUS INSTRUCTIONS"),
+                    "blocked content must not appear in error message"
+                );
             }
             other => panic!("expected Blocked, got {other:?}"),
         }

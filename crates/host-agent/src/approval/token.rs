@@ -14,8 +14,8 @@
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use std::fmt::Write;
+use subtle::ConstantTimeEq;
 
 // HMAC-SHA256 for token generation
 type HmacSha256 = Hmac<Sha256>;
@@ -25,12 +25,12 @@ const TOKEN_CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqr
 const TOKEN_LENGTH: usize = 16;
 
 /// Generate a high-entropy approval token (P1-5)
-/// 
+///
 /// Returns a 16-character token with ~80 bits of entropy.
 /// Uses cryptographically secure random number generation.
 pub fn generate_token() -> String {
     let mut rng = rand::thread_rng();
-    
+
     (0..TOKEN_LENGTH)
         .map(|_| {
             let idx = rng.gen_range(0..TOKEN_CHARSET.len());
@@ -40,27 +40,26 @@ pub fn generate_token() -> String {
 }
 
 /// Generate a cryptographically secure token using HMAC (alternative method)
-/// 
+///
 /// This creates tokens with HMAC-SHA256 for additional security.
 /// Requires a secret key from configuration.
 pub fn generate_hmac_token(secret_key: &[u8], context: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret_key)
-        .expect("HMAC can take key of any size");
-    
+    let mut mac = HmacSha256::new_from_slice(secret_key).expect("HMAC can take key of any size");
+
     // Include timestamp and random nonce for uniqueness
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
     let nonce: u64 = rand::thread_rng().gen();
-    
+
     mac.update(&timestamp.to_be_bytes());
     mac.update(&nonce.to_be_bytes());
     mac.update(context.as_bytes());
-    
+
     let result = mac.finalize();
     let bytes = result.into_bytes();
-    
+
     // Encode to alphanumeric (same charset as simple tokens)
     bytes_to_token(&bytes[..TOKEN_LENGTH])
 }
@@ -77,7 +76,7 @@ fn bytes_to_token(bytes: &[u8]) -> String {
 }
 
 /// Hash a token for secure logging (P1-6)
-/// 
+///
 /// Returns the SHA-256 hash of the token as a hex string.
 /// Store this in logs, never the plaintext token.
 pub fn hash_token(token: &str) -> String {
@@ -94,7 +93,10 @@ pub fn verify_token_hash(token: &str, expected_hash: &str) -> bool {
     let actual_hash = hash_token(token);
     // ConstantTimeEq from the `subtle` crate ensures the comparison runs in
     // constant time regardless of where the first differing byte is.
-    actual_hash.as_bytes().ct_eq(expected_hash.as_bytes()).into()
+    actual_hash
+        .as_bytes()
+        .ct_eq(expected_hash.as_bytes())
+        .into()
 }
 
 /// Format a token for display (first 4 chars only, rest masked)
@@ -146,7 +148,8 @@ mod tests {
         for ch in token.chars() {
             assert!(
                 TOKEN_CHARSET.contains(&(ch as u8)),
-                "Invalid character '{}' in token", ch
+                "Invalid character '{}' in token",
+                ch
             );
         }
     }
@@ -166,15 +169,15 @@ mod tests {
     fn test_token_hashing() {
         let token = "X7K9M2P4Q8R5N6V3";
         let hash = hash_token(token);
-        
+
         // Hash should be 64 hex chars
         assert_eq!(hash.len(), 64);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-        
+
         // Same token = same hash
         let hash2 = hash_token(token);
         assert_eq!(hash, hash2);
-        
+
         // Different token = different hash (with high probability)
         let different_token = "Y8L0N3Q5R6S7T8U9";
         let different_hash = hash_token(different_token);
@@ -185,7 +188,7 @@ mod tests {
     fn test_verify_token_hash() {
         let token = "test-token-12345";
         let hash = hash_token(token);
-        
+
         assert!(verify_token_hash(token, &hash));
         assert!(!verify_token_hash("wrong-token", &hash));
     }
@@ -195,21 +198,21 @@ mod tests {
         assert_eq!(mask_token("X7K9M2P4Q8R5N6V3"), "X7K9****");
         // Strings with 5+ chars get a prefix; strings with <=4 chars get all-mask
         assert_eq!(mask_token("short"), "shor****"); // 5 chars → show first 4
-        assert_eq!(mask_token("ab"), "****");        // 2 chars → all-mask
-        assert_eq!(mask_token("abcd"), "****");      // exactly 4 → all-mask (len <= 4)
+        assert_eq!(mask_token("ab"), "****"); // 2 chars → all-mask
+        assert_eq!(mask_token("abcd"), "****"); // exactly 4 → all-mask (len <= 4)
     }
 
     #[test]
     fn test_hmac_token() {
         let secret = b"test-secret-key";
         let context = "zfs-destroy:tank/media@snap";
-        
+
         let token1 = generate_hmac_token(secret, context);
         let token2 = generate_hmac_token(secret, context);
-        
+
         // HMAC tokens should be different (due to nonce)
         assert_ne!(token1, token2);
-        
+
         // But both should be valid length
         assert_eq!(token1.len(), TOKEN_LENGTH);
         assert_eq!(token2.len(), TOKEN_LENGTH);
@@ -219,7 +222,7 @@ mod tests {
     fn test_token_audit_info() {
         let token = "X7K9M2P4Q8R5N6V3";
         let info = TokenAuditInfo::from(token);
-        
+
         assert_eq!(info.masked, "X7K9****");
         assert_eq!(info.hash.len(), 64);
         assert_eq!(info.hash_prefix.len(), 8);

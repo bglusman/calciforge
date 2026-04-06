@@ -312,14 +312,18 @@ mod tests {
     fn test_bare_zfs_flagged() {
         assert!(check("clash-agent ALL=(root) NOPASSWD: /sbin/zfs"));
         assert!(check("clash-agent ALL=(root) NOPASSWD: /sbin/zfs *"));
-        assert!(check("clash-agent ALL=(root) NOPASSWD: /sbin/zfs destroy *"));
+        assert!(check(
+            "clash-agent ALL=(root) NOPASSWD: /sbin/zfs destroy *"
+        ));
     }
 
     #[test]
     fn test_zfs_safe_subcmds_not_flagged() {
         assert!(!check("clash-agent ALL=(root) NOPASSWD: /sbin/zfs list *"));
         assert!(!check("clash-agent ALL=(root) NOPASSWD: /sbin/zfs get *"));
-        assert!(!check("clash-agent ALL=(root) NOPASSWD: /sbin/zfs snapshot *"));
+        assert!(!check(
+            "clash-agent ALL=(root) NOPASSWD: /sbin/zfs snapshot *"
+        ));
     }
 
     #[test]
@@ -389,6 +393,9 @@ mod tests {
         let r = reason("clash-agent ALL=(root) NOPASSWD: /usr/bin/git *");
         assert!(r.is_some());
         let msg = r.unwrap();
-        assert!(msg.contains("git-safe-wrapper"), "should mention the wrapper");
+        assert!(
+            msg.contains("git-safe-wrapper"),
+            "should mention the wrapper"
+        );
     }
 }

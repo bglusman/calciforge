@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// mTLS authentication middleware
-/// 
+///
 /// This middleware expects ClientIdentity to be injected by the TLS acceptor.
 /// In axum-server with rustls, we use a custom acceptor to extract certs
 /// and inject them into the request extensions.

@@ -18,8 +18,7 @@ use crate::{ClashPolicy, PolicyContext, PolicyVerdict, StarlarkPolicy};
 
 /// Load the shared example policy (same source used in production).
 fn load_test_policy() -> StarlarkPolicy {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/policy.star");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/policy.star");
     StarlarkPolicy::load(path)
 }
 

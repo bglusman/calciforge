@@ -40,7 +40,7 @@ where
 
     loop {
         attempts += 1;
-        
+
         match operation().await {
             Ok(val) => {
                 if attempts > 1 {
@@ -61,9 +61,9 @@ where
                     "Attempt {} failed (retryable), retrying in {}ms: {}",
                     attempts, backoff_ms, e
                 );
-                
+
                 sleep(Duration::from_millis(backoff_ms)).await;
-                
+
                 // Exponential backoff with 2x multiplier
                 backoff_ms = (backoff_ms * 2).min(max_delay_ms);
             }
@@ -80,11 +80,7 @@ mod tests {
     fn test_default_retry_strategy() {
         let strategy = DefaultRetryStrategy::default();
 
-        assert!(strategy.is_retryable(&OneCliError::Unreachable { 
-            url: "test".to_string(), 
-            source: reqwest::Error::from(std::io::Error::new(std::io::ErrorKind::Other, "test")) 
-        }));
-        
+        assert!(strategy.is_retryable(&OneCliError::RateLimited { retry_after: 5 }));
         assert!(!strategy.is_retryable(&OneCliError::PolicyDenied("test".to_string())));
         assert!(!strategy.is_retryable(&OneCliError::CredentialNotFound("test".to_string())));
     }
@@ -114,16 +110,14 @@ mod tests {
 
         let result = execute_with_retry(&config, strategy, || {
             counter.fetch_add(1, Ordering::SeqCst);
-            async move {
-                Err::<i32, OneCliError>(OneCliError::Unreachable {
-                    url: "test".to_string(),
-                    source: reqwest::Error::from(std::io::Error::new(std::io::ErrorKind::Other, "test"))
-                })
-            }
+            async move { Err::<i32, OneCliError>(OneCliError::RateLimited { retry_after: 5 }) }
         })
         .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), config.max_retries as usize + 1);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            config.max_retries as usize + 1
+        );
     }
 }

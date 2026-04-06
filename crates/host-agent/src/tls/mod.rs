@@ -49,11 +49,9 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     }
 
     // Create client certificate verifier
-    let client_verifier = rustls::server::WebPkiClientVerifier::builder(
-        Arc::new(root_store)
-    )
-    .build()
-    .with_context(|| "Failed to create client certificate verifier")?;
+    let client_verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+        .build()
+        .with_context(|| "Failed to create client certificate verifier")?;
 
     // Build server config with mTLS
     let rustls_config = ServerConfig::builder()
@@ -69,8 +67,8 @@ pub fn create_mtls_config<P: AsRef<Path>>(
 /// Load certificates from PEM file
 fn load_certs<P: AsRef<Path>>(path: P) -> Result<Vec<CertificateDer<'static>>> {
     let path = path.as_ref();
-    let content = fs::read(path)
-        .with_context(|| format!("Failed to read cert file: {:?}", path))?;
+    let content =
+        fs::read(path).with_context(|| format!("Failed to read cert file: {:?}", path))?;
 
     let mut certs = Vec::new();
     let mut reader = std::io::BufReader::new(&content[..]);
@@ -96,8 +94,7 @@ fn load_certs<P: AsRef<Path>>(path: P) -> Result<Vec<CertificateDer<'static>>> {
 /// Load private key from PEM file
 fn load_private_key<P: AsRef<Path>>(path: P) -> Result<PrivateKeyDer<'static>> {
     let path = path.as_ref();
-    let content = fs::read(path)
-        .with_context(|| format!("Failed to read key file: {:?}", path))?;
+    let content = fs::read(path).with_context(|| format!("Failed to read key file: {:?}", path))?;
 
     let mut reader = std::io::BufReader::new(&content[..]);
 
@@ -135,8 +132,14 @@ impl IdentityExtractingAcceptor {
     pub async fn accept(
         &self,
         stream: tokio::net::TcpStream,
-    ) -> Result<(ClientIdentity, tokio_rustls::server::TlsStream<tokio::net::TcpStream>)> {
-        let tls_stream = self.inner.accept(stream).await
+    ) -> Result<(
+        ClientIdentity,
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    )> {
+        let tls_stream = self
+            .inner
+            .accept(stream)
+            .await
             .with_context(|| "TLS handshake failed")?;
 
         // Get peer certificates
@@ -170,7 +173,9 @@ impl IdentityExtractingAcceptor {
 /// Test helper to generate self-signed certs for testing (updated for rcgen 0.13)
 #[cfg(test)]
 pub mod test_certs {
-    use rcgen::{CertifiedKey, CertificateParams, KeyPair, IsCa, BasicConstraints, KeyUsagePurpose};
+    use rcgen::{
+        BasicConstraints, CertificateParams, CertifiedKey, IsCa, KeyPair, KeyUsagePurpose,
+    };
 
     /// Generate a self-signed CA certificate. Returns (CertifiedKey) which holds
     /// the cert + key pair together.
@@ -178,10 +183,7 @@ pub mod test_certs {
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["ZeroClawed CA".to_string()]).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params.key_usages = vec![
-            KeyUsagePurpose::KeyCertSign,
-            KeyUsagePurpose::CrlSign,
-        ];
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
         let cert = params.self_signed(&key_pair).unwrap();
         let pem = cert.pem().into_bytes();
         (CertifiedKey { cert, key_pair }, pem)
@@ -191,7 +193,9 @@ pub mod test_certs {
     pub fn generate_test_client_cert(ca: &CertifiedKey, cn: &str) -> (Vec<u8>, Vec<u8>) {
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec![cn.to_string()]).unwrap();
-        params.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, cn);
         let cert = params.signed_by(&key_pair, &ca.cert, &ca.key_pair).unwrap();
         let cert_pem = cert.pem().into_bytes();
         let key_pem = key_pair.serialize_pem().into_bytes();

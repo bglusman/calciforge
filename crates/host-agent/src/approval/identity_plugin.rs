@@ -20,7 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 
 /// Input sent to the identity plugin
 #[derive(Debug, Serialize)]
@@ -52,7 +52,10 @@ pub async fn validate_approver_identity(
     } else if plugin_spec.starts_with("http://") || plugin_spec.starts_with("https://") {
         invoke_http_plugin(plugin_spec, request).await
     } else {
-        anyhow::bail!("Unsupported identity_plugin format: '{}'. Use 'command:/path' or 'http://...'", plugin_spec)
+        anyhow::bail!(
+            "Unsupported identity_plugin format: '{}'. Use 'command:/path' or 'http://...'",
+            plugin_spec
+        )
     }
 }
 
@@ -85,13 +88,10 @@ async fn invoke_command_plugin(path: &str, request: &PluginRequest) -> anyhow::R
     }
 
     // Wait with timeout (5 seconds)
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        child.wait_with_output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("Identity plugin timed out after 5s"))?
-    .map_err(|e| anyhow::anyhow!("Identity plugin wait failed: {}", e))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
+        .await
+        .map_err(|_| anyhow::anyhow!("Identity plugin timed out after 5s"))?
+        .map_err(|e| anyhow::anyhow!("Identity plugin wait failed: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

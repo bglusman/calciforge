@@ -345,10 +345,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            a.hooks_agent_url(),
-            "http://10.0.0.20:18789/hooks/agent"
-        );
+        assert_eq!(a.hooks_agent_url(), "http://10.0.0.20:18789/hooks/agent");
     }
 
     #[test]
@@ -360,10 +357,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            a.hooks_agent_url(),
-            "http://10.0.0.20:18789/hooks/agent"
-        );
+        assert_eq!(a.hooks_agent_url(), "http://10.0.0.20:18789/hooks/agent");
     }
 
     #[test]

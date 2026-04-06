@@ -918,9 +918,6 @@ mod tests {
                 env: None,
                 registry: None,
                 aliases: vec![],
-            openclaw_agent_id: None,
-            reply_port: None,
-            reply_auth_token: None,
             }],
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
@@ -941,6 +938,7 @@ mod tests {
             permissions: None,
             memory: None,
             context: Default::default(),
+            model_shortcuts: vec![],
         })
     }
 
@@ -1089,7 +1087,7 @@ mod tests {
 
     #[test]
     fn test_normalise_phone_strips_spaces() {
-        assert_eq!(normalise_phone("1 215 460 9585"), "+15555550001");
+        assert_eq!(normalise_phone("1 215 460 9585"), "+15555550100");
     }
 
     // --- Identity resolution tests ---

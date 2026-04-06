@@ -115,7 +115,7 @@ pub fn is_cert_revoked(
     crl_data: Option<&[u8]>,
 ) -> Result<bool, IdentityError> {
     let fingerprint = cert_fingerprint(cert);
-    
+
     // If no CRL configured, cert is not revoked
     let crl_data = match crl_data {
         Some(data) => data,
@@ -126,7 +126,7 @@ pub fn is_cert_revoked(
     // In production, use x509_parser to properly parse CRL
     // For now, check if fingerprint appears in CRL data
     let crl_str = String::from_utf8_lossy(crl_data);
-    
+
     // Simple line-based check (real implementation would parse ASN.1)
     for line in crl_str.lines() {
         if line.trim() == fingerprint {
@@ -139,7 +139,7 @@ pub fn is_cert_revoked(
 }
 
 /// mTLS authentication middleware
-/// 
+///
 /// This middleware expects ClientIdentity to be injected by the TLS acceptor.
 /// In axum-server with rustls, we use a custom acceptor to extract certs
 /// and inject them into the request extensions.

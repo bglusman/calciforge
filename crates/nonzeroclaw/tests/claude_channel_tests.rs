@@ -6,10 +6,10 @@
 
 use async_trait::async_trait;
 use nonzeroclaw::channels::claude_acp::{
-    extract_acp_response, parse_acp_events, AcpEvent, ClaudeAcpChannel,
+    AcpEvent, ClaudeAcpChannel, extract_acp_response, parse_acp_events,
 };
 use nonzeroclaw::channels::claude_api::{
-    claude_tool_use_to_nzc, nzc_tool_to_claude, ClaudeApiChannel, ToolUseBlock,
+    ClaudeApiChannel, ToolUseBlock, claude_tool_use_to_nzc, nzc_tool_to_claude,
 };
 use nonzeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
 use nonzeroclaw::config::schema::{ClaudeAcpConfig, ClaudeApiConfig};
@@ -303,10 +303,7 @@ fn acp_parse_multiline_client_block() {
 fn acp_parse_done_closes_open_block() {
     let events = parse_acp_events("[client]\nContent before done\n[done]");
     assert_eq!(events.len(), 2);
-    assert_eq!(
-        events[0],
-        AcpEvent::Client("Content before done".into())
-    );
+    assert_eq!(events[0], AcpEvent::Client("Content before done".into()));
     assert_eq!(events[1], AcpEvent::Done);
 }
 
@@ -339,7 +336,10 @@ fn acp_extract_falls_back_to_raw_when_no_client() {
         AcpEvent::Raw("output line 1".into()),
         AcpEvent::Raw("output line 2".into()),
     ];
-    assert_eq!(extract_acp_response(&events), "output line 1\noutput line 2");
+    assert_eq!(
+        extract_acp_response(&events),
+        "output line 1\noutput line 2"
+    );
 }
 
 #[test]
@@ -428,8 +428,7 @@ fn claude_api_config_serializes_and_deserializes() {
         webhook_secret: None,
     };
     let serialized = toml::to_string_pretty(&original).expect("should serialize");
-    let deserialized: ClaudeApiConfig =
-        toml::from_str(&serialized).expect("should deserialize");
+    let deserialized: ClaudeApiConfig = toml::from_str(&serialized).expect("should deserialize");
 
     assert_eq!(deserialized.enabled, original.enabled);
     assert_eq!(deserialized.api_key, original.api_key);
@@ -460,8 +459,7 @@ fn claude_acp_config_serializes_and_deserializes() {
         extra_args: vec!["--verbose".to_string()],
     };
     let serialized = toml::to_string_pretty(&original).expect("should serialize");
-    let deserialized: ClaudeAcpConfig =
-        toml::from_str(&serialized).expect("should deserialize");
+    let deserialized: ClaudeAcpConfig = toml::from_str(&serialized).expect("should deserialize");
 
     assert_eq!(deserialized.enabled, original.enabled);
     assert_eq!(deserialized.claude_path, original.claude_path);

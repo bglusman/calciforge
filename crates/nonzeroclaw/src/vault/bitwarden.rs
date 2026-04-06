@@ -468,14 +468,24 @@ mod tests {
         let adapter = make_adapter(item_ids, runner, Duration::from_secs(3600));
 
         // First call — should unlock once.
-        let s1 = adapter.get_secret("anthropic_key").await.expect("get_secret 1");
+        let s1 = adapter
+            .get_secret("anthropic_key")
+            .await
+            .expect("get_secret 1");
         assert_eq!(s1.expose(), "sk-ant-test");
         assert_eq!(unlock_count.load(Ordering::SeqCst), 1);
 
         // Second call — should reuse session (no additional unlock).
-        let s2 = adapter.get_secret("anthropic_key").await.expect("get_secret 2");
+        let s2 = adapter
+            .get_secret("anthropic_key")
+            .await
+            .expect("get_secret 2");
         assert_eq!(s2.expose(), "sk-ant-test");
-        assert_eq!(unlock_count.load(Ordering::SeqCst), 1, "unlock called again unexpectedly");
+        assert_eq!(
+            unlock_count.load(Ordering::SeqCst),
+            1,
+            "unlock called again unexpectedly"
+        );
     }
 
     /// Expired session triggers re-unlock.
@@ -496,7 +506,10 @@ mod tests {
         adapter.get_secret("key").await.expect("first call");
         // Sleep to expire the token.
         tokio::time::sleep(Duration::from_millis(5)).await;
-        adapter.get_secret("key").await.expect("second call after expiry");
+        adapter
+            .get_secret("key")
+            .await
+            .expect("second call after expiry");
 
         assert_eq!(
             unlock_count.load(Ordering::SeqCst),
@@ -524,7 +537,10 @@ mod tests {
         let runner = MockBwRunner::new(Default::default());
         let adapter = make_adapter(Default::default(), runner, Duration::from_secs(3600));
 
-        let err = adapter.get_secret("no_such_key").await.expect_err("should fail");
+        let err = adapter
+            .get_secret("no_such_key")
+            .await
+            .expect_err("should fail");
         assert!(matches!(err, VaultError::UnknownKey(_)));
     }
 

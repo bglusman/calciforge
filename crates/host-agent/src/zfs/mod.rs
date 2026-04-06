@@ -57,7 +57,11 @@ impl ZfsExecutor {
     }
 
     /// Create a snapshot
-    async fn snapshot(&self, snapshot: &str, identity: &ClientIdentity) -> Result<String, ZfsError> {
+    async fn snapshot(
+        &self,
+        snapshot: &str,
+        identity: &ClientIdentity,
+    ) -> Result<String, ZfsError> {
         // Execute as the client identity user (P0-3)
         // Uses 'zfs allow' delegation — no sudo needed for snapshot if properly delegated
         let output = run_as_user("zfs", &["snapshot", snapshot], identity).await?;
@@ -90,7 +94,11 @@ impl ZfsExecutor {
     }
 
     /// Rollback to a snapshot
-    async fn rollback(&self, snapshot: &str, identity: &ClientIdentity) -> Result<String, ZfsError> {
+    async fn rollback(
+        &self,
+        snapshot: &str,
+        identity: &ClientIdentity,
+    ) -> Result<String, ZfsError> {
         let output = run_with_sudo_as_user("zfs", &["rollback", snapshot], identity).await?;
 
         warn!(
@@ -110,7 +118,12 @@ impl ZfsExecutor {
         list_type: Option<&str>,
         _identity: &ClientIdentity,
     ) -> Result<Vec<ZfsEntry>, ZfsError> {
-        let mut args = vec!["list", "-H", "-o", "name,type,used,available,refer,mountpoint"];
+        let mut args = vec![
+            "list",
+            "-H",
+            "-o",
+            "name,type,used,available,refer,mountpoint",
+        ];
 
         // Add type filter if specified
         if let Some(t) = list_type {
@@ -128,11 +141,7 @@ impl ZfsExecutor {
     }
 
     /// Get ZFS property
-    pub async fn get_property(
-        &self,
-        dataset: &str,
-        property: &str,
-    ) -> Result<String, ZfsError> {
+    pub async fn get_property(&self, dataset: &str, property: &str) -> Result<String, ZfsError> {
         let args = vec!["get", "-H", "-o", "value", property, dataset];
         let output = run_zfs(&args).await?;
         Ok(output.trim().to_string())
@@ -319,7 +328,10 @@ mod tests {
         assert!(is_valid_snapshot_name("manual_backup"));
         // '@' is NOT valid in a snapshot name component — it's used as the separator
         // between dataset and snapshot in "dataset@snapshot" references
-        assert!(!is_valid_snapshot_name("snap@123"), "@ should be invalid in snapshot name");
+        assert!(
+            !is_valid_snapshot_name("snap@123"),
+            "@ should be invalid in snapshot name"
+        );
         assert!(is_valid_snapshot_name("snap123"));
         assert!(is_valid_snapshot_name("snap.v1"));
     }

@@ -17,8 +17,8 @@ use std::sync::atomic::Ordering;
 
 use clash::{ClashPolicy, PermissivePolicy, PolicyContext, PolicyVerdict, StarlarkPolicy};
 use nonzeroclaw::agent::loop_::{
-    CLASH_ALLOWS_TOTAL, CLASH_DENIES_TOTAL, CLASH_EVALUATIONS_TOTAL, CLASH_REVIEWS_TOTAL,
-    CLASH_REVIEW_QUEUE_SIZE,
+    CLASH_ALLOWS_TOTAL, CLASH_DENIES_TOTAL, CLASH_EVALUATIONS_TOTAL, CLASH_REVIEW_QUEUE_SIZE,
+    CLASH_REVIEWS_TOTAL,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,8 +27,7 @@ use nonzeroclaw::agent::loop_::{
 
 /// Load the config/policy.star template shipped with nonzeroclaw.
 fn load_default_policy() -> StarlarkPolicy {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("config/policy.star");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/policy.star");
     StarlarkPolicy::load_with_profiles(path)
 }
 
@@ -47,16 +46,20 @@ fn policy_context_new_sets_fields() {
 
 #[test]
 fn policy_context_with_command_stored_in_extra() {
-    let ctx = PolicyContext::new("owner", "nzc", "tool:shell")
-        .with_command("ls -la /tmp");
-    assert_eq!(ctx.extra.get("command").map(String::as_str), Some("ls -la /tmp"));
+    let ctx = PolicyContext::new("owner", "nzc", "tool:shell").with_command("ls -la /tmp");
+    assert_eq!(
+        ctx.extra.get("command").map(String::as_str),
+        Some("ls -la /tmp")
+    );
 }
 
 #[test]
 fn policy_context_with_path_stored_in_extra() {
-    let ctx = PolicyContext::new("owner", "nzc", "tool:file_write")
-        .with_path("/etc/passwd");
-    assert_eq!(ctx.extra.get("path").map(String::as_str), Some("/etc/passwd"));
+    let ctx = PolicyContext::new("owner", "nzc", "tool:file_write").with_path("/etc/passwd");
+    assert_eq!(
+        ctx.extra.get("path").map(String::as_str),
+        Some("/etc/passwd")
+    );
 }
 
 #[test]
@@ -64,8 +67,14 @@ fn policy_context_chaining_command_and_path() {
     let ctx = PolicyContext::new("guest", "nzc", "tool:shell")
         .with_command("cat /etc/passwd")
         .with_path("/etc/passwd");
-    assert_eq!(ctx.extra.get("command").map(String::as_str), Some("cat /etc/passwd"));
-    assert_eq!(ctx.extra.get("path").map(String::as_str), Some("/etc/passwd"));
+    assert_eq!(
+        ctx.extra.get("command").map(String::as_str),
+        Some("cat /etc/passwd")
+    );
+    assert_eq!(
+        ctx.extra.get("path").map(String::as_str),
+        Some("/etc/passwd")
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,14 +85,20 @@ fn policy_context_chaining_command_and_path() {
 fn permissive_policy_allows_shell() {
     let policy = PermissivePolicy;
     let ctx = PolicyContext::new("guest", "nzc", "tool:shell").with_command("rm -rf /");
-    assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+    assert!(matches!(
+        policy.evaluate("tool:shell", &ctx),
+        PolicyVerdict::Allow
+    ));
 }
 
 #[test]
 fn permissive_policy_allows_file_write() {
     let policy = PermissivePolicy;
     let ctx = PolicyContext::new("guest", "nzc", "tool:file_write").with_path("/etc/passwd");
-    assert!(matches!(policy.evaluate("tool:file_write", &ctx), PolicyVerdict::Allow));
+    assert!(matches!(
+        policy.evaluate("tool:file_write", &ctx),
+        PolicyVerdict::Allow
+    ));
 }
 
 #[test]
@@ -126,8 +141,7 @@ fn default_policy_allows_read_operations() {
 #[test]
 fn default_policy_reviews_rm_rf() {
     let policy = load_default_policy();
-    let ctx = PolicyContext::new("guest", "nzc", "tool:shell")
-        .with_command("rm -rf /important");
+    let ctx = PolicyContext::new("guest", "nzc", "tool:shell").with_command("rm -rf /important");
     match policy.evaluate("tool:shell", &ctx) {
         PolicyVerdict::Review(reason) => {
             assert!(
@@ -143,8 +157,7 @@ fn default_policy_reviews_rm_rf() {
 #[test]
 fn default_policy_reviews_mkfs_command() {
     let policy = load_default_policy();
-    let ctx = PolicyContext::new("owner", "nzc", "tool:shell")
-        .with_command("mkfs.ext4 /dev/sdb");
+    let ctx = PolicyContext::new("owner", "nzc", "tool:shell").with_command("mkfs.ext4 /dev/sdb");
     match policy.evaluate("tool:shell", &ctx) {
         PolicyVerdict::Review(reason) => {
             assert!(
@@ -191,7 +204,10 @@ fn default_policy_reviews_file_deletion() {
     let policy = load_default_policy();
     let ctx = PolicyContext::new("owner", "nzc", "tool:delete").with_path("/tmp/file.txt");
     assert!(
-        matches!(policy.evaluate("tool:delete", &ctx), PolicyVerdict::Review(_)),
+        matches!(
+            policy.evaluate("tool:delete", &ctx),
+            PolicyVerdict::Review(_)
+        ),
         "file deletion should always require review"
     );
 }
@@ -202,7 +218,10 @@ fn default_policy_reviews_insecure_web_fetch() {
     let ctx = PolicyContext::new("owner", "nzc", "tool:web_fetch")
         .with_command("http://insecure.example.com");
     assert!(
-        matches!(policy.evaluate("tool:web_fetch", &ctx), PolicyVerdict::Review(_)),
+        matches!(
+            policy.evaluate("tool:web_fetch", &ctx),
+            PolicyVerdict::Review(_)
+        ),
         "non-HTTPS web fetch should require review"
     );
 }
@@ -213,7 +232,10 @@ fn default_policy_allows_https_web_fetch() {
     let ctx = PolicyContext::new("owner", "nzc", "tool:web_fetch")
         .with_command("https://secure.example.com/data");
     assert!(
-        matches!(policy.evaluate("tool:web_fetch", &ctx), PolicyVerdict::Allow),
+        matches!(
+            policy.evaluate("tool:web_fetch", &ctx),
+            PolicyVerdict::Allow
+        ),
         "HTTPS web fetch should be allowed by default policy"
     );
 }
@@ -274,13 +296,19 @@ def evaluate(action, identity, agent, command="", path=""):
 
     let owner_ctx = PolicyContext::new("owner", "nzc", "tool:shell");
     assert!(
-        matches!(policy.evaluate("tool:shell", &owner_ctx), PolicyVerdict::Allow),
+        matches!(
+            policy.evaluate("tool:shell", &owner_ctx),
+            PolicyVerdict::Allow
+        ),
         "owner should be allowed"
     );
 
     let guest_ctx = PolicyContext::new("guest", "nzc", "tool:shell");
     assert!(
-        matches!(policy.evaluate("tool:shell", &guest_ctx), PolicyVerdict::Deny(_)),
+        matches!(
+            policy.evaluate("tool:shell", &guest_ctx),
+            PolicyVerdict::Deny(_)
+        ),
         "guest should be denied"
     );
 }
@@ -297,7 +325,10 @@ def evaluate(action, identity, agent, command="", path=""):
 
     let safe_ctx = PolicyContext::new("owner", "nzc", "tool:shell").with_command("ls /tmp");
     assert!(
-        matches!(policy.evaluate("tool:shell", &safe_ctx), PolicyVerdict::Allow),
+        matches!(
+            policy.evaluate("tool:shell", &safe_ctx),
+            PolicyVerdict::Allow
+        ),
         "safe command should be allowed"
     );
 
@@ -325,12 +356,14 @@ def evaluate(action, identity, agent, command="", path=""):
 
     let safe_ctx = PolicyContext::new("owner", "nzc", "tool:file_write").with_path("/tmp/file");
     assert!(
-        matches!(policy.evaluate("tool:file_write", &safe_ctx), PolicyVerdict::Allow),
+        matches!(
+            policy.evaluate("tool:file_write", &safe_ctx),
+            PolicyVerdict::Allow
+        ),
         "/tmp write should be allowed"
     );
 
-    let etc_ctx = PolicyContext::new("owner", "nzc", "tool:file_write")
-        .with_path("/etc/sudoers");
+    let etc_ctx = PolicyContext::new("owner", "nzc", "tool:file_write").with_path("/etc/sudoers");
     match policy.evaluate("tool:file_write", &etc_ctx) {
         PolicyVerdict::Deny(reason) => assert!(reason.contains("etc_write_blocked")),
         other => panic!(
@@ -346,7 +379,10 @@ fn starlark_missing_policy_file_falls_back_to_permissive() {
     let policy = StarlarkPolicy::load(std::path::PathBuf::from("/nonexistent/policy.star"));
     let ctx = PolicyContext::new("guest", "nzc", "tool:shell").with_command("rm -rf /");
     // Permissive fallback: allow everything
-    assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+    assert!(matches!(
+        policy.evaluate("tool:shell", &ctx),
+        PolicyVerdict::Allow
+    ));
 }
 
 #[test]
@@ -445,8 +481,7 @@ fn default_policy_double_space_evasion_still_reviewed() {
     let policy = load_default_policy();
 
     // Attacker attempts double-space evasion: "rm  -rf /important"
-    let ctx = PolicyContext::new("guest", "nzc", "tool:shell")
-        .with_command("rm  -rf /important");
+    let ctx = PolicyContext::new("guest", "nzc", "tool:shell").with_command("rm  -rf /important");
 
     // The normalize() function in policy.star collapses whitespace
     match policy.evaluate("tool:shell", &ctx) {
@@ -469,8 +504,7 @@ fn default_policy_tab_evasion_still_reviewed() {
     let policy = load_default_policy();
 
     // Tab-separated command: "rm\t-rf\t/important"
-    let ctx = PolicyContext::new("guest", "nzc", "tool:shell")
-        .with_command("rm\t-rf\t/important");
+    let ctx = PolicyContext::new("guest", "nzc", "tool:shell").with_command("rm\t-rf\t/important");
 
     match policy.evaluate("tool:shell", &ctx) {
         PolicyVerdict::Review(_) | PolicyVerdict::Deny(_) => {} // caught or blocked
@@ -488,7 +522,10 @@ fn default_policy_tab_evasion_still_reviewed() {
 fn clash_policy_as_trait_object() {
     let policy: Arc<dyn ClashPolicy> = Arc::new(PermissivePolicy);
     let ctx = PolicyContext::new("owner", "nzc", "tool:shell");
-    assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+    assert!(matches!(
+        policy.evaluate("tool:shell", &ctx),
+        PolicyVerdict::Allow
+    ));
 }
 
 #[test]
@@ -499,7 +536,10 @@ def evaluate(action, identity, agent, command="", path=""):
 "#;
     let policy: Arc<dyn ClashPolicy> = Arc::new(StarlarkPolicy::from_source("<test>", script));
     let ctx = PolicyContext::new("owner", "nzc", "tool:shell");
-    assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Deny(_)));
+    assert!(matches!(
+        policy.evaluate("tool:shell", &ctx),
+        PolicyVerdict::Deny(_)
+    ));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -517,7 +557,10 @@ fn policy_verdict_deny_carries_reason() {
     let v = PolicyVerdict::Deny("test_reason".to_string());
     match v {
         PolicyVerdict::Deny(reason) => assert_eq!(reason, "test_reason"),
-        other => panic!("Expected Deny, got allow={}", matches!(other, PolicyVerdict::Allow)),
+        other => panic!(
+            "Expected Deny, got allow={}",
+            matches!(other, PolicyVerdict::Allow)
+        ),
     }
 }
 
@@ -526,7 +569,10 @@ fn policy_verdict_review_carries_reason() {
     let v = PolicyVerdict::Review("needs_approval".to_string());
     match v {
         PolicyVerdict::Review(reason) => assert_eq!(reason, "needs_approval"),
-        other => panic!("Expected Review, got allow={}", matches!(other, PolicyVerdict::Allow)),
+        other => panic!(
+            "Expected Review, got allow={}",
+            matches!(other, PolicyVerdict::Allow)
+        ),
     }
 }
 
@@ -541,5 +587,8 @@ fn clash_evaluations_total_is_monotonically_increasing() {
     // We can't trigger run_tool_call_loop from here, but the counter is
     // observable from test infrastructure — just assert it doesn't decrease.
     let after = CLASH_EVALUATIONS_TOTAL.load(Ordering::Relaxed);
-    assert!(after >= before, "CLASH_EVALUATIONS_TOTAL must never decrease");
+    assert!(
+        after >= before,
+        "CLASH_EVALUATIONS_TOTAL must never decrease"
+    );
 }
