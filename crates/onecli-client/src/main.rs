@@ -8,7 +8,7 @@
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{Request, State, Query},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, any},
@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/proxy/:provider", any(proxy_handler))
+        .route("/proxy-url", any(generic_proxy_handler))
         .route("/vault/:secret", get(vault_handler))
         .route("/policy/check", post(policy_check_handler))
         .with_state(state);
@@ -72,6 +73,19 @@ async fn health_handler() -> impl IntoResponse {
     }))
 }
 
+/// Known LLM provider mappings
+fn get_provider_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" => Some("https://api.anthropic.com"),
+        "openai" => Some("https://api.openai.com"),
+        "kimi" => Some("https://api.moonshot.cn"),
+        "gemini" => Some("https://generativelanguage.googleapis.com"),
+        "groq" => Some("https://api.groq.com/openai/v1"),
+        "brave" => Some("https://api.search.brave.com"),
+        _ => None,
+    }
+}
+
 async fn proxy_handler(
     State(state): State<AppState>,
     axum::extract::Path(provider): axum::extract::Path<String>,
@@ -80,36 +94,100 @@ async fn proxy_handler(
 ) -> Result<Response, StatusCode> {
     debug!(provider = %provider, "Proxying request");
     
-    let target_url = match provider.as_str() {
-        "anthropic" => "https://api.anthropic.com",
-        "openai" => "https://api.openai.com",
-        "kimi" => "https://api.moonshot.cn",
-        "gemini" => "https://generativelanguage.googleapis.com",
-        _ => {
-            warn!("Unknown provider: {}", provider);
-            return Err(StatusCode::BAD_REQUEST);
-        }
-    };
+    let target_url = get_provider_url(&provider)
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    
+    proxy_to_target(state, target_url, &provider, headers, request).await
+}
+
+#[derive(Deserialize)]
+struct GenericProxyQuery {
+    target: String,
+    secret: Option<String>,
+}
+
+async fn generic_proxy_handler(
+    State(state): State<AppState>,
+    Query(query): Query<GenericProxyQuery>,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Result<Response, StatusCode> {
+    debug!(target = %query.target, "Generic proxy request");
+    
+    // Validate target URL (only allow https)
+    if !query.target.starts_with("https://") {
+        warn!("Rejecting non-HTTPS target: {}", query.target);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
+    // Use secret name if provided, otherwise try to derive from hostname
+    let secret_name = query.secret.unwrap_or_else(|| {
+        query.target
+            .trim_start_matches("https://")
+            .trim_start_matches("api.")
+            .split('.')
+            .next()
+            .unwrap_or("unknown")
+            .to_string()
+    });
+    
+    proxy_to_target(state, &query.target, &secret_name, headers, request).await
+}
+
+async fn proxy_to_target(
+    state: AppState,
+    target_url: &str,
+    secret_name: &str,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Result<Response, StatusCode> {
+    let target_path = request.uri().path();
+    let target_query = request.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
     
     let mut forwarded_req = state.http_client.request(
         request.method().clone(),
-        format!("{}{}", target_url, request.uri().path())
+        format!("{}{}{}", target_url, target_path, target_query)
     );
     
+    // Forward headers (except host and x-onecli-*)
     for (key, value) in headers.iter() {
-        if key.as_str().to_lowercase() != "host" {
+        let key_str = key.as_str().to_lowercase();
+        if key_str != "host" && !key_str.starts_with("x-onecli-") {
             forwarded_req = forwarded_req.header(key, value);
         }
     }
     
-    if let Ok(token) = vault::get_secret(&provider).await {
-        forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+    // Try to inject credentials from vault
+    match vault::get_secret(secret_name).await {
+        Ok(token) => {
+            debug!("Injected credentials for {}", secret_name);
+            forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+        }
+        Err(_) => {
+            // Try common variations
+            let variations = vec![
+                secret_name.to_lowercase(),
+                secret_name.to_uppercase(),
+                format!("{} API", secret_name),
+                format!("{} API Key", secret_name),
+            ];
+            for var in variations {
+                if let Ok(token) = vault::get_secret(&var).await {
+                    debug!("Injected credentials for {} (matched as {})", secret_name, var);
+                    forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+                    break;
+                }
+            }
+        }
     }
     
+    // Add body if present
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    forwarded_req = forwarded_req.body(body_bytes);
+    if !body_bytes.is_empty() {
+        forwarded_req = forwarded_req.body(body_bytes);
+    }
     
     match forwarded_req.send().await {
         Ok(response) => {
