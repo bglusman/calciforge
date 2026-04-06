@@ -1219,7 +1219,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         // Token preserved; URL updated.
         assert_eq!(v["hooks"]["entries"]["zeroclawed"]["token"], "existing-tok");
-        assert_eq!(v["hooks"]["entries"]["zeroclawed"]["url"], "http://new/hook");
+        assert_eq!(
+            v["hooks"]["entries"]["zeroclawed"]["url"],
+            "http://new/hook"
+        );
     }
 
     /// patch_openclaw_config fails gracefully on invalid JSON.

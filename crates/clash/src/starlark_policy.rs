@@ -79,7 +79,11 @@ impl StarlarkPolicy {
                 path = %path.display(),
                 "clash: policy file not found — falling back to permissive mode"
             );
-            return Self { inner: Inner::Permissive, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny };
+            return Self {
+                inner: Inner::Permissive,
+                profiles_dir: None,
+                error_behaviour: ErrorBehaviour::Deny,
+            };
         }
 
         let source = match std::fs::read_to_string(&path) {
@@ -90,7 +94,11 @@ impl StarlarkPolicy {
                     error = %e,
                     "clash: failed to read policy file — falling back to permissive mode"
                 );
-                return Self { inner: Inner::Permissive, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny };
+                return Self {
+                    inner: Inner::Permissive,
+                    profiles_dir: None,
+                    error_behaviour: ErrorBehaviour::Deny,
+                };
             }
         };
 
@@ -110,9 +118,7 @@ impl StarlarkPolicy {
     /// 3. If found, run the profile → return its verdict.
     /// 4. Profile can only add restrictions (Deny/Review). It cannot loosen Allow.
     pub fn load_with_profiles(policy_path: PathBuf) -> Self {
-        let profiles_dir = policy_path
-            .parent()
-            .map(|p| p.join("profiles"));
+        let profiles_dir = policy_path.parent().map(|p| p.join("profiles"));
 
         let mut policy = Self::load(policy_path);
         policy.profiles_dir = profiles_dir;
@@ -125,14 +131,22 @@ impl StarlarkPolicy {
     /// Falls back to permissive if the source fails to parse or compile.
     pub fn from_source(filename: &str, source: &str) -> Self {
         match Self::compile(filename, source) {
-            Ok(inner) => Self { inner, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny },
+            Ok(inner) => Self {
+                inner,
+                profiles_dir: None,
+                error_behaviour: ErrorBehaviour::Deny,
+            },
             Err(e) => {
                 tracing::error!(
                     filename = %filename,
                     error = %e,
                     "clash: policy compilation failed — falling back to permissive mode"
                 );
-                Self { inner: Inner::Permissive, profiles_dir: None, error_behaviour: ErrorBehaviour::Deny }
+                Self {
+                    inner: Inner::Permissive,
+                    profiles_dir: None,
+                    error_behaviour: ErrorBehaviour::Deny,
+                }
             }
         }
     }
@@ -147,10 +161,8 @@ impl StarlarkPolicy {
     }
 
     fn compile(filename: &str, source: &str) -> anyhow::Result<Inner> {
-        let ast =
-            AstModule::parse(filename, source.to_string(), &Dialect::Standard).map_err(|e| {
-                anyhow::anyhow!("Starlark parse error in {filename}: {e}")
-            })?;
+        let ast = AstModule::parse(filename, source.to_string(), &Dialect::Standard)
+            .map_err(|e| anyhow::anyhow!("Starlark parse error in {filename}: {e}"))?;
 
         let globals = Globals::standard();
         let module = Module::new();
@@ -179,11 +191,20 @@ impl StarlarkPolicy {
 
     /// Call the Starlark `evaluate(action, identity, agent, command="", path="")` function and
     /// parse the return string into a [`PolicyVerdict`].
-    fn call_evaluate(&self, evaluate_fn: &OwnedFrozenValue, action: &str, context: &PolicyContext) -> PolicyVerdict {
+    fn call_evaluate(
+        &self,
+        evaluate_fn: &OwnedFrozenValue,
+        action: &str,
+        context: &PolicyContext,
+    ) -> PolicyVerdict {
         let env = Module::new();
         let mut eval = Evaluator::new(&env);
 
-        let command = context.extra.get("command").map(|s| s.as_str()).unwrap_or("");
+        let command = context
+            .extra
+            .get("command")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let path = context.extra.get("path").map(|s| s.as_str()).unwrap_or("");
 
         let heap = eval.heap();
@@ -214,7 +235,9 @@ impl StarlarkPolicy {
                     e
                 );
                 match self.error_behaviour {
-                    ErrorBehaviour::Deny => PolicyVerdict::Deny(format!("policy evaluation error: {e}")),
+                    ErrorBehaviour::Deny => {
+                        PolicyVerdict::Deny(format!("policy evaluation error: {e}"))
+                    }
                     ErrorBehaviour::Allow => PolicyVerdict::Allow,
                 }
             }
@@ -229,9 +252,7 @@ impl StarlarkPolicy {
     fn evaluate_base(&self, action: &str, context: &PolicyContext) -> PolicyVerdict {
         match &self.inner {
             Inner::Permissive => PolicyVerdict::Allow,
-            Inner::Loaded { evaluate_fn, .. } => {
-                self.call_evaluate(evaluate_fn, action, context)
-            }
+            Inner::Loaded { evaluate_fn, .. } => self.call_evaluate(evaluate_fn, action, context),
         }
     }
 
@@ -266,7 +287,7 @@ impl StarlarkPolicy {
             }
         }
 
-        base_verdict  // No profile, return base Allow
+        base_verdict // No profile, return base Allow
     }
 
     /// Parse a verdict string into a [`PolicyVerdict`].

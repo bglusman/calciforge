@@ -116,13 +116,25 @@ impl AcpxAdapter {
         raw.lines()
             .filter(|line| {
                 let t = line.trim();
-                if t.is_empty() { return false; }
+                if t.is_empty() {
+                    return false;
+                }
                 // Drop protocol scaffolding lines
-                if t.starts_with("[client]") { return false; }
-                if t.starts_with("[tool]") { return false; }
-                if t.starts_with("[thinking]") { return false; }
-                if t.starts_with("[done]") { return false; }
-                if t.starts_with("[error]") { return false; }
+                if t.starts_with("[client]") {
+                    return false;
+                }
+                if t.starts_with("[tool]") {
+                    return false;
+                }
+                if t.starts_with("[thinking]") {
+                    return false;
+                }
+                if t.starts_with("[done]") {
+                    return false;
+                }
+                if t.starts_with("[error]") {
+                    return false;
+                }
                 true
             })
             .collect::<Vec<_>>()
@@ -138,7 +150,8 @@ impl AcpxAdapter {
         info!(agent = %self.agent_name, "Running acpx exec");
 
         let mut cmd = Command::new("acpx");
-        cmd.arg("--format").arg("text")
+        cmd.arg("--format")
+            .arg("text")
             .arg(&self.agent_name)
             .arg("exec")
             .arg(message)
@@ -185,7 +198,8 @@ impl AcpxAdapter {
         info!(agent = %self.agent_name, "Running acpx prompt with session");
 
         let mut cmd = Command::new("acpx");
-        cmd.arg("--format").arg("text")
+        cmd.arg("--format")
+            .arg("text")
             .arg(&self.agent_name)
             .arg("prompt")
             .arg(message)

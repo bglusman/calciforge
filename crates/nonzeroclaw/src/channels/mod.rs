@@ -1068,10 +1068,7 @@ fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: Chan
 /// Push the current model onto the per-sender history ring buffer before switching.
 /// This is called with the *old* (about-to-be-replaced) model.
 fn push_model_history(ctx: &ChannelRuntimeContext, sender_key: &str, model: &str) {
-    let mut map = ctx
-        .model_history
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut map = ctx.model_history.lock().unwrap_or_else(|e| e.into_inner());
     let history = map.entry(sender_key.to_string()).or_default();
     // Avoid consecutive duplicates (e.g. switching to the same model twice).
     if history.front().map(|m| m.as_str()) != Some(model) {
@@ -1085,10 +1082,7 @@ fn push_model_history(ctx: &ChannelRuntimeContext, sender_key: &str, model: &str
 /// Return the Nth previous model for a sender (1-indexed, 1 = last model).
 /// Returns `None` if history is shorter than requested depth.
 fn get_model_history(ctx: &ChannelRuntimeContext, sender_key: &str, n: usize) -> Option<String> {
-    let map = ctx
-        .model_history
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let map = ctx.model_history.lock().unwrap_or_else(|e| e.into_inner());
     let history = map.get(sender_key)?;
     history.get(n.saturating_sub(1)).cloned()
 }
@@ -1599,7 +1593,9 @@ fn build_models_help_response(
         "Current provider: `{}`\nCurrent model: `{}`",
         current.provider, current.model
     );
-    response.push_str("\nSwitch model with `/model <model-id>`, `/model <alias>`, or `/model <hint>`.\n");
+    response.push_str(
+        "\nSwitch model with `/model <model-id>`, `/model <alias>`, or `/model <hint>`.\n",
+    );
     response.push_str("Use `/model -` to switch back to the previously used model.\n");
     response.push_str("Use `/model -N` to switch back N steps in history.\n");
 
@@ -1907,13 +1903,14 @@ async fn handle_runtime_command_if_needed(
                 "Model ID cannot be empty. Use `/model <model-id>`.".to_string()
             } else {
                 // 1. Check for history navigation: `-` or `-N`
-                let resolved_model: Option<String> =
-                    if let Some(depth) = parse_history_nav(&model_input) {
-                        match get_model_history(ctx, &sender_key, depth) {
-                            Some(prev) => Some(prev),
-                            None => {
-                                // History too short — report error without changing model.
-                                return channel
+                let resolved_model: Option<String> = if let Some(depth) =
+                    parse_history_nav(&model_input)
+                {
+                    match get_model_history(ctx, &sender_key, depth) {
+                        Some(prev) => Some(prev),
+                        None => {
+                            // History too short — report error without changing model.
+                            return channel
                                     .send(
                                         &SendMessage::new(
                                             format!(
@@ -1926,17 +1923,17 @@ async fn handle_runtime_command_if_needed(
                                     .await
                                     .map(|_| true)
                                     .unwrap_or(true);
-                            }
                         }
-                    } else if let Some(expanded) =
-                        resolve_model_shortcut(&ctx.model_shortcuts, &model_input)
-                    {
-                        // 2. Shortcut alias expansion
-                        Some(expanded)
-                    } else {
-                        // 3. Full model string / route hint (existing behaviour)
-                        Some(model_input.clone())
-                    };
+                    }
+                } else if let Some(expanded) =
+                    resolve_model_shortcut(&ctx.model_shortcuts, &model_input)
+                {
+                    // 2. Shortcut alias expansion
+                    Some(expanded)
+                } else {
+                    // 3. Full model string / route hint (existing behaviour)
+                    Some(model_input.clone())
+                };
 
                 // SAFETY: resolved_model is always Some here; the None path returns early above.
                 let resolved_model = resolved_model.expect("resolved_model is always Some");
@@ -12019,21 +12016,12 @@ This is an example JSON object for profile settings."#;
         assert_eq!(get_model_history(&ctx, key, 1), None);
 
         push_model_history(&ctx, key, "model-a");
-        assert_eq!(
-            get_model_history(&ctx, key, 1),
-            Some("model-a".to_string())
-        );
+        assert_eq!(get_model_history(&ctx, key, 1), Some("model-a".to_string()));
 
         push_model_history(&ctx, key, "model-b");
         // Most recent push is model-b, so -1 = model-b, -2 = model-a.
-        assert_eq!(
-            get_model_history(&ctx, key, 1),
-            Some("model-b".to_string())
-        );
-        assert_eq!(
-            get_model_history(&ctx, key, 2),
-            Some("model-a".to_string())
-        );
+        assert_eq!(get_model_history(&ctx, key, 1), Some("model-b".to_string()));
+        assert_eq!(get_model_history(&ctx, key, 2), Some("model-a".to_string()));
     }
 
     #[test]
@@ -12045,14 +12033,8 @@ This is an example JSON object for profile settings."#;
         push_model_history(&ctx, key, "model-a"); // duplicate, should not add
         push_model_history(&ctx, key, "model-b");
 
-        assert_eq!(
-            get_model_history(&ctx, key, 1),
-            Some("model-b".to_string())
-        );
-        assert_eq!(
-            get_model_history(&ctx, key, 2),
-            Some("model-a".to_string())
-        );
+        assert_eq!(get_model_history(&ctx, key, 1), Some("model-b".to_string()));
+        assert_eq!(get_model_history(&ctx, key, 2), Some("model-a".to_string()));
         assert_eq!(get_model_history(&ctx, key, 3), None);
     }
 

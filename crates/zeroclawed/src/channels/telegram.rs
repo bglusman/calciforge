@@ -658,10 +658,7 @@ mod tests {
                 args: None,
                 env: None,
                 registry: None,
-            aliases: vec![],
-            openclaw_agent_id: None,
-            reply_port: None,
-            reply_auth_token: None,
+                aliases: vec![],
             }],
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
@@ -677,6 +674,7 @@ mod tests {
             permissions: None,
             memory: None,
             context: Default::default(),
+            model_shortcuts: vec![],
         }
     }
 

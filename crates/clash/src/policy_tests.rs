@@ -15,15 +15,13 @@ use crate::{ClashPolicy, PolicyContext, PolicyVerdict, StarlarkPolicy};
 
 /// Helper: load the shared example base policy (no profile chain).
 fn nzc_policy() -> StarlarkPolicy {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/policy.star");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/policy.star");
     StarlarkPolicy::load(path)
 }
 
 /// Helper: load the base policy WITH profile chain support.
 fn nzc_policy_with_profiles() -> StarlarkPolicy {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/policy.star");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/policy.star");
     StarlarkPolicy::load_with_profiles(path)
 }
 
@@ -71,14 +69,20 @@ fn assert_deny(verdict: PolicyVerdict, label: &str) {
 #[test]
 fn always_deny_zfs_destroy_recursive() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "zfs destroy -r pool/dataset"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "zfs destroy -r pool/dataset"),
+    );
     assert_deny(verdict, "zfs destroy -r pool/dataset");
 }
 
 #[test]
 fn always_deny_dd_zero_to_disk() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "dd if=/dev/zero of=/dev/sda"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "dd if=/dev/zero of=/dev/sda"),
+    );
     assert_deny(verdict, "dd if=/dev/zero of=/dev/sda");
 }
 
@@ -100,7 +104,10 @@ fn always_deny_fork_bomb() {
 fn always_deny_dd_if_variant() {
     let policy = nzc_policy();
     // dd if= is the pattern — any use of dd with input file
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "dd if=/dev/urandom of=/dev/sdb bs=1M"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "dd if=/dev/urandom of=/dev/sdb bs=1M"),
+    );
     assert_deny(verdict, "dd if=/dev/urandom of=/dev/sdb");
 }
 
@@ -175,7 +182,10 @@ fn root_wipe_rm_rf_long_safe_path() {
     let policy = nzc_policy();
     let verdict = policy.evaluate(
         "tool:shell",
-        &shell_ctx("brian", "rm -rf /tmp/something-very-long/path/that/is/not/root"),
+        &shell_ctx(
+            "brian",
+            "rm -rf /tmp/something-very-long/path/that/is/not/root",
+        ),
     );
     assert_review(
         verdict,
@@ -300,7 +310,10 @@ fn allow_df_root() {
 fn deny_rm_bare_root() {
     let policy = nzc_policy();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "rm /"));
-    assert_deny(verdict, "rm / (bare rm targeting root is still a wipe attempt)");
+    assert_deny(
+        verdict,
+        "rm / (bare rm targeting root is still a wipe attempt)",
+    );
 }
 
 #[test]
@@ -313,7 +326,10 @@ fn allow_cat_etc_hosts() {
 #[test]
 fn allow_systemctl_status() {
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "systemctl status nonzeroclaw"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "systemctl status nonzeroclaw"),
+    );
     assert_allow(verdict, "systemctl status nonzeroclaw");
 }
 
@@ -332,7 +348,10 @@ fn allow_git_log() {
 fn evasion_compound_command_and_operator() {
     // Compound command — rm -rf is still a substring
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "echo hi && rm -rf /tmp/foo"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "echo hi && rm -rf /tmp/foo"),
+    );
     assert_review(verdict, "echo hi && rm -rf /tmp/foo (compound &&)");
 }
 
@@ -340,7 +359,10 @@ fn evasion_compound_command_and_operator() {
 fn evasion_bash_wrapped() {
     // Wrapped in bash -c — rm -rf still appears in the string
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "bash -c 'rm -rf /tmp/foo'"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "bash -c 'rm -rf /tmp/foo'"),
+    );
     assert_review(verdict, "bash -c 'rm -rf /tmp/foo'");
 }
 
@@ -446,7 +468,10 @@ fn profile_brian_rm_rf_is_review_from_base() {
     // brian has no profile — base policy applies only
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "rm -rf /tmp/x"));
-    assert_review(verdict, "brian (no profile) + rm -rf /tmp/x → review from base");
+    assert_review(
+        verdict,
+        "brian (no profile) + rm -rf /tmp/x → review from base",
+    );
 }
 
 #[test]
@@ -460,8 +485,14 @@ fn profile_brian_ls_is_allow() {
 fn profile_brian_file_write_is_allow() {
     // brian has no profile — no file write restrictions
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate("tool:file_write", &file_write_ctx("brian", "/etc/nonzeroclaw/config.toml"));
-    assert_allow(verdict, "brian (no profile) + file write to protected file → allow");
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("brian", "/etc/nonzeroclaw/config.toml"),
+    );
+    assert_allow(
+        verdict,
+        "brian (no profile) + file write to protected file → allow",
+    );
 }
 
 // ── Research profile: renee ───────────────────────────────────────────────
@@ -493,7 +524,10 @@ fn profile_renee_disallowed_shell_command() {
     // rm is NOT in RESEARCH_ALLOWED_COMMANDS → Deny from profile
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "rm /tmp/x"));
-    assert_deny(verdict, "renee (research profile) + rm /tmp/x → deny from profile");
+    assert_deny(
+        verdict,
+        "renee (research profile) + rm /tmp/x → deny from profile",
+    );
 }
 
 #[test]
@@ -501,7 +535,10 @@ fn profile_renee_sudo_is_denied() {
     // sudo is NOT in RESEARCH_ALLOWED_COMMANDS → Deny from profile
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "sudo ls /tmp"));
-    assert_deny(verdict, "renee (research profile) + sudo ls → deny (sudo not in allowlist)");
+    assert_deny(
+        verdict,
+        "renee (research profile) + sudo ls → deny (sudo not in allowlist)",
+    );
 }
 
 #[test]
@@ -509,7 +546,10 @@ fn profile_renee_file_write_is_review() {
     // Profile adds review restriction on file writes
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:file_write", &file_write_ctx("renee", "/tmp/foo"));
-    assert_review(verdict, "renee (research profile) + file write → review from profile");
+    assert_review(
+        verdict,
+        "renee (research profile) + file write → review from profile",
+    );
 }
 
 #[test]
@@ -519,15 +559,24 @@ fn profile_renee_rm_rf_stays_review_not_deny() {
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "rm -rf /tmp/x"));
     // Base catches rm -rf as Review before profile can fire
-    assert_review(verdict, "renee + rm -rf /tmp/x → review (from base, before profile)");
+    assert_review(
+        verdict,
+        "renee + rm -rf /tmp/x → review (from base, before profile)",
+    );
 }
 
 #[test]
 fn profile_renee_always_deny_stays_deny() {
     // zfs destroy -r triggers base always-deny → profile never runs
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "zfs destroy -r pool/data"));
-    assert_deny(verdict, "renee + zfs destroy -r → deny from base (profile never runs)");
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("renee", "zfs destroy -r pool/data"),
+    );
+    assert_deny(
+        verdict,
+        "renee + zfs destroy -r → deny from base (profile never runs)",
+    );
 }
 
 // ── Research profile: david ───────────────────────────────────────────────
@@ -580,9 +629,15 @@ fn profile_lucien_protected_david_policy_denied() {
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
-        &file_write_ctx("lucien", "/etc/nonzeroclaw-david/workspace/.clash/policy.star"),
+        &file_write_ctx(
+            "lucien",
+            "/etc/nonzeroclaw-david/workspace/.clash/policy.star",
+        ),
     );
-    assert_deny(verdict, "lucien + write to david policy.star → deny from profile");
+    assert_deny(
+        verdict,
+        "lucien + write to david policy.star → deny from profile",
+    );
 }
 
 #[test]
@@ -592,18 +647,21 @@ fn profile_lucien_protected_binary_denied() {
         "tool:file_write",
         &file_write_ctx("lucien", "/usr/local/bin/nonzeroclaw"),
     );
-    assert_deny(verdict, "lucien + write to /usr/local/bin/nonzeroclaw → deny from profile");
+    assert_deny(
+        verdict,
+        "lucien + write to /usr/local/bin/nonzeroclaw → deny from profile",
+    );
 }
 
 #[test]
 fn profile_lucien_non_protected_file_is_allowed() {
     // Lucien profile only blocks specific PROTECTED_FILES; all others → allow
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate(
-        "tool:file_write",
-        &file_write_ctx("lucien", "/tmp/foo"),
+    let verdict = policy.evaluate("tool:file_write", &file_write_ctx("lucien", "/tmp/foo"));
+    assert_allow(
+        verdict,
+        "lucien + write to /tmp/foo → allow (not in PROTECTED_FILES)",
     );
-    assert_allow(verdict, "lucien + write to /tmp/foo → allow (not in PROTECTED_FILES)");
 }
 
 #[test]
@@ -613,15 +671,24 @@ fn profile_lucien_workspace_memory_allowed() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/MEMORY.md"),
     );
-    assert_allow(verdict, "lucien + write to MEMORY.md → allow (not protected)");
+    assert_allow(
+        verdict,
+        "lucien + write to MEMORY.md → allow (not protected)",
+    );
 }
 
 #[test]
 fn profile_lucien_shell_unrestricted_safe_command() {
     // Lucien has no shell restrictions in his profile (only file-write)
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("lucien", "systemctl status nonzeroclaw"));
-    assert_allow(verdict, "lucien + systemctl status → allow (no shell restrictions in profile)");
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("lucien", "systemctl status nonzeroclaw"),
+    );
+    assert_allow(
+        verdict,
+        "lucien + systemctl status → allow (no shell restrictions in profile)",
+    );
 }
 
 #[test]
@@ -629,7 +696,10 @@ fn profile_lucien_catastrophic_shell_still_denied_by_base() {
     // Base policy denies catastrophic commands regardless of identity
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("lucien", "rm -rf /"));
-    assert_deny(verdict, "lucien + rm -rf / → deny from base (profile never runs)");
+    assert_deny(
+        verdict,
+        "lucien + rm -rf / → deny from base (profile never runs)",
+    );
 }
 
 #[test]
@@ -645,8 +715,14 @@ fn profile_lucien_rm_rf_tmp_is_review_from_base() {
 fn chain_base_deny_is_final_for_research_identity() {
     // Even for renee: base always-deny can't be loosened by profile
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "dd if=/dev/zero of=/dev/sda"));
-    assert_deny(verdict, "renee + dd (always-deny) → deny from base, profile never runs");
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("renee", "dd if=/dev/zero of=/dev/sda"),
+    );
+    assert_deny(
+        verdict,
+        "renee + dd (always-deny) → deny from base, profile never runs",
+    );
 }
 
 #[test]
@@ -654,7 +730,10 @@ fn chain_base_review_is_final_cannot_be_loosened() {
     // For renee: rm -rf triggers base Review → profile cannot change this to Allow
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "rm -rf /tmp/x"));
-    assert_review(verdict, "renee + rm -rf → review from base (profile can't loosen)");
+    assert_review(
+        verdict,
+        "renee + rm -rf → review from base (profile can't loosen)",
+    );
 }
 
 // ── Unknown identity: no profile, base only ───────────────────────────────
@@ -663,7 +742,10 @@ fn chain_base_review_is_final_cannot_be_loosened() {
 fn profile_unknown_user_gets_base_policy_only() {
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("unknown_user", "ls /tmp"));
-    assert_allow(verdict, "unknown_user + ls /tmp → allow (no profile, base allows)");
+    assert_allow(
+        verdict,
+        "unknown_user + ls /tmp → allow (no profile, base allows)",
+    );
 }
 
 #[test]
@@ -677,7 +759,10 @@ fn profile_unknown_user_rm_rf_gets_review_from_base() {
 fn profile_unknown_user_file_write_allowed() {
     // No profile → no file-write restriction
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate("tool:file_write", &file_write_ctx("unknown_user", "/tmp/foo"));
+    let verdict = policy.evaluate(
+        "tool:file_write",
+        &file_write_ctx("unknown_user", "/tmp/foo"),
+    );
     assert_allow(verdict, "unknown_user + file write → allow (no profile)");
 }
 
@@ -695,7 +780,10 @@ fn file_write_lucien_policy_file_is_denied() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/.clash/policy.star"),
     );
-    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw/workspace/.clash/policy.star → deny");
+    assert_deny(
+        verdict,
+        "lucien writing to /etc/nonzeroclaw/workspace/.clash/policy.star → deny",
+    );
 }
 
 #[test]
@@ -705,7 +793,10 @@ fn file_write_lucien_nzc_config_toml_is_denied() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/config.toml"),
     );
-    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw/config.toml → deny");
+    assert_deny(
+        verdict,
+        "lucien writing to /etc/nonzeroclaw/config.toml → deny",
+    );
 }
 
 #[test]
@@ -713,9 +804,15 @@ fn file_write_lucien_david_policy_star_is_denied() {
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate(
         "tool:file_write",
-        &file_write_ctx("lucien", "/etc/nonzeroclaw-david/workspace/.clash/policy.star"),
+        &file_write_ctx(
+            "lucien",
+            "/etc/nonzeroclaw-david/workspace/.clash/policy.star",
+        ),
     );
-    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw-david/workspace/.clash/policy.star → deny");
+    assert_deny(
+        verdict,
+        "lucien writing to /etc/nonzeroclaw-david/workspace/.clash/policy.star → deny",
+    );
 }
 
 #[test]
@@ -725,7 +822,10 @@ fn file_write_lucien_david_config_toml_is_denied() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw-david/config.toml"),
     );
-    assert_deny(verdict, "lucien writing to /etc/nonzeroclaw-david/config.toml → deny");
+    assert_deny(
+        verdict,
+        "lucien writing to /etc/nonzeroclaw-david/config.toml → deny",
+    );
 }
 
 #[test]
@@ -735,17 +835,20 @@ fn file_write_lucien_binary_is_denied() {
         "tool:file_write",
         &file_write_ctx("lucien", "/usr/local/bin/nonzeroclaw"),
     );
-    assert_deny(verdict, "lucien writing to /usr/local/bin/nonzeroclaw → deny");
+    assert_deny(
+        verdict,
+        "lucien writing to /usr/local/bin/nonzeroclaw → deny",
+    );
 }
 
 #[test]
 fn file_write_lucien_tmp_is_allowed() {
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate(
-        "tool:file_write",
-        &file_write_ctx("lucien", "/tmp/foo"),
+    let verdict = policy.evaluate("tool:file_write", &file_write_ctx("lucien", "/tmp/foo"));
+    assert_allow(
+        verdict,
+        "lucien writing to /tmp/foo → allow (not in PROTECTED_FILES)",
     );
-    assert_allow(verdict, "lucien writing to /tmp/foo → allow (not in PROTECTED_FILES)");
 }
 
 #[test]
@@ -757,7 +860,10 @@ fn file_write_lucien_workspace_config_toml_is_allowed() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/config.toml"),
     );
-    assert_allow(verdict, "lucien writing to /etc/nonzeroclaw/workspace/config.toml → allow (not protected)");
+    assert_allow(
+        verdict,
+        "lucien writing to /etc/nonzeroclaw/workspace/config.toml → allow (not protected)",
+    );
 }
 
 #[test]
@@ -767,7 +873,10 @@ fn file_write_lucien_srv_data_is_allowed() {
         "tool:file_write",
         &file_write_ctx("lucien", "/srv/data/foo"),
     );
-    assert_allow(verdict, "lucien writing to /srv/data/foo → allow (not in PROTECTED_FILES)");
+    assert_allow(
+        verdict,
+        "lucien writing to /srv/data/foo → allow (not in PROTECTED_FILES)",
+    );
 }
 
 #[test]
@@ -777,7 +886,10 @@ fn file_write_lucien_opt_is_allowed() {
         "tool:file_write",
         &file_write_ctx("lucien", "/opt/something"),
     );
-    assert_allow(verdict, "lucien writing to /opt/something → allow (not in PROTECTED_FILES)");
+    assert_allow(
+        verdict,
+        "lucien writing to /opt/something → allow (not in PROTECTED_FILES)",
+    );
 }
 
 #[test]
@@ -787,7 +899,10 @@ fn file_write_lucien_workspace_memory_is_allowed() {
         "tool:file_write",
         &file_write_ctx("lucien", "/etc/nonzeroclaw/workspace/MEMORY.md"),
     );
-    assert_allow(verdict, "lucien writing to /etc/nonzeroclaw/workspace/MEMORY.md → allow (not protected)");
+    assert_allow(
+        verdict,
+        "lucien writing to /etc/nonzeroclaw/workspace/MEMORY.md → allow (not protected)",
+    );
 }
 
 #[test]
@@ -797,16 +912,16 @@ fn file_write_lucien_home_file_is_allowed() {
         "tool:file_write",
         &file_write_ctx("lucien", "/home/brian/foo.txt"),
     );
-    assert_allow(verdict, "lucien writing to /home/brian/foo.txt → allow (not protected)");
+    assert_allow(
+        verdict,
+        "lucien writing to /home/brian/foo.txt → allow (not protected)",
+    );
 }
 
 #[test]
 fn file_write_brian_tmp_is_allowed() {
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate(
-        "tool:file_write",
-        &file_write_ctx("brian", "/tmp/foo"),
-    );
+    let verdict = policy.evaluate("tool:file_write", &file_write_ctx("brian", "/tmp/foo"));
     assert_allow(verdict, "brian writing to /tmp/foo → allow");
 }
 
@@ -818,17 +933,20 @@ fn file_write_brian_nzc_config_toml_is_allowed() {
         "tool:file_write",
         &file_write_ctx("brian", "/etc/nonzeroclaw/config.toml"),
     );
-    assert_allow(verdict, "brian writing to /etc/nonzeroclaw/config.toml → allow (brian has no profile)");
+    assert_allow(
+        verdict,
+        "brian writing to /etc/nonzeroclaw/config.toml → allow (brian has no profile)",
+    );
 }
 
 #[test]
 fn file_write_renee_tmp_is_review() {
     let policy = nzc_policy_with_profiles();
-    let verdict = policy.evaluate(
-        "tool:file_write",
-        &file_write_ctx("renee", "/tmp/foo"),
+    let verdict = policy.evaluate("tool:file_write", &file_write_ctx("renee", "/tmp/foo"));
+    assert_review(
+        verdict,
+        "renee (research profile) writing to /tmp/foo → review",
     );
-    assert_review(verdict, "renee (research profile) writing to /tmp/foo → review");
 }
 
 #[test]
@@ -839,7 +957,10 @@ fn file_write_brian_clash_policy_is_allowed() {
         "tool:file_write",
         &file_write_ctx("brian", "/etc/nonzeroclaw/workspace/.clash/policy.star"),
     );
-    assert_allow(verdict, "brian writing to policy.star → allow (only lucien is restricted via profile)");
+    assert_allow(
+        verdict,
+        "brian writing to policy.star → allow (only lucien is restricted via profile)",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -854,14 +975,14 @@ fn test_rm_rf_evasion_attempts() {
     // The policy catches these via substring search on cmd.lower().strip().
     let should_review = vec![
         "rm -rf /tmp/foo",
-        "rm -rf /tmp/foo && echo done",          // compound &&
-        "bash -c 'rm -rf /tmp/foo'",              // wrapped in bash
-        "RM -RF /tmp/foo",                        // uppercase → .lower() catches it
-        "  rm -rf /tmp/foo  ",                    // leading/trailing whitespace → .strip() catches it
-        "sudo rm -rf /tmp/foo",                   // sudo prefix
-        "rm -rf /tmp/foo; ls",                    // semicolon compound
-        "nohup rm -rf /tmp/foo &",                // nohup background
-        "env rm -rf /tmp/foo",                    // env prefix
+        "rm -rf /tmp/foo && echo done", // compound &&
+        "bash -c 'rm -rf /tmp/foo'",    // wrapped in bash
+        "RM -RF /tmp/foo",              // uppercase → .lower() catches it
+        "  rm -rf /tmp/foo  ",          // leading/trailing whitespace → .strip() catches it
+        "sudo rm -rf /tmp/foo",         // sudo prefix
+        "rm -rf /tmp/foo; ls",          // semicolon compound
+        "nohup rm -rf /tmp/foo &",      // nohup background
+        "env rm -rf /tmp/foo",          // env prefix
     ];
 
     for cmd in &should_review {
@@ -875,10 +996,7 @@ fn test_rm_rf_evasion_attempts() {
     }
 
     // These should be DENY (root wipe) — not just review.
-    let should_deny = vec![
-        "rm -rf /",
-        "rm -rf /*",
-    ];
+    let should_deny = vec!["rm -rf /", "rm -rf /*"];
 
     for cmd in &should_deny {
         let ctx = shell_ctx("brian", cmd);
@@ -973,7 +1091,10 @@ fn non_shell_action_is_allowed_for_research_base_only() {
     let policy = nzc_policy();
     let ctx = PolicyContext::new("renee", "nzc", "tool:memory_recall");
     let verdict = policy.evaluate("tool:memory_recall", &ctx);
-    assert_allow(verdict, "tool:memory_recall for research (base policy) → allow");
+    assert_allow(
+        verdict,
+        "tool:memory_recall for research (base policy) → allow",
+    );
 }
 
 #[test]
@@ -993,7 +1114,10 @@ fn file_read_is_not_restricted_for_lucien_with_profiles() {
     let ctx = PolicyContext::new("lucien", "nzc", "tool:file_read")
         .with_path("/etc/nonzeroclaw/workspace/.clash/policy.star");
     let verdict = policy.evaluate("tool:file_read", &ctx);
-    assert_allow(verdict, "lucien reading policy.star (with profiles) → allow");
+    assert_allow(
+        verdict,
+        "lucien reading policy.star (with profiles) → allow",
+    );
 }
 
 #[test]
@@ -1001,7 +1125,10 @@ fn rm_rf_in_comment_within_shell_script() {
     // A command that just contains "# rm -rf" — still has the substring so it's review.
     // This is intentionally conservative: we don't parse shell syntax.
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "echo '# rm -rf is dangerous'"));
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "echo '# rm -rf is dangerous'"),
+    );
     // The echo itself is safe but contains "rm -rf" substring.
     // Policy will catch it as review — conservative but correct behavior.
     // Document: policy does NOT parse semantics, only searches substrings.
@@ -1022,8 +1149,14 @@ fn rm_rf_in_comment_within_shell_script() {
 fn zfs_destroy_rf_is_always_deny_not_just_review() {
     // "zfs destroy -rf" should be always-deny (not just review) via ALWAYS_DENY_PATTERNS
     let policy = nzc_policy();
-    let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", "zfs destroy -rf pool/sensitive"));
-    assert_deny(verdict, "zfs destroy -rf pool/sensitive → always-deny (not review)");
+    let verdict = policy.evaluate(
+        "tool:shell",
+        &shell_ctx("brian", "zfs destroy -rf pool/sensitive"),
+    );
+    assert_deny(
+        verdict,
+        "zfs destroy -rf pool/sensitive → always-deny (not review)",
+    );
 }
 
 #[test]
@@ -1032,7 +1165,10 @@ fn research_profile_rm_rf_stays_review_from_base() {
     // Profile never runs because base already returned Review.
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "rm -rf /tmp/x"));
-    assert_review(verdict, "renee + rm -rf /tmp/x → review (caught by base before profile)");
+    assert_review(
+        verdict,
+        "renee + rm -rf /tmp/x → review (caught by base before profile)",
+    );
 }
 
 #[test]
@@ -1041,7 +1177,10 @@ fn research_profile_rm_no_flags_is_denied_by_profile() {
     // Base allows it → profile kicks in → "rm" not in RESEARCH_ALLOWED_COMMANDS → deny
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "rm /tmp/x"));
-    assert_deny(verdict, "renee + rm /tmp/x → deny from profile (rm not in allowlist)");
+    assert_deny(
+        verdict,
+        "renee + rm /tmp/x → deny from profile (rm not in allowlist)",
+    );
 }
 
 #[test]
@@ -1050,7 +1189,10 @@ fn research_profile_sudo_is_denied_by_profile() {
     // "sudo" not in RESEARCH_ALLOWED_COMMANDS → deny from profile
     let policy = nzc_policy_with_profiles();
     let verdict = policy.evaluate("tool:shell", &shell_ctx("renee", "sudo ls /tmp"));
-    assert_deny(verdict, "renee + sudo ls /tmp → deny from profile (sudo not in allowlist)");
+    assert_deny(
+        verdict,
+        "renee + sudo ls /tmp → deny from profile (sudo not in allowlist)",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1109,14 +1251,17 @@ fn policy_source_from_file_compiles() {
     // it should catch a known always-deny pattern.
     let verdict = policy.evaluate("tool:shell", &shell_ctx("brian", ":(){ :|:& };:"));
     // Permissive policy would return Allow; real policy denies this.
-    assert_deny(verdict, "fork bomb — permissive would allow, real policy denies");
+    assert_deny(
+        verdict,
+        "fork bomb — permissive would allow, real policy denies",
+    );
 }
 
 /// Verify profile files compile correctly.
 #[test]
 fn profile_files_compile_correctly() {
-    let profiles_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/profiles");
+    let profiles_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/profiles");
 
     for name in &["lucien", "renee", "david"] {
         let path = profiles_dir.join(format!("{name}.star"));

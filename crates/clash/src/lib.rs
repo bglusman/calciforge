@@ -51,7 +51,8 @@ impl PolicyContext {
 
     /// Attach the shell command string to extra context.
     pub fn with_command(mut self, command: &str) -> Self {
-        self.extra.insert("command".to_string(), command.to_string());
+        self.extra
+            .insert("command".to_string(), command.to_string());
         self
     }
 
@@ -149,7 +150,10 @@ mod tests {
             StarlarkPolicy::load(std::path::PathBuf::from("/nonexistent/path/policy.star"));
         let ctx = PolicyContext::new("alice", "nzc", "tool:shell");
         // Must allow (permissive fallback)
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     #[test]
@@ -165,9 +169,15 @@ def evaluate(action, identity, agent, command="", path=""):
         let verdict = policy.evaluate("tool:shell", &ctx);
         match verdict {
             PolicyVerdict::Deny(reason) => {
-                assert!(reason.contains("shell not permitted for alice"), "got: {reason}");
+                assert!(
+                    reason.contains("shell not permitted for alice"),
+                    "got: {reason}"
+                );
             }
-            other => panic!("Expected Deny, got {:?}", matches!(other, PolicyVerdict::Allow)),
+            other => panic!(
+                "Expected Deny, got {:?}",
+                matches!(other, PolicyVerdict::Allow)
+            ),
         }
     }
 
@@ -179,7 +189,10 @@ def evaluate(action, identity, agent, command="", path=""):
 "#;
         let policy = StarlarkPolicy::from_source("<test>", script);
         let ctx = PolicyContext::new("alice", "nzc", "tool:shell");
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     #[test]
@@ -195,9 +208,15 @@ def evaluate(action, identity, agent, command="", path=""):
         let verdict = policy.evaluate("tool:file_write", &ctx);
         match verdict {
             PolicyVerdict::Review(reason) => {
-                assert!(reason.contains("file write requires approval"), "got: {reason}");
+                assert!(
+                    reason.contains("file write requires approval"),
+                    "got: {reason}"
+                );
             }
-            other => panic!("Expected Review, got {:?}", matches!(other, PolicyVerdict::Allow)),
+            other => panic!(
+                "Expected Review, got {:?}",
+                matches!(other, PolicyVerdict::Allow)
+            ),
         }
     }
 
@@ -211,7 +230,10 @@ def evaluate(action, identity, agent, command="", path=""):
 "#;
         let policy = StarlarkPolicy::from_source("<test>", script);
         let ctx = PolicyContext::new("brian", "nzc", "tool:shell");
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     #[test]
@@ -226,7 +248,10 @@ def evaluate(action, identity, agent, command="", path=""):
         let policy = StarlarkPolicy::from_source("<test>", script);
         let ctx = PolicyContext::new("alice", "nzc", "tool:shell");
         // Default is fail-closed: on Starlark error, must deny
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Deny(_)));
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Deny(_)
+        ));
     }
 
     #[test]
@@ -240,7 +265,10 @@ def evaluate(action, identity, agent, command="", path=""):
         let policy = StarlarkPolicy::from_source("<test>", script)
             .with_error_behaviour(crate::ErrorBehaviour::Allow);
         let ctx = PolicyContext::new("alice", "nzc", "tool:shell");
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     #[test]
@@ -252,14 +280,19 @@ def evaluate(action, identity, agent, command="", path=""):
     return "allow"
 "#;
         let policy = StarlarkPolicy::from_source("<test>", script);
-        let ctx = PolicyContext::new("brian", "nzc", "tool:shell")
-            .with_command("rm -rf /");
+        let ctx = PolicyContext::new("brian", "nzc", "tool:shell").with_command("rm -rf /");
         let verdict = policy.evaluate("tool:shell", &ctx);
         match verdict {
             PolicyVerdict::Deny(reason) => {
-                assert!(reason.contains("catastrophic command blocked"), "got: {reason}");
+                assert!(
+                    reason.contains("catastrophic command blocked"),
+                    "got: {reason}"
+                );
             }
-            other => panic!("Expected Deny, got Allow={}", matches!(other, PolicyVerdict::Allow)),
+            other => panic!(
+                "Expected Deny, got Allow={}",
+                matches!(other, PolicyVerdict::Allow)
+            ),
         }
     }
 
@@ -272,9 +305,11 @@ def evaluate(action, identity, agent, command="", path=""):
     return "allow"
 "#;
         let policy = StarlarkPolicy::from_source("<test>", script);
-        let ctx = PolicyContext::new("brian", "nzc", "tool:shell")
-            .with_command("ls /etc");
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+        let ctx = PolicyContext::new("brian", "nzc", "tool:shell").with_command("ls /etc");
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     // ── Lucien-specific policy tests ─────────────────────────────────────
@@ -282,8 +317,8 @@ def evaluate(action, identity, agent, command="", path=""):
     /// Load the real example policy.star with profile chain so we're testing actual deployed logic,
     /// not a hand-written inline stub. Uses load_with_profiles() so profiles/ dir is enabled.
     fn load_example_policy() -> StarlarkPolicy {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("examples/policy.star");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/policy.star");
         StarlarkPolicy::load_with_profiles(path)
     }
 
@@ -297,7 +332,10 @@ def evaluate(action, identity, agent, command="", path=""):
             PolicyVerdict::Deny(reason) => {
                 assert!(reason.contains("Protected file"), "got: {reason}");
             }
-            other => panic!("Expected Deny, got Allow={}", matches!(other, PolicyVerdict::Allow)),
+            other => panic!(
+                "Expected Deny, got Allow={}",
+                matches!(other, PolicyVerdict::Allow)
+            ),
         }
     }
 
@@ -321,7 +359,10 @@ def evaluate(action, identity, agent, command="", path=""):
         // file_read is not restricted for Lucien — he needs to read the policy
         let ctx = PolicyContext::new("lucien", "nzc", "tool:file_read")
             .with_path("/etc/nonzeroclaw/workspace/.clash/policy.star");
-        assert!(matches!(policy.evaluate("tool:file_read", &ctx), PolicyVerdict::Allow));
+        assert!(matches!(
+            policy.evaluate("tool:file_read", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     #[test]
@@ -329,14 +370,16 @@ def evaluate(action, identity, agent, command="", path=""):
         let policy = load_example_policy();
         let ctx = PolicyContext::new("lucien", "nzc", "tool:shell")
             .with_command("systemctl status nonzeroclaw");
-        assert!(matches!(policy.evaluate("tool:shell", &ctx), PolicyVerdict::Allow));
+        assert!(matches!(
+            policy.evaluate("tool:shell", &ctx),
+            PolicyVerdict::Allow
+        ));
     }
 
     #[test]
     fn lucien_catastrophic_shell_denied() {
         let policy = load_example_policy();
-        let ctx = PolicyContext::new("lucien", "nzc", "tool:shell")
-            .with_command("rm -rf /");
+        let ctx = PolicyContext::new("lucien", "nzc", "tool:shell").with_command("rm -rf /");
         let verdict = policy.evaluate("tool:shell", &ctx);
         assert!(matches!(verdict, PolicyVerdict::Deny(_)));
     }

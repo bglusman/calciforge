@@ -37,9 +37,8 @@ const GIT_BIN: &str = "/usr/bin/git";
 /// Branch name regex: alphanumeric, hyphen, underscore, dot, slash.
 static BRANCH_RE: OnceLock<Regex> = OnceLock::new();
 fn branch_re() -> &'static Regex {
-    BRANCH_RE.get_or_init(|| {
-        Regex::new(r"^[a-zA-Z0-9_][a-zA-Z0-9_\-./]*$").expect("BRANCH_RE valid")
-    })
+    BRANCH_RE
+        .get_or_init(|| Regex::new(r"^[a-zA-Z0-9_][a-zA-Z0-9_\-./]*$").expect("BRANCH_RE valid"))
 }
 
 /// Validate a git branch/ref name.
@@ -144,9 +143,7 @@ impl Adapter for GitAdapter {
             let branch = op.args.get(1).map(|s| s.as_str()).unwrap_or("");
             if branch.is_empty() || !is_valid_branch_name(branch) {
                 return Ok(PolicyDecision::Deny {
-                    reason: format!(
-                        "GitAdapter: invalid branch name '{branch}' for checkout"
-                    ),
+                    reason: format!("GitAdapter: invalid branch name '{branch}' for checkout"),
                 });
             }
         }

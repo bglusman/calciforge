@@ -199,6 +199,7 @@ mod tests {
     ///
     /// This is non-trivial: a buggy implementation could, for example,
     /// transform `/*` into something that becomes a comment on the second pass.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_idempotent(tc: hegel::TestCase) {
         use hegel::generators as gs;
@@ -228,6 +229,7 @@ mod tests {
     ///
     /// Would catch bugs where the state machine emits extra characters (e.g.
     /// an unmatched `/*` at end of input triggers a spurious character emit).
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_never_adds_content(tc: hegel::TestCase) {
         use hegel::generators as gs;
@@ -261,6 +263,7 @@ mod tests {
     ///
     /// Uses strings restricted to avoid embedded quotes/backslashes in order
     /// to generate inputs where both parsers should agree.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_preserves_valid_json(tc: hegel::TestCase) {
         use hegel::generators as gs;

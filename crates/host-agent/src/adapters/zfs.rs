@@ -42,7 +42,6 @@ impl Default for ZfsAdapter {
     }
 }
 
-
 #[async_trait]
 impl Adapter for ZfsAdapter {
     fn kind(&self) -> &'static str {
@@ -113,9 +112,7 @@ impl Adapter for ZfsAdapter {
                     format!("send CONFIRM <token> to approve; operation: {operation_key}/{target}")
                 });
 
-            return Ok(PolicyDecision::RequiresApproval {
-                message: token_msg,
-            });
+            return Ok(PolicyDecision::RequiresApproval { message: token_msg });
         }
 
         Ok(PolicyDecision::Allow)

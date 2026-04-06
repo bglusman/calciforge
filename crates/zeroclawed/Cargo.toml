@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [features]
 channel-matrix = ["dep:matrix-sdk"]
+hegel = ["dep:hegeltest"]
 
 [dependencies]
 axum = "0.7"
@@ -71,8 +72,10 @@ base64 = "0.22"
 # Timestamp generation
 chrono = { version = "0.4", features = ["serde"] }
 
+# Property-based testing (optional, enable with --features hegel)
+hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-hegeltest = { git = "https://github.com/hegeldev/hegel-rust" }
 tempfile = "3"
 loom = { version = "0.7", features = ["checkpoint"] }

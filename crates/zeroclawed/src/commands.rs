@@ -840,13 +840,13 @@ impl CommandHandler {
     fn cmd_model(&self, text: &str) -> String {
         // Parse: "!model" or "!model <alias>"
         let args: Vec<&str> = text.trim().splitn(2, ' ').collect();
-        
+
         if args.len() == 1 || args[1].trim().is_empty() {
             // No alias provided — list all shortcuts
             if self.config.model_shortcuts.is_empty() {
                 return "No model shortcuts configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string();
             }
-            
+
             let mut lines = vec!["Model shortcuts:".to_string()];
             for shortcut in &self.config.model_shortcuts {
                 lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
@@ -856,9 +856,17 @@ impl CommandHandler {
         } else {
             // Resolve the alias
             let alias = args[1].trim();
-            match self.config.model_shortcuts.iter().find(|s| s.alias == alias) {
+            match self
+                .config
+                .model_shortcuts
+                .iter()
+                .find(|s| s.alias == alias)
+            {
                 Some(shortcut) => format!("{} → {}", shortcut.alias, shortcut.model),
-                None => format!("Unknown alias: '{}'\n\nUse !model to see available shortcuts.", alias),
+                None => format!(
+                    "Unknown alias: '{}'\n\nUse !model to see available shortcuts.",
+                    alias
+                ),
             }
         }
     }
@@ -1017,9 +1025,6 @@ mod tests {
                         ..Default::default()
                     }),
                     aliases: vec![],
-                    openclaw_agent_id: None,
-                    reply_port: None,
-                    reply_auth_token: None,
                 },
                 AgentConfig {
                     id: "custodian".to_string(),
@@ -1037,9 +1042,6 @@ mod tests {
                     env: None,
                     registry: None,
                     aliases: vec!["keeper".to_string(), "cust".to_string()],
-                    openclaw_agent_id: None,
-                    reply_port: None,
-                    reply_auth_token: None,
                 },
             ],
             routing: vec![
@@ -1063,6 +1065,7 @@ mod tests {
             permissions: None,
             memory: None,
             context: Default::default(),
+            model_shortcuts: vec![],
         }
     }
 
@@ -1253,6 +1256,7 @@ mod tests {
             permissions: None,
             memory: None,
             context: Default::default(),
+            model_shortcuts: vec![],
         });
         let h = CommandHandler::new(config);
         let reply = h.handle("!agents").unwrap();

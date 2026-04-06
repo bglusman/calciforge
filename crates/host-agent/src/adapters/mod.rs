@@ -60,9 +60,7 @@ impl HostOp {
 
     /// Extract an optional approval token from metadata["approval_token"].
     pub fn approval_token(&self) -> Option<&str> {
-        self.metadata
-            .get("approval_token")
-            .and_then(|v| v.as_str())
+        self.metadata.get("approval_token").and_then(|v| v.as_str())
     }
 }
 

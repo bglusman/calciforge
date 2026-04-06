@@ -720,6 +720,7 @@ mod tests {
     /// NOTE: This test spawns `sh -c` subprocesses.  It is the only test in this
     /// codebase that does so — deliberately, because the semantic guarantee cannot
     /// be verified without an actual shell.
+    #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_shell_quote_semantic_eval(tc: hegel::TestCase) {
         use hegel::generators as gs;

@@ -42,18 +42,18 @@ mod rate_limit;
 mod tls;
 mod zfs;
 
-use approval::{ApprovalManager, ApprovalRequest, signal::SignalWebhookPayload};
+use adapters::{AdapterRegistry, HostOp, PolicyDecision};
 use approval::identity_plugin::{validate_approver_identity, PluginRequest};
+use approval::{signal::SignalWebhookPayload, ApprovalManager, ApprovalRequest};
+use audit::RotationStrategy;
 use audit::{AuditEvent, AuditLogger};
 use auth::{AgentRegistry, ClientIdentity};
-use audit::RotationStrategy;
 use config::{Config, ReloadableConfig};
 use error::AppError;
 use metrics::Metrics;
-use rate_limit::{RateLimiter, rate_limit_response};
+use rate_limit::{rate_limit_response, RateLimiter};
 use tls::IdentityExtractingAcceptor;
 use zfs::{ZfsEntry, ZfsExecutor, ZfsOp};
-use adapters::{AdapterRegistry, HostOp, PolicyDecision};
 
 /// ZeroClawed Host-Agent CLI
 #[derive(Parser, Debug)]
@@ -198,7 +198,7 @@ async fn zfs_snapshot(
     let agent_cfg = config.find_agent(&identity.cn).cloned();
     if config.requires_approval_for_agent("zfs-snapshot", &snapshot, agent_cfg.as_ref()) {
         return Err(AppError::PolicyDenied(
-            "Snapshot requires approval per policy".to_string()
+            "Snapshot requires approval per policy".to_string(),
         ));
     }
 
@@ -288,7 +288,10 @@ async fn zfs_list(
         token_hash: None,
     })?;
 
-    let result = state.zfs.list(req.dataset.as_deref(), req.list_type.as_deref(), &identity).await;
+    let result = state
+        .zfs
+        .list(req.dataset.as_deref(), req.list_type.as_deref(), &identity)
+        .await;
 
     match result {
         Ok(entries) => {
@@ -358,11 +361,8 @@ async fn zfs_destroy(
 
     let config = state.config.get().await;
     let agent_cfg = config.find_agent(&identity.cn).cloned();
-    let requires_approval = config.requires_approval_for_agent(
-        "zfs-destroy",
-        &req.dataset,
-        agent_cfg.as_ref(),
-    );
+    let requires_approval =
+        config.requires_approval_for_agent("zfs-destroy", &req.dataset, agent_cfg.as_ref());
 
     // --- Branch 1: No approval required — execute directly ---
     if !requires_approval {
@@ -381,7 +381,10 @@ async fn zfs_destroy(
             token_hash: None,
         })?;
 
-        let result = state.zfs.execute(&req.dataset, ZfsOp::Destroy, &identity).await;
+        let result = state
+            .zfs
+            .execute(&req.dataset, ZfsOp::Destroy, &identity)
+            .await;
 
         return match result {
             Ok(output) => {
@@ -445,7 +448,10 @@ async fn zfs_destroy(
                     token_hash: None,
                 })?;
 
-                let result = state.zfs.execute(&req.dataset, ZfsOp::Destroy, &identity).await;
+                let result = state
+                    .zfs
+                    .execute(&req.dataset, ZfsOp::Destroy, &identity)
+                    .await;
 
                 match result {
                     Ok(output) => {
@@ -548,17 +554,25 @@ async fn submit_approval(
     // Find the approval request to determine which operation is being approved
     // (We check rule-level approval_admin_only for zfs-destroy and similar operations)
     // For simplicity, check if ANY rule with approval_admin_only requires admin CN
-    let is_admin_required = config.find_rule("zfs-destroy")
+    let is_admin_required = config
+        .find_rule("zfs-destroy")
         .map(|r| r.approval_admin_only)
         .unwrap_or(false);
 
     if is_admin_required {
         // P0: fail-closed — if admin_cn_pattern is not configured, deny.
         // Missing config must NOT silently disable the admin check.
-        match config.approval.admin_cn_pattern.as_deref().filter(|p| !p.is_empty()) {
+        match config
+            .approval
+            .admin_cn_pattern
+            .as_deref()
+            .filter(|p| !p.is_empty())
+        {
             Some(admin_pattern) => {
                 let pattern_matches = if admin_pattern.ends_with('*') {
-                    identity.cn.starts_with(&admin_pattern[..admin_pattern.len()-1])
+                    identity
+                        .cn
+                        .starts_with(&admin_pattern[..admin_pattern.len() - 1])
                 } else {
                     identity.cn == admin_pattern
                 };
@@ -570,9 +584,10 @@ async fn submit_approval(
                         "Approval rejected: caller CN does not match admin_cn_pattern"
                     );
                     state.metrics.increment_policy_denials();
-                    return Err(AppError::PolicyDenied(
-                        format!("Approver identity '{}' does not match admin_cn_pattern", identity.cn)
-                    ));
+                    return Err(AppError::PolicyDenied(format!(
+                        "Approver identity '{}' does not match admin_cn_pattern",
+                        identity.cn
+                    )));
                 }
             }
             None => {
@@ -581,7 +596,7 @@ async fn submit_approval(
                 );
                 state.metrics.increment_policy_denials();
                 return Err(AppError::PolicyDenied(
-                    "approval_admin_only requires admin_cn_pattern to be configured".to_string()
+                    "approval_admin_only requires admin_cn_pattern to be configured".to_string(),
                 ));
             }
         }
@@ -603,15 +618,16 @@ async fn submit_approval(
             Ok(false) => {
                 warn!(cn = %identity.cn, "Identity plugin denied approver");
                 state.metrics.increment_policy_denials();
-                return Err(AppError::PolicyDenied(
-                    format!("Approver identity '{}' rejected by identity plugin", identity.cn)
-                ));
+                return Err(AppError::PolicyDenied(format!(
+                    "Approver identity '{}' rejected by identity plugin",
+                    identity.cn
+                )));
             }
             Err(e) => {
                 error!(cn = %identity.cn, error = %e, "Identity plugin invocation failed — denying (fail-closed)");
                 state.metrics.increment_policy_denials();
                 return Err(AppError::PolicyDenied(
-                    "Identity plugin failed; approval denied (fail-closed)".to_string()
+                    "Identity plugin failed; approval denied (fail-closed)".to_string(),
                 ));
             }
         }
@@ -657,7 +673,10 @@ async fn signal_webhook(
         timestamp,
     };
 
-    let result = state.approvals.handle_signal_confirmation(&webhook_payload).await;
+    let result = state
+        .approvals
+        .handle_signal_confirmation(&webhook_payload)
+        .await;
 
     match result {
         Ok(_) => Ok(Json(ApproveResponse {
@@ -722,7 +741,8 @@ async fn warn_permissions(
                         "error": "admin access required",
                         "caller": identity.cn,
                     })),
-                ).into_response();
+                )
+                    .into_response();
             }
         }
     }
@@ -770,10 +790,9 @@ async fn host_op_dispatch(
     let operation_label = format!("{}/{}", op.kind, op.command().unwrap_or("unknown"));
 
     // Find adapter
-    let adapter = state
-        .adapter_registry
-        .dispatch(&op.kind)
-        .ok_or_else(|| AppError::Internal(format!("No adapter registered for kind '{}'", op.kind)))?;
+    let adapter = state.adapter_registry.dispatch(&op.kind).ok_or_else(|| {
+        AppError::Internal(format!("No adapter registered for kind '{}'", op.kind))
+    })?;
 
     // Audit: operation attempt
     state.audit.log(AuditEvent {
@@ -815,7 +834,11 @@ async fn host_op_dispatch(
             if let Some(token) = op.approval_token() {
                 let approval_id = state
                     .approvals
-                    .validate_and_consume_token(token, op.resource.as_deref().unwrap_or(""), &identity.cn)
+                    .validate_and_consume_token(
+                        token,
+                        op.resource.as_deref().unwrap_or(""),
+                        &identity.cn,
+                    )
                     .await;
 
                 match approval_id {
@@ -875,7 +898,8 @@ async fn host_op_dispatch(
                         "Approval required for {operation_label}. Reply CONFIRM {} to approve.",
                         token_audit.masked
                     ),
-                })).into_response());
+                }))
+                .into_response());
             }
         }
 
@@ -908,7 +932,8 @@ async fn host_op_dispatch(
                 "output": exec_result.output,
                 "exit_code": exec_result.exit_code,
                 "metadata": exec_result.metadata,
-            })).into_response())
+            }))
+            .into_response())
         }
         Err(e) => {
             state.audit.log(AuditEvent {
@@ -947,7 +972,10 @@ async fn main() -> Result<()> {
         .with_line_number(false)
         .init();
 
-    info!("Starting ZeroClawed Host-Agent v{}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting ZeroClawed Host-Agent v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Load configuration
     let config = Config::load(&cli.config)
@@ -955,7 +983,8 @@ async fn main() -> Result<()> {
 
     info!("Loaded configuration from {:?}", cli.config);
 
-    let reloadable_config = ReloadableConfig::new(config.clone(), cli.config.to_string_lossy().to_string());
+    let reloadable_config =
+        ReloadableConfig::new(config.clone(), cli.config.to_string_lossy().to_string());
 
     // Initialize Signal client if configured
     let signal_client = if let Some(webhook) = &config.approval.signal_webhook {
@@ -972,7 +1001,8 @@ async fn main() -> Result<()> {
         &config.audit.log_path,
         RotationStrategy::from(config.audit.rotation.as_str()),
         config.audit.retention_days,
-    ).with_context(|| "Failed to initialize audit logger")?;
+    )
+    .with_context(|| "Failed to initialize audit logger")?;
 
     let approvals = ApprovalManager::new(config.approval.ttl_seconds, signal_client);
     let zfs = ZfsExecutor::new();
@@ -1039,12 +1069,14 @@ async fn main() -> Result<()> {
         &config.server.key,
         &config.server.client_ca,
         config.server.crl_file.as_ref(),
-    ).with_context(|| "Failed to create mTLS configuration")?;
+    )
+    .with_context(|| "Failed to create mTLS configuration")?;
 
     info!("mTLS configuration created successfully");
 
     // Create TCP listener
-    let listener = TcpListener::bind(addr).await
+    let listener = TcpListener::bind(addr)
+        .await
         .with_context(|| format!("Failed to bind to {}", addr))?;
 
     info!("Bound to {}", addr);
@@ -1054,8 +1086,7 @@ async fn main() -> Result<()> {
     // acceptor.accept() which returns (ClientIdentity, TlsStream) and inject the
     // identity into the request extensions before dispatching to the axum router.
     let acceptor = Arc::new(IdentityExtractingAcceptor::new(
-        tls_config,
-        None, // CRL already checked in create_mtls_config
+        tls_config, None, // CRL already checked in create_mtls_config
     ));
 
     info!("Host-Agent ready with mTLS enforcement + identity injection");
@@ -1064,8 +1095,7 @@ async fn main() -> Result<()> {
     if config.metrics.enabled {
         let metrics_addr: SocketAddr = config.metrics.bind.parse()?;
         tokio::spawn(async move {
-            let metrics_app = Router::new()
-                .route("/metrics", get(|| async { "Metrics endpoint" }));
+            let metrics_app = Router::new().route("/metrics", get(|| async { "Metrics endpoint" }));
 
             let listener = match TcpListener::bind(metrics_addr).await {
                 Ok(l) => l,

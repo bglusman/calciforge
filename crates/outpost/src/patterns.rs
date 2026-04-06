@@ -15,9 +15,8 @@ pub static RE_ZERO_WIDTH: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Unicode tag characters (U+E0000–U+E007F) — invisible but model-visible.
-pub static RE_UNICODE_TAGS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[\u{E0000}-\u{E007F}]").expect("RE_UNICODE_TAGS compile")
-});
+pub static RE_UNICODE_TAGS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[\u{E0000}-\u{E007F}]").expect("RE_UNICODE_TAGS compile"));
 
 /// CSS-based content-hiding patterns.
 pub static RE_CSS_HIDING: Lazy<Regex> = Lazy::new(|| {
@@ -34,9 +33,8 @@ pub static RE_CSS_HIDING: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Large base64-encoded blobs (> 500 consecutive base64 chars).
-pub static RE_BASE64_BLOB: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[A-Za-z0-9+/\-_]{500,}={0,2}").expect("RE_BASE64_BLOB compile")
-});
+pub static RE_BASE64_BLOB: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[A-Za-z0-9+/\-_]{500,}={0,2}").expect("RE_BASE64_BLOB compile"));
 
 // ── Layer 2: Semantic patterns ─────────────────────────────────────────────────
 

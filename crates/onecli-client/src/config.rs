@@ -62,12 +62,12 @@ impl OneCliConfig {
     pub fn validate(&self) -> crate::Result<()> {
         if self.url.is_empty() {
             return Err(crate::OneCliError::Config(
-                "OneCLI URL cannot be empty".to_string()
+                "OneCLI URL cannot be empty".to_string(),
             ));
         }
         if self.agent_id.is_empty() {
             return Err(crate::OneCliError::Config(
-                "Agent ID cannot be empty".to_string()
+                "Agent ID cannot be empty".to_string(),
             ));
         }
         Ok(())

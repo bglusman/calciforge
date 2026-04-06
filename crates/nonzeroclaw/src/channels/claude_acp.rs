@@ -20,7 +20,7 @@
 //! ```
 
 use super::traits::{Channel, ChannelMessage, SendMessage};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -280,23 +280,19 @@ impl ClaudeAcpChannel {
 
         // Wait for the process with a timeout
         let timeout = Duration::from_secs(self.timeout_secs);
-        let exit_status =
-            match tokio::time::timeout(timeout, child.wait()).await {
-                Ok(Ok(status)) => status,
-                Ok(Err(e)) => {
-                    bail!("Claude process wait failed: {e}");
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        timeout_secs = self.timeout_secs,
-                        "Claude process timed out; killing"
-                    );
-                    bail!(
-                        "Claude process timed out after {}s",
-                        self.timeout_secs
-                    );
-                }
-            };
+        let exit_status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => {
+                bail!("Claude process wait failed: {e}");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = self.timeout_secs,
+                    "Claude process timed out; killing"
+                );
+                bail!("Claude process timed out after {}s", self.timeout_secs);
+            }
+        };
 
         if !exit_status.success() {
             tracing::warn!(
@@ -523,10 +519,10 @@ mod tests {
     fn from_config_uses_defaults_for_empty_fields() {
         let config = crate::config::schema::ClaudeAcpConfig {
             enabled: true,
-            claude_path: String::new(),  // empty → default
+            claude_path: String::new(), // empty → default
             workspace_dir: "/tmp".to_string(),
             permission_mode: String::new(), // empty → default
-            timeout_secs: 0,             // zero → default
+            timeout_secs: 0,                // zero → default
             extra_args: vec![],
         };
         let ch = ClaudeAcpChannel::from_config(&config);

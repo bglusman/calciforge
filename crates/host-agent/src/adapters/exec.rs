@@ -72,10 +72,9 @@ impl Adapter for ExecAdapter {
             });
         }
 
-        let resource = op
-            .resource
-            .as_deref()
-            .ok_or_else(|| AppError::Internal("exec: resource (command path) is required".into()))?;
+        let resource = op.resource.as_deref().ok_or_else(|| {
+            AppError::Internal("exec: resource (command path) is required".into())
+        })?;
 
         // Ansible stub path
         if resource.starts_with("ansible://") {
@@ -99,9 +98,7 @@ impl Adapter for ExecAdapter {
         // Must be in allowlist
         if !exec_cfg.allowed_commands.iter().any(|c| c == resource) {
             return Ok(PolicyDecision::Deny {
-                reason: format!(
-                    "ExecAdapter: command '{resource}' not in allowed_commands list"
-                ),
+                reason: format!("ExecAdapter: command '{resource}' not in allowed_commands list"),
             });
         }
 
@@ -136,7 +133,9 @@ impl Adapter for ExecAdapter {
                     });
 
                     std::fs::write(&job_path, serde_json::to_string_pretty(&job_spec).unwrap())
-                        .map_err(|e| AppError::Internal(format!("Failed to write job spec: {e}")))?;
+                        .map_err(|e| {
+                            AppError::Internal(format!("Failed to write job spec: {e}"))
+                        })?;
 
                     warn!(
                         caller = %identity.cn,
