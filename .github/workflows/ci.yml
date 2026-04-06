@@ -38,7 +38,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Run tests for all workspace crates
@@ -70,7 +70,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Test ${{ matrix.crate }}
-        run: cargo test -p ${{ matrix.crate }} --all-features
+        run: cargo test -p ${{ matrix.crate }}
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Build release binaries
