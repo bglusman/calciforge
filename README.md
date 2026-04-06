@@ -183,4 +183,47 @@ Built with:
 
 ---
 
+## 📋 Roadmap & Architecture
+
+### Components
+
+| Crate | Binary | Purpose |
+|-------|--------|---------|
+| `zeroclawed` | `zeroclawed` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents |
+| `onecli-client` | `onecli` | **Credential Proxy** — VaultWarden integration, injects API keys without exposing them to agents |
+| `host-agent` | `host-agent` | **System Agent** — ZFS, systemd, Proxmox operations with approval gates |
+| `outpost` | *(library)* | **Content Scanner** — detects prompt injection, PII leakage, unsafe content |
+| `clash` | *(library)* | **Policy Engine** — sandboxing and tool restrictions |
+
+### Message Flow
+
+```
+[Telegram] ──┐
+[Matrix]   ──┤──▶ [ZeroClawed] ──▶ [Auth] ──▶ [Router] ──▶ [Agent]
+[Signal]   ──┘        │                                    │
+[WhatsApp] ──┘   [Outpost scan]                      [OneCLI proxy]
+                                                           │
+                                                    [VaultWarden]
+```
+
+### OneCLI: Universal Secret Proxy
+
+OneCLI can proxy **any** HTTP request with credential injection:
+
+```bash
+# LLM APIs (auto-injected)
+/proxy/anthropic → api.anthropic.com + Authorization header
+/proxy/openai    → api.openai.com + Authorization header
+/proxy/kimi      → api.moonshot.cn + Authorization header
+
+# Any secret (explicit lookup)
+/vault/Brave%20Search%20API → returns {token: "..."}
+/vault/MAM                   → returns {token: "..."}
+/vault/Any%20Service         → returns {token: "..."}
+```
+
+Agents use OneCLI transparently — the wrapper scripts set the proxy URL, agents make normal requests.
+
+---
+
 **ZeroClawed** — *Chat safely. Route wisely. Keep your claws retracted.* 🐾
