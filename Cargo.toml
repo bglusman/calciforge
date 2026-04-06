@@ -11,8 +11,8 @@ resolver = "2"
 
 [workspace.dependencies]
 # External agent dependencies
-zeroclawlabs = "0.6.7"
-clash = "0.5.1"
+zeroclawlabs = "0.6.8"
+clash = "0.6.2"
 claw-code = { git = "https://github.com/instructkr/claw-code" }
 
 # Async runtime
