@@ -5,3 +5,4 @@
 
 pub mod onecli_proxy;
 pub mod config_sanity;
+pub mod property_tests;
