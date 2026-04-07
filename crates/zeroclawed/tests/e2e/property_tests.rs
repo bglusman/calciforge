@@ -171,6 +171,9 @@ proptest! {
         let serialized = serde_json::to_string(&tools).unwrap();
         let deserialized: serde_json::Value = serde_json::from_str(&serialized).unwrap();
         
+        // Clone for second assertion
+        let deserialized_for_name = deserialized.clone();
+        
         prop_assert_eq!(
             tools,
             deserialized,
@@ -178,7 +181,7 @@ proptest! {
         );
         
         // Property: tool name is preserved
-        let name = deserialized[0]["function"]["name"].as_str().unwrap();
+        let name = deserialized_for_name[0]["function"]["name"].as_str().unwrap();
         prop_assert_eq!(name, tool_name);
     }
 }
