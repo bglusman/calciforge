@@ -79,3 +79,6 @@ hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 loom = { version = "0.7", features = ["checkpoint"] }
+mockito = "1.5"
+proptest = "1.5"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
