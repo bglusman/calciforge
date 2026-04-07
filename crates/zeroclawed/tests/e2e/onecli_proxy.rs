@@ -3,11 +3,7 @@
 //! Tests the credential proxy that injects secrets from VaultWarden
 //! and forwards requests to upstream APIs.
 
-use mockito::{mock, server_url};
 use reqwest;
-use std::process::{Command, Stdio};
-use std::time::Duration;
-use tokio::time::sleep;
 
 /// Start OneCLI service for testing
 async fn start_onecli() -> String {
@@ -171,42 +167,4 @@ async fn test_proxy_path_stripping() {
     }
 }
 
-/// Mock-based test for tool call passthrough
-/// This uses mockito to verify the proxy forwards tool_calls correctly
-#[cfg(feature = "mock-tests")]
-#[tokio::test]
-async fn test_tool_call_passthrough_with_mock() {
-    // Start mock upstream server
-    let mock_server = mock("POST", "/v1/chat/completions")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(r#"{
-            "id": "test",
-            "object": "chat.completion",
-            "model": "gpt-4",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_123",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": "{\"query\": \"weather\"}"
-                        }
-                    }]
-                }
-            }]
-        }"#)
-        .create();
-    
-    // The proxy should forward this response unchanged
-    // TODO: Configure OneCLI to use mock_server.url() as the openai endpoint
-    // Then verify the tool_calls array is preserved in the response
-    
-    // This requires OneCLI to support configurable provider URLs
-    // which is not yet implemented - mark as TODO
-    println!("TODO: Implement configurable provider URLs for testing");
-}
+// TODO: Add mock-based test once OneCLI supports configurable provider URLs
