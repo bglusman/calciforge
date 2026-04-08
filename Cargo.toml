@@ -48,6 +48,10 @@ base64 = "0.22"
 # UUID
 uuid = { version = "1", features = ["v4", "std"] }
 
+# Testing (workspace-wide)
+proptest = "1.5"
+mockito = "1.5"
+
 # Shared workspace crates
 outpost = { path = "crates/outpost" }
 

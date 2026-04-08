@@ -1,148 +1,73 @@
-//! Configuration for OneCLI client
+//! OneCLI Service Configuration
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::path::PathBuf;
 
-/// OneCLI client configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneCliConfig {
-    /// OneCLI server URL
     pub url: String,
-
-    /// Agent identifier for policy matching
     pub agent_id: String,
-
-    /// Request timeout
-    #[serde(with = "humantime_serde", default = "default_timeout")]
-    pub timeout: Duration,
-
-    /// Retry configuration
-    #[serde(default)]
-    pub retry: RetryConfig,
-
-    /// Whether to fail open if OneCLI is unavailable
-    #[serde(default = "default_fail_open")]
-    pub fail_open: bool,
+    #[serde(with = "humantime_serde")]
+    pub timeout: std::time::Duration,
 }
 
 impl Default for OneCliConfig {
     fn default() -> Self {
         Self {
-            url: "http://127.0.0.1:18799".to_string(),
-            agent_id: "zeroclawed-default".to_string(),
-            timeout: default_timeout(),
-            retry: RetryConfig::default(),
-            fail_open: default_fail_open(),
+            url: "http://localhost:8081".to_string(),
+            agent_id: "default".to_string(),
+            timeout: std::time::Duration::from_secs(30),
         }
     }
 }
 
-impl OneCliConfig {
-    /// Create config from environment variables
-    pub fn from_env() -> Self {
-        Self {
-            url: std::env::var("ONECLI_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:18799".to_string()),
-            agent_id: std::env::var("ONECLI_AGENT_ID")
-                .unwrap_or_else(|_| "zeroclawed-default".to_string()),
-            timeout: std::env::var("ONECLI_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .map(Duration::from_secs)
-                .unwrap_or_else(default_timeout),
-            retry: RetryConfig::default(),
-            fail_open: std::env::var("ONECLI_FAIL_OPEN")
-                .ok()
-                .map(|s| s == "true" || s == "1")
-                .unwrap_or_else(default_fail_open),
-        }
-    }
-
-    /// Validate the configuration
-    pub fn validate(&self) -> crate::Result<()> {
-        if self.url.is_empty() {
-            return Err(crate::OneCliError::Config(
-                "OneCLI URL cannot be empty".to_string(),
-            ));
-        }
-        if self.agent_id.is_empty() {
-            return Err(crate::OneCliError::Config(
-                "Agent ID cannot be empty".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Retry configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetryConfig {
-    /// Maximum number of retries
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
-
-    /// Base delay between retries
-    #[serde(with = "humantime_serde", default = "default_retry_delay")]
-    pub base_delay: Duration,
-
-    /// Maximum delay between retries
-    #[serde(with = "humantime_serde", default = "default_max_retry_delay")]
-    pub max_delay: Duration,
+pub struct OneCliServiceConfig {
+    pub bind: String,
+    pub vault: VaultConfig,
+    pub policy_file: Option<PathBuf>,
+    pub providers: ProviderConfig,
 }
 
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            max_retries: default_max_retries(),
-            base_delay: default_retry_delay(),
-            max_delay: default_max_retry_delay(),
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultConfig {
+    pub backend: String,
+    pub url: Option<String>,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub anthropic: Option<String>,
+    pub openai: Option<String>,
+    pub kimi: Option<String>,
+    pub gemini: Option<String>,
+}
+
+impl OneCliServiceConfig {
+    pub async fn from_env_or_file() -> anyhow::Result<Self> {
+        if let Ok(config_path) = std::env::var("ONECLI_CONFIG") {
+            let contents = tokio::fs::read_to_string(&config_path).await?;
+            return Ok(toml::from_str(&contents)?);
         }
-    }
-}
-
-fn default_timeout() -> Duration {
-    Duration::from_secs(30)
-}
-
-fn default_fail_open() -> bool {
-    false // Fail closed by default for security
-}
-
-fn default_max_retries() -> u32 {
-    3
-}
-
-fn default_retry_delay() -> Duration {
-    Duration::from_millis(100)
-}
-
-fn default_max_retry_delay() -> Duration {
-    Duration::from_secs(5)
-}
-
-// Helper module for humantime serialization
-mod humantime_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::time::Duration;
-
-    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let secs = duration.as_secs();
-        let millis = duration.subsec_millis();
-        if millis == 0 {
-            serializer.serialize_str(&format!("{}s", secs))
-        } else {
-            serializer.serialize_str(&format!("{}.{:03}s", secs, millis))
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        humantime::parse_duration(&s).map_err(serde::de::Error::custom)
+        
+        Ok(Self {
+            bind: std::env::var("ONECLI_BIND")
+                .unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
+            vault: VaultConfig {
+                backend: std::env::var("ONECLI_VAULT_BACKEND")
+                    .unwrap_or_else(|_| "env".to_string()),
+                url: std::env::var("ONECLI_VAULT_URL").ok(),
+                password: std::env::var("ONECLI_VAULT_PASSWORD")
+                    .unwrap_or_else(|_| "".to_string()),
+            },
+            policy_file: std::env::var("ONECLI_POLICY_FILE").ok().map(PathBuf::from),
+            providers: ProviderConfig {
+                anthropic: std::env::var("ANTHROPIC_BASE_URL").ok(),
+                openai: std::env::var("OPENAI_BASE_URL").ok(),
+                kimi: std::env::var("KIMI_BASE_URL").ok(),
+                gemini: std::env::var("GEMINI_BASE_URL").ok(),
+            },
+        })
     }
 }
