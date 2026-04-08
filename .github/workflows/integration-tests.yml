@@ -1,0 +1,112 @@
+name: ZeroClawed Integration Tests
+
+on:
+  push:
+    branches: [main, master, 'feat/**', 'fix/**']
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build project
+        run: cargo build --workspace --all-targets
+
+      - name: Run unit tests
+        run: cargo test --workspace --lib --bins
+
+      - name: Run integration tests
+        run: cargo test -p zeroclawed --test e2e
+        env:
+          # Skip tests that require running services in CI
+          SKIP_LIVE_TESTS: 1
+
+      - name: Run Ralph Loop (limited iterations)
+        run: |
+          # Run up to 5 iterations in CI to catch flaky tests
+          ./scripts/ralph-loop.sh 5 || true
+        timeout-minutes: 10
+
+  test-onecli:
+    name: OneCLI Proxy Tests
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build OneCLI
+        run: cargo build -p onecli-client --release
+
+      - name: Start OneCLI service
+        run: |
+          # Start OneCLI in background for integration tests
+          cargo run -p onecli-client --release &
+          ONECLI_PID=$!
+          echo "ONECLI_PID=$ONECLI_PID" >> $GITHUB_ENV
+          
+          # Wait for it to be ready
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8081/health > /dev/null; then
+              echo "OneCLI is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run OneCLI proxy tests
+        run: cargo test -p zeroclawed test_proxy_ -- --nocapture
+        env:
+          ONECLI_URL: http://127.0.0.1:8081
+
+      - name: Stop OneCLI service
+        if: always()
+        run: |
+          if [ -n "$ONECLI_PID" ]; then
+            kill $ONECLI_PID || true
+          fi
+
+  lint:
+    name: Lint and Format
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

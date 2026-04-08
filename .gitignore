@@ -1,3 +1,5 @@
+.atl/
+.gga
 target/
 target-local/
 vendor/
