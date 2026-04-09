@@ -85,7 +85,8 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
                         field.name, field._type
                     );
                     // type 0 = text, type 1 = hidden (password)
-                    if field._type == 1 && field.value.is_some() {
+                    // Check both - encrypted field names often default to type 0
+                    if field.value.is_some() && !field.value.as_ref().unwrap().is_empty() {
                         return Ok(field.value.clone().unwrap());
                     }
                 }
