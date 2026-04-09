@@ -31,6 +31,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "adversary-detector"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "async-trait",
+ "axum",
+ "chrono",
+ "home",
+ "once_cell",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
+]
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3726,27 +3749,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "outpost"
-version = "0.1.0"
-dependencies = [
- "aho-corasick",
- "async-trait",
- "chrono",
- "home",
- "once_cell",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7088,6 +7090,7 @@ dependencies = [
 name = "zeroclawed"
 version = "0.1.0"
 dependencies = [
+ "adversary-detector",
  "anyhow",
  "async-trait",
  "axum",
@@ -7105,7 +7108,6 @@ dependencies = [
  "matrix-sdk",
  "mockito",
  "onecli-client",
- "outpost",
  "proptest",
  "reqwest 0.12.28",
  "sacp",

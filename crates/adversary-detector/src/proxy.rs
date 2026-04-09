@@ -96,9 +96,9 @@ impl OutpostFetchResult {
 /// Construct via [`OutpostProxy::new`] or [`OutpostProxy::from_config`].
 ///
 /// ```rust,no_run
-/// use outpost::proxy::OutpostProxy;
-/// use outpost::scanner::ScannerConfig;
-/// use outpost::audit::AuditLogger;
+/// use adversary_detector::proxy::OutpostProxy;
+/// use adversary_detector::scanner::ScannerConfig;
+/// use adversary_detector::audit::AuditLogger;
 ///
 /// async fn example() {
 ///     let config = ScannerConfig::default();

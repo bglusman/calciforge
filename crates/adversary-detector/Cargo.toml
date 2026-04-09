@@ -1,8 +1,8 @@
 [package]
-name = "outpost"
+name = "adversary-detector"
 version = "0.1.0"
 edition = "2021"
-description = "ZeroClawed — Outpost external content scanning module"
+description = "ZeroClawed — Adversarial content detection and scanning"
 license = "MIT"
 
 [dependencies]
@@ -19,8 +19,14 @@ home = "0.5"
 once_cell = "1"
 async-trait = "0.1"
 sha2 = "0.10"
+axum = { version = "0.7", features = ["tokio", "http1"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 wiremock = "0.6"
 tempfile = "3"
+
+[[bin]]
+name = "adversary-detector"
+path = "src/main.rs"

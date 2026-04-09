@@ -2,7 +2,7 @@
 
 members = [
     "crates/zeroclawed",
-    "crates/outpost",
+    "crates/adversary-detector",
     "crates/host-agent",
     "crates/onecli-client",
     "crates/clashd",
@@ -54,7 +54,7 @@ proptest = "1.5"
 mockito = "1.5"
 
 # Shared workspace crates
-outpost = { path = "crates/outpost" }
+adversary-detector = { path = "crates/adversary-detector" }
 
 [profile.release]
 opt-level = "z"
