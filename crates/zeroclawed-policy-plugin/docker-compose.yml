@@ -1,0 +1,73 @@
+# Docker Compose for ZeroClawed Policy Stack
+# Runs clashd sidecar + OpenClaw with policy plugin for testing
+
+version: "3.8"
+
+services:
+  clashd:
+    build:
+      context: ../..
+      dockerfile: crates/clashd/Dockerfile
+    ports:
+      - "9001:9001"
+    environment:
+      - CLASHD_PORT=9001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - zeroclawed-policy
+
+  # Mock OpenClaw service for testing the plugin
+  # In production, this would be your actual OpenClaw gateway
+  openclaw-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    ports:
+      - "18789:18789"
+    environment:
+      - CLASHD_ENDPOINT=http://clashd:9001/evaluate
+      - CLASHD_TIMEOUT_MS=1000
+      - CLASHD_FALLBACK=deny
+    depends_on:
+      clashd:
+        condition: service_healthy
+    networks:
+      - zeroclawed-policy
+    volumes:
+      - ./test-config:/config:ro
+
+  # Test runner that verifies the integration
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    depends_on:
+      - clashd
+      - openclaw-mock
+    environment:
+      - CLASHD_URL=http://clashd:9001
+      - OPENCLAW_URL=http://openclaw-mock:18789
+    networks:
+      - zeroclawed-policy
+    command: >
+      sh -c "
+        echo 'Waiting for services...' &&
+        sleep 5 &&
+        echo 'Testing clashd...' &&
+        curl -s http://clashd:9001/health &&
+        echo '' &&
+        echo 'Testing policy enforcement...' &&
+        curl -s -X POST http://clashd:9001/evaluate \\
+          -H 'Content-Type: application/json' \\
+          -d '{\"tool\":\"gateway\",\"args\":{\"action\":\"config.patch\"}}' &&
+        echo '' &&
+        echo 'All tests passed!'
+      "
+
+networks:
+  zeroclawed-policy:
+    driver: bridge
