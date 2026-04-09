@@ -124,7 +124,7 @@ pub struct InboundWaMessage {
     /// Message text content.
     pub text: String,
     /// Unix timestamp (best-effort).
-    pub timestamp: u64,
+    pub _timestamp: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ impl WhatsAppChannel {
                     messages.push(InboundWaMessage {
                         from,
                         text: text_body,
-                        timestamp,
+                        _timestamp: timestamp,
                     });
                 }
             }
@@ -617,7 +617,7 @@ pub async fn run(
     context_store: ContextStore,
 ) -> Result<()> {
     use std::net::SocketAddr;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
 
     // Find WhatsApp channel config
     let wa_channel_cfg = config
@@ -739,7 +739,7 @@ pub async fn run(
                 let sig_header = raw
                     .lines()
                     .find(|l| l.to_lowercase().starts_with("x-hub-signature-256:"))
-                    .and_then(|l| l.splitn(2, ':').nth(1))
+                    .and_then(|l| l.split_once(':').map(|x| x.1))
                     .map(|s| s.trim())
                     .unwrap_or("");
 
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].from, "+15555550001");
         assert_eq!(msgs[0].text, "Hello ZeroClawed!");
-        assert_eq!(msgs[0].timestamp, 1_699_999_999);
+        assert_eq!(msgs[0]._timestamp, 1_699_999_999);
     }
 
     #[test]

@@ -113,8 +113,8 @@ struct HooksAgentResponse {
     #[serde(default)]
     response: Option<String>,
     /// Indicates whether the hook was accepted and queued / run.
-    #[serde(default)]
-    ok: Option<bool>,
+    #[serde(default, rename = "ok")]
+    _ok: Option<bool>,
     /// Error message from OpenClaw (non-fatal protocol error).
     #[serde(default)]
     error: Option<String>,

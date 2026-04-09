@@ -33,11 +33,11 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct OpenClawInstallation {
     /// Path to `openclaw.json` on the remote host.
-    pub config_path: PathBuf,
+    pub _config_path: PathBuf,
     /// Parsed JSON value of the entire config tree.
-    pub config: serde_json::Value,
+    pub _config: serde_json::Value,
     /// Root of the OpenClaw data directory.
-    pub openclaw_dir: PathBuf,
+    pub _openclaw_dir: PathBuf,
     /// Channels detected in the config.
     pub channels: Vec<DetectedChannel>,
     /// OpenClaw version string, if readable.
@@ -50,13 +50,13 @@ pub struct OpenClawInstallation {
 #[derive(Debug, Clone)]
 pub struct DetectedChannel {
     /// Canonical lowercase name: `"telegram"`, `"signal"`, etc.
-    pub name: String,
+    pub _name: String,
     /// Whether the channel appears to be enabled.
-    pub enabled: bool,
+    pub _enabled: bool,
     /// True if at least one credential field is non-empty.
     pub has_credentials: bool,
     /// The raw JSON object for this channel's config block.
-    pub config_snippet: serde_json::Value,
+    pub _config_snippet: serde_json::Value,
 }
 
 /// Who should own a channel after ZeroClawed takes over routing.
@@ -111,10 +111,10 @@ mod tests {
     #[test]
     fn channel_assignment_fields() {
         let ch = DetectedChannel {
-            name: "telegram".into(),
-            enabled: true,
+            _name: "telegram".into(),
+            _enabled: true,
             has_credentials: true,
-            config_snippet: serde_json::json!({"botToken": "tok"}),
+            _config_snippet: serde_json::json!({"botToken": "tok"}),
         };
         let assignment = ChannelAssignment {
             channel: ch,
@@ -129,9 +129,9 @@ mod tests {
     #[test]
     fn openclaw_installation_fields() {
         let install = OpenClawInstallation {
-            config_path: PathBuf::from("/home/user/.openclaw/openclaw.json"),
-            config: serde_json::json!({"version": "2026.3.13"}),
-            openclaw_dir: PathBuf::from("/home/user/.openclaw"),
+            _config_path: PathBuf::from("/home/user/.openclaw/openclaw.json"),
+            _config: serde_json::json!({"version": "2026.3.13"}),
+            _openclaw_dir: PathBuf::from("/home/user/.openclaw"),
             channels: vec![],
             version: Some("2026.3.13".into()),
         };

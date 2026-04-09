@@ -3,7 +3,7 @@
 //! This is the FIRST check on any inbound message. If the sender cannot be
 //! resolved to a known identity, the message is silently dropped.
 
-use crate::config::{Identity, PolyConfig};
+use crate::config::PolyConfig;
 
 /// The resolved identity of a sender, if authorized.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +68,7 @@ pub fn find_agent<'a>(
 /// Returns `true` if:
 /// - The routing rule has no `allowed_agents` restriction (empty list = unrestricted), OR
 /// - The agent is in the `allowed_agents` list.
+#[cfg(test)]
 pub fn is_agent_allowed(identity_id: &str, agent_id: &str, config: &PolyConfig) -> bool {
     match config.routing.iter().find(|r| r.identity == identity_id) {
         Some(rule) => {
