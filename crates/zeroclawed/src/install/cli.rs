@@ -43,7 +43,7 @@ pub struct InstallArgs {
     /// `--skip-backup` — dangerous, must be explicit.
     pub skip_backup: bool,
     /// `--yes` — skip confirmations (for scripted use).
-    pub yes: bool,
+    pub _yes: bool,
 }
 
 impl InstallArgs {
@@ -122,15 +122,14 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
     let host = kv.get("host").cloned().unwrap_or_default();
     let ssh_key = kv.get("key").map(PathBuf::from);
 
-    if adapter.is_remotely_configurable() {
-        if host.is_empty() {
+    if adapter.is_remotely_configurable()
+        && host.is_empty() {
             bail!(
                 "adapter '{}' requires 'host=user@hostname' in spec: {}",
                 adapter_str,
                 spec
             );
         }
-    }
 
     // Endpoint — required for everything except Cli.
     let endpoint = match &adapter {

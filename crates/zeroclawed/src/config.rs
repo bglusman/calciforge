@@ -287,9 +287,9 @@ pub fn config_path() -> Result<PathBuf> {
 
 /// Expand a `~`-prefixed path using the home directory.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = home::home_dir() {
-            return home.join(&path[2..]);
+            return home.join(stripped);
         }
     }
     PathBuf::from(path)

@@ -159,6 +159,7 @@ impl ConversationContext {
     ///
     /// In practice this is handled automatically by [`push`] — this method is
     /// provided as an escape hatch for tests or future channels.
+    #[cfg(test)]
     pub fn mark_seen(&mut self, agent_id: &str) {
         if let Some(last) = self.exchanges.back() {
             self.watermarks.insert(agent_id.to_string(), last.seq);
@@ -166,14 +167,11 @@ impl ConversationContext {
     }
 
     /// Number of exchanges currently in the buffer.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.exchanges.len()
     }
 
-    /// True if no exchanges have been recorded yet.
-    pub fn is_empty(&self) -> bool {
-        self.exchanges.is_empty()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,20 +246,12 @@ impl ContextStore {
     }
 
     /// Return the number of exchanges stored for a chat (for status/debug).
+    #[cfg(test)]
     pub fn exchange_count(&self, chat_id: &str) -> usize {
         let map = self.inner.lock().unwrap();
         map.get(chat_id).map(|c| c.len()).unwrap_or(0)
     }
 
-    /// Configured inject depth.
-    pub fn inject_depth(&self) -> usize {
-        self.inject_depth
-    }
-
-    /// Configured buffer size.
-    pub fn buffer_size(&self) -> usize {
-        self.buffer_size
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -170,35 +170,3 @@ impl IdentityExtractingAcceptor {
     }
 }
 
-/// Test helper to generate self-signed certs for testing (updated for rcgen 0.13)
-#[cfg(test)]
-pub mod test_certs {
-    use rcgen::{
-        BasicConstraints, CertificateParams, CertifiedKey, IsCa, KeyPair, KeyUsagePurpose,
-    };
-
-    /// Generate a self-signed CA certificate. Returns (CertifiedKey) which holds
-    /// the cert + key pair together.
-    pub fn generate_test_ca() -> (CertifiedKey, Vec<u8>) {
-        let key_pair = KeyPair::generate().unwrap();
-        let mut params = CertificateParams::new(vec!["ZeroClawed CA".to_string()]).unwrap();
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        let cert = params.self_signed(&key_pair).unwrap();
-        let pem = cert.pem().into_bytes();
-        (CertifiedKey { cert, key_pair }, pem)
-    }
-
-    /// Generate a client cert signed by the given CA.
-    pub fn generate_test_client_cert(ca: &CertifiedKey, cn: &str) -> (Vec<u8>, Vec<u8>) {
-        let key_pair = KeyPair::generate().unwrap();
-        let mut params = CertificateParams::new(vec![cn.to_string()]).unwrap();
-        params
-            .distinguished_name
-            .push(rcgen::DnType::CommonName, cn);
-        let cert = params.signed_by(&key_pair, &ca.cert, &ca.key_pair).unwrap();
-        let cert_pem = cert.pem().into_bytes();
-        let key_pem = key_pair.serialize_pem().into_bytes();
-        (cert_pem, key_pem)
-    }
-}

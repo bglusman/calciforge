@@ -14,22 +14,20 @@ use axum::{
     routing::{get, post, any},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
 
-mod config;
 mod vault;
-mod policy;
 
-use config::OneCliServiceConfig;
+use onecli_client::OneCliServiceConfig;
 
 /// Shared application state
 #[derive(Clone)]
 struct AppState {
-    config: Arc<OneCliServiceConfig>,
+    _config: Arc<OneCliServiceConfig>,
     http_client: reqwest::Client,
 }
 
@@ -40,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     
     let config = OneCliServiceConfig::from_env_or_file().await?;
     let state = AppState {
-        config: Arc::new(config),
+        _config: Arc::new(config),
         http_client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()?,
@@ -279,5 +277,5 @@ async fn policy_check_handler(
 #[derive(Deserialize)]
 struct PolicyCheckRequest {
     tool: String,
-    args: serde_json::Value,
+    _args: serde_json::Value,
 }

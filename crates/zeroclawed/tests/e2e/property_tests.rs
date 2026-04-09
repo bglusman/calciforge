@@ -5,8 +5,8 @@
 
 use proptest::prelude::*;
 
-/// Property: URL reconstruction after parsing should be lossless
-/// This catches path-stripping bugs like the one we found
+// Property: URL reconstruction after parsing should be lossless
+// This catches path-stripping bugs like the one we found
 proptest! {
     #[test]
     fn test_url_reconstruction_lossless(
@@ -31,8 +31,8 @@ proptest! {
     }
 }
 
-/// Property: Config parsing is deterministic
-/// Same input → same output
+// Property: Config parsing is deterministic
+// Same input → same output
 proptest! {
     #[test]
     fn test_config_parsing_deterministic(
@@ -76,7 +76,7 @@ timeout_ms = 30000
     }
 }
 
-/// Property: Credential headers don't leak into non-auth headers
+// Property: Credential headers don't leak into non-auth headers
 proptest! {
     #[test]
     fn test_credential_isolation(
@@ -98,7 +98,7 @@ proptest! {
     }
 }
 
-/// Property: Adapter kind validation rejects unknown kinds
+// Property: Adapter kind validation rejects unknown kinds
 proptest! {
     #[test]
     fn test_adapter_kind_validation(
@@ -121,7 +121,7 @@ proptest! {
     }
 }
 
-/// Property: Timeout values are positive and reasonable
+// Property: Timeout values are positive and reasonable
 proptest! {
     #[test]
     fn test_timeout_values(
@@ -136,13 +136,13 @@ proptest! {
         }
         
         // Property: reasonable timeouts are accepted
-        if timeout_ms >= 1000 && timeout_ms <= 300000 {
+        if (1000..=300000).contains(&timeout_ms) {
             prop_assert!(timeout_ms >= 1000);
         }
     }
 }
 
-/// Property: Tool payload round-trip preserves structure
+// Property: Tool payload round-trip preserves structure
 proptest! {
     #[test]
     fn test_tool_payload_preservation(

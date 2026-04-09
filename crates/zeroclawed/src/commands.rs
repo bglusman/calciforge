@@ -13,7 +13,7 @@
 //! [`CommandHandler::cmd_status_for_identity`] respectively.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -29,13 +29,13 @@ fn default_state_dir() -> PathBuf {
 }
 
 /// Path to the active-agent state file within `state_dir`.
-fn state_file_path_for(state_dir: &PathBuf) -> PathBuf {
+fn state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-agents.json")
 }
 
 /// Load persisted active-agent selections from a given state directory.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
-fn load_active_agents_from(state_dir: &PathBuf) -> HashMap<String, String> {
+fn load_active_agents_from(state_dir: &Path) -> HashMap<String, String> {
     let path = state_file_path_for(state_dir);
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
@@ -44,7 +44,7 @@ fn load_active_agents_from(state_dir: &PathBuf) -> HashMap<String, String> {
 }
 
 /// Persist the active-agent map to a given state directory.
-fn save_active_agents_to(state_dir: &PathBuf, map: &HashMap<String, String>) {
+fn save_active_agents_to(state_dir: &Path, map: &HashMap<String, String>) {
     let path = state_file_path_for(state_dir);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -153,7 +153,7 @@ impl CommandHandler {
         }
 
         // Grab just the command word (before any args)
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
 
         match cmd.as_str() {
             "!help" => Some(self.cmd_help()),
@@ -182,7 +182,7 @@ impl CommandHandler {
     /// routing to the agent.
     pub fn is_sessions_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!sessions"
     }
 
@@ -192,15 +192,8 @@ impl CommandHandler {
     /// routing to the agent.
     pub fn is_switch_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!switch"
-    }
-
-    /// Returns `true` if the text is a `!model` command (case-insensitive).
-    pub fn is_model_command(text: &str) -> bool {
-        let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
-        cmd == "!model"
     }
 
     /// Returns `true` if the text is a `!default` command (case-insensitive).
@@ -209,7 +202,7 @@ impl CommandHandler {
     /// routing to the agent.
     pub fn is_default_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!default"
     }
 
@@ -219,21 +212,21 @@ impl CommandHandler {
     /// instead of routing to the agent.
     pub fn is_status_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!status"
     }
 
     /// Returns `true` if the text is an `!approve` command (case-insensitive).
     pub fn is_approve_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!approve"
     }
 
     /// Returns `true` if the text is a `!deny` command (case-insensitive).
     pub fn is_deny_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.splitn(2, ' ').next().unwrap_or("").to_lowercase();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!deny"
     }
 
@@ -244,7 +237,7 @@ impl CommandHandler {
 
     /// Respond to unknown commands with a helpful message.
     pub fn unknown_command(&self, text: &str) -> String {
-        let cmd = text.trim().splitn(2, ' ').next().unwrap_or("").to_string();
+        let cmd = text.trim().split(' ').next().unwrap_or("").to_string();
         format!(
             "⚠️ Unknown command: {}\n\nUse !help or !commands to see available commands.",
             cmd
@@ -548,18 +541,13 @@ impl CommandHandler {
     pub fn handle_switch(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // Parse arguments after "!switch"
-        let args: Vec<&str> = trimmed
-            .splitn(2, ' ')
-            .nth(1)
+        let args: Vec<&str> = trimmed.split_once(' ').map(|x| x.1)
             .unwrap_or("")
-            .trim()
             .split_whitespace()
             .collect();
 
         if args.is_empty() {
-            return format!(
-                "Usage: !switch <agent> [session]\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents."
-            );
+            return "Usage: !switch <agent> [session]\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents.".to_string();
         }
 
         let agent_arg = args[0].to_string();
@@ -663,17 +651,13 @@ impl CommandHandler {
     pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // Parse the agent argument (everything after "!sessions ")
-        let agent_arg = trimmed
-            .splitn(2, ' ')
-            .nth(1)
+        let agent_arg = trimmed.split_once(' ').map(|x| x.1)
             .unwrap_or("")
             .trim()
             .to_string();
 
         if agent_arg.is_empty() {
-            return format!(
-                "Usage: !sessions <agent>\n\nLists available ACP sessions for an agent.\nUse !agents to see available agents."
-            );
+            return "Usage: !sessions <agent>\n\nLists available ACP sessions for an agent.\nUse !agents to see available agents.".to_string();
         }
 
         // Look up the routing rule for this identity.
@@ -742,7 +726,7 @@ impl CommandHandler {
         }
 
         // List sessions using acpx.
-        let agent_name = agent_cfg.command.as_deref().unwrap_or(&agent_id);
+        let agent_name = agent_cfg.command.as_deref().unwrap_or(agent_id);
         match self.list_acpx_sessions(agent_name).await {
             Ok(sessions) if sessions.is_empty() => {
                 format!(
@@ -869,55 +853,6 @@ impl CommandHandler {
                 ),
             }
         }
-    }
-
-    /// Fallback status without identity context.
-    ///
-    /// **Deprecated in favour of [`cmd_status_for_identity`]** which uses the
-    /// per-identity active agent and correctly reflects `!switch` overrides.
-    /// Kept for test backward-compatibility only — not called from the live
-    /// Telegram dispatcher.
-    #[cfg(test)]
-    fn cmd_status(&self) -> String {
-        let uptime = self.start_time.elapsed();
-        let uptime_secs = uptime.as_secs();
-        let hours = uptime_secs / 3600;
-        let minutes = (uptime_secs % 3600) / 60;
-        let seconds = uptime_secs % 60;
-
-        let version = self.config.zeroclawed.version;
-        let agent_count = self.config.agents.len();
-        let identity_count = self.config.identities.len();
-        let channel_count = self.config.channels.len();
-
-        // Default agent — first routing rule's default, or "none"
-        let default_agent = self
-            .config
-            .routing
-            .first()
-            .map(|r| r.default_agent.as_str())
-            .unwrap_or("none");
-
-        // Get model/provider info for the default agent
-        let model_info = self
-            .config
-            .agents
-            .iter()
-            .find(|a| a.id == default_agent)
-            .map(|agent| {
-                let model = agent.model.as_deref().unwrap_or("default");
-                let provider = &agent.kind;
-                if provider.contains("alloy") || model.contains("alloy") {
-                    format!("\n  provider: {provider} (alloy)\n  model: {model}")
-                } else {
-                    format!("\n  provider: {provider}\n  model: {model}")
-                }
-            })
-            .unwrap_or_default();
-
-        format!(
-            "ZeroClawed status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {default_agent}{model_info}\n  agents: {agent_count}, identities: {identity_count}, channels: {channel_count}"
-        )
     }
 
     fn cmd_agents(&self) -> String {

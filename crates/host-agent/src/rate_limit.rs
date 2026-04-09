@@ -36,7 +36,7 @@ pub struct RateLimiter {
     window: Duration,
     enabled: bool,
     /// Endpoints subject to rate limiting (set membership check)
-    endpoints: Vec<String>,
+    _endpoints: Vec<String>,
 }
 
 impl RateLimiter {
@@ -46,16 +46,17 @@ impl RateLimiter {
             max_requests: config.max_requests,
             window: Duration::from_secs(config.window_seconds),
             enabled: config.enabled,
-            endpoints: config.endpoints.clone(),
+            _endpoints: config.endpoints.clone(),
         }
     }
 
     /// Returns true if this endpoint is subject to rate limiting.
+    #[cfg(test)]
     pub fn applies_to(&self, path: &str) -> bool {
         if !self.enabled {
             return false;
         }
-        self.endpoints.iter().any(|e| e == path)
+        self._endpoints.iter().any(|e| e == path)
     }
 
     /// Check and consume one token for the given CN on a rate-limited endpoint.

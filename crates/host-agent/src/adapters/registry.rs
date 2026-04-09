@@ -32,11 +32,6 @@ impl AdapterRegistry {
         self
     }
 
-    /// Look up an adapter by kind.  Returns `None` for unknown kinds.
-    pub fn get(&self, kind: &str) -> Option<Arc<dyn Adapter>> {
-        self.adapters.get(kind).cloned()
-    }
-
     /// List registered kinds.
     pub fn kinds(&self) -> Vec<&str> {
         self.adapters.keys().map(|s| s.as_str()).collect()

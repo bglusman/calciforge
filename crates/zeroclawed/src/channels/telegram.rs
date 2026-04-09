@@ -117,7 +117,7 @@ fn handle_message_nonblocking(
     };
 
     // Extract sender user ID — needed for auth and context labels.
-    let user = match msg.from() {
+    let user = match msg.from.as_ref() {
         Some(u) => u,
         None => {
             debug!(chat_id = %chat_id, "message has no sender, dropping");
@@ -361,43 +361,41 @@ fn handle_message_nonblocking(
             Err(e) => {
                 // ── Clash approval flow ─────────────────────────────────────
                 // Check if the agent loop paused for human approval.
-                if let Some(approval) = e.downcast_ref::<crate::adapters::AdapterError>() {
-                    if let crate::adapters::AdapterError::ApprovalPending(req) = approval {
-                        let req = req.clone();
-                        debug!(
-                            request_id = %req.request_id,
-                            command = %req.command,
-                            "clash: forwarding approval request to user"
-                        );
-                        // Register in command handler so !approve / !deny can find it.
-                        command_handler.register_pending_approval(
-                            crate::adapters::openclaw::PendingApprovalMeta {
-                                request_id: req.request_id.clone(),
-                                nzc_endpoint: agent.endpoint.clone(),
-                                nzc_auth_token: agent
-                                    .auth_token
-                                    .clone()
-                                    .unwrap_or_default(),
-                                summary: format!(
-                                    "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
-                                    req.command, req.reason, req.request_id
-                                ),
-                            },
-                        ).await;
+                if let Some(crate::adapters::AdapterError::ApprovalPending(req)) = e.downcast_ref::<crate::adapters::AdapterError>() {
+                    let req = req.clone();
+                    debug!(
+                        request_id = %req.request_id,
+                        command = %req.command,
+                        "clash: forwarding approval request to user"
+                    );
+                    // Register in command handler so !approve / !deny can find it.
+                    command_handler.register_pending_approval(
+                        crate::adapters::openclaw::PendingApprovalMeta {
+                            request_id: req.request_id.clone(),
+                            nzc_endpoint: agent.endpoint.clone(),
+                            nzc_auth_token: agent
+                                .auth_token
+                                .clone()
+                                .unwrap_or_default(),
+                            _summary: format!(
+                                "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
+                                req.command, req.reason, req.request_id
+                            ),
+                        },
+                    ).await;
 
-                        // Send the approval notification to the user.
-                        let notification = format!(
-                            "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
-                            req.command, req.reason, req.request_id
-                        );
-                        let _ = bot.send_message(chat_id, &notification).await;
-                        return; // Don't send an error — we already notified.
-                    }
+                    // Send the approval notification to the user.
+                    let notification = format!(
+                        "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
+                        req.command, req.reason, req.request_id
+                    );
+                    let _ = bot.send_message(chat_id, &notification).await;
+                    return; // Don't send an error — we already notified.
                 }
                 // ─────────────────────────────────────────────────────────────
                 warn!(identity = %identity.id, error = %e, "agent dispatch failed");
                 let _ = bot
-                    .send_message(chat_id, &format!("⚠️ Agent error: {}", e))
+                    .send_message(chat_id, format!("⚠️ Agent error: {}", e))
                     .await;
             }
         }
@@ -440,7 +438,7 @@ async fn handle_message(
     };
 
     // Extract sender user ID — needed for auth and context labels.
-    let user = match msg.from() {
+    let user = match msg.from.as_ref() {
         Some(u) => u,
         None => {
             debug!(chat_id = %chat_id, "message has no sender, dropping");
@@ -607,7 +605,7 @@ async fn handle_message(
         Err(e) => {
             warn!(identity = %identity.id, error = %e, "agent dispatch failed");
             let _ = bot
-                .send_message(chat_id, &format!("⚠️ Agent error: {}", e))
+                .send_message(chat_id, format!("⚠️ Agent error: {}", e))
                 .await;
         }
     }

@@ -24,7 +24,7 @@ pub struct SignalWebhookPayload {
 pub struct ValidatedApproval {
     pub token_hash: String,
     pub approver: String,
-    pub timestamp: DateTime<Utc>,
+    pub _timestamp: DateTime<Utc>,
 }
 
 /// Signal integration client
@@ -154,14 +154,10 @@ impl SignalClient {
         Ok(ValidatedApproval {
             token_hash,
             approver: payload.approver.clone(),
-            timestamp: payload.timestamp,
+            _timestamp: payload.timestamp,
         })
     }
 
-    /// Verify that an approver is allowed
-    pub fn is_allowed_approver(&self, number: &str) -> bool {
-        self.allowed_approvers.iter().any(|a| a == number)
-    }
 }
 
 #[cfg(test)]
