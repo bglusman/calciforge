@@ -44,11 +44,6 @@ impl HttpHealthChecker {
             timeout: Duration::from_secs(10),
         }
     }
-
-    /// Create with custom timeout.
-    pub fn with_timeout(timeout: Duration) -> Self {
-        Self { timeout }
-    }
 }
 
 impl Default for HttpHealthChecker {

@@ -572,7 +572,7 @@ mod tests {
 
                         // Send response as notification chunk (like a real agent)
                         let response_text = format!("echo: {}", prompt_text);
-                        cx.send_notification(SessionNotification {
+                        let _ = cx.send_notification(SessionNotification {
                             session_id: req.session_id.clone(),
                             update: SessionUpdate::AgentMessageChunk(ContentChunk {
                                 content: ContentBlock::Text(TextContent {

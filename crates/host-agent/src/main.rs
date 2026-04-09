@@ -24,7 +24,7 @@ use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower::Service;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 // Install rustls crypto provider early
 use rustls::crypto::ring::default_provider;
@@ -568,10 +568,8 @@ async fn submit_approval(
             .filter(|p| !p.is_empty())
         {
             Some(admin_pattern) => {
-                let pattern_matches = if admin_pattern.ends_with('*') {
-                    identity
-                        .cn
-                        .starts_with(&admin_pattern[..admin_pattern.len() - 1])
+                let pattern_matches = if let Some(prefix) = admin_pattern.strip_suffix('*') {
+                    identity.cn.starts_with(prefix)
                 } else {
                     identity.cn == admin_pattern
                 };
@@ -750,13 +748,8 @@ async fn warn_permissions(
     let risky_gauge = Arc::new(AtomicU64::new(0));
     let result = perm_warn::probe_and_record(&state.audit, &state.metrics, &risky_gauge);
 
-    let status = if result.risky_entries.is_empty() {
-        axum::http::StatusCode::OK
-    } else {
-        axum::http::StatusCode::OK // still 200; warnings are informational
-    };
-
-    (status, Json(result)).into_response()
+    // 200 OK regardless; warnings are informational
+    (axum::http::StatusCode::OK, Json(result)).into_response()
 }
 
 // Unified operation dispatch endpoint — POST /host/op
@@ -828,7 +821,8 @@ async fn host_op_dispatch(
             return Err(AppError::PolicyDenied(reason));
         }
 
-        PolicyDecision::RequiresApproval { message: _ } => {
+        PolicyDecision::RequiresApproval { message } => {
+            debug!(message = %message, "Approval required for operation");
             // Check if approval token was provided
             if let Some(token) = op.approval_token() {
                 let approval_id = state

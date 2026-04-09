@@ -11,7 +11,9 @@ mod channels;
 mod commands;
 mod config;
 mod context;
+#[cfg(test)]
 mod hooks;
+#[cfg(test)]
 mod install;
 mod router;
 

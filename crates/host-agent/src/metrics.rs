@@ -67,10 +67,6 @@ impl Metrics {
         self.approvals_granted_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn increment_auth_failures(&self) {
-        self.auth_failures_total.fetch_add(1, Ordering::Relaxed);
-    }
-
     pub fn increment_policy_denials(&self) {
         self.policy_denials_total.fetch_add(1, Ordering::Relaxed);
     }

@@ -58,7 +58,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use super::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
+use super::openclaw::NzcHttpAdapter;
 use super::{AdapterError, AgentAdapter, DispatchContext, RuntimeStatus};
 
 // ---------------------------------------------------------------------------
@@ -145,30 +145,8 @@ impl NzcNativeAdapter {
         }
     }
 
-    /// Access the pending approvals from the inner `NzcHttpAdapter`.
-    ///
-    /// Allows the router / command handler to approve/deny NZC Clash requests.
-    pub fn pending_approvals(&self) -> SharedPendingApprovals {
-        self.inner.pending_approvals.clone()
-    }
-
-    /// Record a completed approval continuation into the history.
-    ///
-    /// Call this after `poll_result` succeeds so the (user → assistant) turn
-    /// is captured even when the original dispatch returned `ApprovalPending`.
-    pub async fn record_approval_continuation(
-        &self,
-        sender: Option<&str>,
-        user_msg: &str,
-        assistant_reply: &str,
-    ) {
-        let key = sender.unwrap_or("").to_string();
-        let mut guard = self.history.lock().await;
-        let entry = guard.entry(key).or_default();
-        entry.push(user_msg.to_string(), assistant_reply.to_string());
-    }
-
     /// Clear history for a sender (e.g. when `/clear` is requested).
+    #[cfg(test)]
     pub async fn clear_history(&self, sender: Option<&str>) {
         let key = sender.unwrap_or("").to_string();
         let mut guard = self.history.lock().await;

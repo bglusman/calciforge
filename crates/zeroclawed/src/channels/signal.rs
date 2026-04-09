@@ -86,8 +86,8 @@ use crate::{
 #[derive(Debug, Deserialize)]
 struct SignalWebhookPayload {
     /// The receiving account (our Signal number).
-    #[serde(default)]
-    account: Option<String>,
+    #[serde(default, rename = "account")]
+    _account: Option<String>,
     /// The message envelope containing sender and message data.
     #[serde(default)]
     envelope: Option<SignalEnvelope>,
@@ -133,7 +133,7 @@ pub struct InboundSignalMessage {
     /// Message text content.
     pub text: String,
     /// Unix timestamp in seconds.
-    pub timestamp: u64,
+    pub _timestamp: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ impl SignalChannel {
         messages.push(InboundSignalMessage {
             from,
             text,
-            timestamp,
+            _timestamp: timestamp,
         });
 
         messages
@@ -629,7 +629,7 @@ pub async fn run(
     context_store: ContextStore,
 ) -> Result<()> {
     use std::net::SocketAddr;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
 
     // Find Signal channel config
     let signal_channel_cfg = config
@@ -750,7 +750,7 @@ pub async fn run(
                 let signature = raw
                     .lines()
                     .find(|l| l.to_lowercase().starts_with("x-hub-signature-256:"))
-                    .and_then(|l| l.splitn(2, ':').nth(1))
+                    .and_then(|l| l.split_once(':').map(|x| x.1))
                     .map(|s| s.trim());
 
                 if let Some(sig) = signature {
