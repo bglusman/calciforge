@@ -8,3 +8,4 @@ mutants.out/
 mutants.out.old/
 src-backup/
 infra/
+node_modules/
