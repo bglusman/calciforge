@@ -5,6 +5,7 @@ members = [
     "crates/outpost",
     "crates/host-agent",
     "crates/onecli-client",
+    "crates/clashd",
 ]
 
 resolver = "2"
