@@ -5,7 +5,3 @@
 
 pub mod memory;
 
-pub use memory::{
-    CompletedTurn, InboundMessage, MemoryChunk, MemoryEntry, MemoryStore, NoOpPostWriteHook,
-    NoOpPreReadHook, PostWriteHook, PreReadHook, WriteDecision,
-};

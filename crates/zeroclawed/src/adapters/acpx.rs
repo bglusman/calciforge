@@ -9,16 +9,15 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
-use tracing::{debug, error, info, warn};
+use tokio::process::Command;
+use tracing::{debug, info};
 
 use crate::adapters::{AdapterError, AgentAdapter, DispatchContext};
 
 /// ACPX adapter — wraps acpx CLI for ACP agent communication
 pub struct AcpxAdapter {
     agent_name: String,
-    args: Vec<String>,
+    _args: Vec<String>,
     env: HashMap<String, String>,
     timeout_ms: u64,
     session_dir: PathBuf,
@@ -34,7 +33,7 @@ impl AcpxAdapter {
     ) -> Self {
         Self {
             agent_name,
-            args: args.unwrap_or_default(),
+            _args: args.unwrap_or_default(),
             env: env.unwrap_or_default(),
             timeout_ms: timeout_ms.unwrap_or(300_000),
             session_dir: PathBuf::from("/tmp/acpx-sessions"),

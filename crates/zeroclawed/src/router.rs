@@ -26,6 +26,7 @@ impl Router {
     /// Dispatch a user message to the specified agent and return the text response.
     ///
     /// Selects the adapter based on `agent.kind` and calls `dispatch(text)`.
+    #[cfg(test)]
     pub async fn dispatch(
         &self,
         text: &str,

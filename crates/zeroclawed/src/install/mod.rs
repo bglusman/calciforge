@@ -38,22 +38,4 @@ pub mod model;
 pub mod ssh;
 pub mod wizard;
 
-pub use cli::InstallArgs;
-pub use model::{ClawKind, ClawTarget, InstallTarget, WebhookFormat, ZeroClawedTarget};
 
-use anyhow::Result;
-use tracing::info;
-
-/// Entry point: parse args and dispatch to interactive or non-interactive path.
-///
-/// Called from `main.rs` when the `install` subcommand is detected.
-pub async fn run(args: InstallArgs) -> Result<()> {
-    if args.is_interactive() {
-        info!("no CLI targets provided — launching interactive wizard");
-        wizard::run_wizard().await
-    } else {
-        info!("CLI targets provided — running non-interactive install");
-        let target = cli::parse_install_target(&args)?;
-        executor::run_install(target, &args).await
-    }
-}

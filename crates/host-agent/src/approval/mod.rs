@@ -292,18 +292,6 @@ impl ApprovalManager {
             .collect()
     }
 
-    /// Mark a token as used (for internal consumption)
-    pub async fn mark_used(&self, token_hash: &str) {
-        let mut tokens = self.tokens.write().await;
-        if let Some(entry) = tokens.get_mut(token_hash) {
-            entry.used = true;
-            info!(
-                token_hash = %token_hash,
-                approval_id = %entry.request.id,
-                "Token marked as used"
-            );
-        }
-    }
 }
 
 /// Background cleanup task for expired tokens

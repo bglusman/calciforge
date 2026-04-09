@@ -171,7 +171,7 @@ timeout_ms = 30000
     let parsed: toml::Value = content.parse().unwrap();
     
     // But validation should fail
-    let agent = parsed.get("agents").and_then(|a| a.as_array()).unwrap().get(0).unwrap();
+    let agent = parsed.get("agents").and_then(|a| a.as_array()).unwrap().first().unwrap();
     let has_api_key = agent.get("api_key").is_some();
     
     assert!(!has_api_key, "Test config intentionally missing api_key");

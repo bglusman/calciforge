@@ -25,18 +25,6 @@ pub enum AppError {
     #[error("Audit log error: {0}")]
     Audit(String),
 
-    #[error("Configuration error: {0}")]
-    Config(String),
-
-    #[error("TLS error: {0}")]
-    Tls(String),
-
-    #[error("Authentication error: {0}")]
-    Auth(String),
-
-    #[error("Identity resolution failed: {0}")]
-    Identity(String),
-
     #[error("Policy denied: {0}")]
     PolicyDenied(String),
 
@@ -86,11 +74,6 @@ pub enum ApprovalError {
     #[error("Approval already used")]
     AlreadyUsed,
 
-    #[error("Approval not yet granted via Signal")]
-    NotYetApproved,
-
-    #[error("Unauthorized approver: {0}")]
-    UnauthorizedApprover(String),
 }
 
 impl IntoResponse for AppError {
@@ -109,15 +92,9 @@ impl IntoResponse for AppError {
                 ApprovalError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
                 ApprovalError::Expired(_) => (StatusCode::GONE, self.to_string()),
                 ApprovalError::AlreadyUsed => (StatusCode::CONFLICT, self.to_string()),
-                ApprovalError::NotYetApproved => (StatusCode::ACCEPTED, self.to_string()),
-                ApprovalError::UnauthorizedApprover(_) => (StatusCode::FORBIDDEN, self.to_string()),
                 _ => (StatusCode::BAD_REQUEST, self.to_string()),
             },
             AppError::Audit(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            AppError::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            AppError::Tls(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            AppError::Auth(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
-            AppError::Identity(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::PolicyDenied(_) => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
@@ -130,13 +107,6 @@ impl IntoResponse for AppError {
 
         (status, axum::Json(body)).into_response()
     }
-}
-
-/// Standard error response format
-#[derive(Debug, serde::Serialize)]
-pub struct ErrorResponse {
-    pub success: bool,
-    pub error: String,
 }
 
 #[cfg(test)]

@@ -18,13 +18,13 @@ use async_trait::async_trait;
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
     /// The resolved identity ID of the sender.
-    pub sender_id: String,
+    pub _sender_id: String,
     /// The channel this message arrived on (e.g. "telegram", "signal").
-    pub channel: String,
+    pub _channel: String,
     /// The text content of the message.
-    pub text: String,
+    pub _text: String,
     /// Optional thread/conversation ID.
-    pub thread_id: Option<String>,
+    pub _thread_id: Option<String>,
 }
 
 /// A chunk of memory to inject into context before the agent sees the message.
@@ -33,7 +33,7 @@ pub struct MemoryChunk {
     /// Unique identifier for this chunk (e.g. SQLite row ID, vector DB ID).
     pub id: String,
     /// The text content of the memory chunk.
-    pub content: String,
+    pub _content: String,
     /// Optional relevance score (0.0–1.0) from a similarity search.
     pub score: Option<f32>,
 }
@@ -42,22 +42,22 @@ pub struct MemoryChunk {
 #[derive(Debug, Clone)]
 pub struct CompletedTurn {
     /// The original inbound message.
-    pub message: InboundMessage,
+    pub _message: InboundMessage,
     /// The agent's response text.
-    pub response: String,
+    pub _response: String,
     /// Duration of the turn in milliseconds (for latency tracking).
-    pub duration_ms: u64,
+    pub _duration_ms: u64,
 }
 
 /// An entry to be written to the memory store.
 #[derive(Debug, Clone)]
 pub struct MemoryEntry {
     /// The text content to persist.
-    pub content: String,
+    pub _content: String,
     /// Optional category/tag (e.g. "fact", "preference", "event").
     pub category: Option<String>,
     /// The identity ID this memory is associated with.
-    pub identity_id: Option<String>,
+    pub _identity_id: Option<String>,
 }
 
 /// Decision returned by a `PostWriteHook`.
@@ -78,13 +78,7 @@ pub enum WriteDecision {
 /// Implementations can be in-memory, SQLite, or an HTTP vector DB.
 /// Not yet implemented for Phase 1 (hooks use it but the no-op impls ignore it).
 #[async_trait]
-pub trait MemoryStore: Send + Sync {
-    /// Search for relevant memory chunks given a query string.
-    async fn search(&self, query: &str, top_k: usize) -> Vec<MemoryChunk>;
-
-    /// Write entries to the pending buffer.
-    async fn write(&self, entries: Vec<MemoryEntry>);
-}
+pub trait MemoryStore: Send + Sync {}
 
 // ---------------------------------------------------------------------------
 // PreReadHook trait
@@ -164,44 +158,35 @@ mod tests {
 
     /// A minimal in-memory store for testing hooks.
     struct InMemoryStore {
-        chunks: Vec<MemoryChunk>,
+        _chunks: Vec<MemoryChunk>,
     }
 
     impl InMemoryStore {
         fn empty() -> Self {
-            Self { chunks: vec![] }
+            Self { _chunks: vec![] }
         }
 
         fn with_chunks(chunks: Vec<MemoryChunk>) -> Self {
-            Self { chunks }
+            Self { _chunks: chunks }
         }
     }
 
-    #[async_trait]
-    impl MemoryStore for InMemoryStore {
-        async fn search(&self, _query: &str, top_k: usize) -> Vec<MemoryChunk> {
-            self.chunks.iter().take(top_k).cloned().collect()
-        }
-
-        async fn write(&self, _entries: Vec<MemoryEntry>) {
-            // no-op for testing
-        }
-    }
+    impl MemoryStore for InMemoryStore {}
 
     fn make_message() -> InboundMessage {
         InboundMessage {
-            sender_id: "brian".to_string(),
-            channel: "telegram".to_string(),
-            text: "What did we discuss yesterday?".to_string(),
-            thread_id: None,
+            _sender_id: "brian".to_string(),
+            _channel: "telegram".to_string(),
+            _text: "What did we discuss yesterday?".to_string(),
+            _thread_id: None,
         }
     }
 
     fn make_turn() -> CompletedTurn {
         CompletedTurn {
-            message: make_message(),
-            response: "We discussed the Proxmox cluster setup.".to_string(),
-            duration_ms: 1200,
+            _message: make_message(),
+            _response: "We discussed the Proxmox cluster setup.".to_string(),
+            _duration_ms: 1200,
         }
     }
 
@@ -218,7 +203,7 @@ mod tests {
         let hook = NoOpPreReadHook;
         let store = InMemoryStore::with_chunks(vec![MemoryChunk {
             id: "1".to_string(),
-            content: "Yesterday we talked about X".to_string(),
+            _content: "Yesterday we talked about X".to_string(),
             score: Some(0.95),
         }]);
         // Even with a populated store, NoOp returns nothing
@@ -249,7 +234,7 @@ mod tests {
     async fn test_memory_chunk_fields() {
         let chunk = MemoryChunk {
             id: "chunk-1".to_string(),
-            content: "Brian prefers concise responses.".to_string(),
+            _content: "Brian prefers concise responses.".to_string(),
             score: Some(0.87),
         };
         assert_eq!(chunk.id, "chunk-1");
@@ -259,9 +244,9 @@ mod tests {
     #[tokio::test]
     async fn test_write_decision_variant() {
         let entries = vec![MemoryEntry {
-            content: "Discussed Proxmox upgrade".to_string(),
+            _content: "Discussed Proxmox upgrade".to_string(),
             category: Some("event".to_string()),
-            identity_id: Some("brian".to_string()),
+            _identity_id: Some("brian".to_string()),
         }];
         let decision = WriteDecision::Write(entries.clone());
         if let WriteDecision::Write(written) = decision {

@@ -378,7 +378,7 @@ fn collect_connectivity(
         _ => {
             // NZC / OpenClaw: collect endpoint separately.
             let e: String = Input::new()
-                .with_prompt(&format!("  {} endpoint URL", adapter_str))
+                .with_prompt(format!("  {} endpoint URL", adapter_str))
                 .interact_text()
                 .context("failed to read endpoint")?;
             e.trim().to_string()

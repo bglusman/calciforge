@@ -127,7 +127,7 @@ pub struct RuntimeStatus {
     /// If this is an alloy, the constituent providers and their models
     pub alloy_constituents: Option<Vec<(String, String)>>,
     /// Which constituent was selected for the most recent request (if known)
-    pub last_selected: Option<(String, String)>,
+    pub _last_selected: Option<(String, String)>,
 }
 
 /// Common interface for all agent adapters.
@@ -162,16 +162,6 @@ pub trait AgentAdapter: Send + Sync {
         None
     }
 
-    /// Set the model for this adapter.
-    ///
-    /// Adapters that support dynamic model selection (e.g. openclaw-http, acpx)
-    /// override this to update their model configuration. Adapters that don't
-    /// support model switching return `false`.
-    ///
-    /// Returns `true` if the model was successfully updated.
-    fn set_model(&mut self, _model: &str) -> bool {
-        false // Default: model switching not supported
-    }
 }
 
 // ---------------------------------------------------------------------------

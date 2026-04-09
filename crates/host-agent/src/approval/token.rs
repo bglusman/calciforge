@@ -11,12 +11,16 @@
 //! The lookup itself leaks "hash found vs. not found" timing, which is acceptable
 //! because the hash is a 256-bit secret derived from the token.
 
-use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+
+#[cfg(test)]
+use hmac::{Hmac, Mac};
+#[cfg(test)]
 use subtle::ConstantTimeEq;
 
 // HMAC-SHA256 for token generation
+#[cfg(test)]
 type HmacSha256 = Hmac<Sha256>;
 
 /// Token alphabet (removed confusing characters: I, O, 0, 1, l)
@@ -42,6 +46,7 @@ pub fn generate_token() -> String {
 ///
 /// This creates tokens with HMAC-SHA256 for additional security.
 /// Requires a secret key from configuration.
+#[cfg(test)]
 pub fn generate_hmac_token(secret_key: &[u8], context: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(secret_key).expect("HMAC can take key of any size");
 
@@ -64,6 +69,7 @@ pub fn generate_hmac_token(secret_key: &[u8], context: &str) -> String {
 }
 
 /// Convert bytes to token string using our charset
+#[cfg(test)]
 fn bytes_to_token(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -88,6 +94,7 @@ pub fn hash_token(token: &str) -> String {
 ///
 /// Prevents timing-based oracle attacks where an adversary could infer how many
 /// leading bytes of their guess are correct from the response latency.
+#[cfg(test)]
 pub fn verify_token_hash(token: &str, expected_hash: &str) -> bool {
     let actual_hash = hash_token(token);
     // ConstantTimeEq from the `subtle` crate ensures the comparison runs in

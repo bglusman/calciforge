@@ -189,7 +189,7 @@ impl SshClient for RealSshClient {
 #[derive(Debug, Clone)]
 pub struct SshCall {
     pub host: String,
-    pub key: Option<PathBuf>,
+    pub _key: Option<PathBuf>,
     pub command: String,
 }
 
@@ -259,7 +259,7 @@ impl SshClient for MockSshClient {
     fn run(&self, host: &str, key: Option<&Path>, command: &str) -> Result<SshOutput> {
         self.calls.lock().unwrap().push(SshCall {
             host: host.to_string(),
-            key: key.map(PathBuf::from),
+            _key: key.map(PathBuf::from),
             command: command.to_string(),
         });
 
