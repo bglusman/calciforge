@@ -5,10 +5,11 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use starlark::{
+    collections::SmallMap,
     environment::{Globals, Module},
     eval::Evaluator,
     syntax::{AstModule, Dialect},
-    values::Value as StarlarkValue,
+    values::{dict::Dict, Value as StarlarkValue},
 };
 use std::path::Path;
 use tracing::{debug, error, info};
@@ -78,17 +79,17 @@ impl PolicyEvaluator {
                 heap.alloc(values)
             }
             Value::Object(map) => {
-                // Build dict using Starlark syntax: {"key": value, ...}
-                // We'll use a simpler approach - alloc the entries as tuples
-                let entries: Vec<(StarlarkValue<'v>, StarlarkValue<'v>)> = map
-                    .iter()
-                    .map(|(k, v)| {
-                        let key = heap.alloc(k.as_str());
-                        let val = Self::json_to_starlark(v, heap);
-                        (key, val)
-                    })
-                    .collect();
-                heap.alloc(entries)
+                // Build dict using Starlark Dict type via SmallMap
+                let mut small_map = SmallMap::with_capacity(map.len());
+                for (k, v) in map.iter() {
+                    let key = heap.alloc(k.as_str());
+                    let val = Self::json_to_starlark(v, heap);
+                    small_map.insert_hashed(
+                        key.get_hashed().expect("string keys are always hashable"),
+                        val,
+                    );
+                }
+                heap.alloc(Dict::new(small_map))
             }
         }
     }

@@ -22,9 +22,10 @@ def evaluate(tool, args, context):
         # Block domains in threat intelligence feeds
         matched_feeds = context.get("domain_lists", [])
         if matched_feeds:
+            feeds_str = ", ".join(matched_feeds)
             return {
                 "verdict": "deny",
-                "reason": f"Domain {domain} found in threat feeds: {', '.join(matched_feeds)}"
+                "reason": "Domain " + domain + " found in threat feeds: " + feeds_str
             }
 
         # Check per-agent denied domains
@@ -32,7 +33,7 @@ def evaluate(tool, args, context):
         if domain in denied:
             return {
                 "verdict": "deny",
-                "reason": f"Domain {domain} denied for this agent"
+                "reason": "Domain " + domain + " denied for this agent"
             }
 
         # If agent has an explicit allow list, require domain to be in it
@@ -40,7 +41,7 @@ def evaluate(tool, args, context):
         if allowed and domain not in allowed:
             return {
                 "verdict": "review",
-                "reason": f"Domain {domain} not in agent allow list"
+                "reason": "Domain " + domain + " not in agent allow list"
             }
 
     # ── Tool-level rules ──────────────────────────────────────
@@ -51,7 +52,7 @@ def evaluate(tool, args, context):
         if action in ("config.patch", "config.apply", "restart"):
             return {
                 "verdict": "review",
-                "reason": f"Gateway {action} requires custodian approval"
+                "reason": "Gateway " + action + " requires custodian approval"
             }
 
     # Destructive shell commands — deny
@@ -62,7 +63,7 @@ def evaluate(tool, args, context):
             if pattern in cmd:
                 return {
                     "verdict": "deny",
-                    "reason": f"Destructive command pattern blocked: {pattern}"
+                    "reason": "Destructive command pattern blocked: " + pattern
                 }
 
     # Browser navigating to URLs in blocked domains
@@ -76,7 +77,7 @@ def evaluate(tool, args, context):
         if action in ("add", "remove", "update"):
             return {
                 "verdict": "review",
-                "reason": f"Cron {action} requires approval"
+                "reason": "Cron " + action + " requires approval"
             }
 
     # Default: allow
