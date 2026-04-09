@@ -48,14 +48,47 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
 
     for cipher in vault_response.data {
         let cipher_name = cipher.name.to_lowercase();
+        debug!(
+            "Checking cipher: name={}, type={}",
+            cipher_name, cipher._type
+        );
+
         if cipher_name == name.to_lowercase() || cipher_name.contains(&name.to_lowercase()) {
-            if let Some(login) = cipher.login
-                && let Some(password) = login.password
-            {
-                return Ok(password);
+            debug!("Found matching cipher: {}", cipher.name);
+
+            // Try login.password first (most common for API keys)
+            if let Some(login) = &cipher.login {
+                if let Some(password) = &login.password {
+                    debug!("Found password in login field");
+                    return Ok(password.clone());
+                }
+                if let Some(username) = &login.username {
+                    debug!("Found username, no password");
+                    // Some API keys are stored as "username" in UI
+                    if !username.is_empty() {
+                        return Ok(username.clone());
+                    }
+                }
             }
-            if let Some(notes) = cipher.notes {
-                return Ok(notes);
+
+            // Try secure note
+            if let Some(notes) = &cipher.notes {
+                debug!("Found notes field");
+                return Ok(notes.clone());
+            }
+
+            // Try custom fields (often used for API keys in UI)
+            if let Some(fields) = &cipher.fields {
+                for field in fields {
+                    debug!(
+                        "Checking field: name={:?}, type={}",
+                        field.name, field._type
+                    );
+                    // type 0 = text, type 1 = hidden (password)
+                    if field._type == 1 && field.value.is_some() {
+                        return Ok(field.value.clone().unwrap());
+                    }
+                }
             }
         }
     }
@@ -75,10 +108,20 @@ struct Cipher {
     _type: i32,
     login: Option<Login>,
     notes: Option<String>,
+    #[serde(default)]
+    fields: Option<Vec<Field>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Field {
+    name: Option<String>,
+    #[serde(rename = "type")]
+    _type: i32, // 0 = text, 1 = hidden/password
+    value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Login {
-    _username: Option<String>,
+    username: Option<String>,
     password: Option<String>,
 }
