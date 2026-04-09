@@ -15,6 +15,9 @@ use crate::domain_lists::DomainListManager;
 use crate::policy::eval::PolicyEvaluator;
 use crate::policy::PolicyResult;
 
+#[cfg(test)]
+mod tests;
+
 /// Per-agent policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentPolicyConfig {
@@ -131,7 +134,17 @@ impl PolicyEngine {
     /// Extract a domain from common argument patterns
     ///
     /// Looks for domain in args.url, args.domain, args.target, etc.
+    #[cfg(test)]
+    pub fn extract_domain(args: &Value) -> Option<String> {
+        Self::_extract_domain(args)
+    }
+
+    #[cfg(not(test))]
     fn extract_domain(args: &Value) -> Option<String> {
+        Self::_extract_domain(args)
+    }
+
+    fn _extract_domain(args: &Value) -> Option<String> {
         if let Some(obj) = args.as_object() {
             // Try common field names — destructure to get &str from &&str
             for &field in &["url", "domain", "target", "host", "site"] {
