@@ -32,6 +32,11 @@ impl DomainList {
         }
     }
 
+    /// Get the name of this domain list
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Add an exact domain match
     pub fn add_domain(&mut self, domain: &str) {
         self.exact.insert(domain.to_lowercase());
@@ -132,6 +137,12 @@ struct DynamicList {
     refresh_interval: Duration,
     last_fetched: Option<Instant>,
     list: DomainList,
+}
+
+impl Default for DomainListManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DomainListManager {
