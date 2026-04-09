@@ -157,7 +157,6 @@ impl SignalClient {
             _timestamp: payload.timestamp,
         })
     }
-
 }
 
 #[cfg(test)]

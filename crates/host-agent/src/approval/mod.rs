@@ -291,7 +291,6 @@ impl ApprovalManager {
             })
             .collect()
     }
-
 }
 
 /// Background cleanup task for expired tokens

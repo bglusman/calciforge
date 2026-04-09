@@ -67,8 +67,7 @@ impl ClawKind {
 // ---------------------------------------------------------------------------
 
 /// Wire format for [`ClawKind::Webhook`] POST requests.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum WebhookFormat {
     /// POST `{"message": "<text>"}` JSON body.
     #[default]
@@ -76,7 +75,6 @@ pub enum WebhookFormat {
     /// POST raw text body.
     Text,
 }
-
 
 impl std::fmt::Display for WebhookFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -242,7 +240,9 @@ mod tests {
 
     #[test]
     fn test_incompatible_variant_display() {
-        let v = VersionCompatibility::Incompatible { reason: "test".to_string() };
+        let v = VersionCompatibility::Incompatible {
+            reason: "test".to_string(),
+        };
         assert!(v.to_string().contains("incompatible"));
     }
 

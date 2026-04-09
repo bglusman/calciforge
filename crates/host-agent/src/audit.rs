@@ -218,9 +218,8 @@ impl AuditLogger {
                     let parts: Vec<&str> = filename.split('.').collect();
                     if parts.len() >= 2 {
                         if let Ok(date) = chrono::NaiveDate::parse_from_str(parts[1], "%Y-%m-%d") {
-                            let datetime = Utc.from_utc_datetime(
-                                &date.and_hms_opt(0, 0, 0).unwrap(),
-                            );
+                            let datetime =
+                                Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
                             if datetime < cutoff {
                                 info!(path = %path.display(), "Removing old audit log");
                                 if let Err(e) = std::fs::remove_file(&path) {
@@ -235,7 +234,6 @@ impl AuditLogger {
 
         Ok(())
     }
-
 }
 
 #[cfg(test)]

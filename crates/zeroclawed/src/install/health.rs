@@ -44,7 +44,6 @@ impl HttpHealthChecker {
             timeout: Duration::from_secs(10),
         }
     }
-
 }
 
 impl Default for HttpHealthChecker {

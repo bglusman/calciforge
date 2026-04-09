@@ -73,7 +73,6 @@ pub enum ApprovalError {
 
     #[error("Approval already used")]
     AlreadyUsed,
-
 }
 
 impl IntoResponse for AppError {

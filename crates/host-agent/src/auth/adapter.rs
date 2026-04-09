@@ -15,9 +15,7 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     pub fn new(configs: Vec<AgentConfig>) -> Self {
-        Self {
-            configs,
-        }
+        Self { configs }
     }
 
     /// Return a placeholder CN for policy lookups when no per-request identity is available.
@@ -33,8 +31,8 @@ impl AgentRegistry {
 #[cfg(test)]
 mod tests {
     use crate::config::AutonomyLevel;
-    use std::collections::HashMap;
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
 
     /// Supported agent types
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]

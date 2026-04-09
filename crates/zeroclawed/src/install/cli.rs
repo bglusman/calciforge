@@ -122,14 +122,13 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
     let host = kv.get("host").cloned().unwrap_or_default();
     let ssh_key = kv.get("key").map(PathBuf::from);
 
-    if adapter.is_remotely_configurable()
-        && host.is_empty() {
-            bail!(
-                "adapter '{}' requires 'host=user@hostname' in spec: {}",
-                adapter_str,
-                spec
-            );
-        }
+    if adapter.is_remotely_configurable() && host.is_empty() {
+        bail!(
+            "adapter '{}' requires 'host=user@hostname' in spec: {}",
+            adapter_str,
+            spec
+        );
+    }
 
     // Endpoint — required for everything except Cli.
     let endpoint = match &adapter {

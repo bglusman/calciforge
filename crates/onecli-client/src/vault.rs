@@ -14,8 +14,7 @@ impl Default for VaultConfig {
         Self {
             url: std::env::var("ONECLI_VAULT_URL")
                 .unwrap_or_else(|_| "https://vault.enjyn.com".to_string()),
-            token: std::env::var("ONECLI_VAULT_TOKEN")
-                .unwrap_or_default(),
+            token: std::env::var("ONECLI_VAULT_TOKEN").unwrap_or_default(),
         }
     }
 }
@@ -26,40 +25,41 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
         debug!("Found {} in environment", env_var);
         return Ok(token);
     }
-    
+
     let config = VaultConfig::default();
     if config.token.is_empty() {
         anyhow::bail!("No ONECLI_VAULT_TOKEN set and no env var for '{}'", name);
     }
-    
+
     debug!("Looking up {} in VaultWarden at {}", name, config.url);
-    
+
     let client = reqwest::Client::new();
     let response = client
         .get(format!("{}/api/ciphers", config.url))
         .header("Authorization", format!("Bearer {}", config.token))
         .send()
         .await?;
-    
+
     if !response.status().is_success() {
         anyhow::bail!("VaultWarden API error: {}", response.status());
     }
-    
+
     let vault_response: VaultResponse = response.json().await?;
-    
+
     for cipher in vault_response.data {
         let cipher_name = cipher.name.to_lowercase();
         if cipher_name == name.to_lowercase() || cipher_name.contains(&name.to_lowercase()) {
             if let Some(login) = cipher.login
-                && let Some(password) = login.password {
-                    return Ok(password);
+                && let Some(password) = login.password
+            {
+                return Ok(password);
             }
             if let Some(notes) = cipher.notes {
                 return Ok(notes);
             }
         }
     }
-    
+
     anyhow::bail!("Secret '{}' not found in vault", name)
 }
 
