@@ -171,7 +171,6 @@ impl ConversationContext {
     pub fn len(&self) -> usize {
         self.exchanges.len()
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +250,6 @@ impl ContextStore {
         let map = self.inner.lock().unwrap();
         map.get(chat_id).map(|c| c.len()).unwrap_or(0)
     }
-
 }
 
 // ---------------------------------------------------------------------------

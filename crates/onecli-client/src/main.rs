@@ -7,12 +7,12 @@
 //! 4. Enforces clash policy on tool calls
 
 use axum::{
+    Json, Router,
     body::Body,
-    extract::{Request, State, Query},
+    extract::{Query, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post, any},
-    Json, Router,
+    routing::{any, get, post},
 };
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -35,7 +35,7 @@ struct AppState {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting OneCLI service...");
-    
+
     let config = OneCliServiceConfig::from_env_or_file().await?;
     let state = AppState {
         _config: Arc::new(config),
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
             .timeout(std::time::Duration::from_secs(60))
             .build()?,
     };
-    
+
     let app = Router::new()
         .route("/health", get(health_handler))
         // Proxy routes - must capture provider and the rest separately
@@ -54,15 +54,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/vault/:secret", get(vault_handler))
         .route("/policy/check", post(policy_check_handler))
         .with_state(state);
-    
+
     let bind_addr: SocketAddr = std::env::var("ONECLI_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8081".to_string())
         .parse()?;
-    
+
     info!("OneCLI service listening on {}", bind_addr);
     let listener = TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }
 
@@ -95,18 +95,28 @@ async fn proxy_handler(
 ) -> Result<Response, StatusCode> {
     let provider = params.provider;
     let rest_path = params.rest.unwrap_or_default();
-    
+
     debug!(provider = %provider, rest = %rest_path, "Proxying request");
-    
-    let target_url = get_provider_url(&provider)
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    
+
+    let target_url = get_provider_url(&provider).ok_or(StatusCode::BAD_REQUEST)?;
+
     // Build full target path
-    let query = request.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = request
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
     let full_path = format!("/{}{}", rest_path, query);
-    
-    info!("Proxy: {} /proxy/{}/{} -> {}{}", request.method(), provider, rest_path, target_url, full_path);
-    
+
+    info!(
+        "Proxy: {} /proxy/{}/{} -> {}{}",
+        request.method(),
+        provider,
+        rest_path,
+        target_url,
+        full_path
+    );
+
     proxy_with_path(state, target_url, &provider, &full_path, headers, request).await
 }
 
@@ -126,9 +136,9 @@ async fn proxy_with_path(
 ) -> Result<Response, StatusCode> {
     let mut forwarded_req = state.http_client.request(
         request.method().clone(),
-        format!("{}{}", target_url, target_path)
+        format!("{}{}", target_url, target_path),
     );
-    
+
     // Forward headers (except host and x-onecli-*)
     for (key, value) in headers.iter() {
         let key_str = key.as_str().to_lowercase();
@@ -136,7 +146,7 @@ async fn proxy_with_path(
             forwarded_req = forwarded_req.header(key, value);
         }
     }
-    
+
     // Try to inject credentials from vault
     let mut cred_injected = false;
     match vault::get_secret(secret_name).await {
@@ -160,11 +170,15 @@ async fn proxy_with_path(
             ];
             for var in variations {
                 if let Ok(token) = vault::get_secret(&var).await {
-                    debug!("Injected credentials for {} (matched as {})", secret_name, var);
+                    debug!(
+                        "Injected credentials for {} (matched as {})",
+                        secret_name, var
+                    );
                     if var.to_lowercase().contains("brave") {
                         forwarded_req = forwarded_req.header("X-Subscription-Token", token);
                     } else {
-                        forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+                        forwarded_req =
+                            forwarded_req.header("Authorization", format!("Bearer {}", token));
                     }
                     cred_injected = true;
                     break;
@@ -172,11 +186,11 @@ async fn proxy_with_path(
             }
         }
     }
-    
+
     if !cred_injected {
         warn!("No credentials found for {}", secret_name);
     }
-    
+
     // Add body if present
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
         .await
@@ -184,13 +198,13 @@ async fn proxy_with_path(
     if !body_bytes.is_empty() {
         forwarded_req = forwarded_req.body(body_bytes);
     }
-    
+
     match forwarded_req.send().await {
         Ok(response) => {
             let status = response.status();
             let headers = response.headers().clone();
             let body = response.bytes().await.unwrap_or_default();
-            
+
             let mut builder = Response::builder().status(status);
             for (key, value) in headers.iter() {
                 builder = builder.header(key, value);
@@ -217,16 +231,17 @@ async fn generic_proxy_handler(
     request: Request<Body>,
 ) -> Result<Response, StatusCode> {
     debug!(target = %query.target, "Generic proxy request");
-    
+
     // Validate target URL (only allow https)
     if !query.target.starts_with("https://") {
         warn!("Rejecting non-HTTPS target: {}", query.target);
         return Err(StatusCode::BAD_REQUEST);
     }
-    
+
     // Use secret name if provided, otherwise try to derive from hostname
     let secret_name = query.secret.unwrap_or_else(|| {
-        query.target
+        query
+            .target
             .trim_start_matches("https://")
             .trim_start_matches("api.")
             .split('.')
@@ -234,13 +249,25 @@ async fn generic_proxy_handler(
             .unwrap_or("unknown")
             .to_string()
     });
-    
+
     // Build full path with query string
     let target_path = request.uri().path();
-    let target_query = request.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let target_query = request
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
     let full_path = format!("{}{}", target_path, target_query);
-    
-    proxy_with_path(state, &query.target, &secret_name, &full_path, headers, request).await
+
+    proxy_with_path(
+        state,
+        &query.target,
+        &secret_name,
+        &full_path,
+        headers,
+        request,
+    )
+    .await
 }
 
 async fn vault_handler(
@@ -252,13 +279,18 @@ async fn vault_handler(
             "status": "ok",
             "secret": secret_name,
             "token": token,
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => {
             warn!("Vault lookup failed: {}", e);
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({
-                "status": "error",
-                "message": "Secret not found",
-            }))).into_response()
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": "Secret not found",
+                })),
+            )
+                .into_response()
         }
     }
 }

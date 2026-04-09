@@ -169,4 +169,3 @@ impl IdentityExtractingAcceptor {
         anyhow::bail!("No client certificate presented (mTLS required)")
     }
 }
-

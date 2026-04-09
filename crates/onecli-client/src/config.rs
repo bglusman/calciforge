@@ -50,16 +50,14 @@ impl OneCliServiceConfig {
             let contents = tokio::fs::read_to_string(&config_path).await?;
             return Ok(toml::from_str(&contents)?);
         }
-        
+
         Ok(Self {
-            bind: std::env::var("ONECLI_BIND")
-                .unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
+            bind: std::env::var("ONECLI_BIND").unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
             vault: VaultConfig {
                 backend: std::env::var("ONECLI_VAULT_BACKEND")
                     .unwrap_or_else(|_| "env".to_string()),
                 url: std::env::var("ONECLI_VAULT_URL").ok(),
-                password: std::env::var("ONECLI_VAULT_PASSWORD")
-                    .unwrap_or_else(|_| "".to_string()),
+                password: std::env::var("ONECLI_VAULT_PASSWORD").unwrap_or_else(|_| "".to_string()),
             },
             policy_file: std::env::var("ONECLI_POLICY_FILE").ok().map(PathBuf::from),
             providers: ProviderConfig {

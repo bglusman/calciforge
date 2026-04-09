@@ -361,7 +361,9 @@ fn handle_message_nonblocking(
             Err(e) => {
                 // ── Clash approval flow ─────────────────────────────────────
                 // Check if the agent loop paused for human approval.
-                if let Some(crate::adapters::AdapterError::ApprovalPending(req)) = e.downcast_ref::<crate::adapters::AdapterError>() {
+                if let Some(crate::adapters::AdapterError::ApprovalPending(req)) =
+                    e.downcast_ref::<crate::adapters::AdapterError>()
+                {
                     let req = req.clone();
                     debug!(
                         request_id = %req.request_id,

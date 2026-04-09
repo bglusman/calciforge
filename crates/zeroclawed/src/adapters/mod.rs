@@ -161,7 +161,6 @@ pub trait AgentAdapter: Send + Sync {
     async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
         None
     }
-
 }
 
 // ---------------------------------------------------------------------------

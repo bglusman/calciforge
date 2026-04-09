@@ -541,7 +541,9 @@ impl CommandHandler {
     pub fn handle_switch(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // Parse arguments after "!switch"
-        let args: Vec<&str> = trimmed.split_once(' ').map(|x| x.1)
+        let args: Vec<&str> = trimmed
+            .split_once(' ')
+            .map(|x| x.1)
             .unwrap_or("")
             .split_whitespace()
             .collect();
@@ -651,7 +653,9 @@ impl CommandHandler {
     pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // Parse the agent argument (everything after "!sessions ")
-        let agent_arg = trimmed.split_once(' ').map(|x| x.1)
+        let agent_arg = trimmed
+            .split_once(' ')
+            .map(|x| x.1)
             .unwrap_or("")
             .trim()
             .to_string();

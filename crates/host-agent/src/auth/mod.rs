@@ -5,4 +5,3 @@ mod identity;
 
 pub use adapter::AgentRegistry;
 pub use identity::{build_identity, is_cert_revoked, ClientIdentity};
-
