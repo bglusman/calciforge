@@ -438,6 +438,7 @@ impl Config {
     /// - Otherwise, if the agent has `autonomy = Full` AND `allow_full_autonomy_bypass = true`,
     ///   the approval requirement is bypassed.
     /// - Default: Full autonomy does NOT bypass approval (safe default, P-B4).
+    #[cfg(test)]
     pub fn requires_approval(&self, operation: &str, target: &str) -> bool {
         self.requires_approval_for_agent(operation, target, None)
     }
@@ -504,44 +505,17 @@ impl Config {
 #[derive(Clone)]
 pub struct ReloadableConfig {
     inner: Arc<RwLock<Config>>,
-    path: String,
+    _path: String,
 }
 
 impl ReloadableConfig {
     pub fn new(config: Config, path: String) -> Self {
         Self {
             inner: Arc::new(RwLock::new(config)),
-            path,
+            _path: path,
         }
     }
 
-    pub async fn get(&self) -> Config {
-        self.inner.read().await.clone()
-    }
-
-    /// Reload configuration from disk (P2-12: SIGHUP handler calls this)
-    pub async fn reload(&self) -> Result<()> {
-        let new_config = Config::load(&self.path)?;
-        let mut config = self.inner.write().await;
-        *config = new_config;
-        info!("Configuration reloaded from {}", self.path);
-        Ok(())
-    }
-
-    pub fn subscribe_reload(&self) -> ConfigReloadHandle {
-        ConfigReloadHandle {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-/// Handle for accessing config after subscribing to reloads
-#[derive(Clone)]
-pub struct ConfigReloadHandle {
-    inner: Arc<RwLock<Config>>,
-}
-
-impl ConfigReloadHandle {
     pub async fn get(&self) -> Config {
         self.inner.read().await.clone()
     }

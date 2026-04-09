@@ -27,7 +27,7 @@
 //! The result (rollback ok / rollback also failed) is recorded in
 //! [`ClawInstallResult`].
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -94,10 +94,10 @@ impl std::fmt::Display for InstallStep {
 
 #[derive(Debug, Clone)]
 pub enum StepOutcome {
-    Skipped { reason: String },
-    DryRun { description: String },
-    Ok { detail: String },
-    Warning { detail: String },
+    Skipped { _reason: String },
+    DryRun { _description: String },
+    Ok { _detail: String },
+    Warning { _detail: String },
     Failed { error: String },
 }
 
@@ -113,7 +113,7 @@ pub enum RollbackStatus {
     /// Rollback succeeded; original config restored.
     Restored,
     /// Rollback attempted but failed.
-    Failed { reason: String },
+    Failed { _reason: String },
     /// Rollback was not attempted (no backup taken, or not applicable).
     NotApplicable,
 }
@@ -167,20 +167,6 @@ impl ExecutorDeps {
 // Entry points
 // ---------------------------------------------------------------------------
 
-/// Run the full install pipeline for all claws in `target`.
-pub async fn run_install(target: InstallTarget, args: &InstallArgs) -> Result<()> {
-    let deps = ExecutorDeps::real();
-    let summary = run_install_with_deps(target, args, deps).await;
-    print_summary(&summary);
-    if summary.any_failed() {
-        bail!(
-            "installation completed with {} failure(s)",
-            summary.failed_count()
-        );
-    }
-    Ok(())
-}
-
 /// Run the install pipeline with injectable dependencies (used in tests).
 pub async fn run_install_with_deps(
     target: InstallTarget,
@@ -233,7 +219,7 @@ async fn install_claw(
         steps.push(StepResult {
             step: InstallStep::SshConnectivity,
             outcome: StepOutcome::Skipped {
-                reason: format!(
+                _reason: format!(
                     "adapter '{}' does not require SSH",
                     claw.adapter.kind_label()
                 ),
@@ -273,7 +259,7 @@ async fn install_claw(
         steps.push(StepResult {
             step: InstallStep::Backup,
             outcome: StepOutcome::Skipped {
-                reason: "no remote config for this adapter kind".into(),
+                _reason: "no remote config for this adapter kind".into(),
             },
         });
     }
@@ -286,7 +272,7 @@ async fn install_claw(
     steps.push(StepResult {
         step: InstallStep::VersionDetection,
         outcome: StepOutcome::Ok {
-            detail: format!("detected version: {}", version_str),
+            _detail: format!("detected version: {}", version_str),
         },
     });
 
@@ -296,10 +282,10 @@ async fn install_claw(
         step: InstallStep::CompatibilityCheck,
         outcome: match &compat {
             VersionCompatibility::Compatible => StepOutcome::Ok {
-                detail: format!("version {} is compatible", version_str),
+                _detail: format!("version {} is compatible", version_str),
             },
             VersionCompatibility::Unknown => StepOutcome::Warning {
-                detail: format!(
+                _detail: format!(
                     "version '{}' is not in the known-compatible list; proceeding with caution",
                     version_str
                 ),
@@ -324,7 +310,7 @@ async fn install_claw(
     let proposed = describe_proposed_changes(claw);
     steps.push(StepResult {
         step: InstallStep::ProposedChanges,
-        outcome: StepOutcome::Ok { detail: proposed },
+        outcome: StepOutcome::Ok { _detail: proposed },
     });
 
     // ── Step 7: Apply ────────────────────────────────────────────────────────
@@ -377,7 +363,7 @@ fn run_ssh_connectivity(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
         Ok(()) => StepResult {
             step: InstallStep::SshConnectivity,
             outcome: StepOutcome::Ok {
-                detail: format!("connected to {}", claw.host),
+                _detail: format!("connected to {}", claw.host),
             },
         },
         Err(e) => {
@@ -397,7 +383,7 @@ async fn run_health_check(claw: &ClawTarget, deps: &ExecutorDeps, step: InstallS
         Ok(()) => StepResult {
             step,
             outcome: StepOutcome::Ok {
-                detail: format!("endpoint {} is healthy", claw.endpoint),
+                _detail: format!("endpoint {} is healthy", claw.endpoint),
             },
         },
         Err(e) => {
@@ -422,7 +408,7 @@ fn run_backup(
             StepResult {
                 step: InstallStep::Backup,
                 outcome: StepOutcome::Warning {
-                    detail: "--skip-backup specified: skipping backup (DANGEROUS)".into(),
+                    _detail: "--skip-backup specified: skipping backup (DANGEROUS)".into(),
                 },
             },
             None,
@@ -440,7 +426,7 @@ fn run_backup(
             StepResult {
                 step: InstallStep::Backup,
                 outcome: StepOutcome::DryRun {
-                    description: format!("would cp {} → {}", bak, bak_path),
+                    _description: format!("would cp {} → {}", bak, bak_path),
                 },
             },
             Some(bak_path),
@@ -466,7 +452,7 @@ fn run_backup(
                     StepResult {
                         step: InstallStep::Backup,
                         outcome: StepOutcome::Ok {
-                            detail: format!("backed up {} → {}", config_path, bak_path),
+                            _detail: format!("backed up {} → {}", config_path, bak_path),
                         },
                     },
                     Some(bak_path),
@@ -539,7 +525,7 @@ fn run_apply(
         return StepResult {
             step: InstallStep::Apply,
             outcome: StepOutcome::Ok {
-                detail: format!(
+                _detail: format!(
                     "no remote config needed for adapter '{}'; registered in ZeroClawed config",
                     claw.adapter.kind_label()
                 ),
@@ -561,7 +547,7 @@ fn run_apply(
         return StepResult {
             step: InstallStep::Apply,
             outcome: StepOutcome::DryRun {
-                description: describe_apply_changes(claw),
+                _description: describe_apply_changes(claw),
             },
         };
     }
@@ -569,7 +555,7 @@ fn run_apply(
     match apply_remote_config(claw, deps) {
         Ok(detail) => StepResult {
             step: InstallStep::Apply,
-            outcome: StepOutcome::Ok { detail },
+            outcome: StepOutcome::Ok { _detail: detail },
         },
         Err(e) => {
             error!(claw = %claw.name, err = %e, "apply failed");
@@ -616,7 +602,7 @@ fn attempt_rollback(
         Err(e) => {
             error!(claw = %claw.name, err = %e, "rollback failed");
             RollbackStatus::Failed {
-                reason: e.to_string(),
+                _reason: e.to_string(),
             }
         }
     }
@@ -860,50 +846,6 @@ fn patch_nzc_config_stub(content: &str, claw_name: &str) -> String {
 // ---------------------------------------------------------------------------
 // Summary display
 // ---------------------------------------------------------------------------
-
-fn print_summary(summary: &InstallSummary) {
-    println!("\n── Install Summary ──────────────────────────────────────");
-    for result in &summary.claw_results {
-        let status = if result.success { "✅" } else { "❌" };
-        println!("{} claw '{}'", status, result.name);
-
-        for step in &result.steps {
-            let icon = match &step.outcome {
-                StepOutcome::Ok { .. } => "  ✓",
-                StepOutcome::Skipped { .. } => "  ·",
-                StepOutcome::DryRun { .. } => "  ~",
-                StepOutcome::Warning { .. } => "  ⚠",
-                StepOutcome::Failed { .. } => "  ✗",
-            };
-            let detail = match &step.outcome {
-                StepOutcome::Ok { detail } => detail.clone(),
-                StepOutcome::Skipped { reason } => format!("skipped: {}", reason),
-                StepOutcome::DryRun { description } => format!("[dry-run] {}", description),
-                StepOutcome::Warning { detail } => detail.clone(),
-                StepOutcome::Failed { error } => format!("FAILED: {}", error),
-            };
-            println!("{} {} — {}", icon, step.step, detail);
-        }
-
-        if let Some(rollback) = &result.rollback_status {
-            match rollback {
-                RollbackStatus::Restored => println!("  ↩ rollback: config restored from backup"),
-                RollbackStatus::Failed { reason } => {
-                    println!(
-                        "  ⚠ rollback FAILED: {} — MANUAL INTERVENTION REQUIRED",
-                        reason
-                    )
-                }
-                RollbackStatus::NotApplicable => {}
-            }
-        }
-    }
-    println!(
-        "── {} succeeded, {} failed ──────────────────────────────",
-        summary.succeeded_count(),
-        summary.failed_count()
-    );
-}
 
 // ---------------------------------------------------------------------------
 // Tests

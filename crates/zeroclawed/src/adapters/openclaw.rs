@@ -57,8 +57,8 @@ struct ChunkDelta {
 #[derive(Debug, Deserialize)]
 struct ChunkChoice {
     delta: ChunkDelta,
-    #[serde(default)]
-    finish_reason: Option<String>,
+    #[serde(default, rename = "finish_reason")]
+    _finish_reason: Option<String>,
 }
 
 /// OpenAI-compatible streaming chunk.
@@ -92,7 +92,7 @@ pub struct OpenClawHttpAdapter {
     endpoint: String,
     auth_token: String,
     model: String,
-    timeout: Duration,
+    _timeout: Duration,
     /// Agent ID used to build stable per-sender session keys.
     agent_id: String,
 }
@@ -105,6 +105,7 @@ impl OpenClawHttpAdapter {
     /// - `model` — model name (`None` → `"openclaw:main"`)
     /// - `timeout_ms` — stored for reference; no per-request timeout is applied
     /// - `agent_id` — used to build `x-openclaw-session-key` for conversation continuity
+    #[cfg(test)]
     pub fn new(
         endpoint: String,
         auth_token: String,
@@ -135,7 +136,7 @@ impl OpenClawHttpAdapter {
             endpoint,
             auth_token,
             model,
-            timeout,
+            _timeout: timeout,
             agent_id: agent_id.to_string(),
         }
     }
@@ -310,7 +311,7 @@ pub struct PendingApprovalMeta {
     /// Bearer token for the NZC endpoint.
     pub nzc_auth_token: String,
     /// Human-readable summary for display.
-    pub summary: String,
+    pub _summary: String,
 }
 
 /// Shared map of pending approvals: request_id → PendingApprovalMeta.
@@ -450,7 +451,7 @@ impl AgentAdapter for NzcHttpAdapter {
                     request_id: request_id.clone(),
                     nzc_endpoint: self.endpoint.clone(),
                     nzc_auth_token: self.auth_token.clone(),
-                    summary: summary.clone(),
+                    _summary: summary.clone(),
                 },
             );
 
@@ -472,7 +473,7 @@ impl AgentAdapter for NzcHttpAdapter {
         }
         // ─────────────────────────────────────────────────────────────────────
 
-        Ok(nzc_resp.response.unwrap_or_else(|| String::new()))
+        Ok(nzc_resp.response.unwrap_or_default())
     }
 
     fn kind(&self) -> &'static str {
@@ -501,7 +502,8 @@ impl AgentAdapter for NzcHttpAdapter {
         #[derive(Deserialize)]
         struct NzcStatusResponse {
             default_provider: String,
-            default_model: String,
+            #[serde(rename = "default_model")]
+            _default_model: String,
             alloy_constituents: Option<Vec<(String, String)>>,
         }
 
@@ -518,7 +520,7 @@ impl AgentAdapter for NzcHttpAdapter {
             },
             model: status.default_provider, // This is the alias name (e.g., "fast-alloy")
             alloy_constituents: status.alloy_constituents,
-            last_selected: None, // NZC could add this later
+            _last_selected: None, // NZC could add this later
         })
     }
 }
@@ -573,7 +575,7 @@ impl NzcHttpAdapter {
     ///
     /// Blocks until the result is available or the timeout elapses.
     pub async fn poll_result(
-        client: &reqwest::Client,
+        _client: &reqwest::Client,
         nzc_endpoint: &str,
         nzc_auth_token: &str,
         request_id: &str,
@@ -620,7 +622,7 @@ impl NzcHttpAdapter {
             .await
             .map_err(|e| AdapterError::Protocol(format!("result JSON parse error: {e}")))?;
 
-        Ok(result.response.unwrap_or_else(|| String::new()))
+        Ok(result.response.unwrap_or_default())
     }
 }
 
@@ -681,7 +683,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(adapter.timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
+        assert_eq!(adapter._timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
     }
 
     #[test]
@@ -692,7 +694,7 @@ mod tests {
             None,
             Some(5000),
         );
-        assert_eq!(adapter.timeout, Duration::from_millis(5000));
+        assert_eq!(adapter._timeout, Duration::from_millis(5000));
     }
 
     #[test]
@@ -725,7 +727,7 @@ mod tests {
         let raw = r#"{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
         let chunk: ChatCompletionChunk = serde_json::from_str(raw).unwrap();
         assert!(chunk.choices[0].delta.content.is_none());
-        assert_eq!(chunk.choices[0].finish_reason.as_deref(), Some("stop"));
+        assert_eq!(chunk.choices[0]._finish_reason.as_deref(), Some("stop"));
     }
 
     #[test]

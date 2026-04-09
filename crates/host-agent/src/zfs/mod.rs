@@ -11,11 +11,8 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZfsOp {
     Snapshot,
-    List,
     Destroy,
-    Get,
     Rollback,
-    Clone,
 }
 
 /// ZFS entry from list output
@@ -52,7 +49,6 @@ impl ZfsExecutor {
             ZfsOp::Snapshot => self.snapshot(target, identity).await,
             ZfsOp::Destroy => self.destroy(target, identity).await,
             ZfsOp::Rollback => self.rollback(target, identity).await,
-            _ => Err(ZfsError::InvalidOperation(format!("{:?}", op))),
         }
     }
 

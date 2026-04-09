@@ -67,18 +67,13 @@ impl ClawKind {
 // ---------------------------------------------------------------------------
 
 /// Wire format for [`ClawKind::Webhook`] POST requests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum WebhookFormat {
     /// POST `{"message": "<text>"}` JSON body.
+    #[default]
     Json,
     /// POST raw text body.
     Text,
-}
-
-impl Default for WebhookFormat {
-    fn default() -> Self {
-        WebhookFormat::Json
-    }
 }
 
 impl std::fmt::Display for WebhookFormat {
@@ -242,6 +237,14 @@ pub fn backup_filename(original: &str, timestamp_millis: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_incompatible_variant_display() {
+        let v = VersionCompatibility::Incompatible {
+            reason: "test".to_string(),
+        };
+        assert!(v.to_string().contains("incompatible"));
+    }
 
     #[test]
     fn remotely_configurable_only_nzc_and_openclaw() {

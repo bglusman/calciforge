@@ -1,7 +1,7 @@
 //! Structured audit logging with rotation support (P2-14)
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -218,10 +218,8 @@ impl AuditLogger {
                     let parts: Vec<&str> = filename.split('.').collect();
                     if parts.len() >= 2 {
                         if let Ok(date) = chrono::NaiveDate::parse_from_str(parts[1], "%Y-%m-%d") {
-                            let datetime = chrono::DateTime::<Utc>::from_utc(
-                                date.and_hms_opt(0, 0, 0).unwrap(),
-                                Utc,
-                            );
+                            let datetime =
+                                Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
                             if datetime < cutoff {
                                 info!(path = %path.display(), "Removing old audit log");
                                 if let Err(e) = std::fs::remove_file(&path) {
@@ -235,11 +233,6 @@ impl AuditLogger {
         }
 
         Ok(())
-    }
-
-    /// Get the base log path
-    pub fn path(&self) -> &Path {
-        &self.base_path
     }
 }
 
