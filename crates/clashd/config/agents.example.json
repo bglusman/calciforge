@@ -1,0 +1,26 @@
+{
+  "agents": [
+    {
+      "agent_id": "librarian",
+      "allowed_domains": [],
+      "denied_domains": [],
+      "domain_list_sources": [
+        {
+          "name": "urlhaus-malware",
+          "url": "https://urlhaus.abuse.ch/downloads/text/",
+          "refresh_secs": 21600
+        },
+        {
+          "name": "steven-black-hosts",
+          "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+          "refresh_secs": 86400
+        },
+        {
+          "name": "yoyo-ad-servers",
+          "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0",
+          "refresh_secs": 43200
+        }
+      ]
+    }
+  ]
+}

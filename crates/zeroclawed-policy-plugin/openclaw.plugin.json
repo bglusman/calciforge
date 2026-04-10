@@ -1,0 +1,32 @@
+{
+  "id": "zeroclawed-policy",
+  "name": "ZeroClawed Policy Enforcement",
+  "description": "Enforces tool call policies via clashd sidecar. Blocks destructive commands and requires custodian approval for config changes.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "clashdEndpoint": {
+        "type": "string",
+        "description": "URL of clashd evaluate endpoint",
+        "default": "http://localhost:9001/evaluate"
+      },
+      "timeoutMs": {
+        "type": "number",
+        "description": "Timeout for clashd requests",
+        "default": 500
+      },
+      "fallbackOnError": {
+        "type": "string",
+        "enum": ["allow", "deny"],
+        "description": "Behavior when clashd is unreachable",
+        "default": "deny"
+      }
+    }
+  },
+  "requirements": {
+    "openclaw": ">=2026.3.24-beta.2",
+    "notes": "Requires before_tool_call hook with requireApproval support (added in 2026.3.24-beta.2)"
+  }
+}

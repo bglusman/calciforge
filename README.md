@@ -69,9 +69,12 @@ cargo build --release -p onecli-client
 │         │   OneCLI Proxy  │  ← Credentials live here       │
 │         └────────┬────────┘                                 │
 │                  │                                          │
-│         ┌────────▼────────┐                                 │
-│         │  Clash Policy   │  ← Sandboxing happens here     │
-│         └─────────────────┘                                 │
+│         ┌────────▼────────┐     ┌──────────────────────┐   │
+│         │ Policy Plugin   │────▶│       clashd         │   │
+│         │ (before_tool_)  │     │  Starlark + Domain   │   │
+│         └─────────────────┘     │  Filtering + Threat  │   │
+│                                 │  Intel Feeds         │   │
+│                                 └──────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,8 +85,10 @@ cargo build --release -p onecli-client
 | Feature | What it does |
 |---------|--------------|
 | **OneCLI** | Keeps API keys in VaultWarden, not in agent configs |
-| **Clash** | Enforces policy on every tool call — no surprise `curl` to shady domains |
-| **Identity-aware** | Different users get different agents, different permissions |
+| **clashd** | Centralized Starlark policy engine with domain filtering |
+| **Domain Filtering** | Regex patterns, threat intel feeds, per-agent allow/deny lists |
+| **Dynamic Threat Intel** | Auto-updates from URLHaus, StevenBlack, custom feeds |
+| **Identity-aware** | Different agents get different policies |
 | **Unified identity** | Same conversation context across Telegram/WhatsApp/Signal/Matrix |
 | **No secrets in repo** | Deploy scripts live in `infra/` (gitignored) |
 
@@ -124,6 +129,54 @@ kind = "telegram"
 bot_token_file = "/etc/zeroclawed/secrets/telegram-token"
 enabled = true
 ```
+
+---
+
+## 🛡️ Policy Enforcement (clashd)
+
+clashd is a sidecar service that evaluates every tool call through a Starlark policy before execution.
+
+### Features
+
+- **Starlark Policies**: Turing-complete policy language for complex rules
+- **Domain Filtering**: Exact match, regex patterns, subdomain matching
+- **Threat Intelligence**: Dynamic feeds from URLHaus, StevenBlack, custom sources
+- **Per-Agent Policies**: Different rules for different agents
+- **Custodian Approval**: Require human review for sensitive operations
+
+### Quick Start
+
+```bash
+# Build and run clashd
+cargo build --release -p clashd
+CLASHD_POLICY=crates/clashd/config/default-policy.star ./target/release/clashd
+
+# In another terminal, test it
+curl -X POST http://localhost:9001/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "exec", "args": {"command": "ls"}, "context": {"agent_id": "test"}}'
+```
+
+### Policy Example (`policy.star`)
+
+```python
+def evaluate(tool, args, context):
+    # Block known-bad domains
+    if context.get("domain_lists"):
+        return {"verdict": "deny", "reason": "Domain in threat feed"}
+
+    # Require approval for config changes
+    if tool == "gateway":
+        return {"verdict": "review", "reason": "Config change needs approval"}
+
+    # Block destructive commands
+    if tool == "exec" and "rm -rf /" in args.get("command", ""):
+        return {"verdict": "deny", "reason": "Destructive command blocked"}
+
+    return "allow"
+```
+
+See [crates/clashd/README.md](crates/clashd/README.md) for full documentation.
 
 ---
 

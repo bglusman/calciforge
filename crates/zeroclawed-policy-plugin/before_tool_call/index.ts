@@ -26,9 +26,9 @@ const CLASHD_TIMEOUT_MS = parseInt(process.env.CLASHD_TIMEOUT_MS || "500", 10);
 export default async function beforeToolCall(context: HookContext): Promise<HookResult> {
   const toolName = context.toolName;
   const args = context.args;
-  const identity = context.session?.identity || "unknown";
+  const agentId = context.session?.identity || "unknown";
 
-  console.log(`[zeroclawed-policy] Evaluating: ${toolName} for ${identity}`);
+  console.log(`[zeroclawed-policy] Evaluating: ${toolName} for ${agentId}`);
 
   try {
     const controller = new AbortController();
@@ -40,7 +40,7 @@ export default async function beforeToolCall(context: HookContext): Promise<Hook
       body: JSON.stringify({
         tool: toolName,
         args,
-        context: { identity, timestamp: new Date().toISOString() }
+        context: { agent_id: agentId, timestamp: new Date().toISOString() }
       }),
       signal: controller.signal
     });

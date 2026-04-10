@@ -26,29 +26,23 @@ pub enum PolicyAction {
     Redact,
 }
 
+/// Check a tool against policy via clashd (not local clash binary)
+/// 
+/// DEPRECATED: This module is being replaced by clashd sidecar + zeroclawed-policy-plugin.
+/// For new code, use the clashd HTTP API directly or the plugin hook.
+/// 
+/// This function now FAILS CLOSED (denies on error) for security.
 pub async fn check_tool(policy_file: Option<&std::path::Path>, check: &PolicyCheck) -> PolicyResult {
-    let policy_file = match policy_file {
-        Some(p) => p,
-        None => {
-            debug!("No policy file configured, allowing all");
-            return PolicyResult {
-                allowed: true,
-                reason: None,
-                action: PolicyAction::Allow,
-            };
-        }
-    };
+    let _ = policy_file; // Unused - kept for API compatibility
+    let _ = check; // Unused - kept for API compatibility
     
-    match check_with_clash(policy_file, check).await {
-        Ok(result) => result,
-        Err(e) => {
-            warn!("Policy check failed: {}, defaulting to allow", e);
-            PolicyResult {
-                allowed: true,
-                reason: Some(format!("Policy check error: {}", e)),
-                action: PolicyAction::Allow,
-            }
-        }
+    // This module is deprecated. clashd is the new policy enforcement path.
+    // Fail closed rather than allowing potentially unsafe operations.
+    warn!("onecli-client policy module is deprecated, use clashd instead");
+    PolicyResult {
+        allowed: false,
+        reason: Some("Policy module deprecated, use clashd".to_string()),
+        action: PolicyAction::Deny,
     }
 }
 

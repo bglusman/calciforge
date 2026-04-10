@@ -38,7 +38,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Run tests for all workspace crates
@@ -50,9 +50,11 @@ jobs:
       matrix:
         crate:
           - zeroclawed
-          - outpost
+          - adversary-detector
           - host-agent
           - onecli-client
+          - clashd
+          - security-gateway
     steps:
       - uses: actions/checkout@v4
 
@@ -94,60 +96,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binaries
-        run: cargo build --release -p zeroclawed -p onecli-client
+        run: cargo build --release -p zeroclawed -p onecli-client -p security-gateway -p adversary-detector
 
       - name: Check binary sizes
         run: |
-          ls -lh target/release/zeroclawed
-          ls -lh target/release/onecli
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Loom concurrency testing (for zeroclawed)
-  # TODO: Re-enable when loom.rs test file is added
-  # ─────────────────────────────────────────────────────────────────────────────
-  # loom:
-  #   name: Loom Concurrency Tests
-  #   runs-on: ubuntu-latest
-  #   env:
-  #     LOOM_MAX_PREEMPTIONS: 2
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #
-  #     - name: Install Rust toolchain
-  #       uses: dtolnay/rust-toolchain@stable
-  #
-  #     - name: Cache Cargo registry
-  #       uses: actions/cache@v4
-  #       with:
-  #         path: |
-  #           ~/.cargo/registry
-  #           ~/.cargo/git
-  #           target
-  #         key: ${{ runner.os }}-cargo-loom-${{ hashFiles('**/Cargo.lock') }}
-  #
-  #     - name: Run Loom tests
-  #       run: RUSTFLAGS="--cfg loom" cargo test --test loom -p zeroclawed
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Cross-compilation for ARM64
-  # TODO: Re-enable when cross-compilation issues are resolved
-  # Fails at "Cross compile for ARM64" step - likely missing ARM system libs
-  # or linking issues with native dependencies (openssl, ring, etc.)
-  # Needs investigation of cross build error logs
-  # ─────────────────────────────────────────────────────────────────────────────
-  # cross-compile-arm:
-  #   name: Cross Compile (ARM64)
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #
-  #     - name: Install Rust toolchain
-  #       uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         targets: aarch64-unknown-linux-gnu
-  #
-  #     - name: Install cross
-  #       run: cargo install cross --git https://github.com/cross-rs/cross
-  #
-  #     - name: Cross compile for ARM64
-  #       run: cross build --target aarch64-unknown-linux-gnu -p zeroclawed -p nonzeroclaw
+          ls -lh target/release/zeroclawed || true
+          ls -lh target/release/onecli || true
+          ls -lh target/release/security-gateway || true
+          ls -lh target/release/adversary-detector || true
