@@ -37,13 +37,15 @@ pub mod audit;
 pub mod digest;
 pub mod middleware;
 pub mod patterns;
+pub mod profiles;
 pub mod proxy;
 pub mod scanner;
 pub mod verdict;
 
 pub use audit::AuditLogger;
 pub use digest::{sha256_hex, ContentDigest, DigestStore};
-pub use middleware::{HookOutcome, OutpostMiddleware, ToolHook, ToolResult};
+pub use middleware::{HookOutcome, InterceptedToolSet, OutpostMiddleware, ToolHook, ToolResult};
+pub use profiles::{RateLimitConfig, SecurityConfig, SecurityProfile};
 pub use proxy::{OutpostFetchResult, OutpostProxy};
 pub use scanner::{OutpostScanner, ScannerConfig};
 pub use verdict::{OutpostVerdict, ScanContext};

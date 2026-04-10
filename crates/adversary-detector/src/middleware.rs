@@ -20,6 +20,73 @@ pub const INTERCEPTED_TOOLS: &[&str] = &[
     "exec",
 ];
 
+use serde::{Deserialize, Serialize};
+
+/// A configurable set of tool names to intercept.
+///
+/// Used by [`crate::profiles::SecurityConfig`] to vary which tools are scanned
+/// based on the active security profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterceptedToolSet {
+    pub tools: Vec<String>,
+}
+
+impl InterceptedToolSet {
+    /// Only web fetch tools (open profile).
+    pub fn web_only() -> Self {
+        Self {
+            tools: vec!["web_fetch".into(), "safe_fetch".into()],
+        }
+    }
+
+    /// Web fetch + search (balanced profile).
+    pub fn web_and_search() -> Self {
+        Self {
+            tools: vec![
+                "web_fetch".into(),
+                "safe_fetch".into(),
+                "web_search".into(),
+            ],
+        }
+    }
+
+    /// All content tools except exec (hardened profile).
+    pub fn all_tools() -> Self {
+        Self {
+            tools: vec![
+                "web_fetch".into(),
+                "safe_fetch".into(),
+                "web_search".into(),
+                "email_fetch".into(),
+            ],
+        }
+    }
+
+    /// All tools including exec output scanning (paranoid profile).
+    pub fn all_including_exec() -> Self {
+        Self {
+            tools: vec![
+                "web_fetch".into(),
+                "safe_fetch".into(),
+                "web_search".into(),
+                "email_fetch".into(),
+                "exec".into(),
+            ],
+        }
+    }
+
+    /// Check if a tool name should be intercepted.
+    pub fn intercepts(&self, tool_name: &str) -> bool {
+        self.tools.iter().any(|t| t == tool_name)
+    }
+}
+
+impl Default for InterceptedToolSet {
+    fn default() -> Self {
+        Self::web_and_search()
+    }
+}
+
 /// A tool result passed into the middleware.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
