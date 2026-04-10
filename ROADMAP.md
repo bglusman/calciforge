@@ -11,23 +11,23 @@
 - [x] clangd sidecar deployment and health checks
 
 ## In Progress
-- [ ] Outpost domain filtering enhancement (allowlist/blocklist per agent)
+- [ ] Adversary domain filtering enhancement (allowlist/blocklist per agent)
 - [ ] CI lint/format checks passing (current PR)
 - [ ] Documentation updates for policy enforcement
 
 ## Backlog / Research Phase
 
-### Outpost Domain Filtering
+### Adversary Domain Filtering
 - Explicit domain allowlist/blocklist controls
 - Per-agent policy profiles with shared defaults
 - Integration with clash/starlark for unified policy
-- Coordinated enforcement between outpost and clashd
+- Coordinated enforcement between adversary and clashd
 - Audit logging for domain decisions
 
 ## Future Considerations
 - Agent-specific policy profiles in clashd
 - Shared policy templates with overrides
-- Enhanced outpost/clash coordination for network policy
+- Enhanced adversary/clash coordination for network policy
 - Web dashboard for policy monitoring and audit logs
 - Integration with additional LLM providers and tools
 
