@@ -23,14 +23,17 @@
 //! for **external content**. Internal API calls (e.g. posting replies back to a
 //! messaging gateway) are not "external content" and are exempt.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::audit::AuditLogger;
 use crate::digest::{sha256_hex, ContentDigest, DigestStore};
+use crate::profiles::RateLimitConfig;
 use crate::scanner::{OutpostScanner, ScannerConfig};
 use crate::verdict::{OutpostVerdict, ScanContext};
 
@@ -99,20 +102,94 @@ impl OutpostFetchResult {
 /// use adversary_detector::proxy::OutpostProxy;
 /// use adversary_detector::scanner::ScannerConfig;
 /// use adversary_detector::audit::AuditLogger;
+/// use adversary_detector::profiles::RateLimitConfig;
 ///
 /// async fn example() {
 ///     let config = ScannerConfig::default();
 ///     let logger = AuditLogger::new("my-agent");
-///     let proxy = OutpostProxy::from_config(config, logger).await;
+///     let rate_limit = RateLimitConfig::default();
+///     let proxy = OutpostProxy::from_config(config, logger, rate_limit).await;
 ///     let result = proxy.fetch("https://example.com").await;
 /// }
 /// ```
+/// Maximum number of tracked sources before LRU eviction kicks in.
+const RATE_LIMITER_MAX_SOURCES: usize = 10000;
+
+/// Token bucket rate limiter for per-source request limiting.
+#[derive(Debug)]
+struct RateLimiter {
+    /// Configured rate limits
+    config: RateLimitConfig,
+    /// Per-source state: (tokens available, last refill time, last access time for LRU)
+    buckets: HashMap<String, (u32, Instant, Instant)>,
+}
+
+impl RateLimiter {
+    fn new(config: RateLimitConfig) -> Self {
+        Self {
+            config,
+            buckets: HashMap::new(),
+        }
+    }
+
+    /// Evict oldest entries if we're over the limit (simple LRU).
+    fn evict_if_needed(&mut self, _now: Instant) {
+        if self.buckets.len() <= RATE_LIMITER_MAX_SOURCES {
+            return;
+        }
+        // Find and remove 20% oldest by last access time
+        let to_remove = self.buckets.len() / 5;
+        let mut entries: Vec<_> = self.buckets.iter().map(|(k, v)| (k.clone(), v.2)).collect();
+        entries.sort_by(|a, b| a.1.cmp(&b.1));
+        for (key, _) in entries.into_iter().take(to_remove) {
+            self.buckets.remove(&key);
+        }
+    }
+
+    /// Check if a request from `source` is allowed. Returns `true` if within rate limit.
+    fn check(&mut self, source: &str) -> bool {
+        let now = Instant::now();
+        self.evict_if_needed(now);
+
+        let bucket = self.buckets.entry(source.to_owned()).or_insert_with(|| {
+            // New source: start with full burst allowance
+            (self.config.burst_size, now, now)
+        });
+        // Update last access time
+        bucket.2 = now;
+
+        // Calculate tokens to add based on time elapsed
+        let elapsed = now.duration_since(bucket.1);
+        let tokens_per_sec = self.config.max_requests_per_minute as f64 / 60.0;
+        let tokens_to_add = (elapsed.as_secs_f64() * tokens_per_sec) as u32;
+
+        if tokens_to_add > 0 {
+            bucket.0 = (bucket.0 + tokens_to_add).min(self.config.burst_size);
+            bucket.1 = now;
+        }
+
+        if bucket.0 > 0 {
+            bucket.0 -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Time until the next request would be allowed (for cooldown messaging).
+    fn cooldown_remaining(&self, _source: &str) -> Option<Duration> {
+        // Use configured cooldown_seconds when rate limited
+        Some(Duration::from_secs(self.config.cooldown_seconds))
+    }
+}
+
 pub struct OutpostProxy {
     scanner: OutpostScanner,
     store: Arc<Mutex<DigestStore>>,
     logger: AuditLogger,
     client: reqwest::Client,
     override_on_review: bool,
+    rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
 impl OutpostProxy {
@@ -122,6 +199,7 @@ impl OutpostProxy {
         store: DigestStore,
         logger: AuditLogger,
         override_on_review: bool,
+        rate_limit: RateLimitConfig,
     ) -> Self {
         Self {
             scanner,
@@ -132,12 +210,17 @@ impl OutpostProxy {
                 .build()
                 .expect("proxy reqwest client"),
             override_on_review,
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(rate_limit))),
         }
     }
 
     /// Construct from a [`ScannerConfig`] and logger, opening the digest store
     /// at the configured path (or the default `~/.outpost/digests.json`).
-    pub async fn from_config(config: ScannerConfig, logger: AuditLogger) -> Self {
+    pub async fn from_config(
+        config: ScannerConfig,
+        logger: AuditLogger,
+        rate_limit: RateLimitConfig,
+    ) -> Self {
         let override_on_review = config.override_on_review;
         let store_path = config.digest_store_path.clone().unwrap_or_else(|| {
             let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
@@ -145,7 +228,7 @@ impl OutpostProxy {
         });
         let store = DigestStore::open(store_path).await;
         let scanner = OutpostScanner::new(config);
-        Self::new(scanner, store, logger, override_on_review)
+        Self::new(scanner, store, logger, override_on_review, rate_limit)
     }
 
     /// Fetch `url` through the outpost proxy.
@@ -156,7 +239,47 @@ impl OutpostProxy {
     ///   persists the result.
     /// - Human-overridden URL+digest pairs bypass `Blocked`/`Review` verdicts.
     pub async fn fetch(&self, url: &str) -> OutpostFetchResult {
-        // Step 1: fetch raw content
+        // Step 0: rate limiting check
+        {
+            let mut limiter = self.rate_limiter.lock().await;
+            // Use the URL host as the rate limit source
+            let source = crate::extract_host(url);
+            if !source.is_empty() && !limiter.check(source) {
+                let cooldown = limiter
+                    .cooldown_remaining(source)
+                    .map(|d| format!(" Try again in {:?}.", d))
+                    .unwrap_or_default();
+                warn!(url, "outpost: rate limit exceeded");
+                return OutpostFetchResult::Blocked {
+                    reason: format!("Rate limit exceeded.{}", cooldown),
+                    digest: String::new(),
+                    url: url.to_owned(),
+                };
+            }
+        }
+
+        // Step 1: skip_protection — bypass ALL scanning for trusted domains
+        // Check before HTTP fetch to avoid touching untrusted servers entirely.
+        if self.scanner.config().is_skip_protected(url) {
+            debug!(url, "outpost: skip_protection bypass");
+            let content = match self.http_get(url).await {
+                Ok(c) => c,
+                Err(e) => {
+                    return OutpostFetchResult::Blocked {
+                        reason: format!("HTTP fetch failed: {e}"),
+                        digest: String::new(),
+                        url: url.to_owned(),
+                    };
+                }
+            };
+            let digest = sha256_hex(&content);
+            self.logger
+                .log(ScanContext::WebFetch, url, &OutpostVerdict::Clean, false)
+                .await;
+            return OutpostFetchResult::Ok { content, digest };
+        }
+
+        // Step 2: fetch raw content
         let content = match self.http_get(url).await {
             Ok(c) => c,
             Err(e) => {
@@ -167,13 +290,13 @@ impl OutpostProxy {
                 };
             }
         };
-
         let digest = sha256_hex(&content);
 
-        // Step 2: check digest cache
         {
             let store = self.store.lock().await;
-            if let Some(entry) = store.get(url) {
+            let ttl = self.scanner.config().digest_cache_ttl_secs;
+            let ttl = if ttl == 0 { None } else { Some(ttl) };
+            if let Some(entry) = store.get(url, ttl) {
                 if entry.sha256 == digest {
                     // Cache hit — same content as last time
                     debug!(url, digest = %digest, "outpost: digest cache hit");
@@ -190,6 +313,8 @@ impl OutpostProxy {
                 }
                 // Digest changed — fall through to rescan
                 info!(url, "outpost: digest changed, rescanning");
+            } else if ttl.is_some() {
+                debug!(url, "outpost: digest cache miss (expired or not found)");
             }
         }
 
@@ -282,6 +407,7 @@ impl OutpostProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profiles::RateLimitConfig;
     use crate::scanner::ScannerConfig;
     use tempfile::NamedTempFile;
     use wiremock::matchers::{method, path};
@@ -299,7 +425,12 @@ mod tests {
             digest_store_path: Some(store_path),
             ..Default::default()
         };
-        OutpostProxy::from_config(config, AuditLogger::new("test-proxy")).await
+        OutpostProxy::from_config(
+            config,
+            AuditLogger::new("test-proxy"),
+            RateLimitConfig::default(),
+        )
+        .await
     }
 
     // ── digest cache hit ──────────────────────────────────────────────────────
@@ -329,7 +460,7 @@ mod tests {
         assert!(!digest1.is_empty());
         // The same proxy instance has the entry in its in-memory store
         let store = proxy.store.lock().await;
-        let entry = store.get(&url).expect("entry should be stored");
+        let entry = store.get(&url, None).expect("entry should be stored");
         assert_eq!(entry.sha256, digest1);
     }
 
@@ -467,5 +598,83 @@ mod tests {
             OutpostFetchResult::Ok { .. } => {} // clean is also acceptable
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    // ── rate limiting tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_rate_limiter_burst_allowance() {
+        use crate::profiles::RateLimitConfig;
+
+        let config = RateLimitConfig {
+            max_requests_per_minute: 60,
+            burst_size: 5,
+            cooldown_seconds: 10,
+        };
+        let mut limiter = RateLimiter::new(config);
+
+        // Should allow burst_size requests immediately
+        for i in 0..5 {
+            assert!(
+                limiter.check("test-source"),
+                "request {} should be allowed",
+                i + 1
+            );
+        }
+
+        // 6th request should be blocked
+        assert!(
+            !limiter.check("test-source"),
+            "6th request should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_per_source_isolation() {
+        use crate::profiles::RateLimitConfig;
+
+        let config = RateLimitConfig {
+            max_requests_per_minute: 60,
+            burst_size: 3,
+            cooldown_seconds: 10,
+        };
+        let mut limiter = RateLimiter::new(config);
+
+        // Exhaust burst for source-a
+        for _ in 0..3 {
+            assert!(limiter.check("source-a"));
+        }
+        assert!(!limiter.check("source-a"));
+
+        // source-b should still have full burst allowance
+        for _ in 0..3 {
+            assert!(
+                limiter.check("source-b"),
+                "source-b should have independent quota"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rate_limiter_cooldown_calculation() {
+        use crate::profiles::RateLimitConfig;
+
+        let config = RateLimitConfig {
+            max_requests_per_minute: 60, // 1 per second
+            burst_size: 1,
+            cooldown_seconds: 10,
+        };
+        let mut limiter = RateLimiter::new(config);
+
+        // Use the only token
+        assert!(limiter.check("test"));
+
+        // Check cooldown is calculated
+        let cooldown = limiter.cooldown_remaining("test");
+        assert!(cooldown.is_some(), "cooldown should be calculated");
+        assert!(
+            cooldown.unwrap().as_secs() > 0,
+            "cooldown should be positive"
+        );
     }
 }

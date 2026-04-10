@@ -88,6 +88,10 @@ cargo build --release -p onecli-client
 | **clashd** | Centralized Starlark policy engine with domain filtering |
 | **Domain Filtering** | Regex patterns, threat intel feeds, per-agent allow/deny lists |
 | **Dynamic Threat Intel** | Auto-updates from URLHaus, StevenBlack, custom feeds |
+| **Adversary Detector** | Three-layer content scanning: structural → semantic → remote service |
+| **Digest Caching** | SHA-256 of response bodies — same content = cache hit, changed = rescan |
+| **Skip Protection** | Trusted domains bypass scanning entirely (exact match + `*.domain.com` wildcard) |
+| **Security Profiles** | Named presets: open / balanced / hardened / paranoid |
 | **Identity-aware** | Different agents get different policies |
 | **Unified identity** | Same conversation context across Telegram/WhatsApp/Signal/Matrix |
 | **No secrets in repo** | Deploy scripts live in `infra/` (gitignored) |
@@ -180,6 +184,51 @@ See [crates/clashd/README.md](crates/clashd/README.md) for full documentation.
 
 ---
 
+## 🔍 Content Scanning (adversary-detector)
+
+All external content fetched by agents passes through `adversary-detector` — a three-layer scanner with SHA-256 digest caching and skip protection.
+
+### How It Works
+
+1. **Fetch** — proxy fetches the URL over HTTPS
+2. **Digest check** — SHA-256 of response body compared to cached entry
+   - Same URL + same digest → cached verdict, no rescan (fast path)
+   - New or changed digest → full scan pipeline runs
+3. **Three-layer scan:**
+   - Layer 1 (structural): zero-width chars, unicode tag hiding, base64 blobs
+   - Layer 2 (semantic): injection phrases, PII harvesting signals, exfiltration patterns
+   - Layer 3 (remote): optional deeper analysis via shared HTTP service
+4. **Verdict:** Clean / Review / Unsafe → returned to caller
+
+### Skip Protection (Trusted Domains)
+
+Domains in `skip_protection_domains` bypass scanning entirely:
+
+```toml
+# In scanner config
+skip_protection_domains = [
+    "api.internal.example.com",    # exact match
+    "*.trusted-cdn.com",           # wildcard — all subdomains
+]
+```
+
+Skip protection is distinct from digest caching: digest caching scans first then caches; skip protection never scans at all. Use for domains you fully control.
+
+### Security Profiles
+
+Four named presets control scanning depth, rate limits, and logging:
+
+| Profile | Scans | Discussion Ratio | Review | Rate |
+|---------|-------|-----------------|--------|------|
+| **Open** | web_fetch only | 0.5 | auto-pass | 120/min |
+| **Balanced** | web + search | 0.3 | needs approval | 60/min |
+| **Hardened** | all tools | 0.15 | blocked | 30/min |
+| **Paranoid** | all + exec | 0.0 | blocked | 15/min |
+
+See [crates/adversary-detector/README.md](crates/adversary-detector/README.md) for full documentation.
+
+---
+
 ## 🧪 Development
 
 ```bash
@@ -206,7 +255,7 @@ cargo clippy --all-targets
 | `zeroclawed` | The main router/gateway binary |
 | `onecli-client` | Credential proxy service |
 | `host-agent` | System management agent (ZFS, systemd, Proxmox) |
-| `outpost` | Content scanning & injection detection |
+| `adversary-detector` | Content scanning, digest caching, skip protection |
 
 ---
 
@@ -245,8 +294,8 @@ Built with:
 | `zeroclawed` | `zeroclawed` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents |
 | `onecli-client` | `onecli` | **Credential Proxy** — VaultWarden integration, injects API keys without exposing them to agents |
 | `host-agent` | `host-agent` | **System Agent** — ZFS, systemd, Proxmox operations with approval gates |
-| `outpost` | *(library)* | **Content Scanner** — detects prompt injection, PII leakage, unsafe content |
-| `clash` | *(library)* | **Policy Engine** — sandboxing and tool restrictions |
+| `adversary-detector` | *(library)* | **Content Scanner** — three-layer detection, digest caching, skip protection, security profiles | [README](crates/adversary-detector/README.md) |
+| `clashd` | `clashd` | **Policy Engine** — Starlark policies, domain filtering, threat intel feeds, per-agent configs | [README](crates/clashd/README.md) |
 
 ### Message Flow
 
@@ -254,7 +303,7 @@ Built with:
 [Telegram] ──┐
 [Matrix]   ──┤──▶ [ZeroClawed] ──▶ [Auth] ──▶ [Router] ──▶ [Agent]
 [Signal]   ──┘        │                                    │
-[WhatsApp] ──┘   [Outpost scan]                      [OneCLI proxy]
+[WhatsApp] ──┘   [adversary-detector]               [OneCLI proxy]
                                                            │
                                                     [VaultWarden]
 ```
