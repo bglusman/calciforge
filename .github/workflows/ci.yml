@@ -86,6 +86,19 @@ jobs:
           fi
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # Loom concurrency tests (placeholder - no-op for now)
+  # ─────────────────────────────────────────────────────────────────────────────
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Loom placeholder
+        run: |
+          echo "Loom concurrency tests temporarily disabled (compiles as dev-dependency only)"
+          echo "See: https://github.com/bglusman/zeroclawed/issues/TODO"
+          exit 0
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # Build release binaries
   # ─────────────────────────────────────────────────────────────────────────────
   build:
