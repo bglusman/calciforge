@@ -15,7 +15,6 @@ jobs:
   # Check formatting and linting
   # ─────────────────────────────────────────────────────────────────────────────
   fmt-and-clippy:
-    name: Format & Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +42,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   # Run tests for all workspace crates
   # ─────────────────────────────────────────────────────────────────────────────
-  test:
+  test-crates:
     name: Test Suite
     runs-on: ubuntu-latest
     strategy:
@@ -73,11 +72,23 @@ jobs:
       - name: Test ${{ matrix.crate }}
         run: cargo test -p ${{ matrix.crate }}
 
+  # Aggregator job that reports a single `test` status check (required by ruleset)
+  test:
+    runs-on: ubuntu-latest
+    needs: [test-crates]
+    if: always()
+    steps:
+      - name: Verify all crate test jobs succeeded
+        run: |
+          if [ "${{ needs.test-crates.result }}" != "success" ]; then
+            echo "One or more crate test jobs failed: ${{ needs.test-crates.result }}"
+            exit 1
+          fi
+
   # ─────────────────────────────────────────────────────────────────────────────
   # Build release binaries
   # ─────────────────────────────────────────────────────────────────────────────
   build:
-    name: Release Build
     runs-on: ubuntu-latest
     needs: [fmt-and-clippy, test]
     steps:
