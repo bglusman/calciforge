@@ -145,15 +145,18 @@ pub fn sha256_hex(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
-
     fn tmp_path() -> PathBuf {
-        // We only need the path; we drop the file handle so the store can reopen it.
-        let f = NamedTempFile::new().expect("tempfile");
-        let p = f.path().to_path_buf();
-        // Remove so the store starts with an empty file
-        let _ = std::fs::remove_file(&p);
-        p
+        // Use a unique path in the system temp dir
+        let dir = std::env::temp_dir();
+        let name = format!(
+            "digest-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        dir.join(name)
     }
 
     #[tokio::test]

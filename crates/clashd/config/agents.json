@@ -1,0 +1,54 @@
+{
+  "agents": [
+    {
+      "agent_id": "librarian",
+      "allowed_domains": [],
+      "denied_domains": [],
+      "domain_list_sources": [
+        {
+          "name": "urlhaus-malware",
+          "url": "https://urlhaus.abuse.ch/downloads/text/",
+          "refresh_secs": 21600
+        },
+        {
+          "name": "steven-black-hosts",
+          "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+          "refresh_secs": 86400
+        },
+        {
+          "name": "yoyo-ad-servers",
+          "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0",
+          "refresh_secs": 43200
+        }
+      ],
+      "providers": [
+        {
+          "name": "openai",
+          "env_key": "OPENAI_API_KEY"
+        },
+        {
+          "name": "anthropic",
+          "env_key": "ANTHROPIC_API_KEY"
+        },
+        {
+          "name": "google",
+          "env_key": "GOOGLE_API_KEY"
+        },
+        {
+          "name": "openrouter",
+          "env_key": "OPENROUTER_API_KEY"
+        },
+        {
+          "name": "kimi",
+          "env_key": "KIMI_API_KEY"
+        }
+      ],
+      "proxy": {
+        "enforcement": "env_var",
+        "scan_outbound": true,
+        "scan_inbound": true,
+        "inject_credentials": true
+      }
+    }
+  ]
+}

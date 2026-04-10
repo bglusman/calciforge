@@ -1,0 +1,7 @@
+# ZeroClawed deployment targets (one IP per line)
+# Lines starting with # are comments
+# Edit this file, then run: ./scripts/install-security-stack.sh install
+
+192.168.1.210
+# 192.168.1.127   # Docker VM (librarian)
+# 192.168.1.49    # Proxmox node 1

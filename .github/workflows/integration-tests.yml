@@ -38,16 +38,10 @@ jobs:
         run: cargo test --workspace --lib --bins
 
       - name: Run integration tests
-        run: cargo test -p zeroclawed --test e2e
+        run: cargo test --workspace --tests -- --skip test_gateway_
         env:
           # Skip tests that require running services in CI
           SKIP_LIVE_TESTS: 1
-
-      - name: Run Ralph Loop (limited iterations)
-        run: |
-          # Run up to 5 iterations in CI to catch flaky tests
-          ./scripts/ralph-loop.sh 5 || true
-        timeout-minutes: 10
 
   test-onecli:
     name: OneCLI Proxy Tests
@@ -66,12 +60,9 @@ jobs:
 
       - name: Start OneCLI service
         run: |
-          # Start OneCLI in background for integration tests
           cargo run -p onecli-client --release &
           ONECLI_PID=$!
           echo "ONECLI_PID=$ONECLI_PID" >> $GITHUB_ENV
-          
-          # Wait for it to be ready
           for i in {1..30}; do
             if curl -s http://127.0.0.1:8081/health > /dev/null; then
               echo "OneCLI is ready"
