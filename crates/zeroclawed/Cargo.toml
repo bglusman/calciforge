@@ -18,6 +18,11 @@ name = "e2e"
 path = "tests/e2e/mod.rs"
 harness = true
 
+[[test]]
+name = "loom"
+path = "tests/loom.rs"
+harness = true
+
 [dependencies]
 axum = "0.7"
 
