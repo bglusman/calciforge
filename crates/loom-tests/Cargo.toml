@@ -1,0 +1,12 @@
+[package]
+name = "loom-tests"
+version = "0.1.0"
+edition = "2021"
+description = "Loom concurrency tests for ZeroClawed"
+license = "MIT"
+
+[dependencies]
+loom = { version = "0.7", features = ["checkpoint"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

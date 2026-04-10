@@ -16,6 +16,7 @@ mod hooks;
 #[cfg(test)]
 mod install;
 mod router;
+mod sync;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;

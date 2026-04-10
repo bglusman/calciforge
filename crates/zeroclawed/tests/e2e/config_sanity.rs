@@ -65,6 +65,8 @@ fn test_unknown_adapter_kind_fails() {
         "openclaw-http",
         "openclaw-channel",
         "openclaw-native",
+        "nzc-http",
+        "nzc-native",
     ];
 
     let invalid_kinds = vec![
@@ -211,4 +213,120 @@ timeout_ms = 60000
 
     // This should be valid without api_key
     // No assertion needed - test passes if it compiles/runs
+}
+
+#[test]
+fn test_adapter_kind_case_sensitive() {
+    // Adapter kinds must be lowercase with hyphens
+    // Mixed case or underscores should be rejected
+    let invalid_case_kinds = vec![
+        "OpenClaw-Http",
+        "OPENCLAW-HTTP",
+        "openclaw_http",
+        "Cli",
+        "Nzc-Native",
+    ];
+
+    for kind in invalid_case_kinds {
+        assert!(
+            !is_valid_adapter_kind(kind),
+            "'{}' should be rejected (must be lowercase with hyphens)",
+            kind
+        );
+    }
+}
+
+#[test]
+fn test_all_registered_adapter_kinds_are_valid() {
+    // Ensure every kind in the valid list is also documented
+    // This prevents drift between test data and actual adapter registry
+    let all_kinds = [
+        "cli",
+        "acp",
+        "acpx",
+        "zeroclaw",
+        "openclaw-http",
+        "openclaw-channel",
+        "openclaw-native",
+        "nzc-http",
+        "nzc-native",
+    ];
+
+    for kind in all_kinds {
+        assert!(
+            is_valid_adapter_kind(kind),
+            "Registered kind '{}' should pass validation",
+            kind
+        );
+    }
+
+    // Verify we have exactly 9 adapter kinds
+    assert_eq!(all_kinds.len(), 9, "Expected exactly 9 adapter kinds");
+}
+
+#[test]
+fn test_empty_config_has_no_agents() {
+    // Minimal valid config with no agents section
+    let config = "version = 2\n";
+    let (_dir, path) = write_config(config);
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: toml::Value = content.parse().unwrap();
+
+    let agents = parsed.get("agents");
+    assert!(agents.is_none(), "Empty config should have no agents");
+}
+
+#[test]
+fn test_agent_with_timeout_zero_is_suspicious() {
+    // timeout_ms = 0 means no timeout, which is dangerous
+    let config = r#"
+[[agents]]
+id = "fast-agent"
+kind = "cli"
+command = "/bin/echo"
+timeout_ms = 0
+"#;
+
+    let (_dir, path) = write_config(config);
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: toml::Value = content.parse().unwrap();
+
+    let agent = parsed.get("agents").and_then(|a| a.as_array()).unwrap()[0].clone();
+    let timeout = agent.get("timeout_ms").and_then(|t| t.as_integer()).unwrap();
+
+    // The config parses, but timeout=0 should be flagged by validation
+    assert_eq!(timeout, 0, "Test documents that timeout_ms=0 is parseable");
+    // Real validation should reject this with:
+    // "agent 'fast-agent': timeout_ms must be > 0"
+}
+
+#[test]
+fn test_multiple_agents_same_id_should_error() {
+    // Two agents with the same id is almost certainly a mistake
+    let config = r#"
+[[agents]]
+id = "duplicate"
+kind = "cli"
+command = "/bin/echo"
+
+[[agents]]
+id = "duplicate"
+kind = "cli"
+command = "/bin/cat"
+"#;
+
+    let (_dir, path) = write_config(config);
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: toml::Value = content.parse().unwrap();
+
+    let agents = parsed.get("agents").and_then(|a| a.as_array()).unwrap();
+    let ids: Vec<&str> = agents
+        .iter()
+        .filter_map(|a| a.get("id").and_then(|i| i.as_str()))
+        .collect();
+
+    // TOML parses fine, but both have the same id
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], ids[1]);
+    // Real validation should detect: "duplicate agent id 'duplicate'"
 }

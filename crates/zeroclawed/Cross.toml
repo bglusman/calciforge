@@ -1,0 +1,32 @@
+# Cross-compilation configuration for zeroclawed
+# Used by the `cross` tool for cross-compilation and QEMU testing
+# https://github.com/cross-rs/cross
+
+[build]
+# Default build environment settings
+pre-build = [
+    # Install dependencies needed for building
+    "apt-get update && apt-get install -y pkg-config libssl-dev"
+]
+
+[target.aarch64-unknown-linux-gnu]
+# Use the official cross image with additional tools
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+# Additional environment variables for the build
+[target.aarch64-unknown-linux-gnu.env]
+passthrough = [
+    "RUSTFLAGS",
+    "LOOM_MAX_PREEMPTIONS",
+    "LOOM_MAX_BRANCHES",
+    "LOOM_CHECKPOINT_INTERVAL",
+]
+
+# Pre-build steps for ARM64 target
+pre-build = [
+    "apt-get update && apt-get install -y pkg-config libssl-dev"
+]
+
+# Run tests with QEMU user-mode emulation
+# The cross tool automatically handles QEMU execution for test targets
+runner = "qemu-aarch64"
