@@ -80,6 +80,8 @@ pub enum ScanContext {
     Exec,
     /// Response body from a third-party API call.
     Api,
+    /// Outbound message from agent to user.
+    Outbound,
 }
 
 impl ScanContext {
@@ -91,6 +93,7 @@ impl ScanContext {
             ScanContext::Email => "email_fetch",
             ScanContext::Exec => "exec",
             ScanContext::Api => "api",
+            ScanContext::Outbound => "outbound",
         }
     }
 }

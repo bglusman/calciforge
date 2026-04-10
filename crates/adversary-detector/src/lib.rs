@@ -37,13 +37,35 @@ pub mod audit;
 pub mod digest;
 pub mod middleware;
 pub mod patterns;
+pub mod profiles;
 pub mod proxy;
 pub mod scanner;
 pub mod verdict;
 
+/// Extract the host from a URL string.
+/// Strips scheme (http://, https://), takes the hostname (before first `/`, `:`, or `?`).
+/// Returns empty string if the URL has no scheme (rejects bare strings).
+pub fn extract_host(url: &str) -> &str {
+    let rest = match url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        Some(r) => r,
+        None => return "", // no scheme = not a URL
+    };
+    // Take up to first `:` (port), `/` (path), or `?` (query)
+    let end = rest
+        .find(':')
+        .or_else(|| rest.find('/'))
+        .or_else(|| rest.find('?'))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 pub use audit::AuditLogger;
 pub use digest::{sha256_hex, ContentDigest, DigestStore};
-pub use middleware::{HookOutcome, OutpostMiddleware, ToolHook, ToolResult};
+pub use middleware::{HookOutcome, InterceptedToolSet, OutpostMiddleware, ToolHook, ToolResult};
+pub use profiles::{RateLimitConfig, SecurityConfig, SecurityProfile};
 pub use proxy::{OutpostFetchResult, OutpostProxy};
 pub use scanner::{OutpostScanner, ScannerConfig};
 pub use verdict::{OutpostVerdict, ScanContext};
