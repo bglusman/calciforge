@@ -201,7 +201,14 @@ pub struct ChannelConfig {
     /// Must correspond to identity aliases with `channel = "whatsapp"` or `channel = "signal"`.
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
+
+    // --- Adversary detector settings ---
+    /// Enable inbound/outbound adversarial content scanning on this channel.
+    /// Default: false (opt-in). The HTTP proxy is always-on regardless of this flag.
+    #[serde(default)]
+    pub scan_messages: bool,
 }
+
 
 /// `[permissions]` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
