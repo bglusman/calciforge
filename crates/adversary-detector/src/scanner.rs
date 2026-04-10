@@ -88,6 +88,11 @@ impl OutpostScanner {
         }
     }
 
+    /// Access the scanner configuration.
+    pub fn config(&self) -> &ScannerConfig {
+        &self.config
+    }
+
     /// Scan `content` (fetched from `url`) in the given `context`.
     ///
     /// Runs layers 1 → 2 locally. Optionally calls the shared HTTP service (layer 3).
@@ -493,9 +498,11 @@ fn test_extract_host() {
     assert_eq!(extract_host("https://example.com/path"), "example.com");
     assert_eq!(extract_host("http://example.com:8080/path"), "example.com");
     assert_eq!(extract_host("https://sub.example.com"), "sub.example.com");
-    assert_eq!(extract_host("example.com/path"), "example.com");
     assert_eq!(extract_host("https://localhost:3000"), "localhost");
-    assert_eq!(extract_host("not-a-url"), "not-a-url");
+    // URLs without scheme are rejected (prevents bare string matching)
+    assert_eq!(extract_host("example.com/path"), "");
+    assert_eq!(extract_host("not-a-url"), "");
+    assert_eq!(extract_host("random-text-not-a-url"), "");
 }
 
 #[test]

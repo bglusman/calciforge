@@ -4,6 +4,7 @@
 //! into ZeroClaw's `HookHandler::on_tool_result` pipeline.
 
 use crate::audit::AuditLogger;
+use crate::profiles::SecurityConfig;
 use crate::scanner::OutpostScanner;
 use crate::verdict::{OutpostVerdict, ScanContext};
 
@@ -130,24 +131,29 @@ pub trait ToolHook: Send + Sync {
 pub struct OutpostMiddleware {
     scanner: OutpostScanner,
     logger: AuditLogger,
+    config: SecurityConfig,
 }
 
 impl OutpostMiddleware {
-    /// Create a new middleware with the given scanner and audit logger.
-    pub fn new(scanner: OutpostScanner, logger: AuditLogger) -> Self {
-        Self { scanner, logger }
+    /// Create a new middleware with the given scanner, audit logger, and security config.
+    pub fn new(scanner: OutpostScanner, logger: AuditLogger, config: SecurityConfig) -> Self {
+        Self {
+            scanner,
+            logger,
+            config,
+        }
     }
 
-    /// Returns `true` if this tool's results should be scanned.
-    pub fn should_intercept(tool_name: &str) -> bool {
-        INTERCEPTED_TOOLS.contains(&tool_name)
+    /// Returns `true` if this tool's results should be scanned according to the profile.
+    pub fn should_intercept(&self, tool_name: &str) -> bool {
+        self.config.intercepted_tools.intercepts(tool_name)
     }
 }
 
 #[async_trait::async_trait]
 impl ToolHook for OutpostMiddleware {
     async fn on_tool_result(&self, result: ToolResult) -> HookOutcome {
-        if !Self::should_intercept(&result.tool_name) {
+        if !self.should_intercept(&result.tool_name) {
             return HookOutcome::PassThrough(result.content);
         }
 
@@ -156,9 +162,11 @@ impl ToolHook for OutpostMiddleware {
             .scan(&result.url, &result.content, result.context)
             .await;
 
-        self.logger
-            .log(result.context, &result.url, &verdict, false)
-            .await;
+        if self.config.audit_logging {
+            self.logger
+                .log(result.context, &result.url, &verdict, false)
+                .await;
+        }
 
         match &verdict {
             OutpostVerdict::Clean => HookOutcome::PassThrough(result.content),
@@ -176,12 +184,14 @@ impl ToolHook for OutpostMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profiles::SecurityProfile;
     use crate::scanner::ScannerConfig;
 
     fn middleware() -> OutpostMiddleware {
         OutpostMiddleware::new(
             OutpostScanner::new(ScannerConfig::default()),
             AuditLogger::new("test-claw"),
+            SecurityConfig::from_profile(SecurityProfile::Balanced),
         )
     }
 

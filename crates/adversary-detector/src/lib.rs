@@ -44,12 +44,15 @@ pub mod verdict;
 
 /// Extract the host from a URL string.
 /// Strips scheme (http://, https://), takes the hostname (before first `/` or `:`).
-/// Returns empty string if parsing fails.
+/// Returns empty string if the URL has no scheme (rejects bare strings).
 pub fn extract_host(url: &str) -> &str {
-    let rest = url
+    let rest = match url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
+    {
+        Some(r) => r,
+        None => return "", // no scheme = not a URL
+    };
     // Take up to first `:` (port) or `/` (path)
     let end = rest
         .find(':')

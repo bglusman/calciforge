@@ -23,8 +23,6 @@
 //! for **external content**. Internal API calls (e.g. posting replies back to a
 //! messaging gateway) are not "external content" and are exempt.
 
-use crate::extract_host;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -115,7 +113,6 @@ pub struct OutpostProxy {
     logger: AuditLogger,
     client: reqwest::Client,
     override_on_review: bool,
-    skip_protection_domains: Vec<String>,
 }
 
 impl OutpostProxy {
@@ -135,7 +132,6 @@ impl OutpostProxy {
                 .build()
                 .expect("proxy reqwest client"),
             override_on_review,
-            skip_protection_domains: Vec::new(),
         }
     }
 
@@ -143,16 +139,13 @@ impl OutpostProxy {
     /// at the configured path (or the default `~/.outpost/digests.json`).
     pub async fn from_config(config: ScannerConfig, logger: AuditLogger) -> Self {
         let override_on_review = config.override_on_review;
-        let skip_protection_domains = config.skip_protection_domains.clone();
         let store_path = config.digest_store_path.clone().unwrap_or_else(|| {
             let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
             home.join(".outpost/digests.json")
         });
         let store = DigestStore::open(store_path).await;
         let scanner = OutpostScanner::new(config);
-        let mut proxy = Self::new(scanner, store, logger, override_on_review);
-        proxy.skip_protection_domains = skip_protection_domains;
-        proxy
+        Self::new(scanner, store, logger, override_on_review)
     }
 
     /// Fetch `url` through the outpost proxy.
@@ -163,7 +156,28 @@ impl OutpostProxy {
     ///   persists the result.
     /// - Human-overridden URL+digest pairs bypass `Blocked`/`Review` verdicts.
     pub async fn fetch(&self, url: &str) -> OutpostFetchResult {
-        // Step 1: fetch raw content
+        // Step 1: skip_protection — bypass ALL scanning for trusted domains
+        // Check before HTTP fetch to avoid touching untrusted servers entirely.
+        if self.scanner.config().is_skip_protected(url) {
+            debug!(url, "outpost: skip_protection bypass");
+            let content = match self.http_get(url).await {
+                Ok(c) => c,
+                Err(e) => {
+                    return OutpostFetchResult::Blocked {
+                        reason: format!("HTTP fetch failed: {e}"),
+                        digest: String::new(),
+                        url: url.to_owned(),
+                    };
+                }
+            };
+            let digest = sha256_hex(&content);
+            self.logger
+                .log(ScanContext::WebFetch, url, &OutpostVerdict::Clean, false)
+                .await;
+            return OutpostFetchResult::Ok { content, digest };
+        }
+
+        // Step 2: fetch raw content
         let content = match self.http_get(url).await {
             Ok(c) => c,
             Err(e) => {
@@ -175,15 +189,6 @@ impl OutpostProxy {
             }
         };
         let digest = sha256_hex(&content);
-
-        // Step 2: skip_protection — bypass scanning for trusted domains
-        if self.is_skip_protected(url) {
-            debug!(url, "outpost: skip_protection bypass");
-            self.logger
-                .log(ScanContext::WebFetch, url, &OutpostVerdict::Clean, false)
-                .await;
-            return OutpostFetchResult::Ok { content, digest };
-        }
 
         {
             let store = self.store.lock().await;
@@ -245,24 +250,6 @@ impl OutpostProxy {
     }
 
     // ── private ──────────────────────────────────────────────────────────────
-
-    /// Check if a URL's domain is in the skip_protection list.
-    fn is_skip_protected(&self, url: &str) -> bool {
-        if self.skip_protection_domains.is_empty() {
-            return false;
-        }
-        let host = extract_host(url);
-        if host.is_empty() {
-            return false;
-        }
-        self.skip_protection_domains.iter().any(|pattern| {
-            if let Some(suffix) = pattern.strip_prefix("*.") {
-                host == suffix || host.ends_with(&format!(".{suffix}"))
-            } else {
-                host == pattern
-            }
-        })
-    }
 
     async fn http_get(&self, url: &str) -> Result<String, reqwest::Error> {
         let resp = self.client.get(url).send().await?;
