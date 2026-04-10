@@ -330,7 +330,10 @@ mod tests {
             .scan("https://security-blog.com", content, ScanContext::WebFetch)
             .await;
         // Should be Review (not Unsafe) due to discussion context
-        matches!(v, OutpostVerdict::Review { .. });
+        assert!(
+            matches!(v, OutpostVerdict::Review { .. }),
+            "discussion context should downgrade Unsafe to Review"
+        );
     }
 
     #[tokio::test]
@@ -341,7 +344,10 @@ mod tests {
         let v = s
             .scan("https://example.com", &content, ScanContext::WebFetch)
             .await;
-        matches!(v, OutpostVerdict::Review { .. });
+        assert!(
+            matches!(v, OutpostVerdict::Review { .. }),
+            "base64 blob should trigger Review"
+        );
     }
 
     #[tokio::test]
@@ -496,45 +502,47 @@ mod tests {
             OutpostVerdict::Clean
         ));
     }
-}
 
-#[test]
-fn test_extract_host() {
-    assert_eq!(extract_host("https://example.com/path"), "example.com");
-    assert_eq!(extract_host("http://example.com:8080/path"), "example.com");
-    assert_eq!(extract_host("https://sub.example.com"), "sub.example.com");
-    assert_eq!(extract_host("https://localhost:3000"), "localhost");
-    // URLs without scheme are rejected (prevents bare string matching)
-    assert_eq!(extract_host("example.com/path"), "");
-    assert_eq!(extract_host("not-a-url"), "");
-    assert_eq!(extract_host("random-text-not-a-url"), "");
-}
+    #[test]
+    fn test_extract_host() {
+        assert_eq!(extract_host("https://example.com/path"), "example.com");
+        assert_eq!(extract_host("http://example.com:8080/path"), "example.com");
+        assert_eq!(extract_host("https://sub.example.com"), "sub.example.com");
+        assert_eq!(extract_host("https://localhost:3000"), "localhost");
+        // Query params without path
+        assert_eq!(extract_host("https://example.com?x=1"), "example.com");
+        // URLs without scheme are rejected (prevents bare string matching)
+        assert_eq!(extract_host("example.com/path"), "");
+        assert_eq!(extract_host("not-a-url"), "");
+        assert_eq!(extract_host("random-text-not-a-url"), "");
+    }
 
-#[test]
-fn test_skip_protection_exact_match() {
-    let config = ScannerConfig {
-        skip_protection_domains: vec!["trusted.example.com".into()],
-        ..Default::default()
-    };
-    assert!(config.is_skip_protected("https://trusted.example.com/path"));
-    assert!(!config.is_skip_protected("https://untrusted.example.com/path"));
-    assert!(!config.is_skip_protected("https://example.com/path"));
-}
+    #[test]
+    fn test_skip_protection_exact_match() {
+        let config = ScannerConfig {
+            skip_protection_domains: vec!["trusted.example.com".into()],
+            ..Default::default()
+        };
+        assert!(config.is_skip_protected("https://trusted.example.com/path"));
+        assert!(!config.is_skip_protected("https://untrusted.example.com/path"));
+        assert!(!config.is_skip_protected("https://example.com/path"));
+    }
 
-#[test]
-fn test_skip_protection_wildcard() {
-    let config = ScannerConfig {
-        skip_protection_domains: vec!["*.example.com".into()],
-        ..Default::default()
-    };
-    assert!(config.is_skip_protected("https://example.com/path"));
-    assert!(config.is_skip_protected("https://sub.example.com/path"));
-    assert!(config.is_skip_protected("https://deep.sub.example.com/path"));
-    assert!(!config.is_skip_protected("https://example.org/path"));
-}
+    #[test]
+    fn test_skip_protection_wildcard() {
+        let config = ScannerConfig {
+            skip_protection_domains: vec!["*.example.com".into()],
+            ..Default::default()
+        };
+        assert!(config.is_skip_protected("https://example.com/path"));
+        assert!(config.is_skip_protected("https://sub.example.com/path"));
+        assert!(config.is_skip_protected("https://deep.sub.example.com/path"));
+        assert!(!config.is_skip_protected("https://example.org/path"));
+    }
 
-#[test]
-fn test_skip_protection_empty_list() {
-    let config = ScannerConfig::default();
-    assert!(!config.is_skip_protected("https://anything.com"));
+    #[test]
+    fn test_skip_protection_empty_list() {
+        let config = ScannerConfig::default();
+        assert!(!config.is_skip_protected("https://anything.com"));
+    }
 }

@@ -43,7 +43,7 @@ pub mod scanner;
 pub mod verdict;
 
 /// Extract the host from a URL string.
-/// Strips scheme (http://, https://), takes the hostname (before first `/` or `:`).
+/// Strips scheme (http://, https://), takes the hostname (before first `/`, `:`, or `?`).
 /// Returns empty string if the URL has no scheme (rejects bare strings).
 pub fn extract_host(url: &str) -> &str {
     let rest = match url
@@ -53,10 +53,11 @@ pub fn extract_host(url: &str) -> &str {
         Some(r) => r,
         None => return "", // no scheme = not a URL
     };
-    // Take up to first `:` (port) or `/` (path)
+    // Take up to first `:` (port), `/` (path), or `?` (query)
     let end = rest
         .find(':')
         .or_else(|| rest.find('/'))
+        .or_else(|| rest.find('?'))
         .unwrap_or(rest.len());
     &rest[..end]
 }

@@ -112,13 +112,16 @@ impl OutpostFetchResult {
 ///     let result = proxy.fetch("https://example.com").await;
 /// }
 /// ```
+/// Maximum number of tracked sources before LRU eviction kicks in.
+const RATE_LIMITER_MAX_SOURCES: usize = 10000;
+
 /// Token bucket rate limiter for per-source request limiting.
 #[derive(Debug)]
 struct RateLimiter {
     /// Configured rate limits
     config: RateLimitConfig,
-    /// Per-source state: (tokens available, last refill time)
-    buckets: HashMap<String, (u32, Instant)>,
+    /// Per-source state: (tokens available, last refill time, last access time for LRU)
+    buckets: HashMap<String, (u32, Instant, Instant)>,
 }
 
 impl RateLimiter {
@@ -129,13 +132,31 @@ impl RateLimiter {
         }
     }
 
+    /// Evict oldest entries if we're over the limit (simple LRU).
+    fn evict_if_needed(&mut self, _now: Instant) {
+        if self.buckets.len() <= RATE_LIMITER_MAX_SOURCES {
+            return;
+        }
+        // Find and remove 20% oldest by last access time
+        let to_remove = self.buckets.len() / 5;
+        let mut entries: Vec<_> = self.buckets.iter().map(|(k, v)| (k.clone(), v.2)).collect();
+        entries.sort_by(|a, b| a.1.cmp(&b.1));
+        for (key, _) in entries.into_iter().take(to_remove) {
+            self.buckets.remove(&key);
+        }
+    }
+
     /// Check if a request from `source` is allowed. Returns `true` if within rate limit.
     fn check(&mut self, source: &str) -> bool {
         let now = Instant::now();
+        self.evict_if_needed(now);
+
         let bucket = self.buckets.entry(source.to_owned()).or_insert_with(|| {
             // New source: start with full burst allowance
-            (self.config.burst_size, now)
+            (self.config.burst_size, now, now)
         });
+        // Update last access time
+        bucket.2 = now;
 
         // Calculate tokens to add based on time elapsed
         let elapsed = now.duration_since(bucket.1);
