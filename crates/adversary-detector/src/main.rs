@@ -1,4 +1,4 @@
-use adversary_detector::{OutpostScanner, ScannerConfig, ScanContext, OutpostVerdict};
+use adversary_detector::{OutpostScanner, OutpostVerdict, ScanContext, ScannerConfig};
 use axum::{
     extract::Json,
     response::IntoResponse,
