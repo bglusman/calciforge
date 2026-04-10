@@ -93,9 +93,7 @@ impl ScanContext {
             ScanContext::Email => "email_fetch",
             ScanContext::Exec => "exec",
             ScanContext::Api => "api",
-            ScanContext::Outbound => "outbound",
             ScanContext::UserMessage => "user_message",
-            ScanContext::AgentResponse => "agent_response",
         }
     }
 }
