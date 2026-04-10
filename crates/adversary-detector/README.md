@@ -59,6 +59,33 @@ Layer 1 and 2 run locally. Layer 3 is optional and non-blocking — if the servi
 
 Content that is *about* prompt injection (security research, blog posts, CVE analysis) is downgraded from `Unsafe` → `Review`. The heuristic uses a configurable ratio of `discussion_signals / injection_signals`.
 
+
+
+### Skip Protection (Trusted Domains)
+
+Domains listed in `skip_protection_domains` bypass scanning entirely — content is fetched and returned as-is with a `Clean` verdict. Use for:
+
+- **Trusted internal domains** — your own APIs, dashboards, documentation sites
+- **Controlled testing** — deterministic behavior for CI/CD pipelines
+- **Known-safe CDNs** — static asset hosts you trust completely
+
+```rust
+let config = ScannerConfig {
+    skip_protection_domains: vec![
+        "api.internal.example.com".into(),   // exact match
+        "*.trusted-cdn.com".into(),            // wildcard: all subdomains
+    ],
+    ..Default::default()
+};
+```
+
+| Pattern | Matches | Does not match |
+|---------|---------|----------------|
+| `example.com` | `https://example.com/path` | `https://sub.example.com/path` |
+| `*.example.com` | `https://example.com/path`, `https://sub.example.com/path` | `https://example.org/path` |
+
+**Note:** skip_protection bypasses ALL layers of scanning. Only use for domains you fully control or explicitly trust. For domains where you want content cached after a clean scan (but still rescanned if content changes), use digest caching instead.
+
 ## Security Profiles
 
 Four named presets for installation:

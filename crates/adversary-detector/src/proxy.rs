@@ -23,6 +23,8 @@
 //! for **external content**. Internal API calls (e.g. posting replies back to a
 //! messaging gateway) are not "external content" and are exempt.
 
+use crate::extract_host;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -113,6 +115,7 @@ pub struct OutpostProxy {
     logger: AuditLogger,
     client: reqwest::Client,
     override_on_review: bool,
+    skip_protection_domains: Vec<String>,
 }
 
 impl OutpostProxy {
@@ -132,6 +135,7 @@ impl OutpostProxy {
                 .build()
                 .expect("proxy reqwest client"),
             override_on_review,
+            skip_protection_domains: Vec::new(),
         }
     }
 
@@ -139,13 +143,16 @@ impl OutpostProxy {
     /// at the configured path (or the default `~/.outpost/digests.json`).
     pub async fn from_config(config: ScannerConfig, logger: AuditLogger) -> Self {
         let override_on_review = config.override_on_review;
+        let skip_protection_domains = config.skip_protection_domains.clone();
         let store_path = config.digest_store_path.clone().unwrap_or_else(|| {
             let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
             home.join(".outpost/digests.json")
         });
         let store = DigestStore::open(store_path).await;
         let scanner = OutpostScanner::new(config);
-        Self::new(scanner, store, logger, override_on_review)
+        let mut proxy = Self::new(scanner, store, logger, override_on_review);
+        proxy.skip_protection_domains = skip_protection_domains;
+        proxy
     }
 
     /// Fetch `url` through the outpost proxy.
@@ -167,10 +174,21 @@ impl OutpostProxy {
                 };
             }
         };
-
         let digest = sha256_hex(&content);
 
-        // Step 2: check digest cache
+        // Step 2: skip_protection — bypass scanning for trusted domains
+        if self.is_skip_protected(url) {
+            debug!(url, "outpost: skip_protection bypass");
+            self.logger
+                .log(ScanContext::WebFetch, url, &OutpostVerdict::Clean, false)
+                .await;
+            return OutpostFetchResult::Ok {
+                content,
+                digest,
+            };
+        }
+
+
         {
             let store = self.store.lock().await;
             if let Some(entry) = store.get(url) {
@@ -231,6 +249,25 @@ impl OutpostProxy {
     }
 
     // ── private ──────────────────────────────────────────────────────────────
+
+
+    /// Check if a URL's domain is in the skip_protection list.
+    fn is_skip_protected(&self, url: &str) -> bool {
+        if self.skip_protection_domains.is_empty() {
+            return false;
+        }
+        let host = extract_host(url);
+        if host.is_empty() {
+            return false;
+        }
+        self.skip_protection_domains.iter().any(|pattern| {
+            if let Some(suffix) = pattern.strip_prefix("*.") {
+                host == suffix || host.ends_with(&format!(".{suffix}"))
+            } else {
+                host == pattern
+            }
+        })
+    }
 
     async fn http_get(&self, url: &str) -> Result<String, reqwest::Error> {
         let resp = self.client.get(url).send().await?;

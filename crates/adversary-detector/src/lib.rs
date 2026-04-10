@@ -42,6 +42,22 @@ pub mod proxy;
 pub mod scanner;
 pub mod verdict;
 
+/// Extract the host from a URL string.
+/// Strips scheme (http://, https://), takes the hostname (before first `/` or `:`).
+/// Returns empty string if parsing fails.
+pub fn extract_host(url: &str) -> &str {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    // Take up to first `:` (port) or `/` (path)
+    let end = rest
+        .find(':')
+        .or_else(|| rest.find('/'))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 pub use audit::AuditLogger;
 pub use digest::{sha256_hex, ContentDigest, DigestStore};
 pub use middleware::{HookOutcome, InterceptedToolSet, OutpostMiddleware, ToolHook, ToolResult};
