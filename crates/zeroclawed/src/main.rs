@@ -24,7 +24,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use adversary_detector::audit::AuditLogger;
 use adversary_detector::middleware::ChannelScanner;
-use adversary_detector::profiles::SecurityConfig;
+use adversary_detector::profiles::{SecurityConfig, SecurityProfile};
 use adversary_detector::scanner::AdversaryScanner;
 
 use crate::{commands::CommandHandler, config::load_config, context::ContextStore, router::Router};
@@ -66,8 +66,12 @@ async fn main() -> Result<()> {
 
     let context_store = ContextStore::new(config.context.buffer_size, config.context.inject_depth);
 
-    // Initialize adversary detector middleware
-    let security_config = SecurityConfig::balanced();
+    // Initialize adversary detector middleware from config
+    let security_profile: SecurityProfile = config.security.profile.parse().unwrap_or_else(|_| {
+        tracing::warn!(profile = %config.security.profile, "invalid security profile, using balanced");
+        SecurityProfile::Balanced
+    });
+    let security_config = SecurityConfig::from_profile(security_profile);
     let scanner = AdversaryScanner::new(security_config.scanner.clone());
     let audit_logger = AuditLogger::new("zeroclawed");
     let channel_scanner = Arc::new(ChannelScanner::new(
@@ -76,7 +80,7 @@ async fn main() -> Result<()> {
         security_config.clone(),
     ));
     info!(
-        profile = "balanced",
+        profile = %security_profile,
         intercepted_tools = ?security_config.intercepted_tools,
         scan_outbound = security_config.scan_outbound,
         "adversary-detector middleware active"

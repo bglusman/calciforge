@@ -81,6 +81,11 @@ model = "anthropic/claude-sonnet-4.6"
 alias = "fast"
 model = "gemini/gemini-2.5-flash"
 
+# ── Security / Adversary Detection ─────────────────────────────────
+[security]
+profile = "balanced"  # open | balanced | hardened | paranoid
+scan_outbound = false
+
 # ── Channels ────────────────────────────────────────────────────
 # WhatsApp channel (requires NZC/OpenClaw gateway with WA session)
 [[channels]]

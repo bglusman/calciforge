@@ -45,6 +45,10 @@ pub struct PolyConfig {
     /// Example: `!model sonnet` expands to `anthropic/claude-sonnet-4.6`
     #[serde(default)]
     pub model_shortcuts: Vec<ModelShortcutConfig>,
+
+    /// `[security]` — adversary detector profile and settings.
+    #[serde(default)]
+    pub security: SecuritySectionConfig,
 }
 
 /// A model shortcut entry (`[[model_shortcuts]]`).
@@ -233,6 +237,34 @@ pub struct MemoryConfig {
     pub post_write_hook: Option<String>,
     pub store: Option<String>,
     pub store_path: Option<String>,
+}
+
+/// `[security]` section — adversary detector settings.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SecuritySectionConfig {
+    /// Security profile: open, balanced, hardened, paranoid
+    #[serde(default = "default_security_profile")]
+    pub profile: String,
+    /// Enable outbound message scanning
+    #[serde(default = "default_scan_outbound")]
+    pub scan_outbound: bool,
+}
+
+fn default_security_profile() -> String {
+    "balanced".to_string()
+}
+
+fn default_scan_outbound() -> bool {
+    false
+}
+
+impl Default for SecuritySectionConfig {
+    fn default() -> Self {
+        Self {
+            profile: default_security_profile(),
+            scan_outbound: default_scan_outbound(),
+        }
+    }
 }
 
 /// `[context]` section — conversation context ring buffer settings.
