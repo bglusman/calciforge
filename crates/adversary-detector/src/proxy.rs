@@ -182,12 +182,8 @@ impl OutpostProxy {
             self.logger
                 .log(ScanContext::WebFetch, url, &OutpostVerdict::Clean, false)
                 .await;
-            return OutpostFetchResult::Ok {
-                content,
-                digest,
-            };
+            return OutpostFetchResult::Ok { content, digest };
         }
-
 
         {
             let store = self.store.lock().await;
@@ -249,7 +245,6 @@ impl OutpostProxy {
     }
 
     // ── private ──────────────────────────────────────────────────────────────
-
 
     /// Check if a URL's domain is in the skip_protection list.
     fn is_skip_protected(&self, url: &str) -> bool {

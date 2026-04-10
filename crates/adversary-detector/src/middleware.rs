@@ -42,11 +42,7 @@ impl InterceptedToolSet {
     /// Web fetch + search (balanced profile).
     pub fn web_and_search() -> Self {
         Self {
-            tools: vec![
-                "web_fetch".into(),
-                "safe_fetch".into(),
-                "web_search".into(),
-            ],
+            tools: vec!["web_fetch".into(), "safe_fetch".into(), "web_search".into()],
         }
     }
 

@@ -488,41 +488,41 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_extract_host() {
-        assert_eq!(extract_host("https://example.com/path"), "example.com");
-        assert_eq!(extract_host("http://example.com:8080/path"), "example.com");
-        assert_eq!(extract_host("https://sub.example.com"), "sub.example.com");
-        assert_eq!(extract_host("example.com/path"), "example.com");
-        assert_eq!(extract_host("https://localhost:3000"), "localhost");
-        assert_eq!(extract_host("not-a-url"), "not-a-url");
-    }
+#[test]
+fn test_extract_host() {
+    assert_eq!(extract_host("https://example.com/path"), "example.com");
+    assert_eq!(extract_host("http://example.com:8080/path"), "example.com");
+    assert_eq!(extract_host("https://sub.example.com"), "sub.example.com");
+    assert_eq!(extract_host("example.com/path"), "example.com");
+    assert_eq!(extract_host("https://localhost:3000"), "localhost");
+    assert_eq!(extract_host("not-a-url"), "not-a-url");
+}
 
-    #[test]
-    fn test_skip_protection_exact_match() {
-        let config = ScannerConfig {
-            skip_protection_domains: vec!["trusted.example.com".into()],
-            ..Default::default()
-        };
-        assert!(config.is_skip_protected("https://trusted.example.com/path"));
-        assert!(!config.is_skip_protected("https://untrusted.example.com/path"));
-        assert!(!config.is_skip_protected("https://example.com/path"));
-    }
+#[test]
+fn test_skip_protection_exact_match() {
+    let config = ScannerConfig {
+        skip_protection_domains: vec!["trusted.example.com".into()],
+        ..Default::default()
+    };
+    assert!(config.is_skip_protected("https://trusted.example.com/path"));
+    assert!(!config.is_skip_protected("https://untrusted.example.com/path"));
+    assert!(!config.is_skip_protected("https://example.com/path"));
+}
 
-    #[test]
-    fn test_skip_protection_wildcard() {
-        let config = ScannerConfig {
-            skip_protection_domains: vec!["*.example.com".into()],
-            ..Default::default()
-        };
-        assert!(config.is_skip_protected("https://example.com/path"));
-        assert!(config.is_skip_protected("https://sub.example.com/path"));
-        assert!(config.is_skip_protected("https://deep.sub.example.com/path"));
-        assert!(!config.is_skip_protected("https://example.org/path"));
-    }
+#[test]
+fn test_skip_protection_wildcard() {
+    let config = ScannerConfig {
+        skip_protection_domains: vec!["*.example.com".into()],
+        ..Default::default()
+    };
+    assert!(config.is_skip_protected("https://example.com/path"));
+    assert!(config.is_skip_protected("https://sub.example.com/path"));
+    assert!(config.is_skip_protected("https://deep.sub.example.com/path"));
+    assert!(!config.is_skip_protected("https://example.org/path"));
+}
 
-    #[test]
-    fn test_skip_protection_empty_list() {
-        let config = ScannerConfig::default();
-        assert!(!config.is_skip_protected("https://anything.com"));
-    }
+#[test]
+fn test_skip_protection_empty_list() {
+    let config = ScannerConfig::default();
+    assert!(!config.is_skip_protected("https://anything.com"));
+}

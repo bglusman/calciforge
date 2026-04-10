@@ -18,7 +18,7 @@ use crate::middleware::InterceptedToolSet;
 use crate::scanner::ScannerConfig;
 
 /// The named security profile level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecurityProfile {
     /// Minimal scanning, permissive. Best for development or trusted environments.
@@ -36,6 +36,7 @@ pub enum SecurityProfile {
     /// - Review verdicts require explicit approval
     /// - Moderate rate limits (60 req/min)
     /// - Standard logging
+    #[default]
     Balanced,
     /// Stricter scanning for security-conscious environments.
     ///
@@ -54,12 +55,6 @@ pub enum SecurityProfile {
     /// - Full trace logging
     /// - Digest cache disabled (every fetch is rescanned)
     Paranoid,
-}
-
-impl Default for SecurityProfile {
-    fn default() -> Self {
-        Self::Balanced
-    }
 }
 
 impl std::str::FromStr for SecurityProfile {
@@ -141,23 +136,18 @@ impl RateLimitConfig {
 }
 
 /// Logging verbosity for the security pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogVerbosity {
     /// Only log verdicts (clean/review/unsafe) without content details.
     Minimal,
     /// Log verdicts with URL and brief reason.
+    #[default]
     Standard,
     /// Log verdicts with URL, reason, content snippet, and layer that triggered.
     Verbose,
     /// Full trace: every scan, every pattern match, every cache hit/miss.
     Trace,
-}
-
-impl Default for LogVerbosity {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 /// Complete security configuration derived from a named profile.
@@ -313,24 +303,49 @@ mod tests {
 
     #[test]
     fn test_profile_from_str() {
-        assert_eq!("open".parse::<SecurityProfile>().unwrap(), SecurityProfile::Open);
-        assert_eq!("balanced".parse::<SecurityProfile>().unwrap(), SecurityProfile::Balanced);
-        assert_eq!("hardened".parse::<SecurityProfile>().unwrap(), SecurityProfile::Hardened);
-        assert_eq!("paranoid".parse::<SecurityProfile>().unwrap(), SecurityProfile::Paranoid);
-        assert_eq!("strict".parse::<SecurityProfile>().unwrap(), SecurityProfile::Hardened);
-        assert_eq!("relaxed".parse::<SecurityProfile>().unwrap(), SecurityProfile::Open);
+        assert_eq!(
+            "open".parse::<SecurityProfile>().unwrap(),
+            SecurityProfile::Open
+        );
+        assert_eq!(
+            "balanced".parse::<SecurityProfile>().unwrap(),
+            SecurityProfile::Balanced
+        );
+        assert_eq!(
+            "hardened".parse::<SecurityProfile>().unwrap(),
+            SecurityProfile::Hardened
+        );
+        assert_eq!(
+            "paranoid".parse::<SecurityProfile>().unwrap(),
+            SecurityProfile::Paranoid
+        );
+        assert_eq!(
+            "strict".parse::<SecurityProfile>().unwrap(),
+            SecurityProfile::Hardened
+        );
+        assert_eq!(
+            "relaxed".parse::<SecurityProfile>().unwrap(),
+            SecurityProfile::Open
+        );
     }
 
     #[test]
     fn test_profile_from_str_invalid() {
         let result = "yolo".parse::<SecurityProfile>();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("open, balanced, hardened, paranoid"));
+        assert!(result
+            .unwrap_err()
+            .contains("open, balanced, hardened, paranoid"));
     }
 
     #[test]
     fn test_all_profiles_build() {
-        for p in [SecurityProfile::Open, SecurityProfile::Balanced, SecurityProfile::Hardened, SecurityProfile::Paranoid] {
+        for p in [
+            SecurityProfile::Open,
+            SecurityProfile::Balanced,
+            SecurityProfile::Hardened,
+            SecurityProfile::Paranoid,
+        ] {
             let config = SecurityConfig::from_profile(p);
             assert_eq!(config.profile, p);
             assert!(!config.description().is_empty());
@@ -364,13 +379,29 @@ mod tests {
         let paranoid = SecurityConfig::paranoid();
 
         // Discussion ratio: higher = more permissive
-        assert!(open.scanner.discussion_ratio_threshold > balanced.scanner.discussion_ratio_threshold);
-        assert!(balanced.scanner.discussion_ratio_threshold > hardened.scanner.discussion_ratio_threshold);
-        assert!(hardened.scanner.discussion_ratio_threshold > paranoid.scanner.discussion_ratio_threshold);
+        assert!(
+            open.scanner.discussion_ratio_threshold > balanced.scanner.discussion_ratio_threshold
+        );
+        assert!(
+            balanced.scanner.discussion_ratio_threshold
+                > hardened.scanner.discussion_ratio_threshold
+        );
+        assert!(
+            hardened.scanner.discussion_ratio_threshold
+                > paranoid.scanner.discussion_ratio_threshold
+        );
 
         // Rate limits: higher = more permissive
-        assert!(open.rate_limit.max_requests_per_minute > balanced.rate_limit.max_requests_per_minute);
-        assert!(balanced.rate_limit.max_requests_per_minute > hardened.rate_limit.max_requests_per_minute);
-        assert!(hardened.rate_limit.max_requests_per_minute > paranoid.rate_limit.max_requests_per_minute);
+        assert!(
+            open.rate_limit.max_requests_per_minute > balanced.rate_limit.max_requests_per_minute
+        );
+        assert!(
+            balanced.rate_limit.max_requests_per_minute
+                > hardened.rate_limit.max_requests_per_minute
+        );
+        assert!(
+            hardened.rate_limit.max_requests_per_minute
+                > paranoid.rate_limit.max_requests_per_minute
+        );
     }
 }
