@@ -67,8 +67,10 @@ async fn main() -> Result<()> {
     let context_store = ContextStore::new(config.context.buffer_size, config.context.inject_depth);
 
     // Initialize adversary detector middleware from config
-    let security_profile: SecurityProfile = config.security.profile.parse().unwrap_or_else(|_| {
-        tracing::warn!(profile = %config.security.profile, "invalid security profile, using balanced");
+    let security_cfg = config.security.as_ref();
+    let profile_str = security_cfg.map(|s| s.profile.as_str()).unwrap_or("balanced");
+    let security_profile: SecurityProfile = profile_str.parse().unwrap_or_else(|_| {
+        tracing::warn!(profile = %profile_str, "invalid security profile, using balanced");
         SecurityProfile::Balanced
     });
     let security_config = SecurityConfig::from_profile(security_profile);

@@ -47,8 +47,9 @@ pub struct PolyConfig {
     pub model_shortcuts: Vec<ModelShortcutConfig>,
 
     /// `[security]` — adversary detector profile and settings.
+    /// Defaults to balanced if not specified in config.
     #[serde(default)]
-    pub security: SecuritySectionConfig,
+    pub security: Option<SecuritySectionConfig>,
 }
 
 /// A model shortcut entry (`[[model_shortcuts]]`).

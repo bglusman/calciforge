@@ -1001,6 +1001,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            security: None,
         })
     }
 

@@ -20,6 +20,7 @@
 //! LOOM_CHECKPOINT_FILE=loom.json RUSTFLAGS="--cfg loom" cargo test --test loom
 //! ```
 
+#![allow(unexpected_cfgs)]
 #![cfg(loom)]
 
 use loom::sync::{Arc, Mutex, RwLock};
