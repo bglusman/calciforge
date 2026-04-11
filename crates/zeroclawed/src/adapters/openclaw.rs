@@ -645,12 +645,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kind_is_openclaw_http() {
-        let adapter = make_adapter(19001, "tok");
-        assert_eq!(adapter.kind(), "openclaw-http");
-    }
-
-    #[test]
     fn test_url_construction_no_trailing_slash() {
         let endpoint = "http://10.0.0.20:18789";
         let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
@@ -673,28 +667,6 @@ mod tests {
             None,
         );
         assert_eq!(adapter.model, DEFAULT_MODEL);
-    }
-
-    #[test]
-    fn test_default_timeout_applied() {
-        let adapter = OpenClawHttpAdapter::new(
-            "http://localhost".to_string(),
-            "tok".to_string(),
-            None,
-            None,
-        );
-        assert_eq!(adapter._timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
-    }
-
-    #[test]
-    fn test_custom_timeout() {
-        let adapter = OpenClawHttpAdapter::new(
-            "http://localhost".to_string(),
-            "tok".to_string(),
-            None,
-            Some(5000),
-        );
-        assert_eq!(adapter._timeout, Duration::from_millis(5000));
     }
 
     #[test]

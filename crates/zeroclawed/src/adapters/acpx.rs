@@ -276,3 +276,101 @@ impl AgentAdapter for AcpxAdapter {
         "acpx"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kind_is_acpx() {
+        let adapter = AcpxAdapter::new("claude".to_string(), None, None, None);
+        assert_eq!(adapter.kind(), "acpx");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_removes_client_lines() {
+        let raw = "[client] setup complete\nhello world";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "hello world");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_removes_thinking() {
+        let raw = "[thinking] Analyzing request...\nHere is the answer.";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "Here is the answer.");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_removes_tool() {
+        let raw = "[tool] calling read_file\n[tool] result OK\nDone.";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "Done.");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_removes_done_marker() {
+        let raw = "I wrote the code.\n[done]";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "I wrote the code.");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_removes_error_marker() {
+        let raw = "something went wrong\n[error]";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "something went wrong");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_strips_empty_lines() {
+        let raw = "line one\n\n\nline two\n";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "line one\nline two");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_preserves_all_content() {
+        let raw = "response line 1\nresponse line 2";
+        assert_eq!(
+            AcpxAdapter::strip_acpx_noise(raw),
+            "response line 1\nresponse line 2"
+        );
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_mixed() {
+        let raw = "[client] ready\n[thinking] pondering\nanswer\n[tool] read\n[done]";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "answer");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_empty_input() {
+        assert_eq!(AcpxAdapter::strip_acpx_noise(""), "");
+    }
+
+    #[test]
+    fn test_strip_acpx_noise_all_protocol_lines() {
+        let raw = "[client] x\n[tool] y\n[thinking] z\n[done]";
+        assert_eq!(AcpxAdapter::strip_acpx_noise(raw), "");
+    }
+
+    #[test]
+    fn test_new_defaults() {
+        let adapter = AcpxAdapter::new("claude".to_string(), None, None, None);
+        assert_eq!(adapter.agent_name, "claude");
+        assert_eq!(adapter.timeout_ms, 300_000);
+        assert!(adapter._args.is_empty());
+        assert!(adapter.env.is_empty());
+    }
+
+    #[test]
+    fn test_new_with_args_and_env() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-test".to_string());
+        let adapter = AcpxAdapter::new(
+            "claude".to_string(),
+            Some(vec!["--model".to_string(), "sonnet".to_string()]),
+            Some(env.clone()),
+            Some(60_000),
+        );
+        assert_eq!(adapter.agent_name, "claude");
+        assert_eq!(adapter.timeout_ms, 60_000);
+        assert_eq!(adapter._args, vec!["--model", "sonnet"]);
+        assert_eq!(adapter.env, env);
+    }
+}

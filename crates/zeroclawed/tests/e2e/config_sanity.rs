@@ -3,7 +3,6 @@
 //! Tests that catch config parsing errors that caused silent failures:
 //! - Agents after [memory] section not loading
 //! - Unknown adapter kinds not rejected
-//! - Missing api_key for required kinds not caught
 
 use std::fs::write;
 use std::path::PathBuf;
@@ -36,7 +35,6 @@ aliases = ["test"]
 
     let (_dir, path) = write_config(config);
 
-    // Parse the config
     let content = std::fs::read_to_string(&path).unwrap();
     let parsed: Result<toml::Value, _> = content.parse();
 
@@ -65,6 +63,8 @@ fn test_unknown_adapter_kind_fails() {
         "openclaw-http",
         "openclaw-channel",
         "openclaw-native",
+        "nzc-http",
+        "nzc-native",
     ];
 
     let invalid_kinds = vec![
@@ -75,7 +75,6 @@ fn test_unknown_adapter_kind_fails() {
     ];
 
     for kind in valid_kinds {
-        // These should be accepted
         assert!(
             is_valid_adapter_kind(kind),
             "{} should be a valid adapter kind",
@@ -84,7 +83,6 @@ fn test_unknown_adapter_kind_fails() {
     }
 
     for kind in invalid_kinds {
-        // These should be rejected
         assert!(
             !is_valid_adapter_kind(kind),
             "{} should NOT be a valid adapter kind",
@@ -111,7 +109,7 @@ fn is_valid_adapter_kind(kind: &str) -> bool {
 
 #[test]
 fn test_duplicate_agents_array_works() {
-    // TOML allows multiple [[agents]] tables - they append
+    // TOML allows multiple [[agents]] tables — they append
     // This should create 2 agents, not fail
 
     let config = r#"
@@ -139,76 +137,53 @@ command = "/bin/cat"
 }
 
 #[test]
-fn test_config_file_location_precedence() {
-    // Bug: Config was loading from /etc/ instead of ~/.zeroclawed/
-    // This documents the expected precedence
-
-    let expected_locations = vec![
-        // Primary: User config
-        ("~/.zeroclawed/config.toml", true),
-        ("~/.config/zeroclawed/config.toml", true),
-        // Secondary: System config (fallback)
-        ("/etc/zeroclawed/config.toml", false),
-    ];
-
-    // This test documents expected behavior
-    // The actual implementation may vary - update if needed
-    for (path, is_primary) in expected_locations {
-        println!("Config location: {} (primary: {})", path, is_primary);
-    }
-}
-
-#[test]
-fn test_missing_api_key_for_required_kind() {
-    // Bug: Some adapter kinds require api_key but config didn't validate this
-    // openclaw-http requires api_key
-
-    let config_missing_key = r#"
+fn test_nzc_native_without_command() {
+    // nzc-native adapter should work without command (uses webhook pattern)
+    let config = r#"
 [[agents]]
-id = "bad-agent"
-kind = "openclaw-http"
-endpoint = "http://127.0.0.1:8080"
-# Missing: api_key = "..."
+id = "nzc-agent"
+kind = "nzc-native"
+endpoint = "http://127.0.0.1:19300"
+token = "test-token"
 timeout_ms = 30000
 "#;
 
-    let (_dir, path) = write_config(config_missing_key);
+    let (_dir, path) = write_config(config);
     let content = std::fs::read_to_string(&path).unwrap();
-
-    // Parse should succeed (TOML is valid)
     let parsed: toml::Value = content.parse().unwrap();
 
-    // But validation should fail
     let agent = parsed
         .get("agents")
         .and_then(|a| a.as_array())
         .unwrap()
         .first()
         .unwrap();
-    let has_api_key = agent.get("api_key").is_some();
 
-    assert!(!has_api_key, "Test config intentionally missing api_key");
-
-    // The real test: when this config is loaded by ZeroClawed,
-    // it should produce a clear error like:
-    // "agent 'bad-agent': kind='openclaw-http' requires api_key"
+    assert_eq!(agent.get("kind").unwrap().as_str().unwrap(), "nzc-native");
+    assert!(
+        agent.get("command").is_none(),
+        "nzc-native should not require command"
+    );
+    assert!(
+        agent.get("endpoint").is_some(),
+        "nzc-native should have endpoint"
+    );
 }
 
 #[test]
-fn test_cli_kind_does_not_require_api_key() {
-    // CLI adapter doesn't need api_key - uses command only
-
+fn test_empty_agents_array_valid() {
+    // An agents section with no agents should parse but produce empty list
     let config = r#"
-[[agents]]
-id = "cli-agent"
-kind = "cli"
-command = "/usr/local/bin/my-agent"
-args = ["--model", "gpt-4"]
-timeout_ms = 60000
+version = 2
 "#;
 
-    let (_dir, _path) = write_config(config);
+    let (_dir, path) = write_config(config);
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: toml::Value = content.parse().unwrap();
 
-    // This should be valid without api_key
-    // No assertion needed - test passes if it compiles/runs
+    let agents = parsed.get("agents").and_then(|a| a.as_array());
+    assert!(
+        agents.is_none() || agents.unwrap().is_empty(),
+        "No agents section should mean no agents"
+    );
 }

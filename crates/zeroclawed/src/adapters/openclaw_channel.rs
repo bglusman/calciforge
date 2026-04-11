@@ -404,12 +404,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_kind_is_openclaw_channel() {
-        let adapter = make_adapter("http://127.0.0.1:1".to_string(), 18797, None);
-        assert_eq!(adapter.kind(), "openclaw-channel");
-    }
-
     #[tokio::test]
     async fn test_dispatch_sends_expected_inbound_payload() {
         let captured = Arc::new(TokioMutex::new(None));

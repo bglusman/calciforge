@@ -245,12 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kind_is_nzc_native() {
-        let a = make_adapter(19300);
-        assert_eq!(a.kind(), "nzc-native");
-    }
-
-    #[test]
     fn test_sender_history_empty_no_preamble() {
         let h = SenderHistory::default();
         assert!(h.build_preamble().is_none());

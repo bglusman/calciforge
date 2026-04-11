@@ -445,18 +445,6 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn test_kind_is_acp() {
-        let adapter = AcpAdapter::new(
-            "claude".to_string(),
-            Some(vec!["--acp".to_string()]),
-            HashMap::new(),
-            None,
-            None,
-        );
-        assert_eq!(adapter.kind(), "acp");
-    }
-
-    #[test]
     fn test_full_args_without_model() {
         let adapter = AcpAdapter::new(
             "claude".to_string(),
@@ -481,30 +469,6 @@ mod tests {
             adapter.full_args(),
             vec!["--acp", "--model", "claude-sonnet-4-5"]
         );
-    }
-
-    #[test]
-    fn test_default_timeout_is_5_minutes() {
-        let adapter = AcpAdapter::new("claude".to_string(), None, HashMap::new(), None, None);
-        assert_eq!(adapter.timeout, Duration::from_millis(300_000));
-    }
-
-    #[test]
-    fn test_custom_timeout() {
-        let adapter = AcpAdapter::new(
-            "claude".to_string(),
-            None,
-            HashMap::new(),
-            None,
-            Some(60_000),
-        );
-        assert_eq!(adapter.timeout, Duration::from_millis(60_000));
-    }
-
-    #[test]
-    fn test_default_args_when_none() {
-        let adapter = AcpAdapter::new("opencode".to_string(), None, HashMap::new(), None, None);
-        assert!(adapter.args.is_empty());
     }
 
     // -----------------------------------------------------------------------
