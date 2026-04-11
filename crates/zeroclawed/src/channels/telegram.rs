@@ -172,6 +172,7 @@ fn handle_message_nonblocking(
         && !CommandHandler::is_switch_command(&text)
         && !CommandHandler::is_default_command(&text)
         && !CommandHandler::is_sessions_command(&text)
+        && !CommandHandler::is_model_command(&text)
     {
         let reply = command_handler.unknown_command(&text);
         let bot2 = bot.clone();
@@ -207,6 +208,19 @@ fn handle_message_nonblocking(
         tokio::spawn(async move {
             if let Err(e) = bot2.send_message(chat_id, &reply).await {
                 warn!(chat_id = %chat_id, error = %e, "failed to send switch reply");
+            }
+        });
+        return;
+    }
+
+    // !model — requires identity context for alloy selection; handled post-auth.
+    if CommandHandler::is_model_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !model command");
+        let reply = command_handler.handle_model(&text, &identity.id);
+        let bot2 = bot.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bot2.send_message(chat_id, &reply).await {
+                warn!(chat_id = %chat_id, error = %e, "failed to send model reply");
             }
         });
         return;
@@ -502,6 +516,16 @@ async fn handle_message(
         return;
     }
 
+    // !model — requires identity context for alloy selection; handled post-auth.
+    if CommandHandler::is_model_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !model command");
+        let reply = command_handler.handle_model(&text, &identity.id);
+        if let Err(e) = bot.send_message(chat_id, &reply).await {
+            warn!(chat_id = %chat_id, error = %e, "failed to send model reply");
+        }
+        return;
+    }
+
     // !sessions — list ACP sessions for an agent; requires identity context.
     if CommandHandler::is_sessions_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !sessions command");
@@ -675,6 +699,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
         }
     }

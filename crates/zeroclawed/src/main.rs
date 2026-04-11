@@ -15,6 +15,7 @@ mod context;
 mod hooks;
 #[cfg(test)]
 mod install;
+mod providers;
 mod router;
 
 use anyhow::{Context, Result};
@@ -29,7 +30,7 @@ use adversary_detector::middleware::ChannelScanner;
 use adversary_detector::profiles::{SecurityConfig, SecurityProfile};
 use adversary_detector::scanner::AdversaryScanner;
 
-use crate::{commands::CommandHandler, context::ContextStore, router::Router};
+use crate::{commands::CommandHandler, context::ContextStore, providers::alloy::AlloyManager, router::Router};
 
 /// ZeroClawed — Rust agent gateway
 #[derive(Parser, Debug)]
@@ -112,7 +113,31 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(config);
     let router = Arc::new(Router::new());
-    let command_handler = Arc::new(CommandHandler::new(config.clone()));
+
+    // Initialize AlloyManager if alloys are configured
+    let alloy_manager = if config.alloys.is_empty() {
+        None
+    } else {
+        match AlloyManager::from_configs(&config.alloys) {
+            Ok(manager) => {
+                info!(alloys = config.alloys.len(), "alloy manager initialized");
+                Some(manager)
+            }
+            Err(e) => {
+                error!(error = %e, "failed to initialize alloy manager");
+                None
+            }
+        }
+    };
+
+    let command_handler = {
+        let handler = CommandHandler::new(config.clone());
+        if let Some(manager) = alloy_manager {
+            Arc::new(handler.with_alloy_manager(manager))
+        } else {
+            Arc::new(handler)
+        }
+    };
 
     // Detect enabled channels
     let has_telegram = config

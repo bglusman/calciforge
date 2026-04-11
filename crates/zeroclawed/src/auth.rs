@@ -144,6 +144,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
         }
     }
@@ -257,6 +258,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
         };
         assert!(resolve_telegram_sender(8465871195, &cfg).is_none());

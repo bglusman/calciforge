@@ -593,6 +593,7 @@ mod inner {
                         && !CommandHandler::is_switch_command(&body)
                         && !CommandHandler::is_default_command(&body)
                         && !CommandHandler::is_sessions_command(&body)
+                        && !CommandHandler::is_model_command(&body)
                     {
                         let reply = cmd_handler.unknown_command(&body);
                         let room = room.clone();
@@ -632,6 +633,21 @@ mod inner {
                                 .await
                             {
                                 warn!(error = %e, "Matrix: failed to send switch reply");
+                            }
+                        });
+                        return;
+                    }
+
+                    // !model — post-auth alloy selection
+                    if CommandHandler::is_model_command(&body) {
+                        let reply = cmd_handler.handle_model(&body, &identity_id);
+                        let room = room.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = room
+                                .send(RoomMessageEventContent::text_plain(&reply))
+                                .await
+                            {
+                                warn!(error = %e, "Matrix: failed to send model reply");
                             }
                         });
                         return;

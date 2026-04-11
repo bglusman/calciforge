@@ -426,6 +426,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "hello from zeroclawed",
                 sender: Some("brian"),
+            model_override: None,
             })
             .await
             .expect("dispatch should succeed");
@@ -468,6 +469,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "route this",
                 sender: Some("renee"),
+                model_override: None,
             })
             .await
             .expect("dispatch should return reply callback");

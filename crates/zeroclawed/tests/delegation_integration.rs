@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo test --test delegation_integration
 
+#[allow(unused_imports)]
 use std::time::Duration;
 
 /// Test basic connectivity to mock agents.

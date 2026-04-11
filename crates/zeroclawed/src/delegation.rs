@@ -224,6 +224,7 @@ impl<'a> DelegationEngine<'a> {
         let ctx = DispatchContext {
             message: text,
             sender,
+            model_override: None,
         };
 
         // Dispatch to agent

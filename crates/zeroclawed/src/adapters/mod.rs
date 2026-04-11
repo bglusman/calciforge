@@ -101,6 +101,8 @@ pub struct DispatchContext<'a> {
     /// Resolved identity name from ZeroClawed (e.g. "brian", "renee").
     /// This is the identity id, not a phone number or channel-specific id.
     pub sender: Option<&'a str>,
+    /// Optional per-request model override (used by alloy routing).
+    pub model_override: Option<&'a str>,
 }
 
 impl<'a> DispatchContext<'a> {
@@ -109,6 +111,7 @@ impl<'a> DispatchContext<'a> {
         Self {
             message,
             sender: None,
+            model_override: None,
         }
     }
 }

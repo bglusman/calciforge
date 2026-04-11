@@ -21,6 +21,7 @@ use std::time::Instant;
 
 use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
 use crate::config::PolyConfig;
+use crate::providers::alloy::AlloyManager;
 
 /// Default state directory: `~/.zeroclawed/state/`.
 fn default_state_dir() -> PathBuf {
@@ -73,6 +74,8 @@ pub struct CommandHandler {
     pub pending_approvals: SharedPendingApprovals,
     /// reqwest client reused for approve/deny HTTP calls.
     http_client: reqwest::Client,
+    /// Alloy manager for per-identity model/alloy selection.
+    alloy_manager: Option<AlloyManager>,
 }
 
 impl CommandHandler {
@@ -109,7 +112,14 @@ impl CommandHandler {
             state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
+            alloy_manager: None,
         }
+    }
+
+    /// Set the alloy manager for this command handler.
+    pub fn with_alloy_manager(mut self, manager: AlloyManager) -> Self {
+        self.alloy_manager = Some(manager);
+        self
     }
 
     /// Record that a message was routed to an agent.
@@ -170,8 +180,9 @@ impl CommandHandler {
             "!switch" => None,
             // !default needs auth — switches back to the configured default agent.
             "!default" => None,
-            // !model shows model shortcuts — no auth needed for list, auth needed for set
-            "!model" => Some(self.cmd_model(trimmed)),
+            // !model shows model shortcuts/alloys — no auth needed for list.
+            // Setting an alloy requires auth; handle_model() is called post-auth.
+            "!model" => self.cmd_model_preauth(trimmed),
             _ => None, // Unknown !command — fall through to agent
         }
     }
@@ -204,6 +215,16 @@ impl CommandHandler {
         let trimmed = text.trim();
         let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!default"
+    }
+
+    /// Returns `true` if the text is a `!model` command (case-insensitive).
+    ///
+    /// Use this AFTER auth to decide whether to call [`handle_model`] instead of
+    /// routing to the agent.
+    pub fn is_model_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        cmd == "!model"
     }
 
     /// Returns `true` if the text is a `!status` command (case-insensitive).
@@ -817,46 +838,140 @@ impl CommandHandler {
             "  !ping    — connectivity check (replies: pong)",
             "  !switch <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
-            "  !model [alias] — show model shortcuts or resolve an alias",
+            "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
         .join("\n")
     }
-
-    /// Handle the `!model` command — show shortcuts or resolve an alias.
-    fn cmd_model(&self, text: &str) -> String {
-        // Parse: "!model" or "!model <alias>"
+/// Pre-auth handling for !model — lists shortcuts/alloys.
+    /// Returns None if an alloy is being selected (requires post-auth handling).
+    fn cmd_model_preauth(&self, text: &str) -> Option<String> {
         let args: Vec<&str> = text.trim().splitn(2, ' ').collect();
 
         if args.len() == 1 || args[1].trim().is_empty() {
-            // No alias provided — list all shortcuts
-            if self.config.model_shortcuts.is_empty() {
-                return "No model shortcuts configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string();
+            // No argument — list all shortcuts and alloys
+            let mut lines = vec![];
+
+            // Model shortcuts section
+            if !self.config.model_shortcuts.is_empty() {
+                lines.push("Model shortcuts:".to_string());
+                for shortcut in &self.config.model_shortcuts {
+                    lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
+                }
             }
 
-            let mut lines = vec!["Model shortcuts:".to_string()];
-            for shortcut in &self.config.model_shortcuts {
-                lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
+            // Alloys section
+            if let Some(ref manager) = self.alloy_manager {
+                if !manager.is_empty() {
+                    if !lines.is_empty() {
+                        lines.push(String::new());
+                    }
+                    lines.push("Configured alloys:".to_string());
+                    for alloy in manager.list() {
+                        let constituents: Vec<String> = alloy
+                            .constituents
+                            .iter()
+                            .map(|c| format!("{} (weight {})", c.model, c.weight))
+                            .collect();
+                        lines.push(format!(
+                            "  {} — {} ({:?}): {}",
+                            alloy.id,
+                            alloy.name,
+                            alloy.strategy,
+                            constituents.join(", ")
+                        ));
+                    }
+                }
             }
-            lines.push("\nUsage: !model <alias>".to_string());
-            lines.join("\n")
+
+            if lines.is_empty() {
+                return Some("No model shortcuts or alloys configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
+            }
+
+            lines.push("\nUsage:".to_string());
+            lines.push("  !model <alias> — show model for alias".to_string());
+            if self.alloy_manager.is_some() {
+                lines.push("  !model <alloy-id> — activate alloy for your identity".to_string());
+            }
+            Some(lines.join("\n"))
         } else {
-            // Resolve the alias
-            let alias = args[1].trim();
-            match self
-                .config
-                .model_shortcuts
-                .iter()
-                .find(|s| s.alias == alias)
-            {
-                Some(shortcut) => format!("{} → {}", shortcut.alias, shortcut.model),
-                None => format!(
-                    "Unknown alias: '{}'\n\nUse !model to see available shortcuts.",
-                    alias
-                ),
+            // Argument provided — check if it's a model shortcut or alloy selection
+            let arg = args[1].trim();
+
+            // First check if it's a model shortcut (show-only)
+            if let Some(shortcut) = self.config.model_shortcuts.iter().find(|s| s.alias == arg) {
+                return Some(format!("{} → {}", shortcut.alias, shortcut.model));
             }
+
+            // If no alloy manager, unknown alias
+            if self.alloy_manager.is_none() {
+                return Some(format!(
+                    "Unknown alias: '{}',\n\nUse !model to see available shortcuts.",
+                    arg
+                ));
+            }
+
+            // Return None to trigger post-auth handling for alloy selection
+            None
         }
+    }
+
+    /// Handle a `!model <alloy>` command for an authenticated identity.
+    /// Activates the specified alloy for this identity's requests.
+    pub fn handle_model(&self, text: &str, identity_id: &str) -> String {
+        let manager = match self.alloy_manager {
+            Some(ref m) => m,
+            None => return "⚠️ Alloy support is not configured.".to_string(),
+        };
+
+        let trimmed = text.trim();
+        let args: Vec<&str> = trimmed
+            .split_once(' ')
+            .map(|x| x.1)
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+
+        if args.is_empty() {
+            return "Usage: !model <alloy-id>\n\nUse !model to see available alloys.".to_string();
+        }
+
+        let alloy_id = args[0];
+
+        // Check if alloy exists
+        if manager.get(alloy_id).is_none() {
+            let available: Vec<String> = manager.list().iter().map(|a| a.id.clone()).collect();
+            return format!(
+                "⚠️ Unknown alloy: '{}',\n\nAvailable alloys: {}",
+                alloy_id,
+                if available.is_empty() {
+                    "(none configured)".to_string()
+                } else {
+                    available.join(", ")
+                }
+            );
+        }
+
+        // Activate the alloy for this identity
+        if let Err(e) = manager.set_active_for_identity(identity_id, alloy_id) {
+            return format!("⚠️ Failed to activate alloy: {}", e);
+        }
+
+        let alloy = manager.get(alloy_id).unwrap();
+        let constituents: Vec<String> = alloy
+            .definition()
+            .constituents
+            .iter()
+            .map(|c| format!("{} (weight {})", c.model, c.weight))
+            .collect();
+
+        format!(
+            "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
+            alloy_id,
+            alloy.definition().strategy,
+            constituents.join(", ")
+        )
     }
 
     fn cmd_agents(&self) -> String {
@@ -1005,6 +1120,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
         }
     }
@@ -1197,6 +1313,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
         });
         let h = CommandHandler::new(config);

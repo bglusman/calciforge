@@ -85,6 +85,9 @@ base64 = "0.22"
 # Timestamp generation
 chrono = { version = "0.4", features = ["serde"] }
 
+# Random number generation (for alloy weighted selection)
+rand = "0.9"
+
 # Property-based testing (optional, enable with --features hegel)
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
 

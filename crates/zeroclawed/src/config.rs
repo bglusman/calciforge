@@ -46,6 +46,11 @@ pub struct PolyConfig {
     #[serde(default)]
     pub model_shortcuts: Vec<ModelShortcutConfig>,
 
+    /// `[[alloys]]` — model blending/mixing groups.
+    /// Use `!model <alloy-id>` to activate an alloy for an identity.
+    #[serde(default)]
+    pub alloys: Vec<AlloyConfig>,
+
     /// `[security]` — adversary detector profile and settings.
     /// Defaults to balanced if not specified in config.
     #[serde(default)]
@@ -59,6 +64,32 @@ pub struct ModelShortcutConfig {
     pub alias: String,
     /// Full provider/model string this alias expands to (e.g. "anthropic/claude-sonnet-4.6")
     pub model: String,
+}
+
+/// Alloy definition (`[[alloys]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AlloyConfig {
+    /// Alloy identifier used by commands (e.g. "free-alloy-1").
+    pub id: String,
+    /// Human-readable alloy name.
+    pub name: String,
+    /// Strategy: "weighted" or "round_robin".
+    pub strategy: String,
+    /// Constituent models for this alloy.
+    #[serde(default)]
+    pub constituents: Vec<AlloyConstituentConfig>,
+}
+
+/// One alloy constituent (`[[alloys.constituents]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AlloyConstituentConfig {
+    pub model: String,
+    #[serde(default = "default_alloy_weight")]
+    pub weight: u32,
+}
+
+fn default_alloy_weight() -> u32 {
+    1
 }
 
 /// `[zeroclawed]` header section.

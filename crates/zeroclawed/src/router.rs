@@ -48,6 +48,19 @@ impl Router {
         _config: &PolyConfig,
         sender: Option<&str>,
     ) -> Result<String> {
+        self.dispatch_with_sender_and_model(text, agent, _config, sender, None)
+            .await
+    }
+
+    /// Dispatch a message with sender identity and optional model override.
+    pub async fn dispatch_with_sender_and_model(
+        &self,
+        text: &str,
+        agent: &AgentConfig,
+        _config: &PolyConfig,
+        sender: Option<&str>,
+        model_override: Option<&str>,
+    ) -> Result<String> {
         let adapter = build_adapter(agent).map_err(|e| {
             anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
         })?;
@@ -63,6 +76,7 @@ impl Router {
         let ctx = DispatchContext {
             message: text,
             sender,
+            model_override,
         };
         adapter.dispatch_with_context(ctx).await.map_err(|e| {
             let msg = match &e {
@@ -108,6 +122,7 @@ mod tests {
             identities: vec![],
             agents: vec![],
             routing: vec![],
+            alloys: vec![],
             channels: vec![],
             permissions: None,
             memory: None,

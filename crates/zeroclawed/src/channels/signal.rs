@@ -433,6 +433,7 @@ impl SignalChannel {
             && !CommandHandler::is_switch_command(&text)
             && !CommandHandler::is_default_command(&text)
             && !CommandHandler::is_sessions_command(&text)
+            && !CommandHandler::is_model_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
@@ -493,6 +494,27 @@ impl SignalChannel {
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "Signal: failed to send switch reply");
+                }
+            });
+            return;
+        }
+
+        // !model — post-auth command for alloy selection
+        if CommandHandler::is_model_command(&text) {
+            let reply = self.command_handler.handle_model(&text, &identity.id);
+            let channel = self.clone();
+            let from_owned = from.clone();
+            tokio::spawn(async move {
+                if let Err(e) = channel
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
+                    .await
+                {
+                    warn!(from = %from_owned, error = %e, "Signal: failed to send model reply");
                 }
             });
             return;
