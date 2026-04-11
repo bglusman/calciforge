@@ -11,7 +11,7 @@ use crate::verdict::{ScanContext, ScanVerdict};
 /// The set of tool names that the middleware intercepts.
 ///
 /// `safe_fetch` is listed here for backwards compatibility but is **deprecated**.
-/// All fetches now route through [`crate::proxy::AdversaryProxy`], making `web_fetch`
+/// All fetches now route through [`crate::proxy::AdversaryDetector`], making `web_fetch`
 /// and `safe_fetch` semantically identical. New code should use `web_fetch` only.
 pub const INTERCEPTED_TOOLS: &[&str] = &[
     "web_fetch",

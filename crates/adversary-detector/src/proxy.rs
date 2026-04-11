@@ -1,7 +1,7 @@
-//! Adversary transparent proxy layer.
+//! Adversary transparent detector layer.
 //!
-//! All external content access MUST go through [`AdversaryProxy::fetch`].
-//! Tools never hold raw HTTP clients; they call this proxy, which:
+//! All external content access MUST go through [`AdversaryDetector::fetch`].
+//! Tools never hold raw HTTP clients; they call this detector, which:
 //!
 //! 1. Fetches the URL over HTTPS using an internal reqwest client.
 //! 2. Computes the SHA-256 digest of the response body.
@@ -13,7 +13,7 @@
 //!
 //! # Human overrides
 //!
-//! [`AdversaryProxy::mark_override`] records that a human explicitly approved a
+//! [`AdversaryDetector::mark_override`] records that a human explicitly approved a
 //! URL+digest pair. Subsequent fetches for that pair bypass `Blocked` verdicts.
 //!
 //! # No raw HTTP outside this module
@@ -92,14 +92,14 @@ impl AdversaryFetchResult {
     }
 }
 
-// ── AdversaryProxy ─────────────────────────────────────────────────────────────
+// ── AdversaryDetector ───────────────────────────────────────────────────────────
 
-/// Transparent proxy wrapping [`AdversaryScanner`] + [`DigestStore`] + [`AuditLogger`].
+/// Transparent detector wrapping [`AdversaryScanner`] + [`DigestStore`] + [`AuditLogger`].
 ///
-/// Construct via [`AdversaryProxy::new`] or [`AdversaryProxy::from_config`].
+/// Construct via [`AdversaryDetector::new`] or [`AdversaryDetector::from_config`].
 ///
 /// ```rust,no_run
-/// use adversary_detector::proxy::AdversaryProxy;
+/// use adversary_detector::proxy::AdversaryDetector;
 /// use adversary_detector::scanner::ScannerConfig;
 /// use adversary_detector::audit::AuditLogger;
 /// use adversary_detector::profiles::RateLimitConfig;
@@ -108,8 +108,8 @@ impl AdversaryFetchResult {
 ///     let config = ScannerConfig::default();
 ///     let logger = AuditLogger::new("my-agent");
 ///     let rate_limit = RateLimitConfig::default();
-///     let proxy = AdversaryProxy::from_config(config, logger, rate_limit).await;
-///     let result = proxy.fetch("https://example.com").await;
+///     let detector = AdversaryDetector::from_config(config, logger, rate_limit).await;
+///     let result = detector.fetch("https://example.com").await;
 /// }
 /// ```
 /// Maximum number of tracked sources before LRU eviction kicks in.
@@ -183,7 +183,7 @@ impl RateLimiter {
     }
 }
 
-pub struct AdversaryProxy {
+pub struct AdversaryDetector {
     scanner: AdversaryScanner,
     store: Arc<Mutex<DigestStore>>,
     logger: AuditLogger,
@@ -192,7 +192,7 @@ pub struct AdversaryProxy {
     rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
-impl AdversaryProxy {
+impl AdversaryDetector {
     /// Construct from a pre-built scanner, store, and logger.
     pub fn new(
         scanner: AdversaryScanner,
@@ -420,14 +420,14 @@ mod tests {
         p
     }
 
-    async fn proxy_with_store(store_path: PathBuf) -> AdversaryProxy {
+    async fn detector_with_store(store_path: PathBuf) -> AdversaryDetector {
         let config = ScannerConfig {
             digest_store_path: Some(store_path),
             ..Default::default()
         };
-        AdversaryProxy::from_config(
+        AdversaryDetector::from_config(
             config,
-            AuditLogger::new("test-proxy"),
+            AuditLogger::new("test-detector"),
             RateLimitConfig::default(),
         )
         .await
@@ -447,10 +447,10 @@ mod tests {
             .await;
 
         let path = tmp_store_path();
-        let proxy = proxy_with_store(path).await;
+        let detector = detector_with_store(path).await;
 
         let url = format!("{}/page", mock_server.uri());
-        let r1 = proxy.fetch(&url).await;
+        let r1 = detector.fetch(&url).await;
         // Wiremock holds the mock, so we manually re-serve for a second call in isolation.
         // For this test we verify the store populated correctly on first call.
         assert!(r1.is_ok(), "first fetch should be Ok");
@@ -458,8 +458,8 @@ mod tests {
         // Now verify the store has the entry (same digest means cache hit on next run)
         let digest1 = r1.digest().to_owned();
         assert!(!digest1.is_empty());
-        // The same proxy instance has the entry in its in-memory store
-        let store = proxy.store.lock().await;
+        // The same detector instance has the entry in its in-memory store
+        let store = detector.store.lock().await;
         let entry = store.get(&url, None).expect("entry should be stored");
         assert_eq!(entry.sha256, digest1);
     }
@@ -490,13 +490,13 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/changing", mock_server.uri());
 
-        let r1 = proxy.fetch(&url).await;
+        let r1 = detector.fetch(&url).await;
         assert!(r1.is_ok(), "first fetch clean content should be Ok");
 
-        let r2 = proxy.fetch(&url).await;
+        let r2 = detector.fetch(&url).await;
         assert!(
             r2.is_blocked(),
             "second fetch with injection content should be Blocked"
@@ -516,11 +516,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/override-test", mock_server.uri());
 
         // First fetch: should be blocked
-        let r1 = proxy.fetch(&url).await;
+        let r1 = detector.fetch(&url).await;
         assert!(
             r1.is_blocked(),
             "injection content should initially be blocked"
@@ -528,10 +528,10 @@ mod tests {
         let digest = r1.digest().to_owned();
 
         // Human approves this URL+digest
-        proxy.mark_override(&url, &digest).await;
+        detector.mark_override(&url, &digest).await;
 
         // Second fetch: same content, same digest, now has override → should pass
-        let r2 = proxy.fetch(&url).await;
+        let r2 = detector.fetch(&url).await;
         assert!(r2.is_ok(), "override should bypass the block verdict");
     }
 
@@ -549,9 +549,9 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/injected", mock_server.uri());
-        let result = proxy.fetch(&url).await;
+        let result = detector.fetch(&url).await;
 
         match result {
             AdversaryFetchResult::Blocked { reason, .. } => {
@@ -584,9 +584,9 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/review-page", mock_server.uri());
-        let result = proxy.fetch(&url).await;
+        let result = detector.fetch(&url).await;
 
         match result {
             AdversaryFetchResult::Review { content, .. } => {

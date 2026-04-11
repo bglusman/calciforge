@@ -6,7 +6,7 @@
 //! # Architecture
 //!
 //! ```text
-//! [External source] → [AdversaryProxy::fetch] → [AdversaryScanner] → [ScanVerdict]
+//! [External source] → [AdversaryDetector::fetch] → [AdversaryScanner] → [ScanVerdict]
 //!                                                      ↓
 //!                                             [DigestStore]
 //!                                              (cache hit?)
@@ -20,7 +20,7 @@
 //!
 //! # Transparent proxy
 //!
-//! All external content access MUST go through [`proxy::AdversaryProxy::fetch`].
+//! All external content access MUST go through [`proxy::AdversaryDetector::fetch`].
 //! Tools never hold raw HTTP clients or touch raw external content directly.
 //! The proxy fetches, hashes, checks the [`digest::DigestStore`] cache, and
 //! only rescans when the content digest has changed.
@@ -28,7 +28,7 @@
 //! # Tool deprecation note
 //!
 //! `web_fetch` and `safe_fetch` were previously separate tools with different
-//! safety semantics. With all fetches routed through [`proxy::AdversaryProxy`]
+//! safety semantics. With all fetches routed through [`proxy::AdversaryDetector`]
 //! they are now equivalent — every fetch is a safe fetch. `safe_fetch` is kept
 //! in the intercepted-tools list for backwards compatibility but is considered
 //! **deprecated**; callers should consolidate on `web_fetch`.
@@ -66,6 +66,6 @@ pub use audit::AuditLogger;
 pub use digest::{sha256_hex, ContentDigest, DigestStore};
 pub use middleware::{ChannelScanner, HookOutcome, InterceptedToolSet, ToolHook, ToolResult};
 pub use profiles::{RateLimitConfig, SecurityConfig, SecurityProfile};
-pub use proxy::{AdversaryFetchResult, AdversaryProxy};
+pub use proxy::{AdversaryDetector, AdversaryFetchResult};
 pub use scanner::{AdversaryScanner, ScannerConfig};
 pub use verdict::{ScanContext, ScanVerdict};

@@ -1,7 +1,7 @@
 //! Unified security proxy — fetch mode + HTTP intercept mode.
 //!
-//! [`SecurityProxy`] replaces both `AdversaryProxy` (from adversary-detector)
-//! and the original `proxy_handler`/`ProxyState`. One struct, two modes:
+//! [`SecurityProxy`] wraps `AdversaryDetector` (from adversary-detector)
+//! and adds HTTP intercept mode. One struct, two modes:
 //!
 //! 1. **Fetch mode** — [`SecurityProxy::fetch`]: fetches a URL, scans with
 //!    `AdversaryScanner`, returns an `AdversaryFetchResult`. Digest-cached
@@ -29,7 +29,7 @@ use http_body_util::BodyExt;
 use tracing::{error, info, warn};
 
 use adversary_detector::{
-    AdversaryFetchResult, AdversaryProxy, AdversaryScanner, AuditLogger, RateLimitConfig,
+    AdversaryDetector, AdversaryFetchResult, AdversaryScanner, AuditLogger, RateLimitConfig,
     ScanContext, ScannerConfig,
 };
 
@@ -44,8 +44,8 @@ use crate::credentials::CredentialInjector;
 /// (for intercept mode) or call [`SecurityProxy::fetch`] directly (for fetch mode).
 pub struct SecurityProxy {
     pub config: GatewayConfig,
-    /// Fetch-mode proxy — wraps scanner + digest cache + rate limiter.
-    fetch_proxy: AdversaryProxy,
+    /// Fetch-mode detector — wraps scanner + digest cache + rate limiter.
+    fetch_proxy: AdversaryDetector,
     /// Direct scanner for intercept-mode scanning.
     scanner: AdversaryScanner,
     /// Credential injector for known providers.
@@ -69,7 +69,7 @@ impl SecurityProxy {
         // Create a separate logger for the fetch proxy to avoid cloning
         let fetch_audit = AuditLogger::new("security-gateway-fetch");
         let fetch_proxy =
-            AdversaryProxy::from_config(scanner_config, fetch_audit, rate_limit).await;
+            AdversaryDetector::from_config(scanner_config, fetch_audit, rate_limit).await;
 
         Self {
             config,
@@ -88,7 +88,7 @@ impl SecurityProxy {
 
     /// Fetch a URL through the security proxy.
     ///
-    /// Delegates to [`AdversaryProxy::fetch`] — scans content, caches digest,
+    /// Delegates to [`AdversaryDetector::fetch`] — scans content, caches digest,
     /// rate-limits per source, returns verdict.
     pub async fn fetch(&self, url: &str) -> AdversaryFetchResult {
         self.fetch_proxy.fetch(url).await
