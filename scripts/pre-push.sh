@@ -112,6 +112,6 @@ if [ $FAILURES -eq 0 ]; then
   pass "All checks passed — safe to push"
   exit 0
 else
-  fail "$FAILURES check(s) failed — fix before pushing"
+  echo -e "${RED}✗ $FAILURES check(s) failed — fix before pushing${NC}"
   exit 1
 fi

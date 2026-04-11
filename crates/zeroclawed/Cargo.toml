@@ -15,7 +15,7 @@ hegel = ["dep:hegeltest"]
 
 [[test]]
 name = "e2e"
-path = "tests/e2e/mod.rs"
+path = "tests/e2e/main.rs"
 harness = true
 
 [[test]]
