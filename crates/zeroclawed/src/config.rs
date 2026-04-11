@@ -208,7 +208,7 @@ pub struct ChannelConfig {
     pub allowed_numbers: Vec<String>,
 
     // --- Adversary detector settings ---
-    /// Enable inbound/outbound adversarial content scanning on this channel.
+    /// Enable inbound adversarial content scanning on this channel.
     /// Default: false (opt-in). The HTTP proxy is always-on regardless of this flag.
     #[serde(default)]
     pub scan_messages: bool,

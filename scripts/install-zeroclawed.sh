@@ -24,7 +24,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="/opt/zeroclawed"
 CONFIG_DIR="/etc/zeroclawed"
-SSH_KEY="${SSH_KEY:-~/.ssh/id_ed25519}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
 # ── Target resolution ──────────────────────────────────────────────
 ACTION="${1:-help}"
@@ -213,9 +213,6 @@ verify_host() {
 
     echo -n "  zeroclawed:  "
     run_on "$host" "systemctl is-active zeroclawed 2>/dev/null" || echo "❌ not running"
-
-    echo -n "  gateway:     "
-    run_on "$host" "curl -s http://127.0.0.1:18789/health" 2>/dev/null || echo "❌ not responding"
 
     echo -n "  config:      "
     if run_on "$host" "test -f $CONFIG_DIR/config.toml" 2>/dev/null; then

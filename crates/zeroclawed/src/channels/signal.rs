@@ -373,7 +373,7 @@ impl SignalChannel {
                     warn!(
                         identity = %identity.id,
                         reason = %reason,
-                    "Signal: inbound message BLOCKED by adversary scan"
+                        "Signal: inbound message BLOCKED by adversary scan"
                     );
                     let channel = self.clone();
                     let from_owned = from.clone();
