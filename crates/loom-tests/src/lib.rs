@@ -7,25 +7,16 @@
 //!
 //! ```bash
 //! RUSTFLAGS="--cfg loom" cargo test -p loom-tests
-//! LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p loom-tests
+//! LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test -p loom-tests
 //! ```
 
 #![allow(unexpected_cfgs)]
-#![allow(unused_imports)]
-#![allow(unused)]
 #![cfg(loom)]
 
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::sync::{Arc, Mutex, RwLock};
 use loom::thread;
 use std::collections::HashMap;
-
-// Silence warnings from cfg(loom) stripping
-#[allow(unused_imports)]
-#[allow(unused)]
-mod _loom_hints {
-    use super::*;
-}
 
 /// Test concurrent access to a shared registry pattern
 #[test]

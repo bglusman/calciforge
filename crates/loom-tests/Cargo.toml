@@ -5,6 +5,3 @@ edition = "2021"
 
 [dependencies]
 loom = "0.7"
-
-[dev-dependencies]
-loom = "0.7"

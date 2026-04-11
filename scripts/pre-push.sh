@@ -101,7 +101,7 @@ if [ "$LOOM_ONLY" = false ]; then
     fail "loom-tests missing from Cargo.toml [workspace] members"
   fi
   # Verify no cfg(loom) in main crate (breaks tokio::net)
-  if grep -rl '#\[cfg(loom)\]' crates/zeroclawed/src/ 2>/dev/null; then
+  if grep -rq '#\[cfg(loom)\]' crates/zeroclawed/src/ 2>/dev/null; then
     warn "cfg(loom) found in zeroclawed/src — inert but ideally move to crates/loom-tests/"
   fi
 fi
