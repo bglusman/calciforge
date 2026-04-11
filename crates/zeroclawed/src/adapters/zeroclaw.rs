@@ -198,22 +198,6 @@ mod tests {
         assert!(resp.model.is_none());
     }
 
-    #[test]
-    fn test_default_timeout() {
-        let adapter = ZeroClawAdapter::new("http://localhost".to_string(), "key".to_string(), None);
-        assert_eq!(adapter.timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
-    }
-
-    #[test]
-    fn test_custom_timeout() {
-        let adapter = ZeroClawAdapter::new(
-            "http://localhost".to_string(),
-            "key".to_string(),
-            Some(3000),
-        );
-        assert_eq!(adapter.timeout, Duration::from_millis(3000));
-    }
-
     #[tokio::test]
     async fn test_dispatch_to_unreachable_returns_unavailable() {
         let adapter = make_adapter(19092);

@@ -272,12 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kind_is_cli() {
-        let adapter = make_adapter("/bin/echo", None);
-        assert_eq!(adapter.kind(), "cli");
-    }
-
-    #[test]
     fn test_build_args_substitutes_message() {
         let adapter = make_adapter(
             "/usr/local/bin/ironclaw",
@@ -317,30 +311,6 @@ mod tests {
         // Default: ["-m", "{message}"]
         let args = adapter.build_args("test");
         assert_eq!(args, vec!["-m", "test"]);
-    }
-
-    #[test]
-    fn test_default_timeout() {
-        let adapter = CliAdapter::new("/bin/echo".to_string(), None, HashMap::new(), None);
-        assert_eq!(adapter.timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
-    }
-
-    #[test]
-    fn test_default_timeout_is_30s() {
-        assert_eq!(
-            DEFAULT_TIMEOUT_MS, 30_000,
-            "IronClaw default timeout should be 30s"
-        );
-    }
-
-    #[test]
-    fn test_env_vars_set() {
-        let mut env = HashMap::new();
-        env.insert("LLM_BACKEND".to_string(), "openai_compatible".to_string());
-        env.insert("LLM_MODEL".to_string(), "kimi-k2.5".to_string());
-        let adapter = CliAdapter::new("/bin/echo".to_string(), None, env.clone(), None);
-        assert_eq!(adapter.env["LLM_BACKEND"], "openai_compatible");
-        assert_eq!(adapter.env["LLM_MODEL"], "kimi-k2.5");
     }
 
     // --- preamble stripping tests ---

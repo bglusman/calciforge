@@ -86,17 +86,31 @@ jobs:
           fi
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Loom concurrency tests (placeholder - no-op for now)
+  # Loom concurrency tests (exhaustive concurrency exploration)
   # ─────────────────────────────────────────────────────────────────────────────
   loom:
     name: Loom Concurrency
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Loom placeholder
-        run: |
-          echo "Loom concurrency tests temporarily disabled (compiles as dev-dependency only)"
-          exit 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-loom-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Loom tests
+        run: cargo test -p loom-tests
+        env:
+          LOOM_MAX_PREEMPTIONS: 2
+          RUSTFLAGS: "--cfg loom"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Build release binaries

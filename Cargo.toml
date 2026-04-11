@@ -3,10 +3,11 @@
 members = [
     "crates/zeroclawed",
     "crates/adversary-detector",
-"crates/security-gateway",
+    "crates/security-gateway",
     "crates/host-agent",
     "crates/onecli-client",
     "crates/clashd",
+    "crates/loom-tests",
 ]
 
 resolver = "2"

@@ -56,8 +56,8 @@ fn test_concurrent_registry_access() {
         // Verify final state
         let guard = registry.lock().unwrap();
         assert_eq!(guard.len(), 2);
-        assert_eq!(guard.get("agent1"), Some(&"config1".to_string()));
-        assert_eq!(guard.get("agent2"), Some(&"config2".to_string()));
+        assert_eq!(guard.get("agent1").map(String::as_str), Some("config1"));
+        assert_eq!(guard.get("agent2").map(String::as_str), Some("config2"));
     });
 }
 
@@ -97,7 +97,10 @@ fn test_concurrent_session_management() {
 
         // Verify final state
         let guard = sessions.read().unwrap();
-        assert!(guard.len() >= 2); // At least the two from t1
+        assert_eq!(guard.len(), 3);
+        assert_eq!(guard.get("session_1").map(String::as_str), Some("user_a"));
+        assert_eq!(guard.get("session_2").map(String::as_str), Some("user_b"));
+        assert_eq!(guard.get("session_3").map(String::as_str), Some("user_c"));
     });
 }
 

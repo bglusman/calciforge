@@ -35,10 +35,10 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Run unit tests
-        run: cargo test --workspace --lib --bins
+        run: cargo test --workspace --exclude loom-tests --lib --bins
 
       - name: Run integration tests
-        run: cargo test --workspace --tests -- --skip test_gateway_
+        run: cargo test --workspace --exclude loom-tests --tests -- --skip test_gateway_
         env:
           # Skip tests that require running services in CI
           SKIP_LIVE_TESTS: 1

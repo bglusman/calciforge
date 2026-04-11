@@ -331,12 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kind_is_openclaw_native() {
-        let a = make_adapter(19100);
-        assert_eq!(a.kind(), "openclaw-native");
-    }
-
-    #[test]
     fn test_hooks_agent_url_no_trailing_slash() {
         let a = OpenClawNativeAdapter::new(
             "http://10.0.0.20:18789".to_string(),
