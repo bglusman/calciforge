@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn test_default_retry_strategy() {
-        let strategy = DefaultRetryStrategy::default();
+        let strategy = DefaultRetryStrategy;
 
         assert!(strategy.is_retryable(&OneCliError::RateLimited { retry_after: 5 }));
         assert!(!strategy.is_retryable(&OneCliError::PolicyDenied("test".to_string())));
@@ -88,7 +88,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_with_retry_success_first_attempt() {
         let config = RetryConfig::default();
-        let strategy = DefaultRetryStrategy::default();
+        let strategy = DefaultRetryStrategy;
         let counter = AtomicUsize::new(0);
 
         let result = execute_with_retry(&config, strategy, || {
@@ -105,7 +105,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_with_retry_max_retries_exceeded() {
         let config = RetryConfig::default(); // max_retries = 3
-        let strategy = DefaultRetryStrategy::default();
+        let strategy = DefaultRetryStrategy;
         let counter = AtomicUsize::new(0);
 
         let result = execute_with_retry(&config, strategy, || {
