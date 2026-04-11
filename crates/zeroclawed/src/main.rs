@@ -91,7 +91,11 @@ async fn main() -> Result<()> {
         tracing::warn!(profile = %profile_str, "invalid security profile, using balanced");
         SecurityProfile::Balanced
     });
-    let security_config = SecurityConfig::from_profile(security_profile);
+    let mut security_config = SecurityConfig::from_profile(security_profile);
+    // Apply optional config overrides
+    if let Some(cfg) = security_cfg {
+        security_config.scan_outbound = cfg.scan_outbound;
+    }
     let scanner = AdversaryScanner::new(security_config.scanner.clone());
     let audit_logger = AuditLogger::new("zeroclawed");
     let channel_scanner = Arc::new(ChannelScanner::new(

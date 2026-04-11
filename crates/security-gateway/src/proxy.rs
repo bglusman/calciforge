@@ -133,6 +133,20 @@ impl SecurityProxy {
             return Ok(self.forward_upstream(req, &target_url).await);
         }
 
+        // Capture headers before consuming body
+        let original_headers: Vec<(String, String)> = req
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| {
+                let key_str = k.as_str().to_lowercase();
+                if matches!(key_str.as_str(), "host" | "connection" | "keep-alive" | "proxy-authenticate" | "proxy-authorization" | "te" | "trailers" | "transfer-encoding" | "upgrade") {
+                    None
+                } else {
+                    v.to_str().ok().map(|val| (k.as_str().to_string(), val.to_string()))
+                }
+            })
+            .collect();
+
         // Read request body
         let body_bytes = match req.into_body().collect().await {
             Ok(collected) => collected.to_bytes(),
@@ -175,8 +189,13 @@ impl SecurityProxy {
             }
         }
 
-        // Build and forward upstream request
+        // Build and forward upstream request (preserve original headers, add injected)
         let mut upstream_req = self.http_client.request(method.clone(), &target_url);
+        // Copy original headers (except hop-by-hop headers)
+        for (k, v) in &original_headers {
+            upstream_req = upstream_req.header(k.as_str(), v.as_str());
+        }
+        // Overlay injected headers
         for (k, v) in &injected_headers {
             upstream_req = upstream_req.header(k.as_str(), v.as_str());
         }
@@ -187,23 +206,31 @@ impl SecurityProxy {
         match upstream_req.send().await {
             Ok(resp) => {
                 let status = resp.status();
-                let resp_body = resp.text().await.unwrap_or_default();
+                // Preserve upstream content-type; default to application/octet-stream if missing
+                let content_type = resp.headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let resp_bytes = resp.bytes().await.unwrap_or_default();
 
-                // Inbound scan (injection)
-                if self.config.scan_inbound && !resp_body.is_empty() {
-                    let verdict = self
-                        .scanner
-                        .scan(&target_url, &resp_body, ScanContext::WebFetch)
-                        .await;
-                    match &verdict {
-                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                            warn!("BLOCKED response from {}: {}", target_url, reason);
-                            return Ok(blocked_response(&format!("Response blocked: {}", reason)));
+                // Inbound scan (injection) — only scan text content
+                if self.config.scan_inbound && content_type.starts_with("text/") {
+                    if let Ok(body_str) = std::str::from_utf8(&resp_bytes) {
+                        let verdict = self
+                            .scanner
+                            .scan(&target_url, body_str, ScanContext::WebFetch)
+                            .await;
+                        match &verdict {
+                            adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                                warn!("BLOCKED response from {}: {}", target_url, reason);
+                                return Ok(blocked_response(&format!("Response blocked: {}", reason)));
+                            }
+                            adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                                info!("REVIEW response from {}: {}", target_url, reason);
+                            }
+                            adversary_detector::verdict::ScanVerdict::Clean => {}
                         }
-                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                            info!("REVIEW response from {}: {}", target_url, reason);
-                        }
-                        adversary_detector::verdict::ScanVerdict::Clean => {}
                     }
                 }
 
@@ -212,8 +239,8 @@ impl SecurityProxy {
 
                 Response::builder()
                     .status(status.as_u16())
-                    .header("content-type", "application/json")
-                    .body(Body::from(resp_body))
+                    .header(header::CONTENT_TYPE, content_type)
+                    .body(Body::from(resp_bytes))
                     .map_err(|e| {
                         error!("Failed to build response: {}", e);
                     })
