@@ -2,15 +2,12 @@ use std::sync::Arc;
 
 use axum::routing::get;
 use axum::Router;
-use reqwest::Client;
 use tracing::{error, info};
 
+use adversary_detector::{RateLimitConfig, ScannerConfig};
 use security_gateway::agent_config::AgentsConfig;
-use security_gateway::audit::AuditLogger;
 use security_gateway::config::GatewayConfig;
-use security_gateway::credentials::CredentialInjector;
-use security_gateway::proxy::{health_handler, proxy_handler, ProxyState};
-use security_gateway::scanner::{ExfilScanner, InjectionScanner};
+use security_gateway::proxy::{health_handler, proxy_handler, SecurityProxy};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,10 +19,17 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = GatewayConfig::default();
-    let mut credentials = CredentialInjector::new();
+
+    // Build unified security proxy
+    let mut proxy = SecurityProxy::new(
+        config.clone(),
+        ScannerConfig::default(),
+        RateLimitConfig::default(),
+    )
+    .await;
 
     // Load credentials from ZEROGATE_KEY_* env vars (legacy)
-    credentials.load_from_env();
+    proxy.credentials.load_from_env();
 
     // Load from agents.json config
     let agents_config_path =
@@ -41,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         // Auto-load credentials from agent provider configs
         for provider in agents_config.all_providers() {
             if let Ok(api_key) = std::env::var(&provider.env_key) {
-                credentials.add(&provider.name, &api_key);
+                proxy.credentials.add(&provider.name, &api_key);
                 info!(
                     "Loaded credential for {} from ${}",
                     provider.name, provider.env_key
@@ -60,18 +64,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let state = Arc::new(ProxyState {
-        config: config.clone(),
-        exfil_scanner: ExfilScanner::new(),
-        injection_scanner: InjectionScanner::new(),
-        credentials,
-        audit: AuditLogger::new(),
-        http_client: Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?,
-    });
-
+    let state = Arc::new(proxy);
     let port = config.port;
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .fallback(proxy_handler)

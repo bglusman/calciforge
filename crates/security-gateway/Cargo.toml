@@ -26,7 +26,12 @@ thiserror = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
+regex = "1"
 
 [[bin]]
 name = "security-gateway"
 path = "src/main.rs"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"

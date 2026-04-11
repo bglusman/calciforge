@@ -317,7 +317,7 @@ async fn run_acp_client_session(
              request_cx: sacp::JrRequestCx<RequestPermissionResponse>,
              _cx: JrConnectionCx<ClientToAgent>| async move {
                 // Auto-approve tool permissions (zeroclawed trusts its agents;
-                // Outpost/Clash handle security at the boundary)
+                // Adversary/Security handle security at the boundary.
                 let option_id = request.options.first().map(|opt| opt.id.clone());
                 match option_id {
                     Some(id) => {

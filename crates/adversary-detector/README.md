@@ -1,10 +1,10 @@
 # adversary-detector
 
-Outpost external content scanning for ZeroClawed. Protects agents from prompt injection, hidden payloads, and malicious web content before it reaches the model context.
+Adversary external content scanning for ZeroClawed. Protects agents from prompt injection, hidden payloads, and malicious web content before it reaches the model context.
 
 ## How It Works
 
-All external content access goes through `OutpostProxy::fetch()`:
+All external content access goes through `AdversaryDetector::fetch()`:
 
 ```
 URL → fetch → SHA-256 digest → cache check → verdict
@@ -17,7 +17,7 @@ URL → fetch → SHA-256 digest → cache check → verdict
 
 ### Digest-Based Caching
 
-The proxy stores `(URL → SHA-256(content)) → verdict` entries. This protects against:
+The detector stores `(URL → SHA-256(content)) → verdict` entries. This protects against:
 
 - **Gist/CDN poisoning:** Server serves clean content first, then swaps to malicious. Digest changes → rescan triggered.
 - **Cache poisoning attacks:** Same URL, different content = different hash = fresh scan.
@@ -25,10 +25,10 @@ The proxy stores `(URL → SHA-256(content)) → verdict` entries. This protects
 
 ```rust
 // First fetch: full scan, verdict persisted
-let result = proxy.fetch("https://example.com/article").await;
+let result = detector.fetch("https://example.com/article").await;
 
 // Second fetch, same content: cache hit, no rescan
-let result = proxy.fetch("https://example.com/article").await;
+let result = detector.fetch("https://example.com/article").await;
 
 // Server changes content: different digest → rescanned
 // (happens automatically, no caller action needed)
@@ -38,7 +38,7 @@ let result = proxy.fetch("https://example.com/article").await;
 
 ```rust
 // Mark a URL+digest as human-approved
-proxy.mark_override(url, &digest).await;
+detector.mark_override(url, &digest).await;
 
 // Future fetches with same digest bypass Blocked verdicts
 // If content changes (different digest), override does NOT apply
@@ -51,7 +51,7 @@ proxy.mark_override(url, &digest).await;
 |-------|----------------|-----------|
 | **Layer 1 — Structural** | Zero-width chars, unicode tags, CSS hiding, base64 blobs | Regex patterns |
 | **Layer 2 — Semantic** | Prompt injection phrases, PII harvesting, exfiltration signals | Aho-Corasick + regex, with discussion-context heuristic |
-| **Layer 3 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to outpost service |
+| **Layer 3 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
 
 Layer 1 and 2 run locally. Layer 3 is optional and non-blocking — if the service is unreachable, L1+L2 results stand.
 
@@ -101,7 +101,7 @@ Four named presets for installation:
 use adversary_detector::{SecurityConfig, SecurityProfile};
 
 let config = SecurityConfig::from_profile(SecurityProfile::Balanced);
-let proxy = OutpostProxy::with_config(config.scanner, logger).await;
+let detector = AdversaryDetector::from_config(config.scanner, logger, rate_limit).await;
 ```
 
 ## Verdicts

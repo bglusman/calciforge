@@ -20,6 +20,7 @@
 //! LOOM_CHECKPOINT_FILE=loom.json RUSTFLAGS="--cfg loom" cargo test --test loom
 //! ```
 
+#![allow(unexpected_cfgs)]
 #![cfg(loom)]
 
 use loom::sync::{Arc, Mutex, RwLock};
@@ -202,7 +203,7 @@ fn test_session_cache_invalidation_pattern() {
             let mut guard = cache.write().unwrap();
             guard.insert("sess1".to_string(), true);
             guard.insert("sess2".to_string(), true);
-            
+
             // Later, invalidate one
             loom::yield_now();
             guard.insert("sess1".to_string(), false);

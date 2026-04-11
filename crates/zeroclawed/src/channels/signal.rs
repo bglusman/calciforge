@@ -78,6 +78,9 @@ use crate::{
     router::Router,
 };
 
+use adversary_detector::middleware::ChannelScanner;
+use adversary_detector::verdict::ScanContext;
+
 // ---------------------------------------------------------------------------
 // Incoming webhook payload types (Signal REST API format)
 // ---------------------------------------------------------------------------
@@ -169,15 +172,7 @@ pub struct SignalChannel {
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
-    // TODO(outpost-proxy): Replace `http_client` with `Arc<OutpostProxy>` once the
-    // channel adapter is migrated to the transparent proxy layer. The `http_client`
-    // here is used exclusively for sending outbound replies to the OpenClaw gateway
-    // (not for fetching external content), so it is exempt from the proxy requirement.
-    // However, any future code paths that fetch external URLs (e.g., link previews,
-    // media downloads) MUST go through `OutpostProxy::fetch` instead of calling this
-    // client directly.
-    //
-    // See: crates/outpost/src/proxy.rs — `OutpostProxy`
+    channel_scanner: Arc<ChannelScanner>,
     http_client: reqwest::Client,
 }
 
@@ -187,6 +182,7 @@ impl SignalChannel {
         router: Arc<Router>,
         command_handler: Arc<CommandHandler>,
         context_store: ContextStore,
+        channel_scanner: Arc<ChannelScanner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -198,8 +194,19 @@ impl SignalChannel {
             router,
             command_handler,
             context_store,
+            channel_scanner,
             http_client,
         }
+    }
+
+    /// Check if message scanning is enabled for this channel.
+    fn scan_enabled(&self) -> bool {
+        self.config
+            .channels
+            .iter()
+            .find(|c| c.kind == "signal")
+            .map(|c| c.scan_messages)
+            .unwrap_or(false)
     }
 
     /// Parse an incoming webhook payload and return all valid inbound messages.
@@ -353,6 +360,49 @@ impl SignalChannel {
 
         // Context key: scoped per identity (phone is the key)
         let chat_key = format!("signal-{}", identity.id);
+
+        // ── Adversary inbound scan ────────────────────────────────────────────
+
+        if self.scan_enabled() {
+            let verdict = self
+                .channel_scanner
+                .scan_text(&text, ScanContext::UserMessage)
+                .await;
+            match &verdict {
+                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                    warn!(
+                        identity = %identity.id,
+                        reason = %reason,
+                        "Signal: inbound message BLOCKED by adversary scan"
+                    );
+                    let channel = self.clone();
+                    let from_owned = from.clone();
+                    let reason_owned = reason.clone();
+                    tokio::spawn(async move {
+                        let reply =
+                            format!("🚫 Message blocked by security scanner: {reason_owned}");
+                        if let Err(e) = channel
+                            .send_reply(
+                                &nzc_endpoint,
+                                nzc_auth_token.as_deref(),
+                                &from_owned,
+                                &reply,
+                            )
+                            .await
+                        {
+                            warn!(from = %from_owned, error = %e, "Signal: failed to send block notice");
+                        }
+                    });
+                    return;
+                }
+                adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                    warn!(identity = %identity.id, reason = %reason, "Signal: inbound message flagged REVIEW — passing with caution");
+                }
+                adversary_detector::verdict::ScanVerdict::Clean => {
+                    debug!(identity = %identity.id, "Signal: inbound scan clean");
+                }
+            }
+        }
 
         // ── Command fast-path ──────────────────────────────────────────────
 
@@ -572,19 +622,32 @@ impl SignalChannel {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                     self.command_handler.record_dispatch(latency_ms);
 
+                    // Outbound scanning dropped — see docs/roadmap/outbound-sensitive-data-detection.md
+                    let final_response = response;
+
                     debug!(
                         identity = %identity_id,
                         agent_id = %agent_id,
-                        response_len = %response.len(),
+                        response_len = %final_response.len(),
                         "Signal: got agent response"
                     );
 
                     // Record exchange in context buffer
-                    self.context_store
-                        .push(&chat_key, &sender_label, &text, &agent_id, &response);
+                    self.context_store.push(
+                        &chat_key,
+                        &sender_label,
+                        &text,
+                        &agent_id,
+                        &final_response,
+                    );
 
                     if let Err(e) = self
-                        .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from, &response)
+                        .send_reply(
+                            &nzc_endpoint,
+                            nzc_auth_token.as_deref(),
+                            &from,
+                            &final_response,
+                        )
                         .await
                     {
                         warn!(
@@ -627,6 +690,7 @@ pub async fn run(
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    channel_scanner: Arc<ChannelScanner>,
 ) -> Result<()> {
     use std::net::SocketAddr;
     use tokio::io::AsyncReadExt;
@@ -672,6 +736,7 @@ pub async fn run(
         router,
         command_handler,
         context_store,
+        channel_scanner,
     ));
 
     let listener = tokio::net::TcpListener::bind(listen_addr)
@@ -829,10 +894,11 @@ pub async fn run(
 /// Normalise a phone number to E.164 format (with leading +).
 fn normalise_phone(num: &str) -> String {
     let trimmed = num.trim();
-    if trimmed.starts_with('+') {
-        trimmed.to_string()
+    let cleaned = trimmed.replace([' ', '-'], "");
+    if cleaned.starts_with('+') {
+        cleaned
     } else {
-        format!("+{trimmed}")
+        format!("+{cleaned}")
     }
 }
 
@@ -879,4 +945,137 @@ async fn send_http_response(
     );
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test normalise_phone helper
+    #[test]
+    fn test_normalise_phone_with_plus() {
+        assert_eq!(normalise_phone("+12154609585"), "+12154609585");
+    }
+
+    #[test]
+    fn test_normalise_phone_without_plus() {
+        assert_eq!(normalise_phone("12154609585"), "+12154609585");
+    }
+
+    #[test]
+    fn test_normalise_phone_with_spaces() {
+        // Function only trims, doesn't strip internal spaces
+        assert_eq!(normalise_phone("  +12154609585  "), "+12154609585");
+        assert_eq!(normalise_phone("  12154609585  "), "+12154609585");
+    }
+
+    #[test]
+    fn test_normalise_phone_preserves_formatting() {
+        // Function strips dashes and internal spaces, ensuring E.164 format
+        assert_eq!(normalise_phone("+1-215-460-9585"), "+12154609585");
+        assert_eq!(normalise_phone("215-460-9585"), "+2154609585");
+        assert_eq!(normalise_phone("+1 215 460 9585"), "+12154609585");
+    }
+
+    #[test]
+    fn test_normalise_phone_empty() {
+        assert_eq!(normalise_phone(""), "+");
+    }
+
+    // Test is_number_allowed helper
+    #[test]
+    fn test_is_number_allowed_exact_match() {
+        let allowed = vec!["+12154609585".to_string()];
+        assert!(is_number_allowed("+12154609585", &allowed));
+    }
+
+    #[test]
+    fn test_is_number_allowed_wildcard() {
+        let allowed = vec!["*".to_string()];
+        assert!(is_number_allowed("+12154609585", &allowed));
+        assert!(is_number_allowed("any-number", &allowed));
+    }
+
+    #[test]
+    fn test_is_number_allowed_not_in_list() {
+        let allowed = vec!["+12154609585".to_string()];
+        assert!(!is_number_allowed("+12157385500", &allowed));
+    }
+
+    #[test]
+    fn test_is_number_allowed_empty_list() {
+        let allowed: Vec<String> = vec![];
+        assert!(!is_number_allowed("+12154609585", &allowed));
+    }
+
+    // Test verify_hmac_sha256 helper
+    #[test]
+    fn test_verify_hmac_sha256_valid() {
+        let secret = "test-secret";
+        let body = "test-message-body";
+
+        // Generate a valid signature
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let sig_bytes = mac.finalize().into_bytes();
+        let sig_hex = hex::encode(sig_bytes);
+
+        // Verify with sha256= prefix
+        let sig_with_prefix = format!("sha256={}", sig_hex);
+        assert!(verify_hmac_sha256(secret, body, &sig_with_prefix));
+
+        // Verify without prefix
+        assert!(verify_hmac_sha256(secret, body, &sig_hex));
+    }
+
+    #[test]
+    fn test_verify_hmac_sha256_invalid_secret() {
+        let body = "test-message-body";
+
+        // Generate signature with one secret
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let mut mac = HmacSha256::new_from_slice("correct-secret".as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let sig_bytes = mac.finalize().into_bytes();
+        let sig_hex = hex::encode(sig_bytes);
+
+        // Verify with different secret
+        assert!(!verify_hmac_sha256("wrong-secret", body, &sig_hex));
+    }
+
+    #[test]
+    fn test_verify_hmac_sha256_invalid_signature_format() {
+        assert!(!verify_hmac_sha256("secret", "body", "not-hex"));
+        assert!(!verify_hmac_sha256("secret", "body", ""));
+    }
+
+    #[test]
+    fn test_verify_hmac_sha256_tampered_body() {
+        let secret = "test-secret";
+        let body = "original-body";
+
+        // Generate signature for original body
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let sig_bytes = mac.finalize().into_bytes();
+        let sig_hex = hex::encode(sig_bytes);
+
+        // Verify against tampered body
+        assert!(!verify_hmac_sha256(secret, "tampered-body", &sig_hex));
+    }
 }

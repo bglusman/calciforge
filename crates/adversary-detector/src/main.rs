@@ -1,4 +1,4 @@
-use adversary_detector::{OutpostScanner, OutpostVerdict, ScanContext, ScannerConfig};
+use adversary_detector::{AdversaryScanner, ScanContext, ScanVerdict, ScannerConfig};
 use axum::{
     extract::Json,
     response::IntoResponse,
@@ -43,15 +43,15 @@ async fn peek(Json(req): Json<PeekRequest>) -> impl IntoResponse {
 /// Scan raw content directly
 async fn scan(Json(req): Json<ScanRequest>) -> impl IntoResponse {
     let config = ScannerConfig::default();
-    let scanner = OutpostScanner::new(config);
+    let scanner = AdversaryScanner::new(config);
     let url = req.url.as_deref().unwrap_or("unknown");
     let ctx = ScanContext::Api;
 
     let verdict = scanner.scan(url, &req.content, ctx).await;
     let (verdict_str, reason) = match &verdict {
-        OutpostVerdict::Clean => ("clean", None),
-        OutpostVerdict::Review { reason } => ("review", Some(reason.clone())),
-        OutpostVerdict::Unsafe { reason } => ("unsafe", Some(reason.clone())),
+        ScanVerdict::Clean => ("clean", None),
+        ScanVerdict::Review { reason } => ("review", Some(reason.clone())),
+        ScanVerdict::Unsafe { reason } => ("unsafe", Some(reason.clone())),
     };
 
     let mut response = json!({
@@ -67,14 +67,14 @@ async fn scan(Json(req): Json<ScanRequest>) -> impl IntoResponse {
 /// Scan content for injection (POST body)
 async fn scan_injection(body: String) -> impl IntoResponse {
     let config = ScannerConfig::default();
-    let scanner = OutpostScanner::new(config);
+    let scanner = AdversaryScanner::new(config);
     let ctx = ScanContext::Exec;
 
     let verdict = scanner.scan("inline", &body, ctx).await;
     let verdict_str = match &verdict {
-        OutpostVerdict::Clean => "clean",
-        OutpostVerdict::Review { .. } => "review",
-        OutpostVerdict::Unsafe { .. } => "unsafe",
+        ScanVerdict::Clean => "clean",
+        ScanVerdict::Review { .. } => "review",
+        ScanVerdict::Unsafe { .. } => "unsafe",
     };
 
     Json(json!({

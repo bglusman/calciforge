@@ -2,6 +2,27 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
+
+/// Configuration for retry behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    #[serde(with = "humantime_serde")]
+    pub base_delay: Duration,
+    #[serde(with = "humantime_serde")]
+    pub max_delay: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(10),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneCliConfig {
@@ -67,5 +88,54 @@ impl OneCliServiceConfig {
                 gemini: std::env::var("GEMINI_BASE_URL").ok(),
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_retry_config_defaults() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.base_delay, Duration::from_millis(100));
+        assert_eq!(config.max_delay, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_onecli_config_defaults() {
+        let config = OneCliConfig::default();
+        assert_eq!(config.url, "http://localhost:8081");
+        assert_eq!(config.agent_id, "default");
+        assert_eq!(config.timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_onecli_config_toml_roundtrip() {
+        let config = OneCliConfig {
+            url: "http://onecli:9090".to_string(),
+            agent_id: "test-agent".to_string(),
+            timeout: Duration::from_secs(60),
+        };
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: OneCliConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.url, config.url);
+        assert_eq!(parsed.agent_id, config.agent_id);
+        assert_eq!(parsed.timeout, config.timeout);
+    }
+
+    #[test]
+    fn test_retry_config_toml_roundtrip() {
+        let config = RetryConfig {
+            max_retries: 5,
+            base_delay: Duration::from_millis(250),
+            max_delay: Duration::from_secs(30),
+        };
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: RetryConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.max_retries, 5);
+        assert_eq!(parsed.base_delay, Duration::from_millis(250));
+        assert_eq!(parsed.max_delay, Duration::from_secs(30));
     }
 }

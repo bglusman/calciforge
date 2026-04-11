@@ -4,7 +4,7 @@
 //! the digest matches, the previously computed verdict is reused without re-scanning.
 //! If the digest has changed the content is rescanned automatically.
 //!
-//! Persistence is via a simple JSON file; the default path is `~/.outpost/digests.json`.
+//! Persistence is via a simple JSON file; the default path is `~/.zeroclawed/digests.json`.
 //! The file is loaded eagerly on construction and flushed after every mutation.
 
 use chrono::{DateTime, Utc};
@@ -14,7 +14,7 @@ use std::{collections::HashMap, path::PathBuf};
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::warn;
 
-use crate::verdict::OutpostVerdict;
+use crate::verdict::ScanVerdict;
 
 // ── ContentDigest ────────────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ pub struct ContentDigest {
     /// SHA-256 hex digest of the content bytes.
     pub sha256: String,
     /// The cached verdict from the last scan of this digest.
-    pub verdict: OutpostVerdict,
+    pub verdict: ScanVerdict,
     /// UTC timestamp of when this entry was last written.
     pub timestamp: DateTime<Utc>,
     /// If `true`, a human explicitly approved this URL+digest.
@@ -53,10 +53,10 @@ impl DigestStore {
         Self { path, entries }
     }
 
-    /// Open the store at the default path: `~/.outpost/digests.json`.
+    /// Open the store at the default path: `~/.zeroclawed/digests.json`.
     pub async fn open_default() -> Self {
         let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-        Self::open(home.join(".outpost/digests.json")).await
+        Self::open(home.join(".zeroclawed/digests.json")).await
     }
 
     /// Look up a URL by exact match. Returns `None` if not found or expired.
@@ -136,6 +136,10 @@ impl DigestStore {
             Ok(mut f) => {
                 if let Err(e) = f.write_all(data.as_bytes()).await {
                     warn!("digest store: write error: {e}");
+                    return;
+                }
+                if let Err(e) = f.sync_all().await {
+                    warn!("digest store: fsync error: {e}");
                 }
             }
             Err(e) => warn!("digest store: open error: {e}"),
@@ -187,7 +191,7 @@ mod tests {
                 "https://example.com",
                 ContentDigest {
                     sha256: digest.clone(),
-                    verdict: OutpostVerdict::Clean,
+                    verdict: ScanVerdict::Clean,
                     timestamp: Utc::now(),
                     override_approved: false,
                 },
@@ -213,7 +217,7 @@ mod tests {
                 "https://example.com/page",
                 ContentDigest {
                     sha256: digest.clone(),
-                    verdict: OutpostVerdict::Unsafe {
+                    verdict: ScanVerdict::Unsafe {
                         reason: "test".into(),
                     },
                     timestamp: Utc::now(),
@@ -249,7 +253,7 @@ mod tests {
                 "https://example.com",
                 ContentDigest {
                     sha256: digest,
-                    verdict: OutpostVerdict::Unsafe {
+                    verdict: ScanVerdict::Unsafe {
                         reason: "test".into(),
                     },
                     timestamp: Utc::now(),
@@ -295,7 +299,7 @@ mod tests {
                 "https://example.com",
                 ContentDigest {
                     sha256: digest.clone(),
-                    verdict: OutpostVerdict::Clean,
+                    verdict: ScanVerdict::Clean,
                     timestamp: Utc::now() - chrono::Duration::seconds(120),
                     override_approved: false,
                 },
@@ -324,7 +328,7 @@ mod tests {
                 "https://example.com",
                 ContentDigest {
                     sha256: digest.clone(),
-                    verdict: OutpostVerdict::Clean,
+                    verdict: ScanVerdict::Clean,
                     timestamp: Utc::now() - chrono::Duration::days(365),
                     override_approved: false,
                 },

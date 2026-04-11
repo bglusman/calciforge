@@ -144,6 +144,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            security: None,
         }
     }
 
@@ -240,5 +241,66 @@ mod tests {
         let cfg = make_config();
         let agent = find_agent("nonexistent", &cfg);
         assert!(agent.is_none());
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_with_empty_identities() {
+        let cfg = PolyConfig {
+            zeroclawed: crate::config::PolyHeader { version: 2 },
+            identities: vec![],
+            agents: vec![],
+            routing: vec![],
+            channels: vec![],
+            permissions: None,
+            memory: None,
+            context: Default::default(),
+            model_shortcuts: vec![],
+            security: None,
+        };
+        assert!(resolve_telegram_sender(8465871195, &cfg).is_none());
+        assert!(default_agent_for("anyone", &cfg).is_none());
+        assert!(find_agent("any", &cfg).is_none());
+    }
+
+    #[test]
+    fn test_resolve_sender_id_as_string_not_integer() {
+        let cfg = make_config();
+        let identity = resolve_channel_sender("telegram", "8465871195", &cfg);
+        assert!(identity.is_some());
+        let identity2 = resolve_channel_sender("telegram", "08465871195", &cfg);
+        assert!(identity2.is_none(), "leading zeros should not match");
+    }
+
+    #[test]
+    fn test_wrong_channel_drops() {
+        let cfg = make_config();
+        let tg = resolve_channel_sender("telegram", "8465871195", &cfg);
+        assert!(tg.is_some());
+        let sig = resolve_channel_sender("signal", "8465871195", &cfg);
+        assert!(sig.is_none());
+    }
+
+    #[test]
+    fn test_is_agent_allowed_empty_means_unrestricted() {
+        let cfg = make_config();
+        assert!(is_agent_allowed("brian", "librarian", &cfg));
+        assert!(is_agent_allowed("brian", "custodian", &cfg));
+        assert!(is_agent_allowed("brian", "anything", &cfg));
+    }
+
+    #[test]
+    fn test_unknown_channel_kind_drops() {
+        let cfg = make_config();
+        let identity = resolve_channel_sender("discord", "8465871195", &cfg);
+        assert!(identity.is_none(), "unknown channel should return None");
+    }
+
+    #[test]
+    fn test_empty_sender_id_drops() {
+        let cfg = make_config();
+        let identity = resolve_channel_sender("telegram", "", &cfg);
+        assert!(identity.is_none(), "empty sender ID should return None");
     }
 }

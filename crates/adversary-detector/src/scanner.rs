@@ -1,16 +1,16 @@
-//! Core outpost scanner: three-layer content inspection pipeline.
+//! Core adversary scanner: three-layer content inspection pipeline.
 
 use crate::extract_host;
 
 use crate::patterns::*;
-use crate::verdict::{OutpostVerdict, ScanContext};
+use crate::verdict::{ScanContext, ScanVerdict};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Configuration for the outpost scanner and transparent proxy.
+/// Configuration for the adversary scanner and transparent proxy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScannerConfig {
-    /// Optional URL of the shared ZeroClawed outpost HTTP service.
+    /// Optional URL of the shared ZeroClawed adversary HTTP service.
     /// If `None` or unreachable, layers 1+2 run locally only.
     pub service_url: Option<String>,
     /// Ratio threshold: if discussion_signals / injection_signals > this,
@@ -21,7 +21,7 @@ pub struct ScannerConfig {
     #[serde(default = "ScannerConfig::default_min_signals")]
     pub min_signals_for_ratio: usize,
     /// Path to the persistent digest store JSON file.
-    /// Defaults to `~/.outpost/digests.json` when `None`.
+    /// Defaults to `~/.zeroclawed/digests.json` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest_store_path: Option<PathBuf>,
     /// When `true`, `Review` verdicts from the proxy automatically pass through
@@ -75,13 +75,13 @@ impl ScannerConfig {
     }
 }
 
-/// The outpost scanner — runs all layers and returns a verdict.
-pub struct OutpostScanner {
+/// The adversary scanner — runs all layers and returns a verdict.
+pub struct AdversaryScanner {
     config: ScannerConfig,
     client: reqwest::Client,
 }
 
-impl OutpostScanner {
+impl AdversaryScanner {
     /// Create a new scanner with the given config.
     pub fn new(config: ScannerConfig) -> Self {
         Self {
@@ -103,7 +103,7 @@ impl OutpostScanner {
     /// Runs layers 1 → 2 locally. Optionally calls the shared HTTP service (layer 3).
     /// If the HTTP service is unreachable, layers 1+2 results stand — scanning is
     /// **never** skipped due to service unavailability.
-    pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> OutpostVerdict {
+    pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> ScanVerdict {
         // Layer 1: structural
         if let Some(v) = self.layer1_structural(content) {
             return v;
@@ -120,31 +120,31 @@ impl OutpostScanner {
         layer2
     }
 
-    fn layer1_structural(&self, content: &str) -> Option<OutpostVerdict> {
+    fn layer1_structural(&self, content: &str) -> Option<ScanVerdict> {
         if RE_ZERO_WIDTH.is_match(content) {
-            return Some(OutpostVerdict::Unsafe {
+            return Some(ScanVerdict::Unsafe {
                 reason: "zero-width invisible characters detected".into(),
             });
         }
         if RE_UNICODE_TAGS.is_match(content) {
-            return Some(OutpostVerdict::Unsafe {
+            return Some(ScanVerdict::Unsafe {
                 reason: "Unicode tag characters (U+E0000 range) detected".into(),
             });
         }
         if RE_CSS_HIDING.is_match(content) {
-            return Some(OutpostVerdict::Review {
+            return Some(ScanVerdict::Review {
                 reason: "CSS content-hiding pattern detected".into(),
             });
         }
         if RE_BASE64_BLOB.is_match(content) {
-            return Some(OutpostVerdict::Review {
+            return Some(ScanVerdict::Review {
                 reason: "large base64 blob detected (possible hidden payload)".into(),
             });
         }
         None
     }
 
-    fn layer2_semantic(&self, content: &str) -> OutpostVerdict {
+    fn layer2_semantic(&self, content: &str) -> ScanVerdict {
         let injection_count = count_injection_signals(content);
         let discussion_count = count_discussion_signals(content);
 
@@ -156,31 +156,31 @@ impl OutpostScanner {
                     > self.config.discussion_ratio_threshold;
 
             if is_discussion {
-                return OutpostVerdict::Review {
+                return ScanVerdict::Review {
                     reason: format!(
                         "injection phrases found but discussion context detected \
                          ({injection_count} injection, {discussion_count} discussion signals)"
                     ),
                 };
             }
-            return OutpostVerdict::Unsafe {
+            return ScanVerdict::Unsafe {
                 reason: format!("prompt injection phrases detected ({injection_count} match(es))"),
             };
         }
 
         if RE_PII_HARVEST.is_match(content) {
-            return OutpostVerdict::Unsafe {
+            return ScanVerdict::Unsafe {
                 reason: "PII harvesting pattern detected".into(),
             };
         }
 
         if RE_EXFILTRATION.is_match(content) {
-            return OutpostVerdict::Unsafe {
+            return ScanVerdict::Unsafe {
                 reason: "exfiltration signal detected".into(),
             };
         }
 
-        OutpostVerdict::Clean
+        ScanVerdict::Clean
     }
 
     async fn layer3_http(
@@ -189,7 +189,7 @@ impl OutpostScanner {
         url: &str,
         content: &str,
         ctx: ScanContext,
-    ) -> Option<OutpostVerdict> {
+    ) -> Option<ScanVerdict> {
         #[derive(Serialize)]
         struct Req<'a> {
             url: &'a str,
@@ -213,24 +213,24 @@ impl OutpostScanner {
         let data: Resp = resp.json().await.ok()?;
 
         Some(match data.verdict.as_str() {
-            "clean" => OutpostVerdict::Clean,
-            "review" => OutpostVerdict::Review {
+            "clean" => ScanVerdict::Clean,
+            "review" => ScanVerdict::Review {
                 reason: data.reason.unwrap_or_else(|| "remote review".into()),
             },
-            _ => OutpostVerdict::Unsafe {
+            _ => ScanVerdict::Unsafe {
                 reason: data.reason.unwrap_or_else(|| "remote unsafe".into()),
             },
         })
     }
 
     /// Merge two verdicts: stricter wins (Unsafe > Review > Clean).
-    fn merge(a: OutpostVerdict, b: OutpostVerdict) -> OutpostVerdict {
+    fn merge(a: ScanVerdict, b: ScanVerdict) -> ScanVerdict {
         match (&a, &b) {
-            (OutpostVerdict::Unsafe { .. }, _) => a,
-            (_, OutpostVerdict::Unsafe { .. }) => b,
-            (OutpostVerdict::Review { .. }, _) => a,
-            (_, OutpostVerdict::Review { .. }) => b,
-            _ => OutpostVerdict::Clean,
+            (ScanVerdict::Unsafe { .. }, _) => a,
+            (_, ScanVerdict::Unsafe { .. }) => b,
+            (ScanVerdict::Review { .. }, _) => a,
+            (_, ScanVerdict::Review { .. }) => b,
+            _ => ScanVerdict::Clean,
         }
     }
 }
@@ -239,8 +239,8 @@ impl OutpostScanner {
 mod tests {
     use super::*;
 
-    fn scanner() -> OutpostScanner {
-        OutpostScanner::new(ScannerConfig::default())
+    fn scanner() -> AdversaryScanner {
+        AdversaryScanner::new(ScannerConfig::default())
     }
 
     #[tokio::test]
@@ -253,7 +253,7 @@ mod tests {
                 ScanContext::WebFetch,
             )
             .await;
-        assert_eq!(v, OutpostVerdict::Clean);
+        assert_eq!(v, ScanVerdict::Clean);
     }
 
     #[tokio::test]
@@ -331,7 +331,7 @@ mod tests {
             .await;
         // Should be Review (not Unsafe) due to discussion context
         assert!(
-            matches!(v, OutpostVerdict::Review { .. }),
+            matches!(v, ScanVerdict::Review { .. }),
             "discussion context should downgrade Unsafe to Review"
         );
     }
@@ -345,7 +345,7 @@ mod tests {
             .scan("https://example.com", &content, ScanContext::WebFetch)
             .await;
         assert!(
-            matches!(v, OutpostVerdict::Review { .. }),
+            matches!(v, ScanVerdict::Review { .. }),
             "base64 blob should trigger Review"
         );
     }
@@ -353,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn test_fallback_when_service_unreachable() {
         // Scanner with a bogus service URL should still run layers 1+2
-        let s = OutpostScanner::new(ScannerConfig {
+        let s = AdversaryScanner::new(ScannerConfig {
             service_url: Some("http://127.0.0.1:19999".into()),
             ..Default::default()
         });
@@ -367,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn test_borderline_unicode_mixed_content() {
         // Test case: mixed legitimate unicode with suspicious zero-width chars
-        let s = OutpostScanner::new(ScannerConfig {
+        let s = AdversaryScanner::new(ScannerConfig {
             // More permissive ratio for testing
             discussion_ratio_threshold: 0.5,
             ..Default::default()
@@ -395,7 +395,7 @@ mod tests {
             .await;
         // Injection phrase present + discussion context - should be Review, not Unsafe
         assert!(
-            matches!(v2, OutpostVerdict::Review { .. }),
+            matches!(v2, ScanVerdict::Review { .. }),
             "injection + discussion context should downgrade to review, got {:?}",
             v2
         );
@@ -403,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_borderline_base64_with_legitimate_use() {
-        let s = OutpostScanner::new(ScannerConfig::default());
+        let s = AdversaryScanner::new(ScannerConfig::default());
 
         // Small base64 (legitimate, like an icon)
         let small_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ";
@@ -420,7 +420,7 @@ mod tests {
             .scan("https://example.com", &content2, ScanContext::WebFetch)
             .await;
         assert!(
-            matches!(v2, OutpostVerdict::Review { .. }),
+            matches!(v2, ScanVerdict::Review { .. }),
             "large base64 should be review"
         );
 
@@ -430,14 +430,14 @@ mod tests {
             .scan("https://example.com", &content3, ScanContext::WebFetch)
             .await;
         assert!(
-            matches!(v3, OutpostVerdict::Review { .. }),
+            matches!(v3, ScanVerdict::Review { .. }),
             "large base64 with context should be review"
         );
     }
 
     #[tokio::test]
     async fn test_discussion_context_edge_cases() {
-        let s = OutpostScanner::new(ScannerConfig::default());
+        let s = AdversaryScanner::new(ScannerConfig::default());
 
         // Edge case: discussion signals but weak injection signals
         let content = "The word 'ignore' appears here but it's just normal text. \
@@ -466,40 +466,40 @@ mod tests {
 
         // Unsafe wins over everything
         assert!(matches!(
-            OutpostScanner::merge(
-                OutpostVerdict::Unsafe { reason: "a".into() },
-                OutpostVerdict::Clean
+            AdversaryScanner::merge(
+                ScanVerdict::Unsafe { reason: "a".into() },
+                ScanVerdict::Clean
             ),
-            OutpostVerdict::Unsafe { .. }
+            ScanVerdict::Unsafe { .. }
         ));
         assert!(matches!(
-            OutpostScanner::merge(
-                OutpostVerdict::Clean,
-                OutpostVerdict::Unsafe { reason: "b".into() }
+            AdversaryScanner::merge(
+                ScanVerdict::Clean,
+                ScanVerdict::Unsafe { reason: "b".into() }
             ),
-            OutpostVerdict::Unsafe { .. }
+            ScanVerdict::Unsafe { .. }
         ));
 
         // Review wins over clean
         assert!(matches!(
-            OutpostScanner::merge(
-                OutpostVerdict::Review { reason: "a".into() },
-                OutpostVerdict::Clean
+            AdversaryScanner::merge(
+                ScanVerdict::Review { reason: "a".into() },
+                ScanVerdict::Clean
             ),
-            OutpostVerdict::Review { .. }
+            ScanVerdict::Review { .. }
         ));
         assert!(matches!(
-            OutpostScanner::merge(
-                OutpostVerdict::Clean,
-                OutpostVerdict::Review { reason: "b".into() }
+            AdversaryScanner::merge(
+                ScanVerdict::Clean,
+                ScanVerdict::Review { reason: "b".into() }
             ),
-            OutpostVerdict::Review { .. }
+            ScanVerdict::Review { .. }
         ));
 
         // Clean + clean = clean
         assert!(matches!(
-            OutpostScanner::merge(OutpostVerdict::Clean, OutpostVerdict::Clean),
-            OutpostVerdict::Clean
+            AdversaryScanner::merge(ScanVerdict::Clean, ScanVerdict::Clean),
+            ScanVerdict::Clean
         ));
     }
 
