@@ -1,0 +1,70 @@
+# Docker Compose for Delegation Integration Tests
+#
+# Spins up mock agents that simulate delegation scenarios:
+# - planner: Delegates coding tasks to coder
+# - coder: Responds with code
+# - reviewer: Reviews code (chained from coder)
+
+version: '3.8'
+
+services:
+  # Mock OpenAI-compatible API for planner agent
+  planner:
+    build:
+      context: ./mock-agents
+      dockerfile: Dockerfile
+    environment:
+      - AGENT_TYPE=planner
+      - PORT=8080
+    ports:
+      - "18080:8080"
+    networks:
+      - delegation-test
+
+  # Mock OpenAI-compatible API for coder agent
+  coder:
+    build:
+      context: ./mock-agents
+      dockerfile: Dockerfile
+    environment:
+      - AGENT_TYPE=coder
+      - PORT=8080
+    ports:
+      - "18081:8080"
+    networks:
+      - delegation-test
+
+  # Mock OpenAI-compatible API for reviewer agent
+  reviewer:
+    build:
+      context: ./mock-agents
+      dockerfile: Dockerfile
+    environment:
+      - AGENT_TYPE=reviewer
+      - PORT=8080
+    ports:
+      - "18082:8080"
+    networks:
+      - delegation-test
+
+  # ZeroClawed instance for testing
+  zeroclawed:
+    build:
+      context: ../../..  # Repo root
+      dockerfile: crates/zeroclawed/tests/delegation/Dockerfile.zeroclawed
+    volumes:
+      - ./fixtures:/config:ro
+    environment:
+      - RUST_LOG=debug
+    ports:
+      - "18797:18797"
+    networks:
+      - delegation-test
+    depends_on:
+      - planner
+      - coder
+      - reviewer
+
+networks:
+  delegation-test:
+    driver: bridge

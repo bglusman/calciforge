@@ -1,0 +1,65 @@
+version = 2
+
+# Delegation test configuration
+[delegation]
+max_depth = 5
+recent_turns = 3
+
+# Planner agent - can delegate to anyone
+[[agents]]
+id = "planner"
+kind = "openclaw-http"
+endpoint = "http://planner:8080/v1"
+api_key = "test-key"
+aliases = ["plan"]
+
+[agents.delegation]
+delegates = "any"
+accepts_from = "any"
+
+# Coder agent - can only be called by planner
+[[agents]]
+id = "coder"
+kind = "openclaw-http"
+endpoint = "http://coder:8080/v1"
+api_key = "test-key"
+aliases = ["code"]
+
+[agents.delegation]
+delegates = ["reviewer"]  # Can only delegate to reviewer
+accepts_from = ["planner"]  # Only planner can call me
+
+# Reviewer agent - terminal (no delegation)
+[[agents]]
+id = "reviewer"
+kind = "openclaw-http"
+endpoint = "http://reviewer:8080/v1"
+api_key = "test-key"
+aliases = ["review"]
+
+[agents.delegation]
+delegates = "none"  # Can't delegate further
+accepts_from = ["planner", "coder"]  # Planner or coder can call me
+
+# Echo agent - for basic connectivity testing
+[[agents]]
+id = "echo"
+kind = "openclaw-http"
+endpoint = "http://planner:8080/v1"  # Reuse planner for echo
+api_key = "test-key"
+aliases = ["echo"]
+
+[agents.delegation]
+delegates = "none"
+accepts_from = "any"
+
+# Default identity routing
+[[identities]]
+id = "test-user"
+name = "Test User"
+routing = { default_agent = "echo", allowed_agents = ["*"] }
+
+# Telegram channel (for testing - disabled in docker)
+[[channels]]
+kind = "telegram"
+enabled = false
