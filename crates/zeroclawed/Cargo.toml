@@ -18,6 +18,11 @@ name = "e2e"
 path = "tests/e2e/mod.rs"
 harness = true
 
+[[test]]
+name = "loom"
+path = "tests/loom.rs"
+harness = true
+
 [dependencies]
 axum = "0.7"
 
@@ -50,6 +55,9 @@ teloxide = { version = "0.13", features = ["macros", "ctrlc_handler"] }
 anyhow = "1"
 thiserror = "1"
 
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -65,7 +73,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 # Home directory expansion
 home = "0.5"
 
-# Outpost module (shared workspace crate)
+# Adversary detector module (shared workspace crate)
 adversary-detector = { path = "../adversary-detector" }
 
 # TUI wizard

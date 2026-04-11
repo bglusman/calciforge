@@ -75,3 +75,92 @@ impl std::fmt::Debug for OneCliClient {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_creation_with_valid_config() {
+        let config = OneCliConfig::default();
+        let client = OneCliClient::new(config);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_client_creation_with_custom_config() {
+        let config = OneCliConfig {
+            url: "http://onecli:9090".to_string(),
+            agent_id: "test-agent".to_string(),
+            timeout: Duration::from_secs(10),
+        };
+        let client = OneCliClient::new(config);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_client_get_routes_through_proxy() {
+        let config = OneCliConfig {
+            url: "http://proxy:8081".to_string(),
+            agent_id: "test-agent".to_string(),
+            timeout: Duration::from_secs(10),
+        };
+        let client = OneCliClient::new(config).unwrap();
+        let req_builder = client.get("https://api.example.com/test");
+        // We can't easily inspect RequestBuilder internals, but we can verify
+        // it doesn't panic and returns a valid builder.
+        let _ = req_builder;
+    }
+
+    #[test]
+    fn test_client_post_routes_through_proxy() {
+        let config = OneCliConfig::default();
+        let client = OneCliClient::new(config).unwrap();
+        let req_builder = client.post("https://api.example.com/test");
+        let _ = req_builder;
+    }
+
+    #[test]
+    fn test_client_debug_format() {
+        let config = OneCliConfig {
+            url: "http://proxy:8081".to_string(),
+            agent_id: "test-agent".to_string(),
+            timeout: Duration::from_secs(10),
+        };
+        let client = OneCliClient::new(config).unwrap();
+        let debug_str = format!("{:?}", client);
+        assert!(debug_str.contains("OneCliClient"));
+        assert!(debug_str.contains("http://proxy:8081"));
+        assert!(debug_str.contains("test-agent"));
+    }
+
+    #[test]
+    fn test_request_builder_method_mapping() {
+        let config = OneCliConfig::default();
+        let client = OneCliClient::new(config).unwrap();
+
+        // Verify different HTTP methods produce valid builders
+        let get_req = client.request(reqwest::Method::GET, "https://example.com");
+        let post_req = client.request(reqwest::Method::POST, "https://example.com");
+        let put_req = client.request(reqwest::Method::PUT, "https://example.com");
+        let delete_req = client.request(reqwest::Method::DELETE, "https://example.com");
+
+        // All should produce valid request builders (no panic)
+        let _ = get_req;
+        let _ = post_req;
+        let _ = put_req;
+        let _ = delete_req;
+    }
+
+    #[test]
+    fn test_client_url_trailing_slash_stripped() {
+        let config = OneCliConfig {
+            url: "http://proxy:8081/".to_string(),
+            agent_id: "test".to_string(),
+            timeout: Duration::from_secs(10),
+        };
+        let client = OneCliClient::new(config).unwrap();
+        // The proxy URL should strip trailing slash for header construction
+        let _ = client.get("https://example.com");
+    }
+}

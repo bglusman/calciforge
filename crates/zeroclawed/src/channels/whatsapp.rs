@@ -77,6 +77,9 @@ use crate::{
     router::Router,
 };
 
+use adversary_detector::middleware::ChannelScanner;
+use adversary_detector::verdict::ScanContext;
+
 // ---------------------------------------------------------------------------
 // Incoming webhook payload types
 // ---------------------------------------------------------------------------
@@ -159,15 +162,7 @@ pub struct WhatsAppChannel {
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
-    // TODO(outpost-proxy): Replace `http_client` with `Arc<OutpostProxy>` once the
-    // channel adapter is migrated to the transparent proxy layer. The `http_client`
-    // here is used exclusively for sending outbound replies to the NZC gateway
-    // (not for fetching external content), so it is exempt from the proxy requirement.
-    // However, any future code paths that fetch external URLs (e.g., link previews,
-    // media downloads) MUST go through `OutpostProxy::fetch` instead of calling this
-    // client directly.
-    //
-    // See: crates/outpost/src/proxy.rs — `OutpostProxy`
+    channel_scanner: Arc<ChannelScanner>,
     http_client: reqwest::Client,
 }
 
@@ -177,6 +172,7 @@ impl WhatsAppChannel {
         router: Arc<Router>,
         command_handler: Arc<CommandHandler>,
         context_store: ContextStore,
+        channel_scanner: Arc<ChannelScanner>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -188,8 +184,19 @@ impl WhatsAppChannel {
             router,
             command_handler,
             context_store,
+            channel_scanner,
             http_client,
         }
+    }
+
+    /// Check if message scanning is enabled for this channel.
+    fn scan_enabled(&self) -> bool {
+        self.config
+            .channels
+            .iter()
+            .find(|c| c.kind == "whatsapp")
+            .map(|c| c.scan_messages)
+            .unwrap_or(false)
     }
 
     /// Parse an incoming webhook payload and return all valid inbound messages.
@@ -342,6 +349,50 @@ impl WhatsAppChannel {
 
         // Context key: scoped per identity (no chat_id for WA, phone is the key)
         let chat_key = format!("whatsapp-{}", identity.id);
+
+        // ── Adversary inbound scan ────────────────────────────────────────────
+
+        if self.scan_enabled() {
+            let verdict = self
+                .channel_scanner
+                .scan_text(&text, ScanContext::UserMessage)
+                .await;
+            match &verdict {
+                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                    warn!(
+                        identity = %identity.id,
+                        reason = %reason,
+                        "WhatsApp: inbound message BLOCKED by adversary scan"
+                    );
+                    let channel = self.clone();
+                    let from_owned = from.clone();
+                    let reason_owned = reason.clone();
+                    tokio::spawn(async move {
+                        let reply =
+                            format!("🚫 Message blocked by security scanner: {reason_owned}");
+                        if let Err(e) = channel
+                            .send_reply(
+                                &nzc_endpoint,
+                                nzc_auth_token.as_deref(),
+                                &from_owned,
+                                &reply,
+                            )
+                            .await
+                        {
+                            warn!(from = %from_owned, error = %e, "WhatsApp: failed to send block notice");
+                        }
+                    });
+                    return;
+                }
+                adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                    warn!(identity = %identity.id, reason = %reason, "WhatsApp: inbound message flagged REVIEW — passing with caution");
+                    // Pass through but logged
+                }
+                adversary_detector::verdict::ScanVerdict::Clean => {
+                    debug!(identity = %identity.id, "WhatsApp: inbound scan clean");
+                }
+            }
+        }
 
         // ── Command fast-path ──────────────────────────────────────────────
 
@@ -561,19 +612,32 @@ impl WhatsAppChannel {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                     self.command_handler.record_dispatch(latency_ms);
 
+                    // Outbound scanning dropped — see docs/roadmap/outbound-sensitive-data-detection.md
+                    let final_response = response;
+
                     debug!(
                         identity = %identity_id,
                         agent_id = %agent_id,
-                        response_len = %response.len(),
+                        response_len = %final_response.len(),
                         "WhatsApp: got agent response"
                     );
 
                     // Record exchange in context buffer
-                    self.context_store
-                        .push(&chat_key, &sender_label, &text, &agent_id, &response);
+                    self.context_store.push(
+                        &chat_key,
+                        &sender_label,
+                        &text,
+                        &agent_id,
+                        &final_response,
+                    );
 
                     if let Err(e) = self
-                        .send_reply(&nzc_endpoint, nzc_auth_token.as_deref(), &from, &response)
+                        .send_reply(
+                            &nzc_endpoint,
+                            nzc_auth_token.as_deref(),
+                            &from,
+                            &final_response,
+                        )
                         .await
                     {
                         warn!(
@@ -615,6 +679,7 @@ pub async fn run(
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    channel_scanner: Arc<ChannelScanner>,
 ) -> Result<()> {
     use std::net::SocketAddr;
     use tokio::io::AsyncReadExt;
@@ -660,6 +725,7 @@ pub async fn run(
         router,
         command_handler,
         context_store,
+        channel_scanner,
     ));
 
     let listener = tokio::net::TcpListener::bind(listen_addr)
@@ -935,6 +1001,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            security: None,
         })
     }
 
@@ -947,11 +1014,21 @@ mod tests {
             tmp.path().to_path_buf(),
         ));
         let context_store = ContextStore::new(20, 5);
+        let security_config = adversary_detector::profiles::SecurityConfig::balanced();
+        let scanner =
+            adversary_detector::scanner::AdversaryScanner::new(security_config.scanner.clone());
+        let audit_logger = adversary_detector::audit::AuditLogger::new("test-wa");
+        let channel_scanner = Arc::new(adversary_detector::middleware::ChannelScanner::new(
+            scanner,
+            audit_logger,
+            security_config,
+        ));
         Arc::new(WhatsAppChannel::new(
             config,
             router,
             command_handler,
             context_store,
+            channel_scanner,
         ))
     }
 

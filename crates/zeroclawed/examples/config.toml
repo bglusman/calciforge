@@ -1,15 +1,13 @@
 # Example ZeroClawed Configuration with ACP Support
 # Copy to ~/.zeroclawed/config.toml and customize
 
-version = 2
-
 [zeroclawed]
-log_level = "info"
-bind_address = "127.0.0.1:8080"
+version = 1
 
-[zeroclawed.outpost]
-enabled = true
-url = "http://127.0.0.1:9800"
+# ── Security / Adversary Detection ─────────────────────────────────
+[security]
+profile = "balanced"  # open | balanced | hardened | paranoid
+scan_outbound = false
 
 # ============================================================================
 # Identity Registry - Who can use ZeroClawed

@@ -1,16 +1,16 @@
-//! Core verdict and context types for outpost scanning.
+//! Core verdict and context types for adversary scanning.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The result of an outpost scan.
+/// The result of a security scan.
 ///
 /// Determines how tool output is handled before it reaches the model context.
 /// `Unsafe` content must never be returned to the model — the middleware returns
 /// an error string instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "lowercase")]
-pub enum OutpostVerdict {
+pub enum ScanVerdict {
     /// Content passed all checks. Pass through to the model unchanged.
     Clean,
     /// Content is ambiguous or mildly suspicious. Pass through with a warning annotation.
@@ -25,22 +25,22 @@ pub enum OutpostVerdict {
     },
 }
 
-impl OutpostVerdict {
-    /// Returns `true` if this verdict is [`OutpostVerdict::Clean`].
+impl ScanVerdict {
+    /// Returns `true` if this verdict is [`ScanVerdict::Clean`].
     pub fn is_clean(&self) -> bool {
-        matches!(self, OutpostVerdict::Clean)
+        matches!(self, ScanVerdict::Clean)
     }
 
-    /// Returns `true` if this verdict is [`OutpostVerdict::Unsafe`].
+    /// Returns `true` if this verdict is [`ScanVerdict::Unsafe`].
     pub fn is_unsafe(&self) -> bool {
-        matches!(self, OutpostVerdict::Unsafe { .. })
+        matches!(self, ScanVerdict::Unsafe { .. })
     }
 
     /// Returns the reason string, if any.
     pub fn reason(&self) -> Option<&str> {
         match self {
-            OutpostVerdict::Clean => None,
-            OutpostVerdict::Review { reason } | OutpostVerdict::Unsafe { reason } => {
+            ScanVerdict::Clean => None,
+            ScanVerdict::Review { reason } | ScanVerdict::Unsafe { reason } => {
                 Some(reason.as_str())
             }
         }
@@ -49,19 +49,19 @@ impl OutpostVerdict {
     /// Returns the short verdict name for logging and serialization.
     pub fn name(&self) -> &'static str {
         match self {
-            OutpostVerdict::Clean => "clean",
-            OutpostVerdict::Review { .. } => "review",
-            OutpostVerdict::Unsafe { .. } => "unsafe",
+            ScanVerdict::Clean => "clean",
+            ScanVerdict::Review { .. } => "review",
+            ScanVerdict::Unsafe { .. } => "unsafe",
         }
     }
 }
 
-impl fmt::Display for OutpostVerdict {
+impl fmt::Display for ScanVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OutpostVerdict::Clean => write!(f, "clean"),
-            OutpostVerdict::Review { reason } => write!(f, "review({})", reason),
-            OutpostVerdict::Unsafe { reason } => write!(f, "unsafe({})", reason),
+            ScanVerdict::Clean => write!(f, "clean"),
+            ScanVerdict::Review { reason } => write!(f, "review({})", reason),
+            ScanVerdict::Unsafe { reason } => write!(f, "unsafe({})", reason),
         }
     }
 }
@@ -80,8 +80,8 @@ pub enum ScanContext {
     Exec,
     /// Response body from a third-party API call.
     Api,
-    /// Outbound message from agent to user.
-    Outbound,
+    /// Inbound user message arriving via channel.
+    UserMessage,
 }
 
 impl ScanContext {
@@ -93,7 +93,7 @@ impl ScanContext {
             ScanContext::Email => "email_fetch",
             ScanContext::Exec => "exec",
             ScanContext::Api => "api",
-            ScanContext::Outbound => "outbound",
+            ScanContext::UserMessage => "user_message",
         }
     }
 }

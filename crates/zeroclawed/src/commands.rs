@@ -1005,6 +1005,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            security: None,
         }
     }
 
@@ -1196,6 +1197,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            security: None,
         });
         let h = CommandHandler::new(config);
         let reply = h.handle("!agents").unwrap();

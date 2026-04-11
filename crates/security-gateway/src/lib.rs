@@ -8,4 +8,5 @@ pub mod scanner;
 pub use agent_config::{AgentConfig, AgentsConfig, ProxyPolicy};
 pub use config::{GatewayConfig, Verdict};
 pub use credentials::CredentialInjector;
+pub use proxy::SecurityProxy;
 pub use scanner::{ExfilScanner, InjectionScanner};

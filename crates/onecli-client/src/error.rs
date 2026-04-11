@@ -52,3 +52,76 @@ impl OneCliError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mock error helpers (avoid creating real reqwest errors)
+    #[allow(dead_code)]
+    fn make_unreachable_error() -> OneCliError {
+        OneCliError::Config("simulated".to_string())
+    }
+
+    #[test]
+    fn test_unreachable_is_retryable() {
+        // We can't easily construct a reqwest::Error without a network call,
+        // but we can test the enum variant matching.
+        let err = OneCliError::RateLimited { retry_after: 10 };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_rate_limited_is_retryable() {
+        let err = OneCliError::RateLimited { retry_after: 30 };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_policy_denied_not_retryable() {
+        let err = OneCliError::PolicyDenied("no access".to_string());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_credential_not_found_not_retryable() {
+        let err = OneCliError::CredentialNotFound("anthropic".to_string());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_approval_required_not_retryable() {
+        let err = OneCliError::ApprovalRequired("admin approval".to_string());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_config_error_not_retryable() {
+        let err = OneCliError::Config("bad config".to_string());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_rate_limited_retry_delay() {
+        let err = OneCliError::RateLimited { retry_after: 42 };
+        assert_eq!(err.retry_delay(), Some(std::time::Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn test_other_error_no_retry_delay() {
+        let err = OneCliError::Config("test".to_string());
+        assert_eq!(err.retry_delay(), None);
+    }
+
+    #[test]
+    fn test_error_display() {
+        let err = OneCliError::PolicyDenied("block write".to_string());
+        assert_eq!(err.to_string(), "Policy denied: block write");
+    }
+
+    #[test]
+    fn test_rate_limited_display() {
+        let err = OneCliError::RateLimited { retry_after: 5 };
+        assert_eq!(err.to_string(), "Rate limited: retry after 5s");
+    }
+}

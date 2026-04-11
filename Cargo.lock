@@ -5053,15 +5053,18 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "rcgen",
+ "regex",
  "reqwest 0.12.28",
  "rustls",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
@@ -7122,6 +7125,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "clap",
  "console 0.15.11",
  "dialoguer",
  "futures-util",

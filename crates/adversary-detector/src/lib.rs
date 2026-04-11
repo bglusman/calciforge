@@ -1,26 +1,26 @@
-//! ZeroClawed — Outpost external content scanning module.
+//! ZeroClawed — Adversary external content scanning module.
 //!
 //! Provides injection-resistant scanning of external content before it reaches
-//! the model context. Three-layer defence: structural → semantic → HTTP service.
+//! the model context. Three-layer defense: structural → semantic → HTTP service.
 //!
 //! # Architecture
 //!
 //! ```text
-//! [External source] → [OutpostProxy::fetch] → [OutpostScanner] → [OutpostVerdict]
+//! [External source] → [AdversaryDetector::fetch] → [AdversaryScanner] → [ScanVerdict]
 //!                                                      ↓
 //!                                             [DigestStore]
 //!                                              (cache hit?)
 //!                                                  ↓ no
-//!                                         [OutpostMiddleware]
+//!                                         [ChannelScanner]
 //!                                                  ↓
-//!                                   Clean  → OutpostFetchResult::Ok
-//!                                   Review → OutpostFetchResult::Review (with annotation)
-//!                                   Unsafe → OutpostFetchResult::Blocked (content withheld)
+//!                                   Clean  → AdversaryFetchResult::Ok
+//!                                   Review → AdversaryFetchResult::Review (with annotation)
+//!                                   Unsafe → AdversaryFetchResult::Blocked (content withheld)
 //! ```
 //!
 //! # Transparent proxy
 //!
-//! All external content access MUST go through [`proxy::OutpostProxy::fetch`].
+//! All external content access MUST go through [`proxy::AdversaryDetector::fetch`].
 //! Tools never hold raw HTTP clients or touch raw external content directly.
 //! The proxy fetches, hashes, checks the [`digest::DigestStore`] cache, and
 //! only rescans when the content digest has changed.
@@ -28,7 +28,7 @@
 //! # Tool deprecation note
 //!
 //! `web_fetch` and `safe_fetch` were previously separate tools with different
-//! safety semantics. With all fetches routed through [`proxy::OutpostProxy`]
+//! safety semantics. With all fetches routed through [`proxy::AdversaryDetector`]
 //! they are now equivalent — every fetch is a safe fetch. `safe_fetch` is kept
 //! in the intercepted-tools list for backwards compatibility but is considered
 //! **deprecated**; callers should consolidate on `web_fetch`.
@@ -64,8 +64,8 @@ pub fn extract_host(url: &str) -> &str {
 
 pub use audit::AuditLogger;
 pub use digest::{sha256_hex, ContentDigest, DigestStore};
-pub use middleware::{HookOutcome, InterceptedToolSet, OutpostMiddleware, ToolHook, ToolResult};
+pub use middleware::{ChannelScanner, HookOutcome, InterceptedToolSet, ToolHook, ToolResult};
 pub use profiles::{RateLimitConfig, SecurityConfig, SecurityProfile};
-pub use proxy::{OutpostFetchResult, OutpostProxy};
-pub use scanner::{OutpostScanner, ScannerConfig};
-pub use verdict::{OutpostVerdict, ScanContext};
+pub use proxy::{AdversaryDetector, AdversaryFetchResult};
+pub use scanner::{AdversaryScanner, ScannerConfig};
+pub use verdict::{ScanContext, ScanVerdict};

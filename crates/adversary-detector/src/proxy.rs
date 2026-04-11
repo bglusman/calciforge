@@ -1,7 +1,7 @@
-//! Outpost transparent proxy layer.
+//! Adversary transparent detector layer.
 //!
-//! All external content access MUST go through [`OutpostProxy::fetch`].
-//! Tools never hold raw HTTP clients; they call this proxy, which:
+//! All external content access MUST go through [`AdversaryDetector::fetch`].
+//! Tools never hold raw HTTP clients; they call this detector, which:
 //!
 //! 1. Fetches the URL over HTTPS using an internal reqwest client.
 //! 2. Computes the SHA-256 digest of the response body.
@@ -9,11 +9,11 @@
 //!    cached verdict **without** a full rescan (cache hit).
 //! 4. If the digest changed or is new → runs the full scanner pipeline.
 //! 5. Stores the new entry in the [`DigestStore`] for future calls.
-//! 6. Returns an [`OutpostFetchResult`] that the caller handles.
+//! 6. Returns an [`AdversaryFetchResult`] that the caller handles.
 //!
 //! # Human overrides
 //!
-//! [`OutpostProxy::mark_override`] records that a human explicitly approved a
+//! [`AdversaryDetector::mark_override`] records that a human explicitly approved a
 //! URL+digest pair. Subsequent fetches for that pair bypass `Blocked` verdicts.
 //!
 //! # No raw HTTP outside this module
@@ -34,14 +34,14 @@ use tracing::{debug, info, warn};
 use crate::audit::AuditLogger;
 use crate::digest::{sha256_hex, ContentDigest, DigestStore};
 use crate::profiles::RateLimitConfig;
-use crate::scanner::{OutpostScanner, ScannerConfig};
-use crate::verdict::{OutpostVerdict, ScanContext};
+use crate::scanner::{AdversaryScanner, ScannerConfig};
+use crate::verdict::{ScanContext, ScanVerdict};
 
-// ── OutpostFetchResult ───────────────────────────────────────────────────────
+// ── AdversaryFetchResult ───────────────────────────────────────────────────────
 
 /// The result of a proxied fetch, including the content digest for traceability.
 #[derive(Debug, Clone)]
-pub enum OutpostFetchResult {
+pub enum AdversaryFetchResult {
     /// Content passed all checks. Safe to use in model context.
     Ok {
         /// The response body.
@@ -62,7 +62,7 @@ pub enum OutpostFetchResult {
     },
     /// Content is ambiguous — passed through with a warning annotation prepended.
     Review {
-        /// The response body with a `[⚠ OUTPOST REVIEW: …]` annotation prepended.
+        /// The response body with a `[⚠ ADVERSARY REVIEW: …]` annotation prepended.
         content: String,
         /// Human-readable reason for the review flag.
         reason: String,
@@ -71,35 +71,35 @@ pub enum OutpostFetchResult {
     },
 }
 
-impl OutpostFetchResult {
-    /// Returns `true` if the result is [`OutpostFetchResult::Ok`].
+impl AdversaryFetchResult {
+    /// Returns `true` if the result is [`AdversaryFetchResult::Ok`].
     pub fn is_ok(&self) -> bool {
-        matches!(self, OutpostFetchResult::Ok { .. })
+        matches!(self, AdversaryFetchResult::Ok { .. })
     }
 
-    /// Returns `true` if the result is [`OutpostFetchResult::Blocked`].
+    /// Returns `true` if the result is [`AdversaryFetchResult::Blocked`].
     pub fn is_blocked(&self) -> bool {
-        matches!(self, OutpostFetchResult::Blocked { .. })
+        matches!(self, AdversaryFetchResult::Blocked { .. })
     }
 
     /// Returns the digest regardless of variant.
     pub fn digest(&self) -> &str {
         match self {
-            OutpostFetchResult::Ok { digest, .. }
-            | OutpostFetchResult::Blocked { digest, .. }
-            | OutpostFetchResult::Review { digest, .. } => digest,
+            AdversaryFetchResult::Ok { digest, .. }
+            | AdversaryFetchResult::Blocked { digest, .. }
+            | AdversaryFetchResult::Review { digest, .. } => digest,
         }
     }
 }
 
-// ── OutpostProxy ─────────────────────────────────────────────────────────────
+// ── AdversaryDetector ───────────────────────────────────────────────────────────
 
-/// Transparent proxy wrapping [`OutpostScanner`] + [`DigestStore`] + [`AuditLogger`].
+/// Transparent detector wrapping [`AdversaryScanner`] + [`DigestStore`] + [`AuditLogger`].
 ///
-/// Construct via [`OutpostProxy::new`] or [`OutpostProxy::from_config`].
+/// Construct via [`AdversaryDetector::new`] or [`AdversaryDetector::from_config`].
 ///
 /// ```rust,no_run
-/// use adversary_detector::proxy::OutpostProxy;
+/// use adversary_detector::proxy::AdversaryDetector;
 /// use adversary_detector::scanner::ScannerConfig;
 /// use adversary_detector::audit::AuditLogger;
 /// use adversary_detector::profiles::RateLimitConfig;
@@ -108,8 +108,8 @@ impl OutpostFetchResult {
 ///     let config = ScannerConfig::default();
 ///     let logger = AuditLogger::new("my-agent");
 ///     let rate_limit = RateLimitConfig::default();
-///     let proxy = OutpostProxy::from_config(config, logger, rate_limit).await;
-///     let result = proxy.fetch("https://example.com").await;
+///     let detector = AdversaryDetector::from_config(config, logger, rate_limit).await;
+///     let result = detector.fetch("https://example.com").await;
 /// }
 /// ```
 /// Maximum number of tracked sources before LRU eviction kicks in.
@@ -183,8 +183,8 @@ impl RateLimiter {
     }
 }
 
-pub struct OutpostProxy {
-    scanner: OutpostScanner,
+pub struct AdversaryDetector {
+    scanner: AdversaryScanner,
     store: Arc<Mutex<DigestStore>>,
     logger: AuditLogger,
     client: reqwest::Client,
@@ -192,10 +192,10 @@ pub struct OutpostProxy {
     rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
-impl OutpostProxy {
+impl AdversaryDetector {
     /// Construct from a pre-built scanner, store, and logger.
     pub fn new(
-        scanner: OutpostScanner,
+        scanner: AdversaryScanner,
         store: DigestStore,
         logger: AuditLogger,
         override_on_review: bool,
@@ -215,7 +215,7 @@ impl OutpostProxy {
     }
 
     /// Construct from a [`ScannerConfig`] and logger, opening the digest store
-    /// at the configured path (or the default `~/.outpost/digests.json`).
+    /// at the configured path (or the default `~/.zeroclawed/digests.json`).
     pub async fn from_config(
         config: ScannerConfig,
         logger: AuditLogger,
@@ -224,21 +224,21 @@ impl OutpostProxy {
         let override_on_review = config.override_on_review;
         let store_path = config.digest_store_path.clone().unwrap_or_else(|| {
             let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-            home.join(".outpost/digests.json")
+            home.join(".zeroclawed/digests.json")
         });
         let store = DigestStore::open(store_path).await;
-        let scanner = OutpostScanner::new(config);
+        let scanner = AdversaryScanner::new(config);
         Self::new(scanner, store, logger, override_on_review, rate_limit)
     }
 
-    /// Fetch `url` through the outpost proxy.
+    /// Fetch `url` through the adversary proxy.
     ///
     /// - If the URL was previously seen with the same content digest, returns the
     ///   cached verdict (no rescan).
     /// - If the digest changed or is new, runs the full scanner pipeline and
     ///   persists the result.
     /// - Human-overridden URL+digest pairs bypass `Blocked`/`Review` verdicts.
-    pub async fn fetch(&self, url: &str) -> OutpostFetchResult {
+    pub async fn fetch(&self, url: &str) -> AdversaryFetchResult {
         // Step 0: rate limiting check
         {
             let mut limiter = self.rate_limiter.lock().await;
@@ -249,8 +249,8 @@ impl OutpostProxy {
                     .cooldown_remaining(source)
                     .map(|d| format!(" Try again in {:?}.", d))
                     .unwrap_or_default();
-                warn!(url, "outpost: rate limit exceeded");
-                return OutpostFetchResult::Blocked {
+                warn!(url, "adversary: rate limit exceeded");
+                return AdversaryFetchResult::Blocked {
                     reason: format!("Rate limit exceeded.{}", cooldown),
                     digest: String::new(),
                     url: url.to_owned(),
@@ -261,11 +261,11 @@ impl OutpostProxy {
         // Step 1: skip_protection — bypass ALL scanning for trusted domains
         // Check before HTTP fetch to avoid touching untrusted servers entirely.
         if self.scanner.config().is_skip_protected(url) {
-            debug!(url, "outpost: skip_protection bypass");
+            debug!(url, "adversary: skip_protection bypass");
             let content = match self.http_get(url).await {
                 Ok(c) => c,
                 Err(e) => {
-                    return OutpostFetchResult::Blocked {
+                    return AdversaryFetchResult::Blocked {
                         reason: format!("HTTP fetch failed: {e}"),
                         digest: String::new(),
                         url: url.to_owned(),
@@ -274,16 +274,16 @@ impl OutpostProxy {
             };
             let digest = sha256_hex(&content);
             self.logger
-                .log(ScanContext::WebFetch, url, &OutpostVerdict::Clean, false)
+                .log(ScanContext::WebFetch, url, &ScanVerdict::Clean, false)
                 .await;
-            return OutpostFetchResult::Ok { content, digest };
+            return AdversaryFetchResult::Ok { content, digest };
         }
 
         // Step 2: fetch raw content
         let content = match self.http_get(url).await {
             Ok(c) => c,
             Err(e) => {
-                return OutpostFetchResult::Blocked {
+                return AdversaryFetchResult::Blocked {
                     reason: format!("HTTP fetch failed: {e}"),
                     digest: String::new(),
                     url: url.to_owned(),
@@ -299,7 +299,7 @@ impl OutpostProxy {
             if let Some(entry) = store.get(url, ttl) {
                 if entry.sha256 == digest {
                     // Cache hit — same content as last time
-                    debug!(url, digest = %digest, "outpost: digest cache hit");
+                    debug!(url, digest = %digest, "adversary: digest cache hit");
                     self.logger
                         .log(ScanContext::WebFetch, url, &entry.verdict, true)
                         .await;
@@ -312,9 +312,9 @@ impl OutpostProxy {
                     );
                 }
                 // Digest changed — fall through to rescan
-                info!(url, "outpost: digest changed, rescanning");
+                info!(url, "adversary: digest changed, rescanning");
             } else if ttl.is_some() {
-                debug!(url, "outpost: digest cache miss (expired or not found)");
+                debug!(url, "adversary: digest cache miss (expired or not found)");
             }
         }
 
@@ -362,37 +362,37 @@ impl OutpostProxy {
         resp.text().await
     }
 
-    /// Convert a [`OutpostVerdict`] into an [`OutpostFetchResult`], applying
+    /// Convert a [`ScanVerdict`] into an [`AdversaryFetchResult`], applying
     /// the human-override bypass when `override_approved` is set.
     fn result_from_verdict(
         &self,
-        verdict: OutpostVerdict,
+        verdict: ScanVerdict,
         content: String,
         digest: String,
         url: &str,
         override_approved: bool,
-    ) -> OutpostFetchResult {
+    ) -> AdversaryFetchResult {
         // Human override: treat any verdict as Ok for an approved URL+digest
         if override_approved {
-            debug!(url, "outpost: human override in effect, passing through");
-            return OutpostFetchResult::Ok { content, digest };
+            debug!(url, "adversary: human override in effect, passing through");
+            return AdversaryFetchResult::Ok { content, digest };
         }
 
         match verdict {
-            OutpostVerdict::Clean => OutpostFetchResult::Ok { content, digest },
-            OutpostVerdict::Review { reason } => {
+            ScanVerdict::Clean => AdversaryFetchResult::Ok { content, digest },
+            ScanVerdict::Review { reason } => {
                 if self.override_on_review {
                     // Config says Review verdicts auto-pass
-                    OutpostFetchResult::Ok { content, digest }
+                    AdversaryFetchResult::Ok { content, digest }
                 } else {
-                    OutpostFetchResult::Review {
-                        content: format!("[⚠ OUTPOST REVIEW: {reason}]\n{content}"),
+                    AdversaryFetchResult::Review {
+                        content: format!("[⚠ ADVERSARY REVIEW: {reason}]\n{content}"),
                         reason,
                         digest,
                     }
                 }
             }
-            OutpostVerdict::Unsafe { reason } => OutpostFetchResult::Blocked {
+            ScanVerdict::Unsafe { reason } => AdversaryFetchResult::Blocked {
                 // IMPORTANT: never include `content` here — it may contain injection payloads.
                 reason,
                 digest,
@@ -420,14 +420,14 @@ mod tests {
         p
     }
 
-    async fn proxy_with_store(store_path: PathBuf) -> OutpostProxy {
+    async fn detector_with_store(store_path: PathBuf) -> AdversaryDetector {
         let config = ScannerConfig {
             digest_store_path: Some(store_path),
             ..Default::default()
         };
-        OutpostProxy::from_config(
+        AdversaryDetector::from_config(
             config,
-            AuditLogger::new("test-proxy"),
+            AuditLogger::new("test-detector"),
             RateLimitConfig::default(),
         )
         .await
@@ -447,10 +447,10 @@ mod tests {
             .await;
 
         let path = tmp_store_path();
-        let proxy = proxy_with_store(path).await;
+        let detector = detector_with_store(path).await;
 
         let url = format!("{}/page", mock_server.uri());
-        let r1 = proxy.fetch(&url).await;
+        let r1 = detector.fetch(&url).await;
         // Wiremock holds the mock, so we manually re-serve for a second call in isolation.
         // For this test we verify the store populated correctly on first call.
         assert!(r1.is_ok(), "first fetch should be Ok");
@@ -458,8 +458,8 @@ mod tests {
         // Now verify the store has the entry (same digest means cache hit on next run)
         let digest1 = r1.digest().to_owned();
         assert!(!digest1.is_empty());
-        // The same proxy instance has the entry in its in-memory store
-        let store = proxy.store.lock().await;
+        // The same detector instance has the entry in its in-memory store
+        let store = detector.store.lock().await;
         let entry = store.get(&url, None).expect("entry should be stored");
         assert_eq!(entry.sha256, digest1);
     }
@@ -490,13 +490,13 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/changing", mock_server.uri());
 
-        let r1 = proxy.fetch(&url).await;
+        let r1 = detector.fetch(&url).await;
         assert!(r1.is_ok(), "first fetch clean content should be Ok");
 
-        let r2 = proxy.fetch(&url).await;
+        let r2 = detector.fetch(&url).await;
         assert!(
             r2.is_blocked(),
             "second fetch with injection content should be Blocked"
@@ -516,11 +516,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/override-test", mock_server.uri());
 
         // First fetch: should be blocked
-        let r1 = proxy.fetch(&url).await;
+        let r1 = detector.fetch(&url).await;
         assert!(
             r1.is_blocked(),
             "injection content should initially be blocked"
@@ -528,10 +528,10 @@ mod tests {
         let digest = r1.digest().to_owned();
 
         // Human approves this URL+digest
-        proxy.mark_override(&url, &digest).await;
+        detector.mark_override(&url, &digest).await;
 
         // Second fetch: same content, same digest, now has override → should pass
-        let r2 = proxy.fetch(&url).await;
+        let r2 = detector.fetch(&url).await;
         assert!(r2.is_ok(), "override should bypass the block verdict");
     }
 
@@ -549,12 +549,12 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/injected", mock_server.uri());
-        let result = proxy.fetch(&url).await;
+        let result = detector.fetch(&url).await;
 
         match result {
-            OutpostFetchResult::Blocked { reason, .. } => {
+            AdversaryFetchResult::Blocked { reason, .. } => {
                 // The reason must describe the issue but must NOT contain the injection payload
                 assert!(
                     !reason.contains("IGNORE PREVIOUS INSTRUCTIONS"),
@@ -584,18 +584,18 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let proxy = proxy_with_store(tmp_store_path()).await;
+        let detector = detector_with_store(tmp_store_path()).await;
         let url = format!("{}/review-page", mock_server.uri());
-        let result = proxy.fetch(&url).await;
+        let result = detector.fetch(&url).await;
 
         match result {
-            OutpostFetchResult::Review { content, .. } => {
+            AdversaryFetchResult::Review { content, .. } => {
                 assert!(
-                    content.contains("OUTPOST REVIEW"),
+                    content.contains("ADVERSARY REVIEW"),
                     "review annotation missing"
                 );
             }
-            OutpostFetchResult::Ok { .. } => {} // clean is also acceptable
+            AdversaryFetchResult::Ok { .. } => {} // clean is also acceptable
             other => panic!("unexpected result: {other:?}"),
         }
     }
