@@ -15,8 +15,8 @@
 #![allow(unused)]
 #![cfg(loom)]
 
-use loom::sync::{Arc, Mutex, RwLock};
 use loom::sync::atomic::{AtomicUsize, Ordering};
+use loom::sync::{Arc, Mutex, RwLock};
 use loom::thread;
 use std::collections::HashMap;
 
