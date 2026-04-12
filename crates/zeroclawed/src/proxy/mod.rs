@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::sync::Arc;
 
@@ -18,6 +18,7 @@ use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
 use crate::config::ProxyConfig;
 
+mod alloy_router;
 mod auth;
 mod backend;
 mod handlers;
@@ -34,6 +35,7 @@ pub struct ProxyState {
     pub provider_registry: Arc<ProviderRegistry>,
     pub config: ProxyConfig,
     pub backend: Arc<dyn backend::OneCliBackend>,
+    pub alloy_router: Option<Arc<alloy_router::AlloyRouter>>,
 }
 
 /// Start the Alloy proxy HTTP server
@@ -82,11 +84,42 @@ pub async fn start_proxy_server(
     let backend = backend::create_backend(&backend_config)
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;
 
+    // Create AlloyRouter if we have API keys
+    let alloy_router = {
+        // Try to get API keys from config or environment
+        let deepseek_api_key = config.backend_api_key.clone();
+        
+        // Try to get Kimi API key from environment
+        let kimi_api_key = std::env::var("KIMI_API_KEY").ok();
+        
+        // Only create AlloyRouter if we have at least one API key
+        if deepseek_api_key.is_some() || kimi_api_key.is_some() {
+            match alloy_router::AlloyRouter::default_with_backends(
+                deepseek_api_key,
+                kimi_api_key,
+            ) {
+                Ok(router) => {
+                    info!("Created AlloyRouter with {} provider(s)", 
+                        router.providers_count());
+                    Some(Arc::new(router))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create AlloyRouter, falling back to legacy backend");
+                    None
+                }
+            }
+        } else {
+            info!("No API keys available for AlloyRouter, using legacy backend only");
+            None
+        }
+    };
+
     let state = ProxyState {
         alloy_manager,
         provider_registry,
         config: config.clone(),
         backend,
+        alloy_router,
     };
 
     let app = Router::new()

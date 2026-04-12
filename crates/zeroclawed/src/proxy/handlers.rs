@@ -145,7 +145,24 @@ async fn try_provider(
     model: &str,
     req: &ChatCompletionRequest,
 ) -> anyhow::Result<ChatCompletionResponse> {
-    // Use backend to execute request
+    // Try AlloyRouter first if available
+    if let Some(router) = &state.alloy_router {
+        match router.chat_completion(
+            model.to_string(),
+            req.messages.clone(),
+            req.stream.unwrap_or(false),
+            req.tools.clone(),
+            req.tool_choice.clone(),
+        ).await {
+            Ok(response) => return Ok(response),
+            Err(e) => {
+                debug!(error = %e, "AlloyRouter failed, falling back to legacy backend");
+                // Fall through to legacy backend
+            }
+        }
+    }
+    
+    // Fall back to legacy backend
     match state.backend.chat_completion(
         model.to_string(),
         req.messages.clone(),
@@ -182,33 +199,56 @@ pub async fn list_models(
         });
     }
 
-    // Try to get models from backend
-    match state.backend.list_models().await {
-        Ok(backend_models) => {
-            for model_info in backend_models {
-                models.push(ModelInfo {
-                    id: model_info.id,
-                    object: "model".to_string(),
-                    created: now,
-                    owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
-                });
+    // Try to get models from AlloyRouter first if available
+    let mut got_models = false;
+    if let Some(router) = &state.alloy_router {
+        match router.list_models().await {
+            Ok(router_models) => {
+                for model_info in router_models {
+                    models.push(ModelInfo {
+                        id: model_info.id,
+                        object: "model".to_string(),
+                        created: now,
+                        owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
+                    });
+                }
+                got_models = true;
+            }
+            Err(e) => {
+                debug!(error = %e, "AlloyRouter list_models failed, falling back");
             }
         }
-        Err(e) => {
-            warn!(error = %e, "Failed to get models from backend, using fallback");
-            // Fallback to hardcoded models
-            models.push(ModelInfo {
-                id: "gpt-4".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "openai".to_string(),
-            });
-            models.push(ModelInfo {
-                id: "claude-3-5-sonnet".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "anthropic".to_string(),
-            });
+    }
+    
+    // Fall back to legacy backend if AlloyRouter didn't provide models
+    if !got_models {
+        match state.backend.list_models().await {
+            Ok(backend_models) => {
+                for model_info in backend_models {
+                    models.push(ModelInfo {
+                        id: model_info.id,
+                        object: "model".to_string(),
+                        created: now,
+                        owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
+                    });
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to get models from backend, using fallback");
+                // Fallback to hardcoded models
+                models.push(ModelInfo {
+                    id: "gpt-4".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "openai".to_string(),
+                });
+                models.push(ModelInfo {
+                    id: "claude-3-5-sonnet".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "anthropic".to_string(),
+                });
+            }
         }
     }
 
