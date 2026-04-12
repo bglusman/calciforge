@@ -3,10 +3,12 @@
 //! Reads from `~/.zeroclawed/config.toml`. Supports the full config schema
 //! as defined in the spec (Section 3).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+pub mod validator;
 
 // ---------------------------------------------------------------------------
 // Schema types
@@ -55,6 +57,11 @@ pub struct PolyConfig {
     /// Defaults to balanced if not specified in config.
     #[serde(default)]
     pub security: Option<SecuritySectionConfig>,
+
+    /// `[proxy]` — OpenAI-compatible HTTP API server settings.
+    /// Enables agents to use ZeroClawed as a model provider.
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
 }
 
 /// A model shortcut entry (`[[model_shortcuts]]`).
@@ -299,6 +306,153 @@ impl Default for SecuritySectionConfig {
     }
 }
 
+/// `[proxy]` section — OpenAI-compatible HTTP API server.
+/// 
+/// Enables ZeroClawed to act as a model provider that agents can connect to.
+/// Supports alloy-based routing, graceful degradation, and streaming.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyConfig {
+    /// Whether the proxy server is enabled. Default: false.
+    #[serde(default = "default_proxy_enabled")]
+    pub enabled: bool,
+    
+    /// Bind address for the HTTP server. Default: "127.0.0.1:8080"
+    #[serde(default = "default_proxy_bind")]
+    pub bind: String,
+    
+    /// API key for authenticating requests (optional).
+    /// If set, all requests must include `Authorization: Bearer <key>`
+    #[serde(default)]
+    pub api_key: Option<String>,
+    
+    /// Path to file containing API key (alternative to `api_key`).
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
+    
+    /// Request timeout in seconds. Default: 300
+    #[serde(default = "default_proxy_timeout")]
+    pub timeout_seconds: u64,
+    
+    /// Maximum request body size in MB. Default: 50
+    #[serde(default = "default_proxy_max_body_mb")]
+    pub max_body_mb: usize,
+    
+    /// Agent authentication and model access control.
+    /// If empty, all agents can access all models (using global api_key if set).
+    #[serde(default)]
+    pub agents: Vec<ProxyAgentConfig>,
+    
+    /// Default model access policy when no agent match.
+    /// "allow_all" = any model, "deny_all" = no models, "allow_configured" = only configured agents
+    #[serde(default = "default_proxy_default_policy")]
+    pub default_policy: ProxyAccessPolicy,
+    
+    /// Backend type for proxy: "mock", "http", "embedded", "library"
+    /// Default: "mock" (for testing)
+    #[serde(default = "default_proxy_backend_type")]
+    pub backend_type: String,
+    
+    /// Backend API key (for HTTP backend)
+    #[serde(default)]
+    pub backend_api_key: Option<String>,
+    
+    /// Backend URL (for HTTP backend)
+    /// Default: "https://api.deepseek.com/v1" (DeepSeek API)
+    #[serde(default = "default_proxy_backend_url")]
+    pub backend_url: String,
+}
+
+/// Agent-specific configuration for proxy access.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyAgentConfig {
+    /// Unique agent identifier (e.g., "lucien", "claude-code")
+    pub id: String,
+    
+    /// Display name for the agent
+    #[serde(default)]
+    pub name: Option<String>,
+    
+    /// API key for this agent (optional - can use global api_key)
+    #[serde(default)]
+    pub api_key: Option<String>,
+    
+    /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier")
+    /// If empty and default_policy is "allow_all", all models are allowed
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    
+    /// Blocked model patterns (takes precedence over allowed)
+    #[serde(default)]
+    pub blocked_models: Vec<String>,
+    
+    /// Rate limit: requests per minute (0 = unlimited)
+    #[serde(default)]
+    pub rate_limit_rpm: u32,
+    
+    /// Rate limit: tokens per minute (0 = unlimited)
+    #[serde(default)]
+    pub rate_limit_tpm: u32,
+}
+
+/// Default access policy for unconfigured agents.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyAccessPolicy {
+    /// Allow all models (default)
+    #[default]
+    AllowAll,
+    /// Deny all models
+    DenyAll,
+    /// Only allow models configured for specific agents
+    AllowConfigured,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_proxy_enabled(),
+            bind: default_proxy_bind(),
+            api_key: None,
+            api_key_file: None,
+            timeout_seconds: default_proxy_timeout(),
+            max_body_mb: default_proxy_max_body_mb(),
+            agents: Vec::new(),
+            default_policy: default_proxy_default_policy(),
+            backend_type: default_proxy_backend_type(),
+            backend_api_key: None,
+            backend_url: default_proxy_backend_url(),
+        }
+    }
+}
+
+fn default_proxy_enabled() -> bool {
+    false
+}
+
+fn default_proxy_bind() -> String {
+    "127.0.0.1:8080".to_string()
+}
+
+fn default_proxy_timeout() -> u64 {
+    300
+}
+
+fn default_proxy_max_body_mb() -> usize {
+    50
+}
+
+fn default_proxy_default_policy() -> ProxyAccessPolicy {
+    ProxyAccessPolicy::AllowAll
+}
+
+fn default_proxy_backend_type() -> String {
+    "mock".to_string()
+}
+
+fn default_proxy_backend_url() -> String {
+    "https://api.deepseek.com/v1".to_string()
+}
+
 /// `[context]` section — conversation context ring buffer settings.
 ///
 /// Omitting the section from config.toml uses all defaults (enabled, 20/5).
@@ -335,11 +489,37 @@ impl Default for ContextConfig {
 // ---------------------------------------------------------------------------
 
 /// Load the PolyConfig from an explicit path.
+/// 
+/// Validates the configuration before returning it, catching common errors
+/// like duplicate IDs, invalid references, and malformed settings.
 pub fn load_config_from(path: &PathBuf) -> Result<PolyConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading config file: {}", path.display()))?;
+    
+    // Validate TOML syntax first
+    validator::validate_toml_syntax(&raw)
+        .with_context(|| format!("validating TOML syntax: {}", path.display()))?;
+    
+    // Parse the config
     let config: PolyConfig =
         toml::from_str(&raw).with_context(|| format!("parsing config file: {}", path.display()))?;
+    
+    // Run semantic validation
+    let validation = validator::validate_config(&config);
+    
+    if !validation.is_valid() {
+        let error_msg = format!(
+            "Configuration validation failed:\n{}",
+            validation.errors.join("\n")
+        );
+        bail!(error_msg);
+    }
+    
+    // Log warnings if any
+    for warning in &validation.warnings {
+        tracing::warn!("Config warning: {}", warning);
+    }
+    
     Ok(config)
 }
 

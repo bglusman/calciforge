@@ -1,0 +1,143 @@
+# ZeroClawed Configuration for VM 210
+# Includes alloy configurations for model blending/fallback
+
+[zeroclawed]
+version = 1
+
+# ============================================================================
+# PROXY CONFIGURATION - OpenAI-compatible API
+# ============================================================================
+
+[proxy]
+enabled = true
+bind = "0.0.0.0:8083"
+api_key = "test-key-123"
+
+# Default models available through the proxy
+[[proxy.models]]
+id = "deepseek-chat"
+provider = "deepseek"
+upstream_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[proxy.models]]
+id = "deepseek-reasoner"
+provider = "deepseek"
+upstream_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+# ============================================================================
+# ALLOY CONFIGURATIONS - Model Blending/Fallback Groups
+# ============================================================================
+
+# Alloy 1: Fast & Cheap - Weighted toward cheaper models
+[[alloys]]
+id = "fast-alloy"
+name = "Fast & Cheap"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 80
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 20
+
+# Alloy 2: Reasoning Heavy - For complex tasks
+[[alloys]]
+id = "reasoning-alloy"
+name = "Reasoning Heavy"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 90
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 10
+
+# Alloy 3: Balanced - Round-robin for even distribution
+[[alloys]]
+id = "balanced-alloy"
+name = "Balanced Round-Robin"
+strategy = "round_robin"
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 1
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 1
+
+# Alloy 4: Fallback Chain - Priority order
+[[alloys]]
+id = "fallback-alloy"
+name = "Fallback Priority"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 100
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 50
+
+# ============================================================================
+# MODEL SHORTCUTS - Quick aliases
+# ============================================================================
+
+[[model_shortcuts]]
+alias = "fast"
+model = "deepseek-chat"
+
+[[model_shortcuts]]
+alias = "reason"
+model = "deepseek-reasoner"
+
+[[model_shortcuts]]
+alias = "fast-blend"
+model = "alloy:fast-alloy"
+
+[[model_shortcuts]]
+alias = "reason-blend"
+model = "alloy:reasoning-alloy"
+
+[[model_shortcuts]]
+alias = "balanced"
+model = "alloy:balanced-alloy"
+
+[[model_shortcuts]]
+alias = "fallback"
+model = "alloy:fallback-alloy"
+
+# ============================================================================
+# CHANNELS
+# ============================================================================
+
+[[channels]]
+kind = "mock"
+enabled = true
+
+# ============================================================================
+# IDENTITY REGISTRY
+# ============================================================================
+
+[[identities]]
+id = "brian"
+display_name = "Brian"
+aliases = [
+  { channel = "signal", id = "+12154609585" },
+]
+role = "owner"
+
+# ============================================================================
+# SECURITY
+# ============================================================================
+
+[security]
+profile = "balanced"
+scan_outbound = false

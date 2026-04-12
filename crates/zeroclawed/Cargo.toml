@@ -88,12 +88,20 @@ chrono = { version = "0.4", features = ["serde"] }
 # Random number generation (for alloy weighted selection)
 rand = "0.9"
 
+# UUID generation for API responses
+uuid = { version = "1", features = ["v4"] }
+
 # Property-based testing (optional, enable with --features hegel)
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
+
+[lints.rust]
+# Enable check-cfg for loom conditional compilation
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+futures-util = "0.3"
 loom = { version = "0.7", features = ["checkpoint"] }
 mockito = "1.5"
 proptest = "1.5"

@@ -66,7 +66,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use crate::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -1025,6 +1025,7 @@ mod tests {
             model_shortcuts: vec![],
             alloys: vec![],
             security: None,
+            proxy: None,
         })
     }
 

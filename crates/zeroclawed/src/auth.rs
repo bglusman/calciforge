@@ -146,6 +146,7 @@ mod tests {
             model_shortcuts: vec![],
             alloys: vec![],
             security: None,
+            proxy: None,
         }
     }
 
@@ -260,6 +261,7 @@ mod tests {
             model_shortcuts: vec![],
             alloys: vec![],
             security: None,
+            proxy: None,
         };
         assert!(resolve_telegram_sender(8465871195, &cfg).is_none());
         assert!(default_agent_for("anyone", &cfg).is_none());

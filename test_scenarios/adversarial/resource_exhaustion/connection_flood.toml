@@ -1,0 +1,70 @@
+name = "Connection Flood Attack"
+description = "Attempt to exhaust connection pool with rapid requests"
+category = "adversarial.resource_exhaustion"
+priority = "high"
+
+[setup]
+config = "test_simple_direct.toml"
+channels = ["mock"]
+agents = ["test-agent"]
+models = ["deepseek-chat"]
+
+[attack_parameters]
+requests_per_second = 100
+duration_seconds = 10
+concurrent_connections = 50
+
+[scenario]
+steps = [
+    { action = "start_connection_flood", 
+      rate = "$attack_parameters.requests_per_second",
+      duration = "$attack_parameters.duration_seconds",
+      concurrent = "$attack_parameters.concurrent_connections"
+    },
+    { action = "monitor_resources", interval = "1s" },
+    { action = "wait", duration = "$attack_parameters.duration_seconds" },
+    { action = "stop_attack" }
+]
+
+[monitoring_metrics]
+resources = [
+    "connection_count",
+    "memory_usage_mb",
+    "cpu_percent",
+    "response_time_p95"
+]
+
+thresholds = [
+    { metric = "connection_count", max = 100 },
+    { metric = "memory_usage_mb", max = 512 },
+    { metric = "cpu_percent", max = 90 },
+    { metric = "response_time_p95", max = 5000 }
+]
+
+[assertions]
+all_of = [
+    "no_connection_pool_exhaustion",
+    "memory_usage_within_limits",
+    "cpu_usage_within_limits",
+    "service_remains_responsive",
+    "legitimate_requests_not_blocked"
+]
+
+[recovery_test]
+steps = [
+    { action = "wait", duration = "30s" },
+    { action = "verify_connections_drained" },
+    { action = "send_legitimate_request" },
+    { action = "verify_response_received" }
+]
+
+[expected_outcome]
+result = "resilient"  # System should handle gracefully
+max_duration = "45s"  # Attack + recovery
+allowed_degradation = ["increased_response_time"]
+
+[metadata]
+author = "Performance Team"
+created = "2026-04-11"
+tags = ["dos", "resource-exhaustion", "performance", "adversarial"]
+cve_references = ["CWE-400", "CWE-770"]

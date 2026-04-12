@@ -33,7 +33,7 @@
 //! ```
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use crate::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Data types

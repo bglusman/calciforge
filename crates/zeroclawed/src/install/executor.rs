@@ -28,8 +28,9 @@
 //! [`ClawInstallResult`].
 
 use anyhow::Result;
-use std::sync::Arc;
 use tracing::{error, info, warn};
+
+use crate::sync::Arc;
 
 use super::{
     cli::InstallArgs,

@@ -25,9 +25,9 @@
 
 #[cfg(not(feature = "channel-matrix"))]
 pub async fn run(
-    config: std::sync::Arc<crate::config::PolyConfig>,
-    _router: std::sync::Arc<crate::router::Router>,
-    _command_handler: std::sync::Arc<crate::commands::CommandHandler>,
+    config: crate::sync::Arc<crate::config::PolyConfig>,
+    _router: crate::sync::Arc<crate::router::Router>,
+    _command_handler: crate::sync::Arc<crate::commands::CommandHandler>,
     _context_store: crate::context::ContextStore,
 ) -> anyhow::Result<()> {
     let has_matrix = config
@@ -64,9 +64,10 @@ mod inner {
         },
         Client as MatrixSdkClient, LoopCtrl, Room, SessionMeta, SessionTokens,
     };
-    use std::sync::Arc;
     use tokio::sync::Mutex;
     use tracing::{debug, info, warn};
+
+    use crate::sync::Arc;
 
     use crate::{
         auth::{find_agent, resolve_channel_sender},

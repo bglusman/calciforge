@@ -1,0 +1,44 @@
+# Minimal test config for Proxy POC
+
+[zeroclawed]
+version = 1
+
+# Enable proxy server
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+
+# Simple identity for testing
+[[identities]]
+id = "test-user"
+display_name = "Test User"
+role = "owner"
+
+# Simple alloy for testing
+[[alloys]]
+id = "free-tier"
+name = "Free Tier Alloy"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "kimi-free"
+weight = 70
+
+[[alloys.constituents]]
+model = "gemini-free"  
+weight = 30
+
+# Dummy channel to keep server running
+[[channels]]
+kind = "telegram"
+enabled = true
+bot_token = "dummy:token"
+
+# Proxy agents configuration
+[[proxy.agents]]
+id = "test-agent"
+name = "Test Agent"
+api_key = "test-key-123"
+allowed_models = ["*"]  # Allow all models
+
+default_policy = "allow_all"

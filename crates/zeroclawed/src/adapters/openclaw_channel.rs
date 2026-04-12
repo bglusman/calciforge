@@ -5,9 +5,10 @@
 //! local reply webhook `POST /hooks/reply`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+use crate::sync::{Arc, AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use axum::extract::State;
@@ -324,8 +325,9 @@ mod tests {
     use super::*;
     use axum::extract::State;
     use serde_json::Value;
-    use std::sync::Arc;
     use tokio::sync::Mutex as TokioMutex;
+
+    use crate::sync::Arc;
 
     #[derive(Clone)]
     struct CaptureState {

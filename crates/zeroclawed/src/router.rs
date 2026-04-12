@@ -129,6 +129,7 @@ mod tests {
             context: Default::default(),
             model_shortcuts: vec![],
             security: None,
+            proxy: None,
         }
     }
 
@@ -310,7 +311,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         // Shared buffer to capture the raw HTTP request received by the server.
-        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let captured = crate::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
         let captured_srv = captured.clone();
 
         // Serve exactly one connection, capture the request, send the canned

@@ -4,12 +4,13 @@
 //! boundary, routes to the downstream agent, and sends the reply back.
 
 use anyhow::{Context, Result};
-use std::sync::Arc;
 use teloxide::{
     prelude::*,
     types::{Me, ParseMode},
 };
 use tracing::{debug, info, warn};
+
+use crate::sync::Arc;
 
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
@@ -701,6 +702,7 @@ mod tests {
             model_shortcuts: vec![],
             alloys: vec![],
             security: None,
+            proxy: None,
         }
     }
 

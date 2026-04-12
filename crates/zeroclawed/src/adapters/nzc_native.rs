@@ -52,7 +52,7 @@
 //! user message and the final assistant response so history stays consistent.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use crate::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;

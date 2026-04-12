@@ -16,9 +16,10 @@
 //! - ZeroClawed waits until the SSE stream terminates (`data: [DONE]`)
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+use crate::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

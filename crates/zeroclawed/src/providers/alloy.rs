@@ -69,7 +69,7 @@ impl ConstituentStats {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct AlloyState {
     next_rr_index: usize,
     stats_by_model: HashMap<String, ConstituentStats>,
@@ -90,6 +90,15 @@ pub struct AlloyPlan {
 pub struct AlloyProvider {
     def: AlloyDefinition,
     state: Mutex<AlloyState>,
+}
+
+impl Clone for AlloyProvider {
+    fn clone(&self) -> Self {
+        Self {
+            def: self.def.clone(),
+            state: Mutex::new(self.state.lock().expect("mutex poisoned").clone()),
+        }
+    }
 }
 
 impl AlloyProvider {
@@ -270,7 +279,26 @@ pub struct AlloyManager {
     active_by_identity: Mutex<HashMap<String, String>>,
 }
 
+impl Clone for AlloyManager {
+    fn clone(&self) -> Self {
+        Self {
+            alloys: self.alloys.clone(),
+            active_by_identity: Mutex::new(
+                self.active_by_identity.lock().expect("mutex poisoned").clone()
+            ),
+        }
+    }
+}
+
 impl AlloyManager {
+    /// Create an empty alloy manager with no configured alloys.
+    pub fn empty() -> Self {
+        Self {
+            alloys: HashMap::new(),
+            active_by_identity: Mutex::new(HashMap::new()),
+        }
+    }
+
     pub fn from_configs(configs: &[AlloyConfig]) -> Result<Self, String> {
         let mut alloys = HashMap::new();
         for cfg in configs {
@@ -287,6 +315,16 @@ impl AlloyManager {
 
     pub fn is_empty(&self) -> bool {
         self.alloys.is_empty()
+    }
+
+    /// Get an alloy by ID.
+    pub fn get_alloy(&self, alloy_id: &str) -> Option<&AlloyProvider> {
+        self.alloys.get(alloy_id)
+    }
+
+    /// List all configured alloy IDs.
+    pub fn list_alloys(&self) -> Vec<&AlloyProvider> {
+        self.alloys.values().collect()
     }
 
     pub fn set_active_for_identity(&self, identity_id: &str, alloy_id: &str) -> Result<(), String> {

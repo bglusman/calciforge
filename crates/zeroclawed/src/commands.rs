@@ -14,10 +14,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Instant;
+
+use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
 use crate::config::PolyConfig;
@@ -120,6 +119,11 @@ impl CommandHandler {
     pub fn with_alloy_manager(mut self, manager: AlloyManager) -> Self {
         self.alloy_manager = Some(manager);
         self
+    }
+
+    /// Get a reference to the alloy manager, if configured.
+    pub fn alloy_manager(&self) -> Option<&AlloyManager> {
+        self.alloy_manager.as_ref()
     }
 
     /// Record that a message was routed to an agent.
@@ -1122,6 +1126,7 @@ mod tests {
             model_shortcuts: vec![],
             alloys: vec![],
             security: None,
+            proxy: None,
         }
     }
 
@@ -1315,6 +1320,7 @@ mod tests {
             model_shortcuts: vec![],
             alloys: vec![],
             security: None,
+            proxy: None,
         });
         let h = CommandHandler::new(config);
         let reply = h.handle("!agents").unwrap();
