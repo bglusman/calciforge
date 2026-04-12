@@ -308,7 +308,7 @@ async fn streaming_response(
                     index: 0,
                     delta: DeltaMessage {
                         role: None,
-                        content: response.choices.get(0).and_then(|c| c.message.content.as_ref().and_then(|c| c.to_text())),
+                        content: response.choices.first().and_then(|c| c.message.content.as_ref().and_then(|c| c.to_text())),
                         tool_calls: None,
                     },
                     finish_reason: None,
@@ -327,7 +327,7 @@ async fn streaming_response(
                 choices: vec![ChunkChoice {
                     index: 0,
                     delta: DeltaMessage::default(),
-                    finish_reason: response.choices.get(0).and_then(|c| c.finish_reason.clone()),
+                    finish_reason: response.choices.first().and_then(|c| c.finish_reason.clone()),
                     logprobs: None,
                 }],
             }).unwrap()
