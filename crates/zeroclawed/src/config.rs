@@ -360,6 +360,10 @@ pub struct ProxyConfig {
     /// Default: "https://api.deepseek.com/v1" (DeepSeek API)
     #[serde(default = "default_proxy_backend_url")]
     pub backend_url: String,
+
+    /// Custom headers to include in backend requests
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Agent-specific configuration for proxy access.
@@ -421,6 +425,7 @@ impl Default for ProxyConfig {
             backend_type: default_proxy_backend_type(),
             backend_api_key: None,
             backend_url: default_proxy_backend_url(),
+            headers: None,
         }
     }
 }

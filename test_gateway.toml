@@ -1,0 +1,14 @@
+[proxy]
+enabled = true
+bind = "127.0.0.1:19999"
+backend_type = "direct"
+backend_url = "http://127.0.0.1:18789"
+backend_api_key = "Cryptonomicon381!"
+timeout_seconds = 120
+max_body_mb = 50
+default_policy = "allow_all"
+
+[[proxy.agents]]
+id = "test"
+name = "Test Agent"
+allowed_models = ["*"]

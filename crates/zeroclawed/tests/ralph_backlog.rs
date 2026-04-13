@@ -5,7 +5,6 @@
 #[cfg(test)]
 mod tests {
     use futures_util::future::join_all;
-    use reqwest;
     use serde_json::{json, Value};
     use std::time::Duration;
 

@@ -1,0 +1,83 @@
+# Helicone AI Gateway Configuration
+# For ZeroClawed integration
+
+# Global settings
+global:
+  environment: "production"
+  log_level: "info"
+  port: 8080
+  host: "0.0.0.0"
+
+# Providers configuration
+providers:
+  - name: "deepseek"
+    type: "openai"
+    base_url: "https://api.deepseek.com/v1"
+    api_key_env: "DEEPSEEK_API_KEY"
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+      - "deepseek-coder"
+    
+  - name: "moonshot"
+    type: "openai"
+    base_url: "https://api.moonshot.cn/v1"
+    api_key_env: "KIMI_API_KEY"
+    models:
+      - "kimi-for-coding"
+      - "kimi-free"
+      - "moonshot-v1-8k"
+      - "moonshot-v1-32k"
+      - "moonshot-v1-128k"
+  
+  - name: "openrouter"
+    type: "openai"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    models:
+      - "openai/gpt-4o"
+      - "openai/gpt-4o-mini"
+      - "anthropic/claude-3-5-sonnet"
+      - "google/gemini-2.0-flash-exp"
+      - "meta-llama/llama-3.1-8b-instruct"
+      - "meta-llama/llama-3.1-70b-instruct"
+
+# Routing strategies
+routing:
+  default_strategy: "latency"
+  strategies:
+    - name: "latency"
+      type: "latency"
+      window_size: 100
+      update_interval: 30
+    
+    - name: "cost"
+      type: "cost"
+      budget_per_hour: 10.0
+    
+    - name: "weighted"
+      type: "weighted"
+      weights:
+        deepseek: 40
+        moonshot: 40
+        openrouter: 20
+
+# Caching configuration
+caching:
+  enabled: true
+  ttl_seconds: 300
+  max_size_mb: 100
+
+# Rate limiting
+rate_limiting:
+  enabled: true
+  requests_per_minute: 60
+  requests_per_hour: 1000
+
+# Smart routing features
+features:
+  fallback: true
+  retry: true
+  load_balancing: true
+  health_checks: true
+  analytics: true

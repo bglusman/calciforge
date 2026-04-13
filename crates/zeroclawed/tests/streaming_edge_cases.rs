@@ -56,8 +56,7 @@ fn test_sse_done_termination() {
     let mut done_received = false;
 
     for line in sse_stream.lines() {
-        if line.starts_with("data: ") {
-            let data = &line[6..];
+        if let Some(data) = line.strip_prefix("data: ") {
             if data == "[DONE]" {
                 done_received = true;
                 break;
@@ -87,9 +86,7 @@ fn test_sse_malformed_json() {
     for chunk in &malformed_chunks {
         let lines: Vec<&str> = chunk.lines().collect();
         if let Some(data_line) = lines.first() {
-            if data_line.starts_with("data: ") {
-                let json_str = &data_line[6..];
-
+            if let Some(json_str) = data_line.strip_prefix("data: ") {
                 // Should fail gracefully, not panic
                 let result: Result<serde_json::Value, _> = serde_json::from_str(json_str);
                 assert!(
@@ -187,7 +184,7 @@ fn test_streaming_out_of_order_chunks() {
 /// Test streaming with missing chunks
 #[test]
 fn test_streaming_missing_chunks() {
-    let chunks = vec![
+    let chunks = [
         (0, r#"{"content": "First", "index": 0}"#),
         // Missing index 1
         (2, r#"{"content": " third", "index": 2}"#),
@@ -264,8 +261,7 @@ fn test_streaming_empty_response() {
     let mut done_received = false;
 
     for line in sse_data.lines() {
-        if line.starts_with("data: ") {
-            let data = &line[6..];
+        if let Some(data) = line.strip_prefix("data: ") {
             if data == "[DONE]" {
                 done_received = true;
                 break;

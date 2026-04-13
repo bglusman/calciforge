@@ -1,0 +1,15 @@
+[2m2026-04-13T18:26:09.346298Z[0m [32m INFO[0m [2mzeroclawed[0m[2m:[0m ZeroClawed starting
+[2m2026-04-13T18:26:09.346333Z[0m [32m INFO[0m [2mzeroclawed[0m[2m:[0m loading config [3mpath[0m[2m=[0mtest_gateway_debug.toml
+[2m2026-04-13T18:26:09.346877Z[0m [32m INFO[0m [2mzeroclawed[0m[2m:[0m config loaded [3mversion[0m[2m=[0m2 [3midentities[0m[2m=[0m0 [3magents[0m[2m=[0m0 [3mchannels[0m[2m=[0m0 [3mbuffer_size[0m[2m=[0m20 [3minject_depth[0m[2m=[0m5
+[2m2026-04-13T18:26:09.373935Z[0m [32m INFO[0m [2mzeroclawed[0m[2m:[0m adversary-detector middleware active [3mprofile[0m[2m=[0mbalanced [3mintercepted_tools[0m[2m=[0mInterceptedToolSet { tools: ["web_fetch", "safe_fetch", "web_search"] } [3mscan_outbound[0m[2m=[0mfalse
+[2m2026-04-13T18:26:09.399426Z[0m [32m INFO[0m [2mzeroclawed::proxy[0m[2m:[0m Creating proxy backend [3mbackend_type[0m[2m=[0mHttp
+[2m2026-04-13T18:26:09.425114Z[0m [32m INFO[0m [2mzeroclawed::proxy[0m[2m:[0m Starting Alloy proxy server on 127.0.0.1:19998
+[2m2026-04-13T18:26:15.327179Z[0m [32m INFO[0m [2mzeroclawed::proxy::gateway[0m[2m:[0m Gateway list_models request
+[2m2026-04-13T18:26:15.327416Z[0m [34mDEBUG[0m [2mreqwest::connect[0m[2m:[0m starting new connection: http://127.0.0.1:18789/
+[2m2026-04-13T18:26:15.327455Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::connect::http[0m[2m:[0m connecting to 127.0.0.1:18789
+[2m2026-04-13T18:26:15.327566Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::connect::http[0m[2m:[0m connected to 127.0.0.1:18789
+[2m2026-04-13T18:26:15.328574Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::pool[0m[2m:[0m pooling idle connection for ("http", 127.0.0.1:18789)
+[2m2026-04-13T18:26:15.328712Z[0m [32m INFO[0m [2mzeroclawed::proxy::gateway[0m[2m:[0m Gateway list_models error: Invalid response from backend: Failed to parse models: error decoding response body
+[2m2026-04-13T18:26:15.328731Z[0m [33m WARN[0m [2mzeroclawed::proxy::handlers[0m[2m:[0m Failed to get models from gateway, using fallback [3merror[0m[2m=[0mInvalid response from backend: Failed to parse models: error decoding response body
+[2m2026-04-13T18:26:30.365541Z[0m [34mDEBUG[0m [2mzeroclawed::proxy::handlers[0m[2m:[0m Chat completion request [3mmodel[0m[2m=[0mkimi/kimi-for-coding [3mstream[0m[2m=[0mfalse
+[2m2026-04-13T18:26:30.365579Z[0m [33m WARN[0m [2mzeroclawed::proxy::handlers[0m[2m:[0m Invalid model requested [3mmodel[0m[2m=[0mkimi/kimi-for-coding

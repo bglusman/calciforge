@@ -1,0 +1,78 @@
+# ZeroClawed Configuration with Helicone AI Gateway
+# Test configuration for Helicone integration
+
+[zeroclawed]
+version = 1
+
+# ============================================================================
+# PROXY CONFIGURATION - OpenAI-compatible API with Helicone
+# ============================================================================
+
+[proxy]
+enabled = true
+bind = "0.0.0.0:8084"  # Different port for testing
+api_key = "test-key-123"
+backend_type = "helicone"
+backend_url = "http://localhost:8080"  # Helicone AI Gateway
+backend_api_key = "placeholder-api-key"  # Helicone API key if needed
+timeout_seconds = 120
+
+# Models available through Helicone gateway
+# These will be discovered dynamically from Helicone
+[[proxy.models]]
+id = "deepseek-chat"
+provider = "deepseek"
+upstream_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[proxy.models]]
+id = "kimi-for-coding"
+provider = "moonshot"
+upstream_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+
+# ============================================================================
+# ALLOY CONFIGURATIONS - Model Blending/Fallback Groups
+# ============================================================================
+
+# Alloy 1: Fast & Cheap - Weighted toward cheaper models
+[[alloys]]
+id = "fast-alloy"
+name = "Fast & Cheap"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 80
+
+[[alloys.constituents]]
+model = "kimi-for-coding"
+weight = 20
+
+# Alloy 2: Reasoning Heavy - For complex tasks
+[[alloys]]
+id = "reasoning-alloy"
+name = "Reasoning Heavy"
+strategy = "round_robin"
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 100
+
+# ============================================================================
+# AGENT CONFIGURATION
+# ============================================================================
+
+[[proxy.agents]]
+id = "test-agent"
+api_key = "agent-test-key"
+allowed_models = ["fast-alloy", "reasoning-alloy", "deepseek-chat", "kimi-for-coding"]
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+
+[logging]
+level = "info"
+format = "json"
+file = "/tmp/zeroclawed-test.log"

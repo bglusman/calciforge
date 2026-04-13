@@ -4,19 +4,20 @@
 mod tests {
     use super::*;
     use crate::proxy::openai::{
-        ChatMessage, FunctionDefinition, MessageContent, ToolChoice, ToolDefinition, Usage,
+        ChatCompletionResponse, ChatMessage, FunctionDefinition, MessageContent, ToolChoice,
+        ToolDefinition, Usage,
     };
     use crate::proxy::traceloop::{
         CacheEntry, LatencyStats, ProviderConfig, ProviderType, TraceloopRouter,
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_cache_key_generation() {
         // Create a simple router for testing
-        let router = TraceloopRouter::new(vec![]).unwrap();
+        let _router = TraceloopRouter::new(vec![]).unwrap();
 
-        let messages = vec![ChatMessage {
+        let _messages = vec![ChatMessage {
             role: "user".to_string(),
             content: Some(MessageContent::Text("Hello".to_string())),
             name: None,

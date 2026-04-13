@@ -74,15 +74,18 @@ pub async fn start_proxy_server(
                 url: Some(config.backend_url.clone()),
                 api_key: Some(api_key),
                 timeout_seconds: Some(config.timeout_seconds),
+                headers: config.headers.clone(),
                 ..Default::default()
             }
         }
         "embedded" => backend::BackendConfig {
             backend_type: backend::BackendType::Embedded,
+            headers: config.headers.clone(),
             ..Default::default()
         },
         "library" => backend::BackendConfig {
             backend_type: backend::BackendType::Library,
+            headers: config.headers.clone(),
             ..Default::default()
         },
         "helicone" => backend::BackendConfig {
@@ -90,6 +93,7 @@ pub async fn start_proxy_server(
             helicone_url: Some(config.backend_url.clone()),
             helicone_api_key: config.backend_api_key.clone(),
             timeout_seconds: Some(config.timeout_seconds),
+            headers: config.headers.clone(),
             ..Default::default()
         },
         "traceloop" => backend::BackendConfig {
@@ -98,11 +102,12 @@ pub async fn start_proxy_server(
         },
         _ => backend::BackendConfig {
             backend_type: backend::BackendType::Mock,
+            headers: config.headers.clone(),
             ..Default::default()
         },
     };
 
-    info!(backend_type = ?backend_config.backend_type, "Creating proxy backend");
+    info!(backend_type = ?backend_config.backend_type, headers = ?backend_config.headers, "Creating proxy backend");
 
     let backend = backend::create_backend(&backend_config)
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;
@@ -120,6 +125,7 @@ pub async fn start_proxy_server(
         api_key: Some(config.backend_api_key.clone().unwrap_or_default()),
         timeout_seconds: config.timeout_seconds,
         extra_config: None,
+        headers: config.headers.clone(),
         retry_enabled: true,
         max_retries: 3,
         retry_base_delay_ms: 1000,

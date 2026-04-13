@@ -239,7 +239,7 @@ async fn test_07_provider_fallback_chain() {
     println!("🧪 Test 7: Provider fallback chain");
 
     // Create chain: unreliable -> unreliable -> reliable
-    let providers = vec![
+    let providers = [
         MockProvider::new().unreliable(),
         MockProvider::new().unreliable(),
         MockProvider::new(), // Reliable

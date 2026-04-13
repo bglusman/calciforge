@@ -65,23 +65,23 @@ fn parse_duration(input: &str) -> Result<Duration, String> {
         return Err("empty duration".to_string());
     }
 
-    if input.ends_with("ms") {
-        let num = input[..input.len() - 2]
+    if let Some(stripped) = input.strip_suffix("ms") {
+        let num = stripped
             .parse::<u64>()
             .map_err(|_| format!("invalid number in: {}", input))?;
         Ok(Duration::from_millis(num))
-    } else if input.ends_with('s') && !input.ends_with("ms") {
-        let num = input[..input.len() - 1]
+    } else if let Some(stripped) = input.strip_suffix('s') {
+        let num = stripped
             .parse::<u64>()
             .map_err(|_| format!("invalid number in: {}", input))?;
         Ok(Duration::from_secs(num))
-    } else if input.ends_with('m') {
-        let num = input[..input.len() - 1]
+    } else if let Some(stripped) = input.strip_suffix('m') {
+        let num = stripped
             .parse::<u64>()
             .map_err(|_| format!("invalid number in: {}", input))?;
         Ok(Duration::from_secs(num * 60))
-    } else if input.ends_with('h') {
-        let num = input[..input.len() - 1]
+    } else if let Some(stripped) = input.strip_suffix('h') {
+        let num = stripped
             .parse::<u64>()
             .map_err(|_| format!("invalid number in: {}", input))?;
         Ok(Duration::from_secs(num * 3600))

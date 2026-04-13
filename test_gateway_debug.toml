@@ -1,0 +1,22 @@
+[zeroclawed]
+version = 2
+
+[proxy]
+enabled = true
+bind = "127.0.0.1:19998"
+backend_type = "http"  # Creates HTTP backend, wrapped in DirectGateway + LoggingGateway
+backend_url = "http://127.0.0.1:18789"  # OpenClaw proxy
+backend_api_key = "Cryptonomicon381!"
+timeout_seconds = 120
+max_body_mb = 50
+default_policy = "allow_all"
+
+[[proxy.agents]]
+id = "test"
+name = "Test Agent"
+allowed_models = ["*"]
+
+# Enable debug logging
+[logging]
+level = "debug"
+format = "json"

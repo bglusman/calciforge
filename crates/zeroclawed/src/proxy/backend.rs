@@ -121,6 +121,7 @@ pub struct BackendConfig {
     pub url: Option<String>,
     pub api_key: Option<String>,
     pub timeout_seconds: Option<u64>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
 
     // Helicone backend config
     pub helicone_url: Option<String>,
@@ -143,6 +144,7 @@ impl Default for BackendConfig {
             url: Some("http://localhost:8081".to_string()),
             api_key: None,
             timeout_seconds: Some(30),
+            headers: None,
             helicone_url: Some("http://localhost:8080".to_string()),
             helicone_api_key: None,
             helicone_router_name: None,
@@ -175,7 +177,8 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn OneCliBackend>, 
                 BackendError::ConfigError("Missing api_key for HTTP backend".to_string())
             })?;
             let timeout = config.timeout_seconds.unwrap_or(30);
-            Ok(Arc::new(HttpBackend::new(url, api_key, timeout)))
+            let headers = config.headers.clone();
+            Ok(Arc::new(HttpBackend::new(url, api_key, timeout, headers)))
         }
         BackendType::Helicone => {
             let url = config.helicone_url.clone().ok_or_else(|| {
@@ -365,13 +368,34 @@ pub struct HttpBackend {
     base_url: String,
     api_key: String,
     timeout_seconds: u64,
+    headers: std::collections::HashMap<String, String>,
 }
 
 #[allow(dead_code)]
 impl HttpBackend {
-    pub fn new(base_url: String, api_key: String, timeout_seconds: u64) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_seconds))
+    pub fn new(
+        base_url: String,
+        api_key: String,
+        timeout_seconds: u64,
+        headers: Option<std::collections::HashMap<String, String>>,
+    ) -> Self {
+        let mut client_builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_seconds));
+        
+        // Add default headers if provided
+        if let Some(headers) = &headers {
+            let mut header_map = reqwest::header::HeaderMap::new();
+            for (key, value) in headers {
+                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
+                    if let Ok(header_value) = reqwest::header::HeaderValue::from_str(value) {
+                        header_map.insert(header_name, header_value);
+                    }
+                }
+            }
+            client_builder = client_builder.default_headers(header_map);
+        }
+        
+        let client = client_builder
             .build()
             .expect("Failed to build HTTP client");
 
@@ -380,17 +404,18 @@ impl HttpBackend {
             base_url,
             api_key,
             timeout_seconds,
+            headers: headers.unwrap_or_default(),
         }
     }
 
     /// Create backend with OpenRouter configuration
     pub fn openrouter(api_key: String) -> Self {
-        Self::new("https://openrouter.ai/api/v1".to_string(), api_key, 120)
+        Self::new("https://openrouter.ai/api/v1".to_string(), api_key, 120, None)
     }
 
     /// Create backend with local OpenClaw gateway
     pub fn openclaw_local(api_key: String) -> Self {
-        Self::new("http://127.0.0.1:18789/v1".to_string(), api_key, 300)
+        Self::new("http://127.0.0.1:18789/v1".to_string(), api_key, 300, None)
     }
 }
 
@@ -427,11 +452,16 @@ impl OneCliBackend for HttpBackend {
                 serde_json::to_value(tool_choice).unwrap_or(serde_json::Value::Null);
         }
 
-        let response = self
-            .client
-            .post(&url)
+        let mut request_builder = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+        
+        // Add custom headers from config
+        for (key, value) in &self.headers {
+            request_builder = request_builder.header(key, value);
+        }
+        
+        let response = request_builder
             .json(&request_body)
             .send()
             .await

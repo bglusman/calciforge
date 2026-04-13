@@ -33,6 +33,9 @@ pub struct GatewayConfig {
     /// Additional configuration as JSON
     pub extra_config: Option<serde_json::Value>,
 
+    /// Custom headers to include in requests
+    pub headers: Option<std::collections::HashMap<String, String>>,
+
     /// Enable retry logic (default: true)
     pub retry_enabled: bool,
 
@@ -54,6 +57,7 @@ impl Default for GatewayConfig {
             api_key: None,
             timeout_seconds: 30,
             extra_config: None,
+            headers: None,
             retry_enabled: true,
             max_retries: 3,
             retry_base_delay_ms: 1000,
@@ -651,12 +655,19 @@ mod tests {
 
     #[test]
     fn test_mock_gateway() {
+        use super::MockGateway;
+        
         let config = GatewayConfig {
             backend_type: GatewayType::Mock,
             base_url: None,
             api_key: None,
             timeout_seconds: 30,
             extra_config: None,
+            headers: None,
+            retry_enabled: true,
+            max_retries: 3,
+            retry_base_delay_ms: 1000,
+            retry_max_delay_ms: 10000,
         };
 
         let gateway = MockGateway::new(config);
