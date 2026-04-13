@@ -98,6 +98,9 @@ rand = "0.9"
 # UUID generation for API responses
 uuid = { version = "1", features = ["v4"] }
 
+# Retry logic (Helicone-style)
+backon = "0.4"
+
 # Property-based testing (optional, enable with --features hegel)
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
 

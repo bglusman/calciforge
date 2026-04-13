@@ -5,10 +5,9 @@
 //! local reply webhook `POST /hooks/reply`.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::sync::{Arc, AtomicBool, Ordering};
+use crate::sync::{Arc, AtomicBool, OnceLock, Ordering};
 
 use async_trait::async_trait;
 use axum::extract::State;
@@ -428,7 +427,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "hello from zeroclawed",
                 sender: Some("brian"),
-            model_override: None,
+                model_override: None,
             })
             .await
             .expect("dispatch should succeed");

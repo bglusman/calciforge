@@ -9,7 +9,7 @@ use std::time::Duration;
 #[ignore = "Requires running proxy instance - run manually with: cargo test -- --ignored"]
 async fn test_tool_calls_forwarded_via_proxy() {
     let client = reqwest::Client::new();
-    
+
     // Send request with tools through proxy
     let response = client
         .post("http://127.0.0.1:8083/v1/chat/completions")
@@ -37,14 +37,20 @@ async fn test_tool_calls_forwarded_via_proxy() {
         .send()
         .await
         .expect("Request should succeed");
-    
-    assert!(response.status().is_success(), "Proxy should return success");
-    
+
+    assert!(
+        response.status().is_success(),
+        "Proxy should return success"
+    );
+
     let body: serde_json::Value = response.json().await.expect("Should parse JSON");
-    
+
     // Verify we got a valid response
-    assert!(body.get("choices").is_some(), "Response should have choices");
-    
+    assert!(
+        body.get("choices").is_some(),
+        "Response should have choices"
+    );
+
     // The model might or might not use the tool - that's fine
     // What's important is that the request didn't fail with "tools not supported"
     println!("Response: {}", serde_json::to_string_pretty(&body).unwrap());

@@ -219,4 +219,210 @@ mod loom_tests {
             reader.join().unwrap();
         });
     }
+
+    /// Test MockSshClient pattern - concurrent access to shared response queue
+    #[test]
+    fn test_mock_ssh_client_pattern() {
+        loom::model(|| {
+            #[derive(Debug, Clone)]
+            struct SshOutput {
+                stdout: String,
+                stderr: String,
+                exit_code: i32,
+                success: bool,
+            }
+
+            struct MockSshClient {
+                responses: Mutex<Vec<SshOutput>>,
+                calls: Mutex<Vec<String>>,
+            }
+
+            impl MockSshClient {
+                fn new() -> Self {
+                    Self {
+                        responses: Mutex::new(Vec::new()),
+                        calls: Mutex::new(Vec::new()),
+                    }
+                }
+
+                fn push_response(&self, output: SshOutput) {
+                    self.responses.lock().unwrap().push(output);
+                }
+
+                fn get_response(&self) -> Option<SshOutput> {
+                    self.responses.lock().unwrap().pop()
+                }
+
+                fn record_call(&self, command: String) {
+                    self.calls.lock().unwrap().push(command);
+                }
+            }
+
+            let client = Arc::new(MockSshClient::new());
+            let client1 = Arc::clone(&client);
+            let client2 = Arc::clone(&client);
+
+            // Thread 1: Push responses
+            let t1 = thread::spawn(move || {
+                client1.push_response(SshOutput {
+                    stdout: "output1".to_string(),
+                    stderr: "".to_string(),
+                    exit_code: 0,
+                    success: true,
+                });
+                client1.record_call("cmd1".to_string());
+            });
+
+            // Thread 2: Push more responses and record calls
+            let t2 = thread::spawn(move || {
+                client2.push_response(SshOutput {
+                    stdout: "output2".to_string(),
+                    stderr: "error".to_string(),
+                    exit_code: 1,
+                    success: false,
+                });
+                client2.record_call("cmd2".to_string());
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            // Verify final state
+            let response1 = client.get_response();
+            let response2 = client.get_response();
+            let calls = client.calls.lock().unwrap();
+            
+            // We can't guarantee order of responses due to concurrency
+            // but we can verify we have 2 calls recorded
+            assert_eq!(calls.len(), 2);
+            assert!(calls.contains(&"cmd1".to_string()));
+            assert!(calls.contains(&"cmd2".to_string()));
+        });
+    }
+
+    /// Test MockHealthChecker pattern - multiple mutexes with different data
+    #[test]
+    fn test_mock_health_checker_pattern() {
+        loom::model(|| {
+            struct MockHealthChecker {
+                static_responses: Mutex<std::collections::HashMap<String, (bool, String)>>,
+                queued: Mutex<Vec<(bool, String)>>,
+                calls: Mutex<Vec<String>>,
+            }
+
+            impl MockHealthChecker {
+                fn new() -> Self {
+                    Self {
+                        static_responses: Mutex::new(std::collections::HashMap::new()),
+                        queued: Mutex::new(Vec::new()),
+                        calls: Mutex::new(Vec::new()),
+                    }
+                }
+
+                fn set_healthy(&self, endpoint: &str) {
+                    self.static_responses.lock().unwrap()
+                        .insert(endpoint.to_string(), (true, String::new()));
+                }
+
+                fn push_response(&self, healthy: bool, message: &str) {
+                    self.queued.lock().unwrap().push((healthy, message.to_string()));
+                }
+
+                fn record_call(&self, endpoint: &str) {
+                    self.calls.lock().unwrap().push(endpoint.to_string());
+                }
+            }
+
+            let checker = Arc::new(MockHealthChecker::new());
+            let checker1 = Arc::clone(&checker);
+            let checker2 = Arc::clone(&checker);
+
+            // Thread 1: Set static responses and record calls
+            let t1 = thread::spawn(move || {
+                checker1.set_healthy("endpoint1");
+                checker1.push_response(true, "ok");
+                checker1.record_call("endpoint1");
+            });
+
+            // Thread 2: Set different responses and record calls
+            let t2 = thread::spawn(move || {
+                checker2.set_healthy("endpoint2");
+                checker2.push_response(false, "error");
+                checker2.record_call("endpoint2");
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            // Verify final state
+            let static_responses = checker.static_responses.lock().unwrap();
+            let queued = checker.queued.lock().unwrap();
+            let calls = checker.calls.lock().unwrap();
+
+            assert_eq!(static_responses.len(), 2);
+            assert!(static_responses.contains_key("endpoint1"));
+            assert!(static_responses.contains_key("endpoint2"));
+            assert_eq!(queued.len(), 2);
+            assert_eq!(calls.len(), 2);
+            assert!(calls.contains(&"endpoint1".to_string()));
+            assert!(calls.contains(&"endpoint2".to_string()));
+        });
+    }
+
+    /// Test ReplyRouter pattern (Arc<Mutex<HashMap>>) from openclaw_channel
+    #[test]
+    fn test_reply_router_pattern() {
+        loom::model(|| {
+            use std::sync::mpsc::{channel, Sender};
+            
+            struct ReplyRouter {
+                pending: Mutex<std::collections::HashMap<String, Sender<String>>>,
+            }
+
+            impl ReplyRouter {
+                fn new() -> Self {
+                    Self {
+                        pending: Mutex::new(std::collections::HashMap::new()),
+                    }
+                }
+
+                fn insert(&self, session_key: String, tx: Sender<String>) {
+                    self.pending.lock().unwrap().insert(session_key, tx);
+                }
+
+                fn take(&self, session_key: &str) -> Option<Sender<String>> {
+                    self.pending.lock().unwrap().remove(session_key)
+                }
+            }
+
+            let router = Arc::new(ReplyRouter::new());
+            let router1 = Arc::clone(&router);
+            let router2 = Arc::clone(&router);
+
+            // Thread 1: Insert entries
+            let t1 = thread::spawn(move || {
+                let (tx1, _rx1) = channel();
+                let (tx2, _rx2) = channel();
+                router1.insert("session1".to_string(), tx1);
+                router1.insert("session2".to_string(), tx2);
+            });
+
+            // Thread 2: Remove entries
+            let t2 = thread::spawn(move || {
+                let _ = router2.take("session1");
+                let (tx3, _rx3) = channel();
+                router2.insert("session3".to_string(), tx3);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            // Verify final state
+            let pending = router.pending.lock().unwrap();
+            // session1 may have been removed by thread2
+            // session2 should still be there
+            // session3 should have been added by thread2
+            assert!(pending.contains_key("session2") || pending.contains_key("session3"));
+        });
+    }
 }

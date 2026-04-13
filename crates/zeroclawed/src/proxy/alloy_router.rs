@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 
 use crate::proxy::{
     backend::{BackendError, ModelInfo},
-    openai::{ChatMessage, ToolDefinition, ToolChoice, ChatCompletionResponse},
+    openai::{ChatCompletionResponse, ChatMessage, ToolChoice, ToolDefinition},
 };
 
 #[cfg(feature = "helicone")]

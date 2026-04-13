@@ -124,18 +124,12 @@ fn test_sse_long_content() {
 #[test]
 fn test_sse_unicode_content() {
     let unicode_content = "Hello 世界 🌍 Привет مرحبا こんにちは";
-    let sse_data = format!(
-        "data: {{\"content\": \"{}\"}}\n\n",
-        unicode_content
-    );
+    let sse_data = format!("data: {{\"content\": \"{}\"}}\n\n", unicode_content);
 
     if let Some(json_start) = sse_data.find("data: ") {
         let json_str = &sse_data[json_start + 6..].trim();
         let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        assert_eq!(
-            parsed["content"].as_str().unwrap(),
-            unicode_content
-        );
+        assert_eq!(parsed["content"].as_str().unwrap(), unicode_content);
     }
 }
 

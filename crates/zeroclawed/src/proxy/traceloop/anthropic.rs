@@ -5,10 +5,10 @@
 #![allow(dead_code)]
 
 use super::{Provider, ProviderConfig, ProviderType};
-use crate::proxy::openai::{
-    ChatCompletionResponse, ChatMessage, MessageContent, ToolDefinition, ToolChoice,
-};
 use crate::proxy::backend::BackendError;
+use crate::proxy::openai::{
+    ChatCompletionResponse, ChatMessage, MessageContent, ToolChoice, ToolDefinition,
+};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::json;
@@ -56,13 +56,16 @@ impl Provider for AnthropicProvider {
             .map(|msg| {
                 let mut message = HashMap::new();
                 message.insert("role".to_string(), serde_json::Value::String(msg.role));
-                
+
                 match msg.content {
                     Some(MessageContent::Text(text)) => {
-                        message.insert("content".to_string(), json!([{
-                            "type": "text",
-                            "text": text
-                        }]));
+                        message.insert(
+                            "content".to_string(),
+                            json!([{
+                                "type": "text",
+                                "text": text
+                            }]),
+                        );
                     }
                     Some(MessageContent::Parts(parts)) => {
                         // Convert parts to Anthropic format
@@ -86,13 +89,16 @@ impl Provider for AnthropicProvider {
                         message.insert("content".to_string(), serde_json::Value::Array(content));
                     }
                     None => {
-                        message.insert("content".to_string(), json!([{
-                            "type": "text",
-                            "text": ""
-                        }]));
+                        message.insert(
+                            "content".to_string(),
+                            json!([{
+                                "type": "text",
+                                "text": ""
+                            }]),
+                        );
                     }
                 }
-                
+
                 message
             })
             .collect();
@@ -116,15 +122,13 @@ impl Provider for AnthropicProvider {
                     })
                 })
                 .collect();
-            
+
             payload["tools"] = serde_json::Value::Array(tool_defs);
-            
+
             // Add tool_choice if provided
             if let Some(tool_choice) = tool_choice {
                 let tool_choice_value = match tool_choice {
-                    ToolChoice::Mode(mode) => {
-                        serde_json::Value::String(mode)
-                    }
+                    ToolChoice::Mode(mode) => serde_json::Value::String(mode),
                     ToolChoice::Specific { r#type, function } => {
                         // For function-specific tool choice
                         json!({
@@ -149,12 +153,17 @@ impl Provider for AnthropicProvider {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| BackendError::ExecutionFailed(format!("Anthropic API request error: {}", e)))?;
+            .map_err(|e| {
+                BackendError::ExecutionFailed(format!("Anthropic API request error: {}", e))
+            })?;
 
         let status = response.status();
-        
+
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(BackendError::ExecutionFailed(format!(
                 "Anthropic API error ({}): {}",
                 status, error_text
@@ -168,17 +177,13 @@ impl Provider for AnthropicProvider {
             ))
         } else {
             // Parse the response
-            let response_json: serde_json::Value = response
-                .json()
-                .await
-                .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse response: {}", e)))?;
+            let response_json: serde_json::Value = response.json().await.map_err(|e| {
+                BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
+            })?;
 
             // Convert Anthropic response to OpenAI format
-            let id = response_json["id"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            
+            let id = response_json["id"].as_str().unwrap_or("").to_string();
+
             // Extract text content from Anthropic response
             let content = response_json["content"]
                 .as_array()
@@ -193,44 +198,53 @@ impl Provider for AnthropicProvider {
                 })
                 .collect::<Vec<String>>()
                 .join(" ");
-            
+
             // Handle tool calls from Anthropic
             let tool_calls = response_json["content"]
                 .as_array()
                 .unwrap_or(&vec![])
                 .iter()
                 .filter(|item| item["type"].as_str() == Some("tool_use"))
-                .map(|item| {
-                    crate::proxy::openai::ToolCall {
-                        id: item["id"].as_str().unwrap_or("").to_string(),
-                        r#type: "function".to_string(),
-                        function: crate::proxy::openai::FunctionCall {
-                            name: item["name"].as_str().unwrap_or("").to_string(),
-                            arguments: serde_json::to_string(&item["input"]).unwrap_or_else(|_| "{}".to_string()),
-                        },
-                    }
+                .map(|item| crate::proxy::openai::ToolCall {
+                    id: item["id"].as_str().unwrap_or("").to_string(),
+                    r#type: "function".to_string(),
+                    function: crate::proxy::openai::FunctionCall {
+                        name: item["name"].as_str().unwrap_or("").to_string(),
+                        arguments: serde_json::to_string(&item["input"])
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
                 })
                 .collect::<Vec<_>>();
-            
+
             let choices = vec![crate::proxy::openai::Choice {
                 index: 0,
                 message: crate::proxy::openai::ChatMessage {
                     role: "assistant".to_string(),
                     content: Some(MessageContent::Text(content)),
                     name: None,
-                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
                     tool_call_id: None,
                 },
                 finish_reason: response_json["stop_reason"].as_str().map(|s| s.to_string()),
                 logprobs: None,
             }];
-            
+
             // Extract usage from Anthropic response
-            let usage = if let Some(input_tokens) = response_json["usage"]["input_tokens"].as_u64() {
+            let usage = if let Some(input_tokens) = response_json["usage"]["input_tokens"].as_u64()
+            {
                 crate::proxy::openai::Usage {
                     prompt_tokens: input_tokens as u32,
-                    completion_tokens: response_json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
-                    total_tokens: (input_tokens + response_json["usage"]["output_tokens"].as_u64().unwrap_or(0)) as u32,
+                    completion_tokens: response_json["usage"]["output_tokens"]
+                        .as_u64()
+                        .unwrap_or(0) as u32,
+                    total_tokens: (input_tokens
+                        + response_json["usage"]["output_tokens"]
+                            .as_u64()
+                            .unwrap_or(0)) as u32,
                 }
             } else {
                 crate::proxy::openai::Usage {
@@ -239,7 +253,7 @@ impl Provider for AnthropicProvider {
                     total_tokens: 0,
                 }
             };
-            
+
             Ok(ChatCompletionResponse {
                 id,
                 object: "chat.completion".to_string(),

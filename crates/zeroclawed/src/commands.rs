@@ -848,7 +848,7 @@ impl CommandHandler {
         ]
         .join("\n")
     }
-/// Pre-auth handling for !model — lists shortcuts/alloys.
+    /// Pre-auth handling for !model — lists shortcuts/alloys.
     /// Returns None if an alloy is being selected (requires post-auth handling).
     fn cmd_model_preauth(&self, text: &str) -> Option<String> {
         let args: Vec<&str> = text.trim().splitn(2, ' ').collect();

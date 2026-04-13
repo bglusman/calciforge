@@ -13,58 +13,58 @@ use std::collections::HashMap;
 pub struct ChatCompletionRequest {
     /// Model ID or alloy alias (e.g., "gpt-4", "alloy/free-tier")
     pub model: String,
-    
+
     /// Messages for the conversation
     pub messages: Vec<ChatMessage>,
-    
+
     /// Maximum tokens to generate (optional)
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    
+
     /// Temperature for sampling (optional, default 1.0)
     #[serde(default)]
     pub temperature: Option<f32>,
-    
+
     /// Top-p sampling (optional)
     #[serde(default)]
     pub top_p: Option<f32>,
-    
+
     /// Number of completions to generate (optional, default 1)
     #[serde(default)]
     pub n: Option<u32>,
-    
+
     /// Whether to stream responses (optional, default false)
     #[serde(default)]
     pub stream: Option<bool>,
-    
+
     /// Stop sequences (optional)
     #[serde(default)]
     pub stop: Option<Vec<String>>,
-    
+
     /// Presence penalty (optional)
     #[serde(default)]
     pub presence_penalty: Option<f32>,
-    
+
     /// Frequency penalty (optional)
     #[serde(default)]
     pub frequency_penalty: Option<f32>,
-    
+
     /// Logit bias (optional)
     #[serde(default)]
     pub logit_bias: Option<HashMap<String, f32>>,
-    
+
     /// User identifier for tracking (optional)
     #[serde(default)]
     pub user: Option<String>,
-    
+
     /// Response format (optional, for JSON mode)
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
-    
+
     /// Tool definitions for function calling (optional)
     #[serde(default)]
     pub tools: Option<Vec<ToolDefinition>>,
-    
+
     /// Tool choice (optional)
     #[serde(default)]
     pub tool_choice: Option<ToolChoice>,
@@ -153,7 +153,7 @@ pub struct ChatMessage {
 pub struct ToolDefinition {
     /// Type of tool (typically "function")
     pub r#type: String,
-    
+
     /// Function definition
     pub function: FunctionDefinition,
 }
@@ -163,11 +163,11 @@ pub struct ToolDefinition {
 pub struct FunctionDefinition {
     /// Function name
     pub name: String,
-    
+
     /// Function description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    
+
     /// JSON schema for function parameters
     pub parameters: serde_json::Value,
 }
@@ -196,10 +196,10 @@ pub struct ToolChoiceFunction {
 pub struct ToolCall {
     /// Tool call ID
     pub id: String,
-    
+
     /// Type (typically "function")
     pub r#type: String,
-    
+
     /// Function call details
     pub function: FunctionCall,
 }
@@ -209,7 +209,7 @@ pub struct ToolCall {
 pub struct FunctionCall {
     /// Function name
     pub name: String,
-    
+
     /// Arguments as JSON string
     pub arguments: String,
 }
@@ -226,22 +226,22 @@ pub struct ResponseFormat {
 pub struct ChatCompletionResponse {
     /// Response ID
     pub id: String,
-    
+
     /// Object type ("chat.completion")
     pub object: String,
-    
+
     /// Creation timestamp (Unix epoch)
     pub created: u64,
-    
+
     /// Model that generated the response
     pub model: String,
-    
+
     /// Choices/completions
     pub choices: Vec<Choice>,
-    
+
     /// Token usage statistics
     pub usage: Usage,
-    
+
     /// System fingerprint (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
@@ -252,13 +252,13 @@ pub struct ChatCompletionResponse {
 pub struct Choice {
     /// Choice index
     pub index: u32,
-    
+
     /// The message
     pub message: ChatMessage,
-    
+
     /// Finish reason ("stop", "length", "tool_calls", "content_filter")
     pub finish_reason: Option<String>,
-    
+
     /// Logprobs (optional, not implemented)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<serde_json::Value>,
@@ -269,10 +269,10 @@ pub struct Choice {
 pub struct Usage {
     /// Prompt tokens
     pub prompt_tokens: u32,
-    
+
     /// Completion tokens
     pub completion_tokens: u32,
-    
+
     /// Total tokens
     pub total_tokens: u32,
 }
@@ -318,10 +318,10 @@ pub struct ChunkChoice {
 pub struct DeltaMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -348,7 +348,7 @@ impl ChatCompletionRequest {
     pub fn effective_model(&self) -> &str {
         &self.model
     }
-    
+
     /// Check if this request should use streaming
     pub fn should_stream(&self) -> bool {
         self.stream.unwrap_or(false)

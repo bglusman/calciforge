@@ -51,8 +51,8 @@
 //! `record_approval_continuation` method should be called with the original
 //! user message and the final assistant response so history stays consistent.
 
-use std::collections::HashMap;
 use crate::sync::Arc;
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -394,7 +394,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "what is 2+2?",
                 sender: Some("brian"),
-            model_override: None,
+                model_override: None,
             })
             .await;
         assert!(r1.is_ok(), "first dispatch failed: {:?}", r1);
@@ -404,7 +404,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "and 3+3?",
                 sender: Some("brian"),
-            model_override: None,
+                model_override: None,
             })
             .await;
         assert!(r2.is_ok(), "second dispatch failed: {:?}", r2);

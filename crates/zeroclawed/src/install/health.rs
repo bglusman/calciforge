@@ -7,6 +7,7 @@
 //!
 //! Cli-adapter claws have no network endpoint and skip health checks.
 
+use crate::sync::Mutex;
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
@@ -105,19 +106,19 @@ impl HealthChecker for HttpHealthChecker {
 /// - Sequential: returns responses in order (`push_response`), then falls back to static or Ok
 pub struct MockHealthChecker {
     /// Map of endpoint → static (is_healthy, message).
-    static_responses: std::sync::Mutex<std::collections::HashMap<String, (bool, String)>>,
+    static_responses: Mutex<std::collections::HashMap<String, (bool, String)>>,
     /// Ordered queue of responses consumed in FIFO order.
-    queued: std::sync::Mutex<Vec<(bool, String)>>,
+    queued: Mutex<Vec<(bool, String)>>,
     /// Calls recorded for assertions.
-    pub calls: std::sync::Mutex<Vec<String>>,
+    pub calls: Mutex<Vec<String>>,
 }
 
 impl MockHealthChecker {
     pub fn new() -> Self {
         Self {
-            static_responses: std::sync::Mutex::new(std::collections::HashMap::new()),
-            queued: std::sync::Mutex::new(Vec::new()),
-            calls: std::sync::Mutex::new(Vec::new()),
+            static_responses: Mutex::new(std::collections::HashMap::new()),
+            queued: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
         }
     }
 

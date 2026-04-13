@@ -28,9 +28,7 @@ use tracing::{debug, info};
 use crate::sync::Arc;
 
 use crate::{
-    commands::CommandHandler,
-    config::PolyConfig,
-    context::ContextStore,
+    commands::CommandHandler, config::PolyConfig, context::ContextStore,
     router::Router as ZeroclawedRouter,
 };
 
@@ -129,7 +127,10 @@ pub async fn run(
         .await
         .context(format!("failed to bind to port {}", control_port))?;
 
-    info!("Mock channel control API listening on port {}", control_port);
+    info!(
+        "Mock channel control API listening on port {}",
+        control_port
+    );
     info!("Use HTTP API to send test messages:");
     info!("  GET  http://127.0.0.1:{}/health", control_port);
     info!("  GET  http://127.0.0.1:{}/messages", control_port);
@@ -153,15 +154,17 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 /// Get all messages handler
-async fn get_messages_handler(
-    State(state): State<MockState>,
-) -> impl IntoResponse {
+async fn get_messages_handler(State(state): State<MockState>) -> impl IntoResponse {
     let sent = state.sent_messages.lock().await;
     let received = state.received_messages.lock().await;
-    
+
     Json(ApiResponse {
         success: true,
-        message: format!("{} sent messages, {} received messages", sent.len(), received.len()),
+        message: format!(
+            "{} sent messages, {} received messages",
+            sent.len(),
+            received.len()
+        ),
         data: Some(serde_json::json!({
             "sent": &*sent,
             "received": &*received,
@@ -176,7 +179,7 @@ async fn send_message_handler(
 ) -> impl IntoResponse {
     let message_id = format!("mock-{}", chrono::Utc::now().timestamp_millis());
     let timestamp = chrono::Utc::now().to_rfc3339();
-    
+
     // Create mock message
     let mock_message = MockMessage {
         id: message_id.clone(),
@@ -185,22 +188,22 @@ async fn send_message_handler(
         timestamp: timestamp.clone(),
         response: None,
     };
-    
+
     // Store in received messages
     {
         let mut received = state.received_messages.lock().await;
         received.push(mock_message.clone());
     }
-    
+
     info!(sender = %req.sender, text = %req.text, "Mock channel received message");
-    
+
     // TODO: Actually route the message through the system
     // For now, just log it
     debug!("Would route message from {}: {}", req.sender, req.text);
-    
+
     // Simulate a response
     let response_text = format!("Mock response to: {}", req.text);
-    
+
     // Create response message
     let response_message = MockMessage {
         id: format!("resp-{}", message_id),
@@ -209,13 +212,13 @@ async fn send_message_handler(
         timestamp: chrono::Utc::now().to_rfc3339(),
         response: None,
     };
-    
+
     // Store in sent messages
     {
         let mut sent = state.sent_messages.lock().await;
         sent.push(response_message);
     }
-    
+
     // Update original message with response
     {
         let mut received = state.received_messages.lock().await;
@@ -223,7 +226,7 @@ async fn send_message_handler(
             msg.response = Some(response_text.clone());
         }
     }
-    
+
     Json(ApiResponse {
         success: true,
         message: "Message sent and response simulated".to_string(),
@@ -235,21 +238,18 @@ async fn send_message_handler(
 }
 
 /// Clear all messages handler
-async fn clear_messages_handler(
-    State(state): State<MockState>,
-) -> impl IntoResponse {
+async fn clear_messages_handler(State(state): State<MockState>) -> impl IntoResponse {
     {
         let mut sent = state.sent_messages.lock().await;
         sent.clear();
-        
+
         let mut received = state.received_messages.lock().await;
         received.clear();
     }
-    
+
     Json(ApiResponse {
         success: true,
         message: "All messages cleared".to_string(),
         data: None,
     })
 }
-

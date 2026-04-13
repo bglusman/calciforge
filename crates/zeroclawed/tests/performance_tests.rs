@@ -71,10 +71,7 @@ async fn test_concurrent_capacity() {
         }
 
         let elapsed = start.elapsed();
-        println!(
-            "Concurrency {}: completed in {:?}",
-            concurrency, elapsed
-        );
+        println!("Concurrency {}: completed in {:?}", concurrency, elapsed);
     }
 }
 
@@ -188,10 +185,7 @@ async fn test_sustained_load() {
         request_count, duration, throughput
     );
 
-    assert!(
-        throughput > 50.0,
-        "Should sustain at least 50 req/sec"
-    );
+    assert!(throughput > 50.0, "Should sustain at least 50 req/sec");
 }
 
 /// Test recovery after load spike
@@ -275,7 +269,9 @@ async fn test_timeout_under_load() {
                 100 // Slow (will timeout)
             };
             tokio::time::sleep(Duration::from_millis(delay)).await;
-        }).await {
+        })
+        .await
+        {
             Ok(_) => completions += 1,
             Err(_) => timeouts += 1,
         }

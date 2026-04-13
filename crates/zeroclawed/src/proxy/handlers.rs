@@ -7,18 +7,18 @@ use axum::{
     Json,
 };
 use futures_util::stream::{self};
-use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
-use tracing::{info, warn, error, debug};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, error, info, warn};
 
-use crate::proxy::{
-    ProxyState, ChatCompletionRequest,
-    openai::{
-        ChatCompletionResponse, ChatCompletionChunk, DeltaMessage, ChunkChoice, ModelListResponse, ModelInfo, 
-        ApiError, ErrorDetail,
-    },
-};
 use crate::providers::alloy::AlloyPlan;
+use crate::proxy::{
+    openai::{
+        ApiError, ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, DeltaMessage,
+        ErrorDetail, ModelInfo, ModelListResponse,
+    },
+    ChatCompletionRequest, ProxyState,
+};
 
 /// List of valid/known models - in production this would come from config or backend
 const KNOWN_MODELS: &[&str] = &[
@@ -29,6 +29,8 @@ const KNOWN_MODELS: &[&str] = &[
     "claude-3-5-sonnet",
     "claude-3-opus",
     "kimi-free",
+    "kimi/kimi-for-coding",
+    "kimi-for-coding",
 ];
 
 /// Handler for POST /v1/chat/completions
@@ -51,7 +53,10 @@ pub async fn chat_completions(
         return api_error(
             StatusCode::FORBIDDEN,
             "model_access_denied",
-            &format!("Agent '{}' does not have access to model '{}'", agent_id, req.model),
+            &format!(
+                "Agent '{}' does not have access to model '{}'",
+                agent_id, req.model
+            ),
             None,
         );
     }
@@ -120,7 +125,9 @@ async fn route_with_fallback(
         debug!(attempt = idx + 1, model = %model, "Trying constituent");
 
         // Record attempt in stats
-        state.alloy_manager.record_attempt(&plan.alloy_id, model, true);
+        state
+            .alloy_manager
+            .record_attempt(&plan.alloy_id, model, true);
 
         match try_provider(state, model, req).await {
             Ok(response) => {
@@ -130,7 +137,9 @@ async fn route_with_fallback(
             Err(e) => {
                 warn!(model = %model, error = %e, "Provider failed, trying fallback");
                 // Update attempt to failure
-                state.alloy_manager.record_attempt(&plan.alloy_id, model, false);
+                state
+                    .alloy_manager
+                    .record_attempt(&plan.alloy_id, model, false);
                 last_error = Some(e);
             }
         }
@@ -148,7 +157,7 @@ async fn try_provider(
     // Create a request with the specific model
     let mut gateway_req = req.clone();
     gateway_req.model = model.to_string();
-    
+
     // Use the gateway
     match state.gateway.chat_completion(gateway_req).await {
         Ok(response) => Ok(response),
@@ -159,9 +168,7 @@ async fn try_provider(
 }
 
 /// Handler for GET /v1/models
-pub async fn list_models(
-    State(state): State<ProxyState>,
-) -> impl IntoResponse {
+pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -219,6 +226,12 @@ pub async fn list_models(
                 created: now,
                 owned_by: "kimi".to_string(),
             });
+            models.push(ModelInfo {
+                id: "kimi/kimi-for-coding".to_string(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: "kimi".to_string(),
+            });
         }
     }
 
@@ -237,37 +250,36 @@ pub async fn health_check() -> impl IntoResponse {
 }
 
 /// Create a streaming SSE response
-async fn streaming_response(
-    response: ChatCompletionResponse,
-    model: &str,
-) -> Response {
+async fn streaming_response(response: ChatCompletionResponse, model: &str) -> Response {
     let id = response.id.clone();
     let created = response.created;
     let model = model.to_string();
-    
+
     // Create a simple stream with the response
-    let stream = stream::iter(vec![Ok::<_, std::convert::Infallible>(
-        axum::response::sse::Event::default().data(
-            serde_json::to_string(&ChatCompletionChunk {
-                id: id.clone(),
-                object: "chat.completion.chunk".to_string(),
-                created,
-                model: model.clone(),
-                system_fingerprint: None,
-                choices: vec![ChunkChoice {
-                    index: 0,
-                    delta: DeltaMessage {
-                        role: Some("assistant".to_string()),
-                        content: None,
-                        tool_calls: None,
-                    },
-                    finish_reason: None,
-                    logprobs: None,
-                }],
-            }).unwrap()
-        )
-    ), Ok(
-        axum::response::sse::Event::default().data(
+    let stream = stream::iter(vec![
+        Ok::<_, std::convert::Infallible>(
+            axum::response::sse::Event::default().data(
+                serde_json::to_string(&ChatCompletionChunk {
+                    id: id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created,
+                    model: model.clone(),
+                    system_fingerprint: None,
+                    choices: vec![ChunkChoice {
+                        index: 0,
+                        delta: DeltaMessage {
+                            role: Some("assistant".to_string()),
+                            content: None,
+                            tool_calls: None,
+                        },
+                        finish_reason: None,
+                        logprobs: None,
+                    }],
+                })
+                .unwrap(),
+            ),
+        ),
+        Ok(axum::response::sse::Event::default().data(
             serde_json::to_string(&ChatCompletionChunk {
                 id: id.clone(),
                 object: "chat.completion.chunk".to_string(),
@@ -278,16 +290,19 @@ async fn streaming_response(
                     index: 0,
                     delta: DeltaMessage {
                         role: None,
-                        content: response.choices.first().and_then(|c| c.message.content.as_ref().and_then(|c| c.to_text())),
+                        content: response
+                            .choices
+                            .first()
+                            .and_then(|c| c.message.content.as_ref().and_then(|c| c.to_text())),
                         tool_calls: None,
                     },
                     finish_reason: None,
                     logprobs: None,
                 }],
-            }).unwrap()
-        )
-    ), Ok(
-        axum::response::sse::Event::default().data(
+            })
+            .unwrap(),
+        )),
+        Ok(axum::response::sse::Event::default().data(
             serde_json::to_string(&ChatCompletionChunk {
                 id: id.clone(),
                 object: "chat.completion.chunk".to_string(),
@@ -297,25 +312,23 @@ async fn streaming_response(
                 choices: vec![ChunkChoice {
                     index: 0,
                     delta: DeltaMessage::default(),
-                    finish_reason: response.choices.first().and_then(|c| c.finish_reason.clone()),
+                    finish_reason: response
+                        .choices
+                        .first()
+                        .and_then(|c| c.finish_reason.clone()),
                     logprobs: None,
                 }],
-            }).unwrap()
-        )
-    ), Ok(
-        axum::response::sse::Event::default().data("[DONE]")
-    )]);
+            })
+            .unwrap(),
+        )),
+        Ok(axum::response::sse::Event::default().data("[DONE]")),
+    ]);
 
     Sse::new(stream).into_response()
 }
 
 /// Helper to create an API error response
-fn api_error(
-    status: StatusCode,
-    error_type: &str,
-    message: &str,
-    param: Option<&str>,
-) -> Response {
+fn api_error(status: StatusCode, error_type: &str, message: &str, param: Option<&str>) -> Response {
     let error = ApiError {
         error: ErrorDetail {
             message: message.to_string(),
@@ -324,6 +337,6 @@ fn api_error(
             code: Some(error_type.to_string()),
         },
     };
-    
+
     (status, Json(error)).into_response()
 }

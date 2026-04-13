@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-
 // ==================== SIMPLE MOCK INFRASTRUCTURE ====================
 
 #[derive(Clone)]
@@ -161,7 +160,10 @@ async fn test_03_concurrent_message_handling() {
         assert!(messages.contains(&expected), "Missing: {}", expected);
     }
 
-    println!("✅ Concurrent message handling test passed ({} messages)\n", messages.len());
+    println!(
+        "✅ Concurrent message handling test passed ({} messages)\n",
+        messages.len()
+    );
 }
 
 #[tokio::test]
@@ -199,7 +201,11 @@ async fn test_05_unreliable_provider_with_retries() {
         }
     }
 
-    assert!(success, "Should succeed with retries after {} attempts", attempts);
+    assert!(
+        success,
+        "Should succeed with retries after {} attempts",
+        attempts
+    );
     println!("✅ Unreliable provider with retries test passed\n");
 }
 
@@ -209,20 +215,14 @@ async fn test_06_slow_provider_timeout() {
     let provider = MockProvider::new().unreliable(); // Has 100ms delay
 
     // Test with short timeout (should timeout)
-    match tokio::time::timeout(
-        Duration::from_millis(50),
-        provider.chat_completion("Test")
-    ).await {
+    match tokio::time::timeout(Duration::from_millis(50), provider.chat_completion("Test")).await {
         Ok(Ok(response)) => println!("  Got response: {}", response),
         Ok(Err(e)) => println!("  Provider error: {}", e),
         Err(_) => println!("  Timeout occurred (expected)"),
     }
 
     // Test with longer timeout (should succeed)
-    match tokio::time::timeout(
-        Duration::from_millis(200),
-        provider.chat_completion("Test")
-    ).await {
+    match tokio::time::timeout(Duration::from_millis(200), provider.chat_completion("Test")).await {
         Ok(Ok(response)) => {
             println!("  Got response with longer timeout: {}", response);
             assert!(response.contains("Response to:"));
@@ -237,7 +237,7 @@ async fn test_06_slow_provider_timeout() {
 #[tokio::test]
 async fn test_07_provider_fallback_chain() {
     println!("🧪 Test 7: Provider fallback chain");
-    
+
     // Create chain: unreliable -> unreliable -> reliable
     let providers = vec![
         MockProvider::new().unreliable(),
@@ -264,7 +264,11 @@ async fn test_07_provider_fallback_chain() {
         }
     }
 
-    assert!(success, "Should succeed with fallback chain after {} attempts", attempts);
+    assert!(
+        success,
+        "Should succeed with fallback chain after {} attempts",
+        attempts
+    );
     println!("✅ Provider fallback chain test passed\n");
 }
 
@@ -303,7 +307,10 @@ async fn test_08_mixed_workload() {
     let messages = channel.get_messages().await;
     assert_eq!(messages.len(), 10);
 
-    println!("✅ Mixed workload test passed ({} messages, 5 provider calls)\n", messages.len());
+    println!(
+        "✅ Mixed workload test passed ({} messages, 5 provider calls)\n",
+        messages.len()
+    );
 }
 
 #[tokio::test]
@@ -335,15 +342,15 @@ async fn test_09_resource_cleanup() {
 #[tokio::test]
 async fn test_10_rate_limiting_simulation() {
     println!("🧪 Test 10: Rate limiting simulation");
-    
+
     use tokio::sync::Semaphore;
-    
+
     #[derive(Clone)]
     struct RateLimitedChannel {
         semaphore: Arc<Semaphore>,
         processed: Arc<Mutex<u32>>,
     }
-    
+
     impl RateLimitedChannel {
         fn new(rate_limit: usize) -> Self {
             Self {
@@ -351,31 +358,34 @@ async fn test_10_rate_limiting_simulation() {
                 processed: Arc::new(Mutex::new(0)),
             }
         }
-        
+
         async fn send(&self, _message: &str) -> Result<(), String> {
-            let permit = self.semaphore.acquire().await
+            let permit = self
+                .semaphore
+                .acquire()
+                .await
                 .map_err(|_| "Rate limit exceeded".to_string())?;
-            
+
             // Simulate processing
             tokio::time::sleep(Duration::from_millis(20)).await;
-            
+
             let mut processed = self.processed.lock().await;
             *processed += 1;
-            
+
             drop(permit);
             Ok(())
         }
-        
+
         async fn get_processed(&self) -> u32 {
             *self.processed.lock().await
         }
     }
-    
+
     let channel = RateLimitedChannel::new(3); // Max 3 concurrent
-    
+
     let start = std::time::Instant::now();
     let mut handles = vec![];
-    
+
     // Try to send 10 messages
     for i in 0..10 {
         let channel = channel.clone();
@@ -386,33 +396,36 @@ async fn test_10_rate_limiting_simulation() {
             }
         }));
     }
-    
+
     // Wait for all
     for handle in handles {
         handle.await.unwrap();
     }
-    
+
     let elapsed = start.elapsed();
     let processed = channel.get_processed().await;
-    
+
     println!("  Processed {} messages in {:?}", processed, elapsed);
-    
+
     assert_eq!(processed, 10, "Should process all messages");
-    assert!(elapsed > Duration::from_millis(100), "Should take time due to rate limiting");
-    
+    assert!(
+        elapsed > Duration::from_millis(100),
+        "Should take time due to rate limiting"
+    );
+
     println!("✅ Rate limiting simulation test passed\n");
 }
 
 #[tokio::test]
 async fn test_11_error_recovery_state_consistency() {
     println!("🧪 Test 11: Error recovery and state consistency");
-    
+
     #[derive(Clone)]
     struct StatefulService {
         counter: Arc<Mutex<u32>>,
         error_rate: f32,
     }
-    
+
     impl StatefulService {
         fn new(error_rate: f32) -> Self {
             Self {
@@ -420,27 +433,27 @@ async fn test_11_error_recovery_state_consistency() {
                 error_rate,
             }
         }
-        
+
         async fn increment(&self) -> Result<u32, String> {
             let mut counter = self.counter.lock().await;
-            
+
             if rand::random::<f32>() < self.error_rate {
                 // Simulate error after modifying state
                 *counter += 1;
                 return Err("Error after increment".to_string());
             }
-            
+
             *counter += 1;
             Ok(*counter)
         }
-        
+
         async fn get_count(&self) -> u32 {
             *self.counter.lock().await
         }
     }
-    
+
     let service = StatefulService::new(0.2);
-    
+
     let mut handles = vec![];
     for i in 0..20 {
         let service = service.clone();
@@ -451,14 +464,14 @@ async fn test_11_error_recovery_state_consistency() {
             }
         }));
     }
-    
+
     for handle in handles {
         handle.await.unwrap();
     }
-    
+
     let final_count = service.get_count().await;
     println!("  Final count: {}", final_count);
-    
+
     assert!(final_count <= 20, "Count should not exceed attempts");
     println!("✅ Error recovery and state consistency test passed\n");
 }
@@ -466,37 +479,46 @@ async fn test_11_error_recovery_state_consistency() {
 #[tokio::test]
 async fn test_12_concurrent_provider_requests() {
     println!("🧪 Test 12: Concurrent provider requests");
-    
+
     let start = std::time::Instant::now();
     let mut handles = vec![];
-    
+
     // Make many concurrent requests to unreliable providers
     for i in 0..15 {
         let provider_captured = MockProvider::new().unreliable();
         handles.push(tokio::spawn(async move {
-            match provider_captured.chat_completion(&format!("Request {}", i)).await {
+            match provider_captured
+                .chat_completion(&format!("Request {}", i))
+                .await
+            {
                 Ok(response) => format!("Success: {}", response),
                 Err(e) => format!("Failure: {}", e),
             }
         }));
     }
-    
+
     // Collect results
     let mut results = Vec::new();
     for handle in handles {
         results.push(handle.await.unwrap());
     }
-    
+
     let elapsed = start.elapsed();
-    
+
     let successes = results.iter().filter(|r| r.starts_with("Success")).count();
     let failures = results.iter().filter(|r| r.starts_with("Failure")).count();
-    
-    println!("  Results: {} successes, {} failures in {:?}", successes, failures, elapsed);
+
+    println!(
+        "  Results: {} successes, {} failures in {:?}",
+        successes, failures, elapsed
+    );
     println!("  Sample results: {:?}", &results[..3.min(results.len())]);
-    
+
     assert_eq!(results.len(), 15, "All requests should complete");
-    assert!(elapsed < Duration::from_secs(3), "Should complete in reasonable time");
-    
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "Should complete in reasonable time"
+    );
+
     println!("✅ Concurrent provider requests test passed\n");
 }

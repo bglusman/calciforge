@@ -2,10 +2,9 @@
 //!
 //! Handles API key validation, agent identification, and model access control.
 
-
 use tracing::{debug, warn};
 
-use crate::config::{ProxyConfig, ProxyAccessPolicy};
+use crate::config::{ProxyAccessPolicy, ProxyConfig};
 
 /*
 /// Authenticated agent information.
@@ -19,11 +18,7 @@ pub struct AuthContext {
 */
 
 /// Check if a model is allowed for a given agent.
-pub fn check_model_access(
-    config: &ProxyConfig,
-    agent_id: &str,
-    model: &str,
-) -> bool {
+pub fn check_model_access(config: &ProxyConfig, agent_id: &str, model: &str) -> bool {
     // Find agent configuration
     let agent_config = config.agents.iter().find(|a| a.id == agent_id);
 
@@ -43,7 +38,10 @@ pub fn check_model_access(
                 true
             } else {
                 // Must match at least one allowed pattern
-                let allowed = agent.allowed_models.iter().any(|pattern| model_matches(model, pattern));
+                let allowed = agent
+                    .allowed_models
+                    .iter()
+                    .any(|pattern| model_matches(model, pattern));
                 debug!(agent_id = %agent_id, model = %model, allowed = allowed, "Checked model access");
                 allowed
             }
@@ -107,16 +105,16 @@ fn model_matches(model: &str, pattern: &str) -> bool {
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
-    
+
     if a_bytes.len() != b_bytes.len() {
         return false;
     }
-    
+
     let mut result = 0u8;
     for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
         result |= x ^ y;
     }
-    
+
     result == 0
 }
 */
@@ -127,7 +125,10 @@ mod tests {
 
     #[test]
     fn test_model_matches_exact() {
-        assert!(model_matches("kimi/kimi-for-coding", "kimi/kimi-for-coding"));
+        assert!(model_matches(
+            "kimi/kimi-for-coding",
+            "kimi/kimi-for-coding"
+        ));
         assert!(!model_matches("kimi/kimi-for-coding", "kimi/kimi-lite"));
     }
 
@@ -141,12 +142,18 @@ mod tests {
     #[test]
     fn test_model_matches_wildcard_star() {
         // "*" should match any model
-        assert!(model_matches("deepseek-chat", "*"), 
-            "Expected '*' to match 'deepseek-chat'");
-        assert!(model_matches("kimi/kimi-for-coding", "*"),
-            "Expected '*' to match 'kimi/kimi-for-coding'");
-        assert!(model_matches("test-alloy", "*"),
-            "Expected '*' to match 'test-alloy'");
+        assert!(
+            model_matches("deepseek-chat", "*"),
+            "Expected '*' to match 'deepseek-chat'"
+        );
+        assert!(
+            model_matches("kimi/kimi-for-coding", "*"),
+            "Expected '*' to match 'kimi/kimi-for-coding'"
+        );
+        assert!(
+            model_matches("test-alloy", "*"),
+            "Expected '*' to match 'test-alloy'"
+        );
     }
 
     #[test]
@@ -164,11 +171,15 @@ mod tests {
             backend_api_key: None,
             agents: vec![],
         };
-        
+
         // With AllowAll policy, any model should be allowed
         assert!(check_model_access(&config, "test-agent", "deepseek-chat"));
         assert!(check_model_access(&config, "test-agent", "any-model"));
-        assert!(check_model_access(&config, "non-existent-agent", "deepseek-chat"));
+        assert!(check_model_access(
+            &config,
+            "non-existent-agent",
+            "deepseek-chat"
+        ));
     }
 
     #[test]
@@ -186,7 +197,7 @@ mod tests {
             backend_api_key: None,
             agents: vec![],
         };
-        
+
         // With DenyAll policy, no models should be allowed
         assert!(!check_model_access(&config, "test-agent", "deepseek-chat"));
         assert!(!check_model_access(&config, "any-agent", "any-model"));
@@ -195,7 +206,7 @@ mod tests {
     #[test]
     fn test_check_model_access_agent_specific() {
         use crate::config::ProxyAgentConfig;
-        
+
         let config = ProxyConfig {
             enabled: true,
             bind: "127.0.0.1:8083".to_string(),
@@ -217,15 +228,23 @@ mod tests {
                 rate_limit_tpm: 0,
             }],
         };
-        
+
         // Agent should have access to allowed models
         assert!(check_model_access(&config, "test-agent", "deepseek-chat"));
-        assert!(check_model_access(&config, "test-agent", "deepseek-reasoner"));
+        assert!(check_model_access(
+            &config,
+            "test-agent",
+            "deepseek-reasoner"
+        ));
         assert!(check_model_access(&config, "test-agent", "test-alloy"));
-        
+
         // Agent should NOT have access to other models
-        assert!(!check_model_access(&config, "test-agent", "kimi/kimi-for-coding"));
-        
+        assert!(!check_model_access(
+            &config,
+            "test-agent",
+            "kimi/kimi-for-coding"
+        ));
+
         // Other agents should be denied (not in configured list)
         assert!(!check_model_access(&config, "other-agent", "deepseek-chat"));
     }
@@ -233,7 +252,7 @@ mod tests {
     #[test]
     fn test_check_model_access_blocked_models() {
         use crate::config::ProxyAgentConfig;
-        
+
         let config = ProxyConfig {
             enabled: true,
             bind: "127.0.0.1:8083".to_string(),
@@ -249,17 +268,21 @@ mod tests {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),
                 api_key: Some("test-key".to_string()),
-                allowed_models: vec!["*".to_string()],  // Allow all
+                allowed_models: vec!["*".to_string()], // Allow all
                 blocked_models: vec!["dangerous-model".to_string(), "secret/*".to_string()],
                 rate_limit_rpm: 0,
                 rate_limit_tpm: 0,
             }],
         };
-        
+
         // Blocked models should be denied even if allowed_models says "*"
-        assert!(!check_model_access(&config, "test-agent", "dangerous-model"));
+        assert!(!check_model_access(
+            &config,
+            "test-agent",
+            "dangerous-model"
+        ));
         assert!(!check_model_access(&config, "test-agent", "secret/model-a"));
-        
+
         // Other models should be allowed
         assert!(check_model_access(&config, "test-agent", "safe-model"));
     }

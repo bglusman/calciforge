@@ -11,10 +11,9 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::{
-    proxy::backend::{BackendError, ModelInfo, OneCliBackend, BackendType},
+    proxy::backend::{BackendError, BackendType, ModelInfo, OneCliBackend},
     proxy::openai::{
-        ChatCompletionResponse, ChatMessage, ToolDefinition,
-        ToolChoice, ChatCompletionRequest,
+        ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolChoice, ToolDefinition,
     },
 };
 
@@ -80,8 +79,10 @@ impl HeliconeRouter {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()
-            .map_err(|e| HeliconeError::HttpClient(format!("Failed to create HTTP client: {}", e)))?;
-        
+            .map_err(|e| {
+                HeliconeError::HttpClient(format!("Failed to create HTTP client: {}", e))
+            })?;
+
         Ok(Self { config, client })
     }
 
@@ -108,8 +109,9 @@ impl HeliconeRouter {
         };
 
         let url = format!("{}/v1/chat/completions", self.config.base_url);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -121,17 +123,19 @@ impl HeliconeRouter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(BackendError::HttpError(format!(
                 "Helicone API error ({}): {}",
                 status, error_text
             )));
         }
 
-        let completion_response: ChatCompletionResponse = response
-            .json()
-            .await
-            .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse response: {}", e)))?;
+        let completion_response: ChatCompletionResponse = response.json().await.map_err(|e| {
+            BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
+        })?;
 
         Ok(completion_response)
     }

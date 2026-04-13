@@ -32,8 +32,8 @@
 //! <current message>
 //! ```
 
-use std::collections::{HashMap, VecDeque};
 use crate::sync::{Arc, Mutex};
+use std::collections::{HashMap, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -245,10 +245,9 @@ impl ContextStore {
     }
 
     /// Return the number of exchanges stored for a chat (for status/debug).
-    #[cfg(test)]
     pub fn exchange_count(&self, chat_id: &str) -> usize {
         let map = self.inner.lock().unwrap();
-        map.get(chat_id).map(|c| c.len()).unwrap_or(0)
+        map.get(chat_id).map(|c| c.exchanges.len()).unwrap_or(0)
     }
 }
 

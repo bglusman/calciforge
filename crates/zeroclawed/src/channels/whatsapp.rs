@@ -64,9 +64,9 @@
 //! allowed_numbers = ["+15555550001"]
 //! ```
 
+use crate::sync::Arc;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use crate::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::{

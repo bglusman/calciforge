@@ -9,13 +9,15 @@
 //! Each backend can be enabled via feature flags and selected via configuration.
 
 use async_trait::async_trait;
+use backon::Retryable;
 use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::proxy::backend::{BackendError, ModelInfo, OneCliBackend};
 use crate::proxy::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolDefinition, ToolChoice, Usage,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolChoice, ToolDefinition, Usage,
 };
+use tracing::{info, warn};
 
 /// Configuration for a gateway backend
 #[derive(Debug, Clone)]
@@ -30,7 +32,40 @@ pub struct GatewayConfig {
     pub timeout_seconds: u64,
     /// Additional configuration as JSON
     pub extra_config: Option<serde_json::Value>,
+
+    /// Enable retry logic (default: true)
+    pub retry_enabled: bool,
+
+    /// Maximum number of retries (default: 3)
+    pub max_retries: u32,
+
+    /// Base delay between retries in milliseconds (default: 1000)
+    pub retry_base_delay_ms: u64,
+
+    /// Maximum delay between retries in milliseconds (default: 10000)
+    pub retry_max_delay_ms: u64,
 }
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            backend_type: GatewayType::Direct,
+            base_url: None,
+            api_key: None,
+            timeout_seconds: 30,
+            extra_config: None,
+            retry_enabled: true,
+            max_retries: 3,
+            retry_base_delay_ms: 1000,
+            retry_max_delay_ms: 10000,
+        }
+    }
+}
+
+// Removed with_retry helper for now - causing compilation issues
+
+// Removed RetryGatewayDyn for now - causing compilation issues
+// We'll implement retry properly later
 
 /// Type of gateway backend
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,71 +133,94 @@ pub fn create_gateway(
         #[cfg(feature = "helicone")]
         GatewayType::Helicone => {
             use crate::proxy::helicone_router::{HeliconeRouter, HeliconeRouterConfig};
-            
+
             let helicone_config = HeliconeRouterConfig {
-                base_url: config.base_url.clone().unwrap_or_else(|| "http://localhost:8787".to_string()),
+                base_url: config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:8787".to_string()),
                 api_key: config.api_key.clone().unwrap_or_default(),
                 timeout_seconds: config.timeout_seconds,
                 router_name: "helicone".to_string(),
                 enable_caching: false,
                 cache_ttl_seconds: 300,
             };
-            
-            let router = HeliconeRouter::new(helicone_config)
-                .map_err(|e| BackendError::ConfigError(format!("Failed to create Helicone router: {}", e)))?;
-            
-            Ok(Arc::new(HeliconeGateway {
-                config,
+
+            let router = HeliconeRouter::new(helicone_config).map_err(|e| {
+                BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
+            })?;
+
+            let inner_gateway = Arc::new(HeliconeGateway {
+                config: config.clone(),
                 router,
-            }))
+            });
+
+            // Wrap with logging for debugging
+            Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
-        
+
         #[cfg(feature = "traceloop")]
         GatewayType::Traceloop => {
-            use crate::proxy::traceloop::TraceloopRouter;
-            
-            // TODO: Need to pass provider configurations to TraceloopRouter
-            // For now, return an error or create a minimal router
-            Err(BackendError::ConfigError("Traceloop gateway not fully implemented yet".to_string()))
-            
-            // let router = TraceloopRouter::new(vec![])
-            //     .map_err(|e| BackendError::ConfigError(format!("Failed to create Traceloop router: {}", e)))?;
-            // 
-            // Ok(Arc::new(TraceloopGateway {
-            //     config,
-            //     router,
-            // }))
+            use crate::proxy::traceloop::{ProviderConfig, ProviderType, TraceloopRouter};
+
+            // Create provider configurations from config
+            // Use the actual API key and URL from config
+            let providers = vec![ProviderConfig {
+                id: "kimi".to_string(),
+                r#type: ProviderType::Kimi,
+                api_key: config.api_key.clone().unwrap_or_default(),
+                base_url: config.base_url.clone(),
+                default_model: "kimi-for-coding".to_string(),
+            }];
+
+            let router = TraceloopRouter::new(providers).map_err(|e| {
+                BackendError::ConfigError(format!("Failed to create Traceloop router: {}", e))
+            })?;
+
+            let inner_gateway = Arc::new(TraceloopGateway {
+                config: config.clone(),
+                router,
+            });
+
+            // Wrap with logging for debugging
+            Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
-        
+
         #[cfg(feature = "test")]
         GatewayType::Mock => {
-            Ok(Arc::new(MockGateway::new(config)))
+            let inner_gateway = Arc::new(MockGateway::new(config.clone()));
+
+            // Wrap with logging for debugging
+            Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
-        
+
         #[cfg(not(feature = "test"))]
-        GatewayType::Mock => {
-            Err(BackendError::ConfigError("Mock gateway only available in test mode".to_string()))
-        }
-        
+        GatewayType::Mock => Err(BackendError::ConfigError(
+            "Mock gateway only available in test mode".to_string(),
+        )),
+
         GatewayType::Direct => {
             // Direct provider calls (no gateway)
             // This requires a backend to be passed in
-            let backend = backend.ok_or_else(|| 
+            let backend = backend.ok_or_else(|| {
                 BackendError::ConfigError("Direct gateway requires a backend parameter".to_string())
-            )?;
-            
-            Ok(Arc::new(DirectGateway::new(config, backend)))
+            })?;
+
+            let inner_gateway = Arc::new(DirectGateway::new(config.clone(), backend));
+
+            // Wrap with logging for debugging
+            Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
-        
+
         #[cfg(not(feature = "helicone"))]
-        GatewayType::Helicone => {
-            Err(BackendError::ConfigError("Helicone feature not enabled".to_string()))
-        }
-        
+        GatewayType::Helicone => Err(BackendError::ConfigError(
+            "Helicone feature not enabled".to_string(),
+        )),
+
         #[cfg(not(feature = "traceloop"))]
-        GatewayType::Traceloop => {
-            Err(BackendError::ConfigError("Traceloop feature not enabled".to_string()))
-        }
+        GatewayType::Traceloop => Err(BackendError::ConfigError(
+            "Traceloop feature not enabled".to_string(),
+        )),
     }
 }
 
@@ -190,17 +248,199 @@ impl GatewayBackend for HeliconeGateway {
     ) -> Result<ChatCompletionResponse, BackendError> {
         // Extract parameters from request to pass to HeliconeRouter
         // Note: HeliconeRouter uses the old parameter-based API
-        self.router.chat_completion(
-            request.model,
-            request.messages,
-            request.stream.unwrap_or(false),
-            request.tools,
-            request.tool_choice,
-        ).await
+        self.router
+            .chat_completion(
+                request.model,
+                request.messages,
+                request.stream.unwrap_or(false),
+                request.tools,
+                request.tool_choice,
+            )
+            .await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         self.router.list_models().await
+    }
+
+    fn config(&self) -> &GatewayConfig {
+        &self.config
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Logging Gateway (wraps another gateway for debugging)
+// ---------------------------------------------------------------------------
+
+/// Logging gateway that wraps another gateway and logs all requests
+#[derive(Debug)]
+pub struct LoggingGateway {
+    config: GatewayConfig,
+    inner: Arc<dyn GatewayBackend>,
+}
+
+impl LoggingGateway {
+    pub fn new(config: GatewayConfig, inner: Arc<dyn GatewayBackend>) -> Self {
+        Self { config, inner }
+    }
+}
+
+#[async_trait]
+impl GatewayBackend for LoggingGateway {
+    fn gateway_type(&self) -> GatewayType {
+        GatewayType::Direct // Same as inner
+    }
+
+    async fn chat_completion(
+        &self,
+        mut request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        use tracing::{info, warn};
+
+        // Normalize model name for Kimi API
+        if request.model.starts_with("kimi/") {
+            let stripped = request.model.trim_start_matches("kimi/");
+            info!(
+                "Normalizing request model: {} -> {}",
+                request.model, stripped
+            );
+            request.model = stripped.to_string();
+        }
+
+        info!(
+            "Gateway request: model={}, messages={}, stream={}, tools={:?}",
+            request.model,
+            request.messages.len(),
+            request.stream.unwrap_or(false),
+            request.tools.is_some()
+        );
+
+        let start = std::time::Instant::now();
+
+        // Apply retry logic
+        let inner = self.inner.clone();
+        let request_clone = request.clone();
+
+        // Simple retry logic using backon
+        let operation = || async {
+            let result = inner.chat_completion(request_clone.clone()).await;
+
+            // Check if we should retry
+            match &result {
+                Ok(_) => {
+                    info!("Request succeeded");
+                    result
+                }
+                Err(e) => {
+                    // Retry on HTTP errors (5xx) and rate limits (429)
+                    let error_str = e.to_string();
+                    let should_retry = error_str.contains("500")
+                        || error_str.contains("502")
+                        || error_str.contains("503")
+                        || error_str.contains("504")
+                        || error_str.contains("429")
+                        || error_str.contains("timeout")
+                        || error_str.contains("network");
+
+                    if should_retry {
+                        warn!("Retryable error: {}", e);
+                    } else {
+                        warn!("Non-retryable error: {}", e);
+                    }
+
+                    result
+                }
+            }
+        };
+
+        // Exponential backoff: 1s, 2s, 4s, 8s with jitter
+        let mut result = operation
+            .retry(
+                &backon::ExponentialBuilder::default()
+                    .with_min_delay(std::time::Duration::from_secs(1))
+                    .with_max_delay(std::time::Duration::from_secs(8))
+                    .with_max_times(3)
+                    .with_factor(2.0)
+                    .with_jitter(),
+            )
+            .await;
+
+        let duration = start.elapsed();
+
+        // Normalize response model back to client format
+        if let Ok(ref mut response) = result {
+            if response.model.starts_with("kimi-") {
+                let prefixed = format!("kimi/{}", response.model);
+                info!(
+                    "Normalizing response model: {} -> {}",
+                    response.model, prefixed
+                );
+                response.model = prefixed;
+            }
+        }
+
+        match &result {
+            Ok(response) => {
+                info!(
+                    "Gateway response: id={}, model={}, duration={:?}, choices={}",
+                    response.id,
+                    response.model,
+                    duration,
+                    response.choices.len()
+                );
+            }
+            Err(e) => {
+                warn!("Gateway error: {}, duration={:?}", e, duration);
+            }
+        }
+
+        result
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
+        use tracing::info;
+
+        info!("Gateway list_models request");
+        let result = self.inner.list_models().await;
+
+        match &result {
+            Ok(models) => {
+                info!("Gateway list_models response: {} models", models.len());
+
+                // Normalize model names for consistency
+                let normalized_models: Vec<ModelInfo> = models
+                    .iter()
+                    .map(|model| {
+                        let mut normalized = model.clone();
+
+                        // Map Kimi models: kimi-for-coding -> kimi/kimi-for-coding
+                        // Also handle kimi-free, kimi-pro, etc.
+                        if normalized.id.starts_with("kimi-") {
+                            let prefixed = format!("kimi/{}", normalized.id);
+                            info!("Normalizing model name: {} -> {}", normalized.id, prefixed);
+                            normalized.id = prefixed;
+                        }
+
+                        normalized
+                    })
+                    .collect();
+
+                for model in &normalized_models {
+                    info!(
+                        "  - {} ({})",
+                        model.id,
+                        model.provider.as_deref().unwrap_or("unknown")
+                    );
+                }
+
+                return Ok(normalized_models);
+            }
+            Err(e) => {
+                info!("Gateway list_models error: {}", e);
+            }
+        }
+
+        result
     }
 
     fn config(&self) -> &GatewayConfig {
@@ -245,13 +485,15 @@ impl GatewayBackend for DirectGateway {
     ) -> Result<ChatCompletionResponse, BackendError> {
         // Extract parameters to pass to the underlying backend
         // Note: Backend uses the old parameter-based API
-        self.backend.chat_completion(
-            request.model,
-            request.messages,
-            request.stream.unwrap_or(false),
-            request.tools,
-            request.tool_choice,
-        ).await
+        self.backend
+            .chat_completion(
+                request.model,
+                request.messages,
+                request.stream.unwrap_or(false),
+                request.tools,
+                request.tool_choice,
+            )
+            .await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
@@ -267,40 +509,44 @@ impl GatewayBackend for DirectGateway {
 // Traceloop Gateway Implementation
 // ---------------------------------------------------------------------------
 
-// TODO: Implement TraceloopGateway when traceloop module is fully integrated
-// #[cfg(feature = "traceloop")]
-// #[derive(Debug)]
-// pub struct TraceloopGateway {
-//     config: GatewayConfig,
-//     router: crate::proxy::traceloop::TraceloopRouter,
-// }
-// 
-// #[cfg(feature = "traceloop")]
-// #[async_trait]
-// impl GatewayBackend for TraceloopGateway {
-//     fn gateway_type(&self) -> GatewayType {
-//         GatewayType::Traceloop
-//     }
-// 
-//     async fn chat_completion(
-//         &self,
-//         model: String,
-//         messages: Vec<ChatMessage>,
-//         stream: bool,
-//         tools: Option<Vec<ToolDefinition>>,
-//         tool_choice: Option<ToolChoice>,
-//     ) -> Result<ChatCompletionResponse, BackendError> {
-//         self.router.chat_completion(model, messages, stream, tools, tool_choice).await
-//     }
-// 
-//     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-//         self.router.list_models().await
-//     }
-// 
-//     fn config(&self) -> &GatewayConfig {
-//         &self.config
-//     }
-// }
+// Traceloop Gateway Implementation
+#[cfg(feature = "traceloop")]
+#[derive(Debug)]
+pub struct TraceloopGateway {
+    config: GatewayConfig,
+    router: crate::proxy::traceloop::TraceloopRouter,
+}
+
+#[cfg(feature = "traceloop")]
+#[async_trait]
+impl GatewayBackend for TraceloopGateway {
+    fn gateway_type(&self) -> GatewayType {
+        GatewayType::Traceloop
+    }
+
+    async fn chat_completion(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        self.router
+            .chat_completion(
+                request.model,
+                request.messages,
+                request.stream.unwrap_or(false),
+                request.tools,
+                request.tool_choice,
+            )
+            .await
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
+        self.router.list_models().await
+    }
+
+    fn config(&self) -> &GatewayConfig {
+        &self.config
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Mock Gateway Implementation (for testing)
@@ -379,9 +625,18 @@ mod tests {
 
     #[test]
     fn test_gateway_type_parsing() {
-        assert_eq!("helicone".parse::<GatewayType>().unwrap(), GatewayType::Helicone);
-        assert_eq!("traceloop".parse::<GatewayType>().unwrap(), GatewayType::Traceloop);
-        assert_eq!("direct".parse::<GatewayType>().unwrap(), GatewayType::Direct);
+        assert_eq!(
+            "helicone".parse::<GatewayType>().unwrap(),
+            GatewayType::Helicone
+        );
+        assert_eq!(
+            "traceloop".parse::<GatewayType>().unwrap(),
+            GatewayType::Traceloop
+        );
+        assert_eq!(
+            "direct".parse::<GatewayType>().unwrap(),
+            GatewayType::Direct
+        );
         assert_eq!("mock".parse::<GatewayType>().unwrap(), GatewayType::Mock);
         assert!("unknown".parse::<GatewayType>().is_err());
     }

@@ -12,7 +12,7 @@ proptest! {
     fn prop_message_delivery_guarantee(messages in prop::collection::vec("[a-zA-Z0-9 ]{1,50}", 1..100)) {
         let sent: HashSet<String> = messages.iter().cloned().collect();
         let mut delivered = HashSet::new();
-        
+
         // Simulate delivery (with possible duplicates but NO loss)
         for message in &messages {
             delivered.insert(message.clone());
@@ -21,7 +21,7 @@ proptest! {
                 delivered.insert(message.clone());
             }
         }
-        
+
         // Property: Every sent message should be delivered at least once
         for message in sent {
             prop_assert!(
@@ -43,7 +43,7 @@ proptest! {
         for _ in 0..=duplicates {
             processed_count += 1;
         }
-        
+
         // Property: Processing count should match input count
         prop_assert_eq!(
             processed_count,
@@ -59,11 +59,11 @@ proptest! {
     fn prop_cost_monotonicity(costs in prop::collection::vec(0.0f64..100.0, 1..50)) {
         let mut total = 0.0f64;
         let mut history = Vec::new();
-        
+
         for cost in &costs {
             total += cost;
             history.push(total);
-            
+
             // Property: Cost should never be negative
             prop_assert!(
                 total >= 0.0,
@@ -71,7 +71,7 @@ proptest! {
                 total, cost
             );
         }
-        
+
         // Property: Cost should be monotonic (non-decreasing)
         for window in history.windows(2) {
             let &[prev, current] = window else { unreachable!() };
@@ -93,21 +93,21 @@ proptest! {
         let hash = model_name.bytes().fold(0u32, |acc, b| {
             acc.wrapping_mul(31).wrapping_add(b as u32)
         });
-        
+
         let selected_provider = (hash % provider_count as u32) as usize;
-        
+
         // Property: Same input should always route to same provider
         let hash2 = model_name.bytes().fold(0u32, |acc, b| {
             acc.wrapping_mul(31).wrapping_add(b as u32)
         });
         let selected_provider2 = (hash2 % provider_count as u32) as usize;
-        
+
         prop_assert_eq!(
             selected_provider, selected_provider2,
             "Routing is non-deterministic for model '{}'",
             model_name
         );
-        
+
         // Property: Selected provider should be in valid range
         prop_assert!(
             selected_provider < provider_count,
@@ -126,7 +126,7 @@ proptest! {
         let mut tokens = rate_limit;
         let mut allowed = 0;
         let mut rejected = 0;
-        
+
         for _ in 0..requests {
             if tokens > 0 {
                 tokens -= 1;
@@ -134,13 +134,13 @@ proptest! {
             } else {
                 rejected += 1;
             }
-            
+
             // Replenish 1 token every 10 requests (simplified)
             if allowed % 10 == 0 && tokens < rate_limit {
                 tokens += 1;
             }
         }
-        
+
         // Property: Total should match requests
         prop_assert_eq!(
             allowed + rejected,
@@ -148,7 +148,7 @@ proptest! {
             "Count mismatch: {} + {} != {}",
             allowed, rejected, requests
         );
-        
+
         // Property: At least some should be allowed (unless rate limit is very low)
         if rate_limit > 0 && requests > 0 {
             prop_assert!(
@@ -164,23 +164,23 @@ proptest! {
     fn prop_request_id_uniqueness(count in 1usize..1000) {
         let mut ids = HashSet::new();
         let mut collisions = 0;
-        
+
         for i in 0..count {
             // Simulate request ID generation
             let id = format!("req-{}", i);
-            
+
             if !ids.insert(id.clone()) {
                 collisions += 1;
             }
         }
-        
+
         // Property: No collisions in sequential IDs
         prop_assert_eq!(
             collisions, 0,
             "Found {} ID collisions in {} requests",
             collisions, count
         );
-        
+
         // Property: All IDs are unique
         prop_assert_eq!(
             ids.len(), count,
@@ -196,7 +196,7 @@ proptest! {
         timeout_ms in 100u64..1000
     ) {
         let should_timeout = response_time_ms > timeout_ms;
-        
+
         // Property: Response time determines timeout outcome
         if should_timeout {
             // In real test, this would be a timeout
@@ -222,7 +222,7 @@ proptest! {
         response_variation in 0.0f32..1.0
     ) {
         let mut results: Vec<Result<String, String>> = Vec::new();
-        
+
         // Simulate concurrent requests with varying outcomes
         for i in 0..request_count {
             if rand::random::<f32>() < response_variation {
@@ -231,14 +231,14 @@ proptest! {
                 results.push(Err(format!("Error {}", i)));
             }
         }
-        
+
         // Property: All requests should have a result
         prop_assert_eq!(
             results.len(), request_count,
             "Expected {} results, got {}",
             request_count, results.len()
         );
-        
+
         // Property: Results are independent (no cross-contamination)
         for (i, result) in results.iter().enumerate() {
             match result {
@@ -262,22 +262,22 @@ proptest! {
         messages in prop::collection::vec((0u64..1000, "[a-z]{1,20}"), 1..100)
     ) {
         let mut indexed: Vec<(u64, String)> = messages;
-        
+
         // Sort by sequence number
         indexed.sort_by_key(|(seq, _)| *seq);
-        
+
         // Property: Sequence numbers should be non-decreasing
         for window in indexed.windows(2) {
             let &(seq1, _) = &window[0];
             let &(seq2, _) = &window[1];
-            
+
             prop_assert!(
                 seq1 <= seq2,
                 "Sequence numbers out of order: {} before {}",
                 seq1, seq2
             );
         }
-        
+
         // Property: No duplicate sequence numbers (if we care about strict ordering)
         let mut seen = HashSet::new();
         for (seq, _) in &indexed {
@@ -298,10 +298,10 @@ proptest! {
         let mut consecutive_failures = 0;
         let mut state = "closed"; // closed, open, half-open
         let threshold = 5;
-        
+
         for _ in 0..request_count {
             let is_failure = rand::random::<f32>() < failure_rate;
-            
+
             match state {
                 "closed" => {
                     if is_failure {
@@ -333,14 +333,14 @@ proptest! {
                 _ => {}
             }
         }
-        
+
         // Property: State should always be valid
         prop_assert!(
             ["closed", "open", "half-open"].contains(&state),
             "Invalid circuit breaker state: {}",
             state
         );
-        
+
         // Property: Consecutive failures should respect threshold logic
         if state == "open" {
             prop_assert!(

@@ -50,21 +50,21 @@ pub fn validate_config(config: &PolyConfig) -> ValidationResult {
 
     // Check for duplicate IDs
     validate_no_duplicate_ids(config, &mut result);
-    
+
     // Validate routing rules reference valid agents
     validate_routing_rules(config, &mut result);
-    
+
     // Validate identities have valid channels
     validate_identities(config, &mut result);
-    
+
     // Validate alloys have valid constituents
     validate_alloys(config, &mut result);
-    
+
     // Validate proxy configuration if present
     if let Some(ref proxy) = config.proxy {
         validate_proxy_config(proxy, &mut result);
     }
-    
+
     // Validate security settings
     if let Some(ref security) = config.security {
         validate_security_config(security, &mut result);
@@ -79,10 +79,7 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
     let mut identity_ids = HashSet::new();
     for identity in &config.identities {
         if !identity_ids.insert(&identity.id) {
-            result.add_error(format!(
-                "Duplicate identity ID: '{}'",
-                identity.id
-            ));
+            result.add_error(format!("Duplicate identity ID: '{}'", identity.id));
         }
     }
 
@@ -90,10 +87,7 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
     let mut agent_ids = HashSet::new();
     for agent in &config.agents {
         if !agent_ids.insert(&agent.id) {
-            result.add_error(format!(
-                "Duplicate agent ID: '{}'",
-                agent.id
-            ));
+            result.add_error(format!("Duplicate agent ID: '{}'", agent.id));
         }
     }
 
@@ -112,10 +106,7 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
     let mut alloy_ids = HashSet::new();
     for alloy in &config.alloys {
         if !alloy_ids.insert(&alloy.id) {
-            result.add_error(format!(
-                "Duplicate alloy ID: '{}'",
-                alloy.id
-            ));
+            result.add_error(format!("Duplicate alloy ID: '{}'", alloy.id));
         }
     }
 
@@ -134,7 +125,7 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
 /// Validate routing rules reference valid agents.
 fn validate_routing_rules(config: &PolyConfig, result: &mut ValidationResult) {
     let valid_agents: HashSet<_> = config.agents.iter().map(|a| &a.id).collect();
-    
+
     for rule in &config.routing {
         // Check default_agent exists
         if !valid_agents.contains(&rule.default_agent) {
@@ -143,7 +134,7 @@ fn validate_routing_rules(config: &PolyConfig, result: &mut ValidationResult) {
                 rule.identity, rule.default_agent
             ));
         }
-        
+
         // Check all allowed_agents exist
         for agent_id in &rule.allowed_agents {
             if !valid_agents.contains(agent_id) {
@@ -159,7 +150,7 @@ fn validate_routing_rules(config: &PolyConfig, result: &mut ValidationResult) {
 /// Validate identities have valid channel aliases.
 fn validate_identities(config: &PolyConfig, result: &mut ValidationResult) {
     let valid_channels: HashSet<_> = config.channels.iter().map(|c| c.kind.clone()).collect();
-    
+
     for identity in &config.identities {
         for alias in &identity.aliases {
             if !valid_channels.contains(&alias.channel) {
@@ -185,7 +176,7 @@ fn validate_alloys(config: &PolyConfig, result: &mut ValidationResult) {
                 ));
             }
         }
-        
+
         // Check constituents sum to reasonable weight for weighted strategy
         if alloy.strategy == "weighted" && !alloy.constituents.is_empty() {
             let total_weight: u32 = alloy.constituents.iter().map(|c| c.weight).sum();
@@ -196,7 +187,7 @@ fn validate_alloys(config: &PolyConfig, result: &mut ValidationResult) {
                 ));
             }
         }
-        
+
         // Warn if alloy has no constituents
         if alloy.constituents.is_empty() {
             result.add_warning(format!(
@@ -212,7 +203,7 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
     if !proxy.enabled {
         return;
     }
-    
+
     // Validate bind address format
     if let Err(e) = proxy.bind.parse::<std::net::SocketAddr>() {
         result.add_error(format!(
@@ -220,7 +211,7 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
             proxy.bind, e
         ));
     }
-    
+
     // Validate timeout is reasonable
     if proxy.timeout_seconds == 0 {
         result.add_error("Proxy timeout_seconds cannot be zero".to_string());
@@ -230,13 +221,13 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
             proxy.timeout_seconds
         ));
     }
-    
+
     // Validate backend_type
     match proxy.backend_type.as_str() {
-        "http" | "embedded" | "library" | "mock" => {}
+        "http" | "embedded" | "library" | "mock" | "helicone" | "traceloop" => {}
         other => {
             result.add_error(format!(
-                "Proxy backend_type '{}' is invalid. Use: http, embedded, library, mock",
+                "Proxy backend_type '{}' is invalid. Use: http, embedded, library, mock, helicone, traceloop",
                 other
             ));
         }
@@ -263,9 +254,8 @@ fn validate_security_config(
 /// Pre-parse validation: check TOML syntax without full deserialization.
 pub fn validate_toml_syntax(raw: &str) -> Result<()> {
     // Try to parse as generic TOML value first
-    let _: toml::Value = toml::from_str(raw)
-        .context("TOML syntax error in config file")?;
-    
+    let _: toml::Value = toml::from_str(raw).context("TOML syntax error in config file")?;
+
     Ok(())
 }
 
@@ -274,17 +264,17 @@ pub fn validate_config_file(path: &std::path::PathBuf) -> Result<ValidationResul
     // First check TOML syntax
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading config file: {}", path.display()))?;
-    
+
     validate_toml_syntax(&raw)
         .with_context(|| format!("validating TOML syntax: {}", path.display()))?;
-    
+
     // Then try to parse as PolyConfig
-    let config: PolyConfig = toml::from_str(&raw)
-        .with_context(|| format!("parsing config file: {}", path.display()))?;
-    
+    let config: PolyConfig =
+        toml::from_str(&raw).with_context(|| format!("parsing config file: {}", path.display()))?;
+
     // Run semantic validation
     let result = validate_config(&config);
-    
+
     Ok(result)
 }
 
@@ -293,7 +283,7 @@ pub fn validate_config_file(path: &std::path::PathBuf) -> Result<ValidationResul
 // mod tests {
 //     use super::*;
 //     use crate::config::*;
-//     
+//
 //     // Tests removed temporarily due to struct changes
 //     // Need to update test data to match new config structure
 // }

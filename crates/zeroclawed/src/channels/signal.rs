@@ -64,9 +64,9 @@
 //! allowed_numbers = ["+14155551234"]
 //! ```
 
+use crate::sync::Arc;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use crate::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 

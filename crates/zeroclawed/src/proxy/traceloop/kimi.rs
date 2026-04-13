@@ -5,10 +5,8 @@
 #![allow(dead_code)]
 
 use super::{Provider, ProviderConfig, ProviderType};
-use crate::proxy::openai::{
-    ChatCompletionResponse, ChatMessage, ToolDefinition, ToolChoice,
-};
 use crate::proxy::backend::BackendError;
+use crate::proxy::openai::{ChatCompletionResponse, ChatMessage, ToolChoice, ToolDefinition};
 use async_trait::async_trait;
 use reqwest::Client;
 
@@ -60,9 +58,11 @@ impl Provider for KimiProvider {
             base_url: Some(self.base_url()),
             default_model: self.config.default_model.clone(),
         };
-        
+
         let openai_provider = super::openai::OpenAIProvider::new(&openai_config);
-        
-        openai_provider.chat_completions(model, messages, stream, tools, tool_choice).await
+
+        openai_provider
+            .chat_completions(model, messages, stream, tools, tool_choice)
+            .await
     }
 }

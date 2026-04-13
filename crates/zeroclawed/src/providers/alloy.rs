@@ -5,11 +5,11 @@
 
 #![allow(dead_code)]
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
-use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
+use rand::distr::Distribution;
 use rand::rng;
 use serde::Serialize;
 
@@ -284,7 +284,10 @@ impl Clone for AlloyManager {
         Self {
             alloys: self.alloys.clone(),
             active_by_identity: Mutex::new(
-                self.active_by_identity.lock().expect("mutex poisoned").clone()
+                self.active_by_identity
+                    .lock()
+                    .expect("mutex poisoned")
+                    .clone(),
             ),
         }
     }

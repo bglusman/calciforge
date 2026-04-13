@@ -9,7 +9,8 @@ use futures_util::Stream;
 use std::pin::Pin;
 
 /// A stream of SSE chunks from a provider
-pub type SseStream = Pin<Box<dyn Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>> + Send>>;
+pub type SseStream =
+    Pin<Box<dyn Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>> + Send>>;
 
 /// Transform a provider's SSE stream into OpenAI-compatible format
 pub fn transform_stream(

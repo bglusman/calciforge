@@ -125,8 +125,8 @@ async fn proxy_handler(
 
     debug!(provider = %provider, rest = %rest_path, "Proxying request");
 
-    let target_url = resolve_provider_url(&provider, &state._config)
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let target_url =
+        resolve_provider_url(&provider, &state._config).ok_or(StatusCode::BAD_REQUEST)?;
 
     // Build full target path
     let query = request
@@ -155,7 +155,11 @@ async fn fallback_chat_handler(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Result<Response, StatusCode> {
-    let chain = state._config.providers.fallback_chain.clone()
+    let chain = state
+        ._config
+        .providers
+        .fallback_chain
+        .clone()
         .unwrap_or_else(|| vec!["kimi".into(), "openclaw".into()]);
 
     // Read body once, clone for retries
@@ -195,8 +199,7 @@ async fn fallback_chat_handler(
         // Inject credentials from vault (preferred) or forward incoming auth (fallback)
         match vault::get_secret(provider).await {
             Ok(token) => {
-                forwarded_req = forwarded_req
-                    .header("Authorization", format!("Bearer {}", token));
+                forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
             }
             Err(_) => {
                 // Forward the incoming Authorization header if present
@@ -357,7 +360,9 @@ async fn generic_proxy_handler(
     // Allow HTTPS always; allow HTTP only for RFC1918/local targets
     let is_https = query.target.starts_with("https://");
     let is_local_http = query.target.starts_with("http://") && {
-        let host = query.target.trim_start_matches("http://")
+        let host = query
+            .target
+            .trim_start_matches("http://")
             .split(&[':', '/'][..])
             .next()
             .unwrap_or("");

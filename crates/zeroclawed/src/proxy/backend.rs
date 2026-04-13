@@ -7,8 +7,8 @@
 //! - Helicone (HTTP to Helicone AI Gateway)
 //! - Mock (for testing)
 
-use thiserror::Error;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::sync::Arc;
 
@@ -23,19 +23,19 @@ use super::helicone_router;
 pub enum BackendError {
     #[error("OneCLI execution failed: {0}")]
     ExecutionFailed(String),
-    
+
     #[error("OneCLI not found or not executable")]
     OneCliNotFound,
-    
+
     #[error("HTTP request failed: {0}")]
     HttpError(String),
-    
+
     #[error("Invalid response from backend: {0}")]
     InvalidResponse(String),
-    
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    
+
     #[error("Backend not available: {0}")]
     NotAvailable(String),
 }
@@ -53,10 +53,10 @@ pub trait OneCliBackend: Send + Sync {
         tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
         tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError>;
-    
+
     /// List available models
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError>;
-    
+
     /// Get backend type for logging/debugging
     fn backend_type(&self) -> BackendType;
 }
@@ -112,21 +112,21 @@ pub struct ModelInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
     pub backend_type: BackendType,
-    
+
     // Embedded backend config
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
-    
+
     // HTTP backend config
     pub url: Option<String>,
     pub api_key: Option<String>,
     pub timeout_seconds: Option<u64>,
-    
+
     // Helicone backend config
     pub helicone_url: Option<String>,
     pub helicone_api_key: Option<String>,
     pub helicone_router_name: Option<String>,
-    
+
     // Library backend config
     pub config_path: Option<String>,
 }
@@ -136,7 +136,10 @@ impl Default for BackendConfig {
         Self {
             backend_type: BackendType::Mock,
             command: Some("onecli".to_string()),
-            args: Some(vec!["--config".to_string(), "~/.config/onecli.toml".to_string()]),
+            args: Some(vec![
+                "--config".to_string(),
+                "~/.config/onecli.toml".to_string(),
+            ]),
             url: Some("http://localhost:8081".to_string()),
             api_key: None,
             timeout_seconds: Some(30),
@@ -152,31 +155,37 @@ impl Default for BackendConfig {
 pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn OneCliBackend>, BackendError> {
     match config.backend_type {
         BackendType::Embedded => {
-            let command = config.command.clone()
-                .ok_or_else(|| BackendError::ConfigError("Missing command for embedded backend".to_string()))?;
+            let command = config.command.clone().ok_or_else(|| {
+                BackendError::ConfigError("Missing command for embedded backend".to_string())
+            })?;
             let args = config.args.clone().unwrap_or_default();
             Ok(Arc::new(EmbeddedBackend::new(command, args)))
         }
         BackendType::Library => {
-            let config_path = config.config_path.clone()
-                .ok_or_else(|| BackendError::ConfigError("Missing config_path for library backend".to_string()))?;
+            let config_path = config.config_path.clone().ok_or_else(|| {
+                BackendError::ConfigError("Missing config_path for library backend".to_string())
+            })?;
             Ok(Arc::new(LibraryBackend::new(config_path)))
         }
         BackendType::Http => {
-            let url = config.url.clone()
-                .ok_or_else(|| BackendError::ConfigError("Missing url for HTTP backend".to_string()))?;
-            let api_key = config.api_key.clone()
-                .ok_or_else(|| BackendError::ConfigError("Missing api_key for HTTP backend".to_string()))?;
+            let url = config.url.clone().ok_or_else(|| {
+                BackendError::ConfigError("Missing url for HTTP backend".to_string())
+            })?;
+            let api_key = config.api_key.clone().ok_or_else(|| {
+                BackendError::ConfigError("Missing api_key for HTTP backend".to_string())
+            })?;
             let timeout = config.timeout_seconds.unwrap_or(30);
             Ok(Arc::new(HttpBackend::new(url, api_key, timeout)))
         }
         BackendType::Helicone => {
-            let url = config.helicone_url.clone()
-                .ok_or_else(|| BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string()))?;
-            let api_key = config.helicone_api_key.clone()
-                .unwrap_or_default();
+            let url = config.helicone_url.clone().ok_or_else(|| {
+                BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string())
+            })?;
+            let api_key = config.helicone_api_key.clone().unwrap_or_default();
             let timeout = config.timeout_seconds.unwrap_or(120);
-            let router_name = config.helicone_router_name.clone()
+            let router_name = config
+                .helicone_router_name
+                .clone()
                 .unwrap_or_else(|| "helicone".to_string());
             let helicone_config = helicone_router::HeliconeRouterConfig {
                 base_url: url,
@@ -186,13 +195,12 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn OneCliBackend>, 
                 enable_caching: true,
                 cache_ttl_seconds: 300,
             };
-            let router = helicone_router::HeliconeRouter::new(helicone_config)
-                .map_err(|e| BackendError::ConfigError(format!("Failed to create Helicone router: {}", e)))?;
+            let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
+                BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
+            })?;
             Ok(Arc::new(router))
         }
-        BackendType::Mock => {
-            Ok(Arc::new(MockBackend::new()))
-        }
+        BackendType::Mock => Ok(Arc::new(MockBackend::new())),
     }
 }
 
@@ -205,9 +213,15 @@ impl MockBackend {
     pub fn new() -> Self {
         let mut responses = std::collections::HashMap::new();
         responses.insert("gpt-4".to_string(), "Hello from GPT-4 mock!".to_string());
-        responses.insert("claude-3-5-sonnet".to_string(), "Hello from Claude mock!".to_string());
-        responses.insert("kimi-free".to_string(), "Hello from Kimi Free mock!".to_string());
-        
+        responses.insert(
+            "claude-3-5-sonnet".to_string(),
+            "Hello from Claude mock!".to_string(),
+        );
+        responses.insert(
+            "kimi-free".to_string(),
+            "Hello from Kimi Free mock!".to_string(),
+        );
+
         Self { responses }
     }
 }
@@ -223,14 +237,17 @@ impl OneCliBackend for MockBackend {
         _tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
         // Simple mock response
-        let response_text = self.responses.get(&model)
+        let response_text = self
+            .responses
+            .get(&model)
             .cloned()
             .unwrap_or_else(|| format!("Mock response for model: {}", model));
-        
-        let last_message = messages.last()
+
+        let last_message = messages
+            .last()
             .and_then(|m| m.content.as_ref().and_then(|c| c.to_text()))
             .unwrap_or_default();
-        
+
         Ok(ChatCompletionResponse {
             id: format!("mock-{}", uuid::Uuid::new_v4()),
             object: "chat.completion".to_string(),
@@ -243,7 +260,10 @@ impl OneCliBackend for MockBackend {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content: Some(MessageContent::Text(format!("{} (responding to: {})", response_text, last_message))),
+                    content: Some(MessageContent::Text(format!(
+                        "{} (responding to: {})",
+                        response_text, last_message
+                    ))),
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
@@ -252,11 +272,15 @@ impl OneCliBackend for MockBackend {
                 logprobs: None,
             }],
             usage: Usage {
-                prompt_tokens: messages.iter()
-                    .map(|m| m.content.as_ref()
-                        .and_then(|c| c.to_text())
-                        .map(|t| t.len() as u32 / 4)
-                        .unwrap_or(0))
+                prompt_tokens: messages
+                    .iter()
+                    .map(|m| {
+                        m.content
+                            .as_ref()
+                            .and_then(|c| c.to_text())
+                            .map(|t| t.len() as u32 / 4)
+                            .unwrap_or(0)
+                    })
                     .sum(),
                 completion_tokens: response_text.len() as u32 / 4,
                 total_tokens: 0,
@@ -264,7 +288,7 @@ impl OneCliBackend for MockBackend {
             system_fingerprint: None,
         })
     }
-    
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         Ok(vec![
             ModelInfo {
@@ -287,7 +311,7 @@ impl OneCliBackend for MockBackend {
             },
         ])
     }
-    
+
     fn backend_type(&self) -> BackendType {
         BackendType::Mock
     }
@@ -317,14 +341,18 @@ impl OneCliBackend for EmbeddedBackend {
         _tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
         // TODO: Implement actual OneCLI subprocess execution
-        Err(BackendError::NotAvailable("Embedded backend not yet implemented".to_string()))
+        Err(BackendError::NotAvailable(
+            "Embedded backend not yet implemented".to_string(),
+        ))
     }
-    
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         // TODO: Implement actual OneCLI subprocess execution
-        Err(BackendError::NotAvailable("Embedded backend not yet implemented".to_string()))
+        Err(BackendError::NotAvailable(
+            "Embedded backend not yet implemented".to_string(),
+        ))
     }
-    
+
     fn backend_type(&self) -> BackendType {
         BackendType::Embedded
     }
@@ -346,31 +374,23 @@ impl HttpBackend {
             .timeout(std::time::Duration::from_secs(timeout_seconds))
             .build()
             .expect("Failed to build HTTP client");
-        
-        Self { 
-            client, 
+
+        Self {
+            client,
             base_url,
             api_key,
             timeout_seconds,
         }
     }
-    
+
     /// Create backend with OpenRouter configuration
     pub fn openrouter(api_key: String) -> Self {
-        Self::new(
-            "https://openrouter.ai/api/v1".to_string(),
-            api_key,
-            120,
-        )
+        Self::new("https://openrouter.ai/api/v1".to_string(), api_key, 120)
     }
-    
+
     /// Create backend with local OpenClaw gateway
     pub fn openclaw_local(api_key: String) -> Self {
-        Self::new(
-            "http://127.0.0.1:18789/v1".to_string(),
-            api_key,
-            300,
-        )
+        Self::new("http://127.0.0.1:18789/v1".to_string(), api_key, 300)
     }
 }
 
@@ -385,28 +405,30 @@ impl OneCliBackend for HttpBackend {
         tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
         let url = format!("{}/chat/completions", self.base_url);
-        
+
         // Force non-streaming - streaming responses require SSE parsing
         let _ = stream; // Acknowledge parameter but don't use it for now
-        
+
         // Build request body with optional tools
         let mut request_body = serde_json::json!({
             "model": model,
             "messages": messages,
             "stream": false,
         });
-        
+
         // Add tools if present
         if let Some(tools) = tools {
             request_body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
         }
-        
+
         // Add tool_choice if present
         if let Some(tool_choice) = tool_choice {
-            request_body["tool_choice"] = serde_json::to_value(tool_choice).unwrap_or(serde_json::Value::Null);
+            request_body["tool_choice"] =
+                serde_json::to_value(tool_choice).unwrap_or(serde_json::Value::Null);
         }
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -414,62 +436,70 @@ impl OneCliBackend for HttpBackend {
             .send()
             .await
             .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await
+            let error_text = response
+                .text()
+                .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(
-                format!("API error {}: {}", status, error_text)
-            ));
+            return Err(BackendError::HttpError(format!(
+                "API error {}: {}",
+                status, error_text
+            )));
         }
-        
-        let completion: ChatCompletionResponse = response.json().await
-            .map_err(|e| BackendError::InvalidResponse(
-                format!("Failed to parse response: {}", e)
-            ))?;
-        
+
+        let completion: ChatCompletionResponse = response.json().await.map_err(|e| {
+            BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
+        })?;
+
         Ok(completion)
     }
-    
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         let url = format!("{}/models", self.base_url);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await
             .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await
+            let error_text = response
+                .text()
+                .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(
-                format!("API error {}: {}", status, error_text)
-            ));
+            return Err(BackendError::HttpError(format!(
+                "API error {}: {}",
+                status, error_text
+            )));
         }
-        
+
         // Parse OpenAI-compatible models response
         #[derive(serde::Deserialize)]
         struct ModelsResponse {
             data: Vec<OpenAiModel>,
         }
-        
+
         #[derive(serde::Deserialize)]
         struct OpenAiModel {
             id: String,
             #[serde(default)]
             owned_by: Option<String>,
         }
-        
-        let models_resp: ModelsResponse = response.json().await
-            .map_err(|e| BackendError::InvalidResponse(
-                format!("Failed to parse models: {}", e)
-            ))?;
-        
-        let models = models_resp.data.into_iter()
+
+        let models_resp: ModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse models: {}", e)))?;
+
+        let models = models_resp
+            .data
+            .into_iter()
             .map(|m| ModelInfo {
                 id: m.id.clone(),
                 name: Some(m.id),
@@ -477,10 +507,10 @@ impl OneCliBackend for HttpBackend {
                 capabilities: vec!["chat".to_string()],
             })
             .collect();
-        
+
         Ok(models)
     }
-    
+
     fn backend_type(&self) -> BackendType {
         BackendType::Http
     }
@@ -509,16 +539,19 @@ impl OneCliBackend for LibraryBackend {
         _tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
         // TODO: Implement actual OneCLI library integration
-        Err(BackendError::NotAvailable("Library backend not yet implemented".to_string()))
+        Err(BackendError::NotAvailable(
+            "Library backend not yet implemented".to_string(),
+        ))
     }
-    
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         // TODO: Implement actual OneCLI library integration
-        Err(BackendError::NotAvailable("Library backend not yet implemented".to_string()))
+        Err(BackendError::NotAvailable(
+            "Library backend not yet implemented".to_string(),
+        ))
     }
-    
+
     fn backend_type(&self) -> BackendType {
         BackendType::Library
     }
 }
-

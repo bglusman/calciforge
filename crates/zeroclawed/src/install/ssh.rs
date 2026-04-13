@@ -16,6 +16,7 @@
 //! The property tests in `model.rs` verify that `shell_quote` never lets bare
 //! single-quotes through.
 
+use crate::sync::Mutex;
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -195,21 +196,21 @@ pub struct SshCall {
 
 /// Mock SSH client that returns canned responses and records calls.
 ///
-/// Uses interior mutability (`std::sync::Mutex`) so it can be shared via
+/// Uses interior mutability (`crate::sync::Mutex`) so it can be shared via
 /// `Arc` across the trait interface (which requires `&self`).
 pub struct MockSshClient {
     /// Queued responses, consumed in order. When exhausted, returns a default
     /// success with empty stdout.
-    responses: std::sync::Mutex<Vec<SshOutput>>,
+    responses: Mutex<Vec<SshOutput>>,
     /// All calls made, for assertion in tests.
-    pub calls: std::sync::Mutex<Vec<SshCall>>,
+    pub calls: Mutex<Vec<SshCall>>,
 }
 
 impl MockSshClient {
     pub fn new() -> Self {
         Self {
-            responses: std::sync::Mutex::new(Vec::new()),
-            calls: std::sync::Mutex::new(Vec::new()),
+            responses: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
         }
     }
 

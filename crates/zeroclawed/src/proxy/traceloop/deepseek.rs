@@ -5,10 +5,10 @@
 #![allow(dead_code)]
 
 use super::{Provider, ProviderConfig, ProviderType};
-use crate::proxy::openai::{
-    ChatCompletionResponse, ChatMessage, MessageContent, ToolDefinition, ToolChoice,
-};
 use crate::proxy::backend::BackendError;
+use crate::proxy::openai::{
+    ChatCompletionResponse, ChatMessage, MessageContent, ToolChoice, ToolDefinition,
+};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::json;
@@ -60,7 +60,7 @@ impl Provider for DeepSeekProvider {
             .map(|msg| {
                 let mut message = HashMap::new();
                 message.insert("role".to_string(), serde_json::Value::String(msg.role));
-                
+
                 match msg.content {
                     Some(MessageContent::Text(text)) => {
                         message.insert("content".to_string(), serde_json::Value::String(text));
@@ -81,14 +81,17 @@ impl Provider for DeepSeekProvider {
                         message.insert("content".to_string(), serde_json::Value::String(text));
                     }
                     None => {
-                        message.insert("content".to_string(), serde_json::Value::String("".to_string()));
+                        message.insert(
+                            "content".to_string(),
+                            serde_json::Value::String("".to_string()),
+                        );
                     }
                 }
-                
+
                 if let Some(name) = msg.name {
                     message.insert("name".to_string(), serde_json::Value::String(name));
                 }
-                
+
                 message
             })
             .collect();
@@ -116,15 +119,13 @@ impl Provider for DeepSeekProvider {
                     })
                 })
                 .collect();
-            
+
             payload["tools"] = serde_json::Value::Array(tool_defs);
-            
+
             // Add tool_choice if provided
             if let Some(tool_choice) = tool_choice {
                 let tool_choice_value = match tool_choice {
-                    ToolChoice::Mode(mode) => {
-                        serde_json::Value::String(mode)
-                    }
+                    ToolChoice::Mode(mode) => serde_json::Value::String(mode),
                     ToolChoice::Specific { r#type, function } => {
                         // For function-specific tool choice
                         json!({
@@ -148,12 +149,17 @@ impl Provider for DeepSeekProvider {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| BackendError::ExecutionFailed(format!("DeepSeek API request error: {}", e)))?;
+            .map_err(|e| {
+                BackendError::ExecutionFailed(format!("DeepSeek API request error: {}", e))
+            })?;
 
         let status = response.status();
-        
+
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(BackendError::ExecutionFailed(format!(
                 "DeepSeek API error ({}): {}",
                 status, error_text
@@ -167,17 +173,13 @@ impl Provider for DeepSeekProvider {
             ))
         } else {
             // Parse the response
-            let response_json: serde_json::Value = response
-                .json()
-                .await
-                .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse response: {}", e)))?;
+            let response_json: serde_json::Value = response.json().await.map_err(|e| {
+                BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
+            })?;
 
             // Convert to ChatCompletionResponse
-            let id = response_json["id"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            
+            let id = response_json["id"].as_str().unwrap_or("").to_string();
+
             let choices = response_json["choices"]
                 .as_array()
                 .unwrap_or(&vec![])
@@ -185,27 +187,30 @@ impl Provider for DeepSeekProvider {
                 .map(|choice| {
                     let message = &choice["message"];
                     let content = message["content"].as_str().map(|s| s.to_string());
-                    
+
                     // Handle tool calls
-                    let tool_calls = if let Some(tool_calls_array) = message["tool_calls"].as_array() {
+                    let tool_calls = if let Some(tool_calls_array) =
+                        message["tool_calls"].as_array()
+                    {
                         let calls: Vec<_> = tool_calls_array
                             .iter()
-                            .map(|tc| {
-                                crate::proxy::openai::ToolCall {
-                                    id: tc["id"].as_str().unwrap_or("").to_string(),
-                                    r#type: "function".to_string(),
-                                    function: crate::proxy::openai::FunctionCall {
-                                        name: tc["function"]["name"].as_str().unwrap_or("").to_string(),
-                                        arguments: tc["function"]["arguments"].as_str().unwrap_or("").to_string(),
-                                    },
-                                }
+                            .map(|tc| crate::proxy::openai::ToolCall {
+                                id: tc["id"].as_str().unwrap_or("").to_string(),
+                                r#type: "function".to_string(),
+                                function: crate::proxy::openai::FunctionCall {
+                                    name: tc["function"]["name"].as_str().unwrap_or("").to_string(),
+                                    arguments: tc["function"]["arguments"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string(),
+                                },
                             })
                             .collect();
                         Some(calls)
                     } else {
                         None
                     };
-                    
+
                     crate::proxy::openai::Choice {
                         index: choice["index"].as_u64().unwrap_or(0) as u32,
                         message: crate::proxy::openai::ChatMessage {
@@ -220,7 +225,7 @@ impl Provider for DeepSeekProvider {
                     }
                 })
                 .collect();
-            
+
             let usage = if let Some(usage_obj) = response_json["usage"].as_object() {
                 crate::proxy::openai::Usage {
                     prompt_tokens: usage_obj["prompt_tokens"].as_u64().unwrap_or(0) as u32,
@@ -234,7 +239,7 @@ impl Provider for DeepSeekProvider {
                     total_tokens: 0,
                 }
             };
-            
+
             Ok(ChatCompletionResponse {
                 id,
                 object: "chat.completion".to_string(),
