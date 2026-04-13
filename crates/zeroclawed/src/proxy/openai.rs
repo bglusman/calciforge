@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// OpenAI-style chat completion request
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     /// Model ID or alloy alias (e.g., "gpt-4", "alloy/free-tier")
     pub model: String,

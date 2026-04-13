@@ -43,15 +43,7 @@ pub struct ProxyState {
     pub alloy_manager: Arc<AlloyManager>,
     pub provider_registry: Arc<ProviderRegistry>,
     pub config: ProxyConfig,
-    pub backend: Arc<dyn backend::OneCliBackend>,
-    pub gateway: Option<Arc<dyn gateway::GatewayBackend>>,
-    pub alloy_router: Option<Arc<alloy_router::AlloyRouter>>,
-    
-    #[cfg(feature = "traceloop")]
-    pub traceloop_router: Option<Arc<traceloop::TraceloopRouter>>,
-    
-    #[cfg(feature = "helicone")]
-    pub helicone_router: Option<Arc<helicone_router::HeliconeRouter>>,
+    pub gateway: Arc<dyn gateway::GatewayBackend>,
 }
 
 /// Start the Alloy proxy HTTP server
@@ -107,52 +99,30 @@ pub async fn start_proxy_server(
     let backend = backend::create_backend(&backend_config)
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;
 
-    // Create Helicone router (replacing Traceloop) - only if helicone feature is enabled
-    #[cfg(feature = "helicone")]
-    let helicone_router = {
-        // Try to get Helicone configuration
-        let helicone_api_key = config.backend_api_key.clone();
-        
-        // Create Helicone router configuration
-        let helicone_config = helicone_router::HeliconeRouterConfig {
-            base_url: config.backend_url.clone(),
-            api_key: helicone_api_key.unwrap_or_default(),
-            timeout_seconds: config.timeout_seconds,
-            router_name: "ai".to_string(),
-            enable_caching: true,
-            cache_ttl_seconds: 300,
-        };
-        
-        match helicone_router::HeliconeRouter::new(helicone_config.clone()) {
-            Ok(router) => {
-                info!("Created HeliconeRouter with gateway at {}", helicone_config.base_url);
-                Some(Arc::new(router))
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to create HeliconeRouter, falling back to legacy backend");
-                None
-            }
-        }
+    // Determine gateway type based on configuration
+    let gateway_type = if config.backend_type == "helicone" {
+        gateway::GatewayType::Helicone
+    } else {
+        gateway::GatewayType::Direct
     };
     
-    // Keep Traceloop router for backward compatibility (disabled)
-    #[cfg(feature = "traceloop")]
-    let traceloop_router = None;
+    let gateway_config = gateway::GatewayConfig {
+        backend_type: gateway_type,
+        base_url: Some(config.backend_url.clone()),
+        api_key: Some(config.backend_api_key.clone().unwrap_or_default()),
+        timeout_seconds: config.timeout_seconds,
+        extra_config: None,
+    };
     
-    // Keep old AlloyRouter for backward compatibility (but don't create it)
-    let alloy_router = None;
+    // Create gateway
+    let gateway = gateway::create_gateway(gateway_config, Some(backend))
+        .map_err(|e| anyhow::anyhow!("Failed to create gateway: {}", e))?;
 
     let state = ProxyState {
         alloy_manager,
         provider_registry,
         config: config.clone(),
-        backend,
-        gateway: None, // TODO: Create gateway based on config
-        alloy_router,
-        #[cfg(feature = "traceloop")]
-        traceloop_router,
-        #[cfg(feature = "helicone")]
-        helicone_router,
+        gateway,
     };
 
     let app = Router::new()

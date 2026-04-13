@@ -4,6 +4,7 @@
 //! - Embedded (spawns subprocess)
 //! - Library (uses OneCLI as library)
 //! - HTTP (HTTP to OneCLI server)
+//! - Helicone (HTTP to Helicone AI Gateway)
 //! - Mock (for testing)
 
 use thiserror::Error;
@@ -12,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::sync::Arc;
 
 use crate::proxy::openai::{ChatCompletionResponse, MessageContent};
+
+// Helicone router (embedded library)
+use super::helicone_router;
 
 /// Errors that can occur in backend operations
 #[derive(Error, Debug)]
@@ -66,6 +70,8 @@ pub enum BackendType {
     Library,
     /// HTTP to OneCLI server
     Http,
+    /// HTTP to Helicone AI Gateway
+    Helicone,
     /// Mock backend for testing
     Mock,
 }
@@ -76,6 +82,7 @@ impl std::fmt::Display for BackendType {
             BackendType::Embedded => write!(f, "embedded"),
             BackendType::Library => write!(f, "library"),
             BackendType::Http => write!(f, "http"),
+            BackendType::Helicone => write!(f, "helicone"),
             BackendType::Mock => write!(f, "mock"),
         }
     }
@@ -115,6 +122,11 @@ pub struct BackendConfig {
     pub api_key: Option<String>,
     pub timeout_seconds: Option<u64>,
     
+    // Helicone backend config
+    pub helicone_url: Option<String>,
+    pub helicone_api_key: Option<String>,
+    pub helicone_router_name: Option<String>,
+    
     // Library backend config
     pub config_path: Option<String>,
 }
@@ -128,6 +140,9 @@ impl Default for BackendConfig {
             url: Some("http://localhost:8081".to_string()),
             api_key: None,
             timeout_seconds: Some(30),
+            helicone_url: Some("http://localhost:8080".to_string()),
+            helicone_api_key: None,
+            helicone_router_name: None,
             config_path: Some("~/.config/onecli.toml".to_string()),
         }
     }
@@ -154,6 +169,26 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn OneCliBackend>, 
                 .ok_or_else(|| BackendError::ConfigError("Missing api_key for HTTP backend".to_string()))?;
             let timeout = config.timeout_seconds.unwrap_or(30);
             Ok(Arc::new(HttpBackend::new(url, api_key, timeout)))
+        }
+        BackendType::Helicone => {
+            let url = config.helicone_url.clone()
+                .ok_or_else(|| BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string()))?;
+            let api_key = config.helicone_api_key.clone()
+                .unwrap_or_default();
+            let timeout = config.timeout_seconds.unwrap_or(120);
+            let router_name = config.helicone_router_name.clone()
+                .unwrap_or_else(|| "helicone".to_string());
+            let helicone_config = helicone_router::HeliconeRouterConfig {
+                base_url: url,
+                api_key,
+                timeout_seconds: timeout,
+                router_name,
+                enable_caching: true,
+                cache_ttl_seconds: 300,
+            };
+            let router = helicone_router::HeliconeRouter::new(helicone_config)
+                .map_err(|e| BackendError::ConfigError(format!("Failed to create Helicone router: {}", e)))?;
+            Ok(Arc::new(router))
         }
         BackendType::Mock => {
             Ok(Arc::new(MockBackend::new()))

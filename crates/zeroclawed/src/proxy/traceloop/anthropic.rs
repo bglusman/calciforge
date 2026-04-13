@@ -2,6 +2,8 @@
 //!
 //! Anthropic uses a different API format than OpenAI.
 
+#![allow(dead_code)]
+
 use super::{Provider, ProviderConfig, ProviderType};
 use crate::proxy::openai::{
     ChatCompletionResponse, ChatMessage, MessageContent, ToolDefinition, ToolChoice,

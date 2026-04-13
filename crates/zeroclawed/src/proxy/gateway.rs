@@ -93,7 +93,7 @@ pub trait GatewayBackend: Send + Sync + Debug {
 pub fn create_gateway(
     config: GatewayConfig,
     backend: Option<Arc<dyn OneCliBackend>>,
-) -> Result<Box<dyn GatewayBackend>, BackendError> {
+) -> Result<Arc<dyn GatewayBackend>, BackendError> {
     match config.backend_type {
         #[cfg(feature = "helicone")]
         GatewayType::Helicone => {
@@ -111,7 +111,7 @@ pub fn create_gateway(
             let router = HeliconeRouter::new(helicone_config)
                 .map_err(|e| BackendError::ConfigError(format!("Failed to create Helicone router: {}", e)))?;
             
-            Ok(Box::new(HeliconeGateway {
+            Ok(Arc::new(HeliconeGateway {
                 config,
                 router,
             }))
@@ -128,7 +128,7 @@ pub fn create_gateway(
             // let router = TraceloopRouter::new(vec![])
             //     .map_err(|e| BackendError::ConfigError(format!("Failed to create Traceloop router: {}", e)))?;
             // 
-            // Ok(Box::new(TraceloopGateway {
+            // Ok(Arc::new(TraceloopGateway {
             //     config,
             //     router,
             // }))
@@ -136,7 +136,7 @@ pub fn create_gateway(
         
         #[cfg(feature = "test")]
         GatewayType::Mock => {
-            Ok(Box::new(MockGateway::new(config)))
+            Ok(Arc::new(MockGateway::new(config)))
         }
         
         #[cfg(not(feature = "test"))]
@@ -151,7 +151,7 @@ pub fn create_gateway(
                 BackendError::ConfigError("Direct gateway requires a backend parameter".to_string())
             )?;
             
-            Ok(Box::new(DirectGateway::new(config, backend)))
+            Ok(Arc::new(DirectGateway::new(config, backend)))
         }
         
         #[cfg(not(feature = "helicone"))]
