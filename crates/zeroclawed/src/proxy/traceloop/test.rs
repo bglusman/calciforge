@@ -67,7 +67,7 @@ mod tests {
     #[tokio::test]
     async fn test_caching_behavior() {
         // Create a mock router with a single provider
-        let router = TraceloopRouter::new(vec![ProviderConfig {
+        let _router = TraceloopRouter::new(vec![ProviderConfig {
             id: "test".to_string(),
             r#type: ProviderType::OpenAI,
             api_key: "test-key".to_string(),
@@ -76,7 +76,7 @@ mod tests {
         }])
         .unwrap();
 
-        let messages = vec![ChatMessage {
+        let _messages = vec![ChatMessage {
             role: "user".to_string(),
             content: Some(MessageContent::Text("Test message".to_string())),
             name: None,
