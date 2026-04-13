@@ -10,8 +10,9 @@
 
 use async_trait::async_trait;
 use std::fmt::Debug;
+use std::sync::Arc;
 
-use crate::proxy::backend::{BackendError, ModelInfo};
+use crate::proxy::backend::{BackendError, ModelInfo, OneCliBackend};
 use crate::proxy::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolDefinition, ToolChoice, Usage,
 };
@@ -89,7 +90,10 @@ pub trait GatewayBackend: Send + Sync + Debug {
 }
 
 /// Create a gateway backend from configuration
-pub fn create_gateway(config: GatewayConfig) -> Result<Box<dyn GatewayBackend>, BackendError> {
+pub fn create_gateway(
+    config: GatewayConfig,
+    backend: Option<Arc<dyn OneCliBackend>>,
+) -> Result<Box<dyn GatewayBackend>, BackendError> {
     match config.backend_type {
         #[cfg(feature = "helicone")]
         GatewayType::Helicone => {
@@ -142,8 +146,12 @@ pub fn create_gateway(config: GatewayConfig) -> Result<Box<dyn GatewayBackend>, 
         
         GatewayType::Direct => {
             // Direct provider calls (no gateway)
-            // This would use the existing backend infrastructure
-            Err(BackendError::ConfigError("Direct gateway not yet implemented".to_string()))
+            // This requires a backend to be passed in
+            let backend = backend.ok_or_else(|| 
+                BackendError::ConfigError("Direct gateway requires a backend parameter".to_string())
+            )?;
+            
+            Ok(Box::new(DirectGateway::new(config, backend)))
         }
         
         #[cfg(not(feature = "helicone"))]
@@ -193,6 +201,61 @@ impl GatewayBackend for HeliconeGateway {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         self.router.list_models().await
+    }
+
+    fn config(&self) -> &GatewayConfig {
+        &self.config
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Direct Gateway Implementation (wraps existing OneCliBackend)
+// ---------------------------------------------------------------------------
+
+/// Direct gateway that wraps an existing OneCliBackend
+pub struct DirectGateway {
+    config: GatewayConfig,
+    backend: Arc<dyn OneCliBackend>,
+}
+
+impl Debug for DirectGateway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectGateway")
+            .field("config", &self.config)
+            .field("backend_type", &self.backend.backend_type())
+            .finish()
+    }
+}
+
+impl DirectGateway {
+    pub fn new(config: GatewayConfig, backend: Arc<dyn OneCliBackend>) -> Self {
+        Self { config, backend }
+    }
+}
+
+#[async_trait]
+impl GatewayBackend for DirectGateway {
+    fn gateway_type(&self) -> GatewayType {
+        GatewayType::Direct
+    }
+
+    async fn chat_completion(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        // Extract parameters to pass to the underlying backend
+        // Note: Backend uses the old parameter-based API
+        self.backend.chat_completion(
+            request.model,
+            request.messages,
+            request.stream.unwrap_or(false),
+            request.tools,
+            request.tool_choice,
+        ).await
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
+        self.backend.list_models().await
     }
 
     fn config(&self) -> &GatewayConfig {

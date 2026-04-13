@@ -44,6 +44,7 @@ pub struct ProxyState {
     pub provider_registry: Arc<ProviderRegistry>,
     pub config: ProxyConfig,
     pub backend: Arc<dyn backend::OneCliBackend>,
+    pub gateway: Option<Arc<dyn gateway::GatewayBackend>>,
     pub alloy_router: Option<Arc<alloy_router::AlloyRouter>>,
     
     #[cfg(feature = "traceloop")]
@@ -146,6 +147,7 @@ pub async fn start_proxy_server(
         provider_registry,
         config: config.clone(),
         backend,
+        gateway: None, // TODO: Create gateway based on config
         alloy_router,
         #[cfg(feature = "traceloop")]
         traceloop_router,
