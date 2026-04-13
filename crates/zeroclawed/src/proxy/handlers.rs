@@ -145,8 +145,8 @@ async fn try_provider(
     model: &str,
     req: &ChatCompletionRequest,
 ) -> anyhow::Result<ChatCompletionResponse> {
-    // Try AlloyRouter first if available
-    if let Some(router) = &state.alloy_router {
+    // Try Traceloop router first if available
+    if let Some(router) = &state.traceloop_router {
         match router.chat_completion(
             model.to_string(),
             req.messages.clone(),
@@ -156,7 +156,7 @@ async fn try_provider(
         ).await {
             Ok(response) => return Ok(response),
             Err(e) => {
-                debug!(error = %e, "AlloyRouter failed, falling back to legacy backend");
+                debug!(error = %e, "TraceloopRouter failed, falling back to legacy backend");
                 // Fall through to legacy backend
             }
         }
@@ -199,9 +199,9 @@ pub async fn list_models(
         });
     }
 
-    // Try to get models from AlloyRouter first if available
+    // Try to get models from Traceloop router first if available
     let mut got_models = false;
-    if let Some(router) = &state.alloy_router {
+    if let Some(router) = &state.traceloop_router {
         match router.list_models().await {
             Ok(router_models) => {
                 for model_info in router_models {
@@ -215,12 +215,12 @@ pub async fn list_models(
                 got_models = true;
             }
             Err(e) => {
-                debug!(error = %e, "AlloyRouter list_models failed, falling back");
+                debug!(error = %e, "TraceloopRouter list_models failed, falling back");
             }
         }
     }
     
-    // Fall back to legacy backend if AlloyRouter didn't provide models
+    // Fall back to legacy backend if TraceloopRouter didn't provide models
     if !got_models {
         match state.backend.list_models().await {
             Ok(backend_models) => {

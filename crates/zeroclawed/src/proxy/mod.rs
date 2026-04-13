@@ -21,9 +21,18 @@ use crate::config::ProxyConfig;
 mod alloy_router;
 mod auth;
 mod backend;
+mod gateway;
 mod handlers;
 mod openai;
 mod streaming;
+
+// Helicone AI Gateway router (HTTP-based)
+#[cfg(feature = "helicone")]
+mod helicone_router;
+
+// Traceloop-inspired router
+#[cfg(feature = "traceloop")]
+mod traceloop;
 
 pub use openai::ChatCompletionRequest;
 
@@ -36,6 +45,12 @@ pub struct ProxyState {
     pub config: ProxyConfig,
     pub backend: Arc<dyn backend::OneCliBackend>,
     pub alloy_router: Option<Arc<alloy_router::AlloyRouter>>,
+    
+    #[cfg(feature = "traceloop")]
+    pub traceloop_router: Option<Arc<traceloop::TraceloopRouter>>,
+    
+    #[cfg(feature = "helicone")]
+    pub helicone_router: Option<Arc<helicone_router::HeliconeRouter>>,
 }
 
 /// Start the Alloy proxy HTTP server
@@ -73,6 +88,13 @@ pub async fn start_proxy_server(
             backend_type: backend::BackendType::Library,
             ..Default::default()
         },
+        "helicone" => backend::BackendConfig {
+            backend_type: backend::BackendType::Helicone,
+            helicone_url: Some(config.backend_url.clone()),
+            helicone_api_key: config.backend_api_key.clone(),
+            timeout_seconds: Some(config.timeout_seconds),
+            ..Default::default()
+        },
         _ => backend::BackendConfig {
             backend_type: backend::BackendType::Mock,
             ..Default::default()
@@ -84,35 +106,40 @@ pub async fn start_proxy_server(
     let backend = backend::create_backend(&backend_config)
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;
 
-    // Create AlloyRouter if we have API keys
-    let alloy_router = {
-        // Try to get API keys from config or environment
-        let deepseek_api_key = config.backend_api_key.clone();
+    // Create Helicone router (replacing Traceloop) - only if helicone feature is enabled
+    #[cfg(feature = "helicone")]
+    let helicone_router = {
+        // Try to get Helicone configuration
+        let helicone_api_key = config.backend_api_key.clone();
         
-        // Try to get Kimi API key from environment
-        let kimi_api_key = std::env::var("KIMI_API_KEY").ok();
+        // Create Helicone router configuration
+        let helicone_config = helicone_router::HeliconeRouterConfig {
+            base_url: config.backend_url.clone(),
+            api_key: helicone_api_key.unwrap_or_default(),
+            timeout_seconds: config.timeout_seconds,
+            router_name: "ai".to_string(),
+            enable_caching: true,
+            cache_ttl_seconds: 300,
+        };
         
-        // Only create AlloyRouter if we have at least one API key
-        if deepseek_api_key.is_some() || kimi_api_key.is_some() {
-            match alloy_router::AlloyRouter::default_with_backends(
-                deepseek_api_key,
-                kimi_api_key,
-            ) {
-                Ok(router) => {
-                    info!("Created AlloyRouter with {} provider(s)", 
-                        router.providers_count());
-                    Some(Arc::new(router))
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to create AlloyRouter, falling back to legacy backend");
-                    None
-                }
+        match helicone_router::HeliconeRouter::new(helicone_config.clone()) {
+            Ok(router) => {
+                info!("Created HeliconeRouter with gateway at {}", helicone_config.base_url);
+                Some(Arc::new(router))
             }
-        } else {
-            info!("No API keys available for AlloyRouter, using legacy backend only");
-            None
+            Err(e) => {
+                warn!(error = %e, "Failed to create HeliconeRouter, falling back to legacy backend");
+                None
+            }
         }
     };
+    
+    // Keep Traceloop router for backward compatibility (disabled)
+    #[cfg(feature = "traceloop")]
+    let traceloop_router = None;
+    
+    // Keep old AlloyRouter for backward compatibility (but don't create it)
+    let alloy_router = None;
 
     let state = ProxyState {
         alloy_manager,
@@ -120,6 +147,10 @@ pub async fn start_proxy_server(
         config: config.clone(),
         backend,
         alloy_router,
+        #[cfg(feature = "traceloop")]
+        traceloop_router,
+        #[cfg(feature = "helicone")]
+        helicone_router,
     };
 
     let app = Router::new()

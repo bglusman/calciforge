@@ -26,9 +26,15 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
         return Ok(token);
     }
 
+    // Try fnox (encrypted local/remote secret store)
+    if let Ok(secret) = get_secret_from_fnox(name).await {
+        debug!("Found {} in fnox", name);
+        return Ok(secret);
+    }
+
     let config = VaultConfig::default();
     if config.token.is_empty() {
-        anyhow::bail!("No ONECLI_VAULT_TOKEN set and no env var for '{}'", name);
+        anyhow::bail!("Secret '{}' not found in env, fnox, or vault", name);
     }
 
     debug!("Looking up {} in VaultWarden at {}", name, config.url);
@@ -140,4 +146,39 @@ struct Field {
 struct Login {
     username: Option<String>,
     password: Option<String>,
+}
+
+/// Retrieve a secret from fnox (encrypted local/remote secret store).
+///
+/// fnox supports age encryption, AWS Secrets Manager, Azure Key Vault,
+/// GCP Secret Manager, 1Password, Bitwarden, Infisical, HashiCorp Vault, etc.
+pub async fn get_secret_from_fnox(name: &str) -> anyhow::Result<String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    debug!("Looking up {} in fnox", name);
+
+    let output = Command::new("fnox")
+        .args(["get", name])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to execute fnox: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("fnox get {} failed: {}", name, stderr);
+    }
+
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|e| anyhow::anyhow!("fnox returned invalid UTF-8: {}", e))?
+        .trim()
+        .to_string();
+
+    if secret.is_empty() {
+        anyhow::bail!("fnox returned empty secret for {}", name);
+    }
+
+    Ok(secret)
 }
