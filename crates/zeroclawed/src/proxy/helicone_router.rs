@@ -47,6 +47,7 @@ impl Default for HeliconeRouterConfig {
 }
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum HeliconeError {
     #[error("Configuration error: {0}")]
     Config(String),
@@ -87,6 +88,7 @@ impl HeliconeRouter {
     }
 
     /// Create a default router with standard configuration
+    #[allow(dead_code)]
     pub fn default() -> Result<Self, HeliconeError> {
         Self::new(HeliconeRouterConfig::default())
     }
@@ -153,6 +155,7 @@ impl HeliconeRouter {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
+#[allow(dead_code)]
 pub trait Router: Send + Sync {
     async fn chat_completion(
         &self,

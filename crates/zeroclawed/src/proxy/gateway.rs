@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::proxy::backend::{BackendError, ModelInfo, OneCliBackend};
 use crate::proxy::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolChoice, ToolDefinition, Usage,
+    ChatCompletionRequest, ChatCompletionResponse,
 };
 use tracing::{info, warn};
 
@@ -234,6 +234,7 @@ pub fn create_gateway(
 
 #[cfg(feature = "helicone")]
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct HeliconeGateway {
     config: GatewayConfig,
     router: crate::proxy::helicone_router::HeliconeRouter,
@@ -278,6 +279,7 @@ impl GatewayBackend for HeliconeGateway {
 
 /// Logging gateway that wraps another gateway and logs all requests
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LoggingGateway {
     config: GatewayConfig,
     inner: Arc<dyn GatewayBackend>,
@@ -516,6 +518,7 @@ impl GatewayBackend for DirectGateway {
 // Traceloop Gateway Implementation
 #[cfg(feature = "traceloop")]
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TraceloopGateway {
     config: GatewayConfig,
     router: crate::proxy::traceloop::TraceloopRouter,

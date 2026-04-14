@@ -20,6 +20,7 @@ use crate::persistent_context::PersistentContextStore;
 
 /// Unified trait for conversation context storage.
 #[async_trait]
+#[allow(dead_code)]
 pub trait ContextStoreTrait: Send + Sync {
     /// Build a context preamble for a chat+agent pair and return the full
     /// message to send (preamble prepended if non-empty).
