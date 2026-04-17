@@ -15,21 +15,31 @@ mod context;
 mod hooks;
 #[cfg(test)]
 mod install;
+#[cfg(feature = "persistent-context")]
+mod persistent_context;
+mod providers;
+mod proxy;
 mod router;
+mod sync;
+mod unified_context;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
+
+use crate::sync::Arc;
 
 use adversary_detector::audit::AuditLogger;
 use adversary_detector::middleware::ChannelScanner;
 use adversary_detector::profiles::{SecurityConfig, SecurityProfile};
 use adversary_detector::scanner::AdversaryScanner;
 
-use crate::{commands::CommandHandler, context::ContextStore, router::Router};
+use crate::{
+    commands::CommandHandler, providers::alloy::AlloyManager, router::Router,
+    unified_context::UnifiedContextStore,
+};
 
 /// ZeroClawed — Rust agent gateway
 #[derive(Parser, Debug)]
@@ -38,6 +48,14 @@ struct Args {
     /// Path to config file (default: ~/.zeroclawed/config.toml)
     #[arg(short, long)]
     config: Option<PathBuf>,
+
+    /// Run only the proxy server, skip channels (for testing)
+    #[arg(long)]
+    proxy_only: bool,
+
+    /// Validate config file and exit (don't start server)
+    #[arg(long)]
+    validate: bool,
 }
 
 #[tokio::main]
@@ -57,6 +75,41 @@ async fn main() -> Result<()> {
         .config
         .unwrap_or_else(|| config::config_path().expect("Failed to determine default config path"));
     info!(path = %config_path.display(), "loading config");
+
+    // If --validate flag is set, just validate and exit
+    if args.validate {
+        match config::validator::validate_config_file(&config_path) {
+            Ok(validation) => {
+                if validation.is_valid() {
+                    println!("✅ Configuration is valid!");
+                    if !validation.warnings.is_empty() {
+                        println!("\n⚠️  Warnings:");
+                        for warning in &validation.warnings {
+                            println!("  - {}", warning);
+                        }
+                    }
+                    std::process::exit(0);
+                } else {
+                    println!("❌ Configuration validation failed:");
+                    for error in &validation.errors {
+                        println!("  - {}", error);
+                    }
+                    if !validation.warnings.is_empty() {
+                        println!("\n⚠️  Warnings:");
+                        for warning in &validation.warnings {
+                            println!("  - {}", warning);
+                        }
+                    }
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                println!("❌ Failed to validate config: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     let config = config::load_config_from(&config_path).with_context(|| {
         format!(
             "Failed to load config from {}. Create it first (see README).",
@@ -80,7 +133,24 @@ async fn main() -> Result<()> {
         }
     }
 
-    let context_store = ContextStore::new(config.context.buffer_size, config.context.inject_depth);
+    let unified_context_store = UnifiedContextStore::new(
+        config.context.buffer_size,
+        config.context.inject_depth,
+        config.context.persistent.as_ref(),
+    )
+    .await?;
+
+    // Extract ContextStore from UnifiedContextStore (assuming InMemory variant for now)
+    let context_store_arc = match unified_context_store {
+        UnifiedContextStore::InMemory(store) => store,
+        #[cfg(feature = "persistent-context")]
+        UnifiedContextStore::Persistent(_) => {
+            anyhow::bail!("Persistent context store requires persistence support")
+        }
+    };
+
+    // Clone the inner ContextStore for channel functions
+    let context_store = (*context_store_arc).clone();
 
     // Initialize adversary detector middleware from config
     let security_cfg = config.security.as_ref();
@@ -112,7 +182,31 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(config);
     let router = Arc::new(Router::new());
-    let command_handler = Arc::new(CommandHandler::new(config.clone()));
+
+    // Initialize AlloyManager if alloys are configured
+    let alloy_manager = if config.alloys.is_empty() {
+        None
+    } else {
+        match AlloyManager::from_configs(&config.alloys) {
+            Ok(manager) => {
+                info!(alloys = config.alloys.len(), "alloy manager initialized");
+                Some(manager)
+            }
+            Err(e) => {
+                error!(error = %e, "failed to initialize alloy manager");
+                None
+            }
+        }
+    };
+
+    let command_handler = {
+        let handler = CommandHandler::new(config.clone());
+        if let Some(manager) = alloy_manager {
+            Arc::new(handler.with_alloy_manager(manager))
+        } else {
+            Arc::new(handler)
+        }
+    };
 
     // Detect enabled channels
     let has_telegram = config
@@ -135,7 +229,13 @@ async fn main() -> Result<()> {
         .iter()
         .any(|c| c.kind == "signal" && c.enabled);
 
-    if !has_telegram && !has_matrix && !has_whatsapp && !has_signal {
+    let has_mock = config
+        .channels
+        .iter()
+        .any(|c| c.kind == "mock" && c.enabled);
+
+    if !args.proxy_only && !has_telegram && !has_matrix && !has_whatsapp && !has_signal && !has_mock
+    {
         error!("no enabled channels found in config — nothing to do");
         std::process::exit(1);
     }
@@ -143,7 +243,7 @@ async fn main() -> Result<()> {
     // Run enabled channels concurrently via tokio::join!
     // Channels that are not enabled resolve immediately with Ok(()).
     let telegram_fut = async {
-        if has_telegram {
+        if !args.proxy_only && has_telegram {
             info!("starting Telegram channel");
             channels::telegram::run(
                 config.clone(),
@@ -159,7 +259,7 @@ async fn main() -> Result<()> {
     };
 
     let matrix_fut = async {
-        if has_matrix {
+        if !args.proxy_only && has_matrix {
             info!("starting Matrix channel");
             channels::matrix::run(
                 config.clone(),
@@ -175,7 +275,7 @@ async fn main() -> Result<()> {
     };
 
     let whatsapp_fut = async {
-        if has_whatsapp {
+        if !args.proxy_only && has_whatsapp {
             info!("starting WhatsApp channel (webhook receiver)");
             channels::whatsapp::run(
                 config.clone(),
@@ -192,7 +292,7 @@ async fn main() -> Result<()> {
     };
 
     let signal_fut = async {
-        if has_signal {
+        if !args.proxy_only && has_signal {
             info!("starting Signal channel (webhook receiver)");
             channels::signal::run(
                 config.clone(),
@@ -208,12 +308,54 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (tg_result, mx_result, wa_result, sig_result) =
-        tokio::join!(telegram_fut, matrix_fut, whatsapp_fut, signal_fut);
+    let mock_fut = async {
+        if !args.proxy_only && has_mock {
+            info!("starting Mock channel");
+            channels::mock::run(
+                config.clone(),
+                router.clone(),
+                command_handler.clone(),
+                context_store.clone(),
+            )
+            .await
+            .context("Mock channel error")
+        } else {
+            Ok(())
+        }
+    };
+
+    // Start proxy server if enabled
+    let proxy_config = config.proxy.clone().unwrap_or_default();
+    let proxy_enabled = proxy_config.enabled;
+    let proxy_fut = async {
+        if proxy_enabled {
+            let alloy_mgr = command_handler
+                .alloy_manager()
+                .map(|m| Arc::new((*m).clone()))
+                .unwrap_or_else(|| Arc::new(crate::providers::alloy::AlloyManager::empty()));
+            let providers = Arc::new(crate::providers::ProviderRegistry::new());
+            proxy::start_proxy_server(proxy_config, alloy_mgr, providers)
+                .await
+                .context("Proxy server error")
+        } else {
+            Ok(())
+        }
+    };
+
+    let (tg_result, mx_result, wa_result, sig_result, mock_result, proxy_result) = tokio::join!(
+        telegram_fut,
+        matrix_fut,
+        whatsapp_fut,
+        signal_fut,
+        mock_fut,
+        proxy_fut
+    );
     tg_result?;
+    proxy_result?;
     mx_result?;
     wa_result?;
     sig_result?;
+    mock_result?;
 
     Ok(())
 }

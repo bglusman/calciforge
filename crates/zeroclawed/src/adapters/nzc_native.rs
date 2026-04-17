@@ -51,8 +51,8 @@
 //! `record_approval_continuation` method should be called with the original
 //! user message and the final assistant response so history stays consistent.
 
+use crate::sync::Arc;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -190,6 +190,7 @@ impl AgentAdapter for NzcNativeAdapter {
         let inner_ctx = DispatchContext {
             message: &full_message,
             sender: ctx.sender,
+            model_override: ctx.model_override,
         };
 
         match self.inner.dispatch_with_context(inner_ctx).await {
@@ -393,6 +394,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "what is 2+2?",
                 sender: Some("brian"),
+                model_override: None,
             })
             .await;
         assert!(r1.is_ok(), "first dispatch failed: {:?}", r1);
@@ -402,6 +404,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "and 3+3?",
                 sender: Some("brian"),
+                model_override: None,
             })
             .await;
         assert!(r2.is_ok(), "second dispatch failed: {:?}", r2);
@@ -489,6 +492,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "brian first message",
                 sender: Some("brian"),
+                model_override: None,
             })
             .await;
 
@@ -497,6 +501,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "renee first message",
                 sender: Some("renee"),
+                model_override: None,
             })
             .await;
 
@@ -505,6 +510,7 @@ mod tests {
             .dispatch_with_context(DispatchContext {
                 message: "brian second message",
                 sender: Some("brian"),
+                model_override: None,
             })
             .await;
 

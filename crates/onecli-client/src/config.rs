@@ -4,6 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Provider URL mappings with optional fallback chain
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderConfig {
+    pub anthropic: Option<String>,
+    pub openai: Option<String>,
+    pub kimi: Option<String>,
+    pub gemini: Option<String>,
+    pub openclaw: Option<String>,
+    /// Fallback chain: try providers in order on failure
+    /// e.g. ["kimi", "openclaw"] means try Kimi first, fallback to OpenClaw
+    pub fallback_chain: Option<Vec<String>>,
+}
+
 /// Configuration for retry behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
@@ -57,14 +70,6 @@ pub struct VaultConfig {
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderConfig {
-    pub anthropic: Option<String>,
-    pub openai: Option<String>,
-    pub kimi: Option<String>,
-    pub gemini: Option<String>,
-}
-
 impl OneCliServiceConfig {
     pub async fn from_env_or_file() -> anyhow::Result<Self> {
         if let Ok(config_path) = std::env::var("ONECLI_CONFIG") {
@@ -86,6 +91,10 @@ impl OneCliServiceConfig {
                 openai: std::env::var("OPENAI_BASE_URL").ok(),
                 kimi: std::env::var("KIMI_BASE_URL").ok(),
                 gemini: std::env::var("GEMINI_BASE_URL").ok(),
+                openclaw: std::env::var("OPENCLAW_BASE_URL").ok(),
+                fallback_chain: std::env::var("ONECLI_FALLBACK_CHAIN")
+                    .ok()
+                    .map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
             },
         })
     }

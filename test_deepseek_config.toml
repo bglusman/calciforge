@@ -1,0 +1,60 @@
+# Test config with DeepSeek models and HTTP backend
+
+[zeroclawed]
+version = 1
+
+# Enable proxy server with HTTP backend
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+backend_type = "http"
+backend_url = "http://127.0.0.1:18789/v1"
+backend_api_key = "Cryptonomicon381!"
+timeout_seconds = 300
+
+# Simple identity for testing
+[[identities]]
+id = "test-user"
+display_name = "Test User"
+role = "owner"
+
+# DeepSeek alloy - uses DeepSeek chat model + Kimi fallback
+[[alloys]]
+id = "deepseek-alloy"
+name = "DeepSeek Alloy"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek/deepseek-chat-v3-0324"
+weight = 70
+
+[[alloys.constituents]]
+model = "kimi/kimi-for-coding"
+weight = 30
+
+# Multi-model alloy with DeepSeek + others
+[[alloys]]
+id = "smart-alloy"
+name = "Smart Alloy (DeepSeek + Kimi)"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek/deepseek-chat-v3-0324"
+weight = 60
+
+[[alloys.constituents]]
+model = "kimi/kimi-for-coding"
+weight = 40
+
+# Proxy agents configuration
+[[proxy.agents]]
+id = "test-agent"
+name = "Test Agent"
+api_key = "test-key-123"
+allowed_models = ["*"]
+
+# Dummy channel to keep server running
+[[channels]]
+kind = "telegram"
+enabled = true
+bot_token = "dummy:token"

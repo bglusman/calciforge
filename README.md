@@ -136,6 +136,65 @@ enabled = true
 
 ---
 
+## 🔧 Model Alloys (Blended Model Routing)
+
+ZeroClawed supports **Alloy** — a technique inspired by [Alloy: A Model for Blended LLM Outputs](https://arxiv.org/abs/2410.10630) that routes requests across multiple LLM providers for improved cost efficiency, quality, and reliability.
+
+### Why Use Alloys?
+
+- **Cost Optimization**: Route 80% of requests to cheaper models, 20% to premium
+- **Quality Blending**: Combine outputs from multiple models for better responses
+- **Graceful Degradation**: Automatic fallback when providers are down
+- **A/B Testing**: Compare model performance in production
+
+### Configuration
+
+```tomn
+# Define alloys — blended model groups with selection strategies
+[[alloys]]
+id = "free-alloy-1"
+name = "Free Tier Alloy"
+strategy = "weighted"  # or "round_robin"
+
+[[alloys.constituents]]
+model = "openrouter/google/gemini-flash-1.5"
+weight = 80  # 80% of requests
+
+[[alloys.constituents]]
+model = "openrouter/anthropic/claude-3-haiku"
+weight = 20  # 20% of requests
+
+[[alloys]]
+id = "premium-alloy"
+name = "Premium Quality"
+strategy = "round_robin"
+
+[[alloys.constituents]]
+model = "openrouter/anthropic/claude-3.5-sonnet"
+weight = 50
+
+[[alloys.constituents]]
+model = "openrouter/openai/gpt-4o"
+weight = 50
+```
+
+### Usage
+
+Users activate alloys per-identity:
+
+```
+!model                    # List available alloys and shortcuts
+!model free-alloy-1       # Activate an alloy for your identity
+!model premium-alloy      # Switch to premium alloy
+```
+
+### Strategies
+
+- **weighted**: Random selection based on configured weights (good for cost control)
+- **round_robin**: Cycles through constituents deterministically (good for A/B testing)
+
+---
+
 ## 🛡️ Policy Enforcement (clashd)
 
 clashd is a sidecar service that evaluates every tool call through a Starlark policy before execution.

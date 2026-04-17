@@ -80,3 +80,5 @@ panic = "abort"
 
 [patch.crates-io]
 # matrix-sdk = { git = "https://github.com/upstream-fork/matrix-rust-sdk" } # temporarily disabled for local builds
+
+

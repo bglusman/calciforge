@@ -1,0 +1,171 @@
+# ZeroClawed Configuration with Helicone AI Gateway Backend
+# 
+# This configuration uses Helicone AI Gateway as the backend for the
+# OpenAI-compatible proxy server. Helicone acts as a sidecar that
+# provides unified routing, observability, and cost tracking across
+# multiple LLM providers.
+#
+# To use this configuration:
+# 1. Start Helicone AI Gateway (see below)
+# 2. Configure your API keys in Helicone's config.yaml
+# 3. Start zeroclawed with this config
+# 4. Point your OpenAI-compatible clients to zeroclawed's proxy
+
+[zeroclawed]
+version = 2
+
+# ============================================================================
+# PROXY CONFIGURATION - Helicone Backend
+# ============================================================================
+[proxy]
+enabled = true
+# Bind address for the OpenAI-compatible HTTP API
+bind = "127.0.0.1:18789"
+
+# Backend type: use "helicone" for Helicone AI Gateway
+backend_type = "helicone"
+
+# URL of the Helicone AI Gateway (default: http://localhost:8080)
+backend_url = "http://localhost:8080"
+
+# Optional: API key if Helicone has authentication enabled
+# backend_api_key = "your-helicone-api-key"
+
+# Request timeout in seconds
+timeout_seconds = 120
+
+# Maximum request body size in MB
+max_body_mb = 50
+
+# Default policy for unconfigured agents: "allow_all", "deny_all", or "allow_configured"
+default_policy = "allow_all"
+
+# ============================================================================
+# AGENT CONFIGURATION (for proxy access control)
+# ============================================================================
+[[proxy.agents]]
+id = "librarian"
+name = "Librarian Agent"
+# Agent-specific API key (optional - falls back to global)
+# api_key = "agent-specific-key"
+# Allowed model patterns (supports wildcards)
+allowed_models = ["*"]
+# Rate limits (0 = unlimited)
+rate_limit_rpm = 0
+rate_limit_tpm = 0
+
+[[proxy.agents]]
+id = "claude-code"
+name = "Claude Code"
+allowed_models = ["anthropic/*", "deepseek/*"]
+
+# ============================================================================
+# IDENTITY CONFIGURATION
+# ============================================================================
+[[identities]]
+id = "brian"
+aliases = [{ channel = "telegram", id = "YOUR_TELEGRAM_ID" }]
+role = "owner"
+
+# ============================================================================
+# AGENT DISPATCH CONFIGURATION
+# ============================================================================
+[[agents]]
+id = "librarian"
+kind = "openclaw-http"
+endpoint = "http://10.0.0.20:18789"
+timeout_ms = 120000
+
+[[routing]]
+identity = "brian"
+default_agent = "librarian"
+
+# ============================================================================
+# CHANNEL CONFIGURATION
+# ============================================================================
+[[channels]]
+kind = "telegram"
+bot_token_file = "~/.zeroclawed/secrets/telegram-token"
+enabled = true
+
+# ============================================================================
+# HELICONE SETUP INSTRUCTIONS
+# ============================================================================
+# 
+# 1. Clone and build Helicone AI Gateway:
+#    
+#    git clone https://github.com/Helicone/helicone.git /tmp/helicone
+#    cd /tmp/helicone/gateway
+#    cargo build --release
+#
+# 2. Create Helicone config.yaml (in /tmp/helicone/gateway/):
+#
+#    gateway:
+#      port: 8080
+#      host: 0.0.0.0
+#    
+#    providers:
+#      - name: deepseek
+#        type: deepseek
+#        api_key: ${DEEPSEEK_API_KEY}
+#        base_url: https://api.deepseek.com/v1
+#      
+#      - name: kimi
+#        type: openai-compatible
+#        api_key: ${KIMI_API_KEY}
+#        base_url: https://api.moonshot.cn/v1
+#      
+#      - name: anthropic
+#        type: anthropic
+#        api_key: ${ANTHROPIC_API_KEY}
+#
+# 3. Start Helicone Gateway:
+#
+#    cargo run --release
+#
+# 4. Start zeroclawed with this config:
+#
+#    zeroclawed --config config-examples/helicone-proxy.toml
+#
+# 5. Test the proxy:
+#
+#    curl http://127.0.0.1:18789/v1/models
+#
+#    curl http://127.0.0.1:18789/v1/chat/completions \
+#      -H "Content-Type: application/json" \
+#      -H "Authorization: Bearer Cryptonomicon381!" \
+#      -d '{
+#        "model": "deepseek/deepseek-chat",
+#        "messages": [{"role": "user", "content": "Hello!"}]
+#      }'
+#
+# ============================================================================
+# COMPARISON: Helicone vs Traceloop Approach
+# ============================================================================
+#
+# Helicone (Sidecar Pattern):
+# - Pros:
+#   * Full observability dashboard out of the box
+#   * Cost tracking and analytics
+#   * Mature, production-ready
+#   * Supports many providers
+# - Cons:
+#   * Requires running separate process (2 binaries)
+#   * More complex deployment
+#   * Additional network hop
+#   * Dependency on Helicone project health
+#
+# Traceloop (Embedded Pattern):
+# - Pros:
+#   * Single binary deployment
+#   * No external dependencies
+#   * Direct control over routing logic
+#   * Easier to customize
+# - Cons:
+#   * No built-in observability dashboard
+#   * Need to implement analytics separately
+#   * Less mature
+#
+# Recommendation: Use Traceloop for simpler deployments where you want
+# single-binary simplicity. Use Helicone when you need rich observability
+# and don't mind running a sidecar.

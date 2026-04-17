@@ -1,0 +1,48 @@
+# Simple test config - Direct to DeepSeek API, no OpenClaw gateway
+
+[zeroclawed]
+version = 1
+
+# Enable proxy server
+[proxy]
+enabled = true
+bind = "127.0.0.1:8083"
+backend_type = "http"
+backend_url = "https://api.deepseek.com/v1"
+backend_api_key = "sk-f4fd89ce2ce34d76bb80a9c4c0d13b08"  # DeepSeek API key
+timeout_seconds = 300
+default_policy = "allow_all"
+
+# Simple identity
+[[identities]]
+id = "test-user"
+display_name = "Test User"
+role = "owner"
+
+# Simple alloy - DeepSeek chat + reasoner
+[[alloys]]
+id = "test-alloy"
+name = "Test Alloy"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 70
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 30
+
+# Proxy agent
+[[proxy.agents]]
+id = "test-agent"
+name = "Test Agent"
+api_key = "test-key-123"
+# Empty allowed_models means allow all (when default_policy is allow_all)
+allowed_models = []
+
+# Minimal Signal channel (required by server)
+[[channels]]
+kind = "signal"
+enabled = true
+account = "default"

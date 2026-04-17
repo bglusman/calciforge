@@ -5,3 +5,8 @@ edition = "2021"
 
 [dependencies]
 loom = "0.7"
+zeroclawed = { path = "../zeroclawed" }
+
+[features]
+default = []
+loom_tests = []

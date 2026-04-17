@@ -1,0 +1,50 @@
+# Test config with DeepSeek models using direct API
+
+[zeroclawed]
+version = 1
+
+# Enable proxy server with HTTP backend to DeepSeek API
+[proxy]
+enabled = true
+bind = "127.0.0.1:8081"
+backend_type = "http"
+backend_url = "https://api.deepseek.com/v1"
+backend_api_key = "sk-f4fd89ce2ce34d76bb80a9c4c0d13b08"  # DeepSeek API key
+timeout_seconds = 300
+
+# Simple identity for testing
+[[identities]]
+id = "test-user"
+display_name = "Test User"
+role = "owner"
+
+# DeepSeek alloy - uses DeepSeek chat + reasoner
+[[alloys]]
+id = "deepseek-alloy"
+name = "DeepSeek Alloy"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "deepseek-chat"
+weight = 70
+
+[[alloys.constituents]]
+model = "deepseek-reasoner"
+weight = 30
+
+# Multi-model alloy with DeepSeek + Kimi
+# Note: This won't work with DeepSeek-only backend
+# We'd need a more sophisticated backend that can route to multiple providers
+
+# Proxy agents configuration
+[[proxy.agents]]
+id = "test-agent"
+name = "Test Agent"
+api_key = "test-key-123"
+allowed_models = ["*"]
+
+# Minimal Signal channel to keep server running
+[[channels]]
+kind = "signal"
+enabled = true
+account = "default"

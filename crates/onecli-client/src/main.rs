@@ -37,16 +37,28 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting OneCLI service...");
 
     let config = OneCliServiceConfig::from_env_or_file().await?;
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    info!(
+        fallback = ?config.providers.fallback_chain,
+        openclaw = ?config.providers.openclaw,
+        kimi = ?config.providers.kimi,
+        "Provider config loaded"
+    );
+
     let state = AppState {
         _config: Arc::new(config),
-        http_client: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()?,
+        http_client,
     };
 
     let app = Router::new()
         .route("/health", get(health_handler))
-        // Proxy routes - must capture provider and the rest separately
+        // Fallback proxy — tries providers in chain order
+        .route("/v1/chat/completions", post(fallback_chat_handler))
+        .route("/v1/chat/completions", get(fallback_chat_handler))
+        // Provider-specific proxy routes
         .route("/proxy/:provider", any(proxy_handler))
         .route("/proxy/:provider/*rest", any(proxy_handler))
         .route("/proxy-url", any(generic_proxy_handler))
@@ -74,7 +86,7 @@ async fn health_handler() -> impl IntoResponse {
     }))
 }
 
-/// Known LLM provider mappings
+/// Known LLM provider mappings (static defaults)
 fn get_provider_url(provider: &str) -> Option<&'static str> {
     match provider {
         "anthropic" => Some("https://api.anthropic.com"),
@@ -83,8 +95,23 @@ fn get_provider_url(provider: &str) -> Option<&'static str> {
         "gemini" => Some("https://generativelanguage.googleapis.com"),
         "groq" => Some("https://api.groq.com/openai/v1"),
         "brave" => Some("https://api.search.brave.com"),
+        "openclaw" => Some("http://192.168.1.229:18789"),
         _ => None,
     }
+}
+
+/// Resolve provider URL: config override > static default > None
+fn resolve_provider_url(provider: &str, config: &OneCliServiceConfig) -> Option<String> {
+    // Check config overrides first
+    match provider {
+        "anthropic" => config.providers.anthropic.clone(),
+        "openai" => config.providers.openai.clone(),
+        "kimi" => config.providers.kimi.clone(),
+        "gemini" => config.providers.gemini.clone(),
+        "openclaw" => config.providers.openclaw.clone(),
+        _ => None,
+    }
+    .or_else(|| get_provider_url(provider).map(String::from))
 }
 
 async fn proxy_handler(
@@ -98,7 +125,8 @@ async fn proxy_handler(
 
     debug!(provider = %provider, rest = %rest_path, "Proxying request");
 
-    let target_url = get_provider_url(&provider).ok_or(StatusCode::BAD_REQUEST)?;
+    let target_url =
+        resolve_provider_url(&provider, &state._config).ok_or(StatusCode::BAD_REQUEST)?;
 
     // Build full target path
     let query = request
@@ -117,7 +145,104 @@ async fn proxy_handler(
         full_path
     );
 
-    proxy_with_path(state, target_url, &provider, &full_path, headers, request).await
+    proxy_with_path(state, &target_url, &provider, &full_path, headers, request).await
+}
+
+/// Fallback chat endpoint: tries providers in chain order
+/// POST /v1/chat/completions → tries kimi first, falls back to openclaw
+async fn fallback_chat_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Result<Response, StatusCode> {
+    let chain = state
+        ._config
+        .providers
+        .fallback_chain
+        .clone()
+        .unwrap_or_else(|| vec!["kimi".into(), "openclaw".into()]);
+
+    // Read body once, clone for retries
+    let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    info!(chain = ?chain, "Fallback chat: trying chain");
+
+    let mut last_error = StatusCode::BAD_GATEWAY;
+
+    for provider in &chain {
+        let target_url = match resolve_provider_url(provider, &state._config) {
+            Some(u) => u,
+            None => {
+                warn!(provider = %provider, "Unknown provider in chain, skipping");
+                continue;
+            }
+        };
+
+        // Build the /v1/chat/completions path
+        let target_path = "/v1/chat/completions";
+        let full_url = format!("{}{}", target_url, target_path);
+
+        info!(provider = %provider, url = %full_url, "Fallback: trying provider");
+
+        let mut forwarded_req = state.http_client.post(&full_url);
+
+        // Forward headers
+        for (key, value) in headers.iter() {
+            let key_str = key.as_str().to_lowercase();
+            if key_str != "host" && !key_str.starts_with("x-onecli-") {
+                forwarded_req = forwarded_req.header(key, value);
+            }
+        }
+
+        // Inject credentials from vault (preferred) or forward incoming auth (fallback)
+        match vault::get_secret(provider).await {
+            Ok(token) => {
+                forwarded_req = forwarded_req.header("Authorization", format!("Bearer {}", token));
+            }
+            Err(_) => {
+                // Forward the incoming Authorization header if present
+                if let Some(auth) = headers.get("authorization") {
+                    forwarded_req = forwarded_req.header("authorization", auth.clone());
+                    debug!(provider = %provider, "No vault creds, forwarding incoming auth header");
+                } else {
+                    debug!(provider = %provider, "No vault creds and no incoming auth header");
+                }
+            }
+        }
+
+        forwarded_req = forwarded_req.body(body_bytes.clone());
+
+        match forwarded_req.send().await {
+            Ok(response) if response.status().is_success() => {
+                info!(provider = %provider, status = %response.status(), "Fallback: success");
+                let status = response.status();
+                let resp_headers = response.headers().clone();
+                let body = response.bytes().await.unwrap_or_default();
+
+                let mut builder = Response::builder().status(status);
+                for (key, value) in resp_headers.iter() {
+                    builder = builder.header(key, value);
+                }
+                return Ok(builder.body(Body::from(body)).unwrap());
+            }
+            Ok(response) => {
+                let status = response.status();
+                warn!(provider = %provider, status = %status, "Fallback: provider returned error");
+                last_error = status;
+                // Continue to next provider
+            }
+            Err(e) => {
+                warn!(provider = %provider, err = %e, "Fallback: provider unreachable");
+                last_error = StatusCode::BAD_GATEWAY;
+                // Continue to next provider
+            }
+        }
+    }
+
+    error!(chain = ?chain, "All providers in fallback chain failed");
+    Err(last_error)
 }
 
 #[derive(Deserialize)]
@@ -232,9 +357,29 @@ async fn generic_proxy_handler(
 ) -> Result<Response, StatusCode> {
     debug!(target = %query.target, "Generic proxy request");
 
-    // Validate target URL (only allow https)
-    if !query.target.starts_with("https://") {
-        warn!("Rejecting non-HTTPS target: {}", query.target);
+    // Allow HTTPS always; allow HTTP only for RFC1918/local targets
+    let is_https = query.target.starts_with("https://");
+    let is_local_http = query.target.starts_with("http://") && {
+        let host = query
+            .target
+            .trim_start_matches("http://")
+            .split(&[':', '/'][..])
+            .next()
+            .unwrap_or("");
+        host.starts_with("127.")
+            || host.starts_with("10.")
+            || host.starts_with("192.168.")
+            || host.starts_with("172.16.")
+            || host.starts_with("172.17.")
+            || host.starts_with("172.18.")
+            || host.starts_with("172.19.")
+            || host.starts_with("172.2")
+            || host.starts_with("172.30.")
+            || host.starts_with("172.31.")
+            || host == "localhost"
+    };
+    if !is_https && !is_local_http {
+        warn!("Rejecting non-local HTTP target: {}", query.target);
         return Err(StatusCode::BAD_REQUEST);
     }
 

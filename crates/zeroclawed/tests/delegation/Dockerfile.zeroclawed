@@ -1,0 +1,25 @@
+# Dockerfile for ZeroClawed delegation testing
+
+FROM rust:1.85-bookworm as builder
+
+WORKDIR /build
+
+# Copy workspace
+COPY . .
+
+# Build zeroclawed
+RUN cargo build --release -p zeroclawed
+
+# Runtime image
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/zeroclawed /usr/local/bin/zeroclawed
+
+# Config will be mounted at /config
+ENV POLY_CONFIG=/config/test-config.toml
+
+EXPOSE 18797
+
+CMD ["zeroclawed"]

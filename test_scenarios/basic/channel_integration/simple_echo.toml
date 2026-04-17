@@ -1,0 +1,35 @@
+name = "Simple Echo Test"
+description = "Basic message echo through channel → agent → response"
+category = "basic.channel_integration"
+priority = "high"
+
+[setup]
+config = "test_simple_direct.toml"
+channels = ["mock"]
+agents = ["test-agent"]
+models = ["deepseek-chat"]
+
+[scenario]
+steps = [
+    { action = "send_message", channel = "mock", sender = "user1", text = "Hello, please echo this back" },
+    { action = "wait_response", timeout = "5s" },
+    { action = "verify_response", contains = "echo" }
+]
+
+[assertions]
+all_of = [
+    "response_received_within_5s",
+    "response_contains_echo_or_hello",
+    "no_errors_logged",
+    "single_response_only"
+]
+
+[expected_outcome]
+result = "success"
+max_duration = "10s"
+allowed_errors = []
+
+[metadata]
+author = "Test Framework"
+created = "2026-04-11"
+tags = ["basic", "channel", "echo", "smoke-test"]

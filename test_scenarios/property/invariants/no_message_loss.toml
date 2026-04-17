@@ -1,0 +1,64 @@
+name = "No Message Loss Invariant"
+description = "Property test: No messages should be lost in the system"
+category = "property.invariants"
+priority = "high"
+
+[property]
+description = "For any sequence of valid messages sent to the system, all messages should be processed and generate responses"
+type = "invariant"
+
+[generator]
+message_count = { min = 1, max = 1000 }
+message_types = ["text", "command", "query"]
+senders = { count = { min = 1, max = 10 } }
+
+[test_parameters]
+iterations = 1000
+max_concurrent_messages = 100
+channel_types = ["mock"]
+failure_injection_probability = 0.1  # 10% chance of injected failure
+
+[scenario_template]
+steps = [
+    { action = "generate_messages", count = "$generator.message_count" },
+    { action = "send_messages_concurrently", max_concurrent = "$test_parameters.max_concurrent_messages" },
+    { action = "wait_all_responses", timeout_multiplier = 2.0 },
+    { action = "collect_results" }
+]
+
+[invariants]
+all_of = [
+    "messages_sent == responses_received",
+    "no_duplicate_responses",
+    "response_order_preserves_causality",
+    "no_crashes_or_panics"
+]
+
+[statistical_assertions]
+metrics = [
+    { name = "message_delivery_rate", min = 1.0 },  # 100% delivery
+    { name = "average_response_time", max = 5000 },  # 5 seconds max average
+    { name = "p99_response_time", max = 10000 },  # 10 seconds max p99
+    { name = "error_rate", max = 0.01 }  # 1% max error rate
+]
+
+[edge_cases]
+include = [
+    "empty_messages",
+    "very_long_messages",
+    "unicode_messages",
+    "special_characters",
+    "rapid_bursts",
+    "silent_periods"
+]
+
+[expected_outcome]
+result = "invariant_holds"
+confidence_level = 0.99  # 99% confidence
+allow_flaky = false
+
+[metadata]
+author = "Property Testing Team"
+created = "2026-04-11"
+tags = ["property", "invariant", "reliability", "statistical"]
+references = ["https://en.wikipedia.org/wiki/Invariant_(computer_science)"]
