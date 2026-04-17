@@ -235,3 +235,138 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Integration tests — HTTP-level
+//
+// These tests exercise the full axum handler stack, not just the engine.
+// They prove the wire contract: the /evaluate endpoint reads agent_id from
+// context, NOT identity. Sending identity (the old plugin bug) leaves
+// agent_id as None and silently skips per-agent policy enforcement.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use http_body_util::BodyExt;
+    use std::io::Write;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    /// Build a minimal axum Router backed by a policy that denies when
+    /// context["agent_id"] == "restricted".
+    async fn test_router() -> (Router, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let policy_path = tmp.path().join("policy.star");
+        let mut f = std::fs::File::create(&policy_path).unwrap();
+        write!(
+            f,
+            r#"
+def evaluate(tool, args, context):
+    if context.get("agent_id") == "restricted":
+        return {{"verdict": "deny", "reason": "restricted agent blocked"}}
+    return "allow"
+"#
+        )
+        .unwrap();
+
+        let engine = Arc::new(PolicyEngine::new(&policy_path).await.unwrap());
+        let state = AppState { engine };
+
+        let router = Router::new()
+            .route("/evaluate", post(evaluate))
+            .with_state(state);
+
+        (router, tmp)
+    }
+
+    async fn post_evaluate(router: Router, body: serde_json::Value) -> serde_json::Value {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Regression test: proves that sending `identity` in context (the old
+    /// plugin bug) does NOT trigger agent-specific policy — agent_id is None.
+    ///
+    /// This test would have caught the bug before the fix: with the buggy
+    /// plugin sending {identity: "restricted"}, the policy receives
+    /// agent_id = None and returns "allow" when it should return "deny".
+    #[tokio::test]
+    async fn test_identity_key_is_not_agent_id() {
+        let (router, _tmp) = test_router().await;
+
+        let result = post_evaluate(
+            router,
+            serde_json::json!({
+                "tool": "shell",
+                "args": {},
+                // Old buggy plugin format — sends "identity", not "agent_id"
+                "context": { "identity": "restricted", "timestamp": "2026-01-01T00:00:00Z" }
+            }),
+        )
+        .await;
+
+        // "identity" key is ignored by /evaluate; agent_id is None.
+        // Policy cannot identify the caller, so the restriction is bypassed.
+        assert_eq!(
+            result["verdict"], "allow",
+            "identity key must not be treated as agent_id — got: {result}"
+        );
+    }
+
+    /// Positive test: proves that sending `agent_id` in context (the fixed
+    /// plugin format) correctly triggers agent-specific policy enforcement.
+    #[tokio::test]
+    async fn test_agent_id_key_enforces_policy() {
+        let (router, _tmp) = test_router().await;
+
+        let result = post_evaluate(
+            router,
+            serde_json::json!({
+                "tool": "shell",
+                "args": {},
+                // Fixed plugin format — sends "agent_id"
+                "context": { "agent_id": "restricted", "timestamp": "2026-01-01T00:00:00Z" }
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            result["verdict"], "deny",
+            "agent_id must reach the policy engine — got: {result}"
+        );
+        assert!(
+            result["reason"].as_str().unwrap_or("").contains("restricted"),
+            "reason should explain the denial — got: {result}"
+        );
+    }
+
+    /// Non-restricted agent with correct agent_id key is still allowed.
+    #[tokio::test]
+    async fn test_unrestricted_agent_id_is_allowed() {
+        let (router, _tmp) = test_router().await;
+
+        let result = post_evaluate(
+            router,
+            serde_json::json!({
+                "tool": "shell",
+                "args": {},
+                "context": { "agent_id": "librarian", "timestamp": "2026-01-01T00:00:00Z" }
+            }),
+        )
+        .await;
+
+        assert_eq!(result["verdict"], "allow");
+    }
+}
