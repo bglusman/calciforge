@@ -146,3 +146,59 @@ def evaluate(tool, args, context):
 
     assert_eq!(result.verdict, Verdict::Allow);
 }
+
+#[tokio::test]
+async fn test_agent_id_visible_in_starlark_context() {
+    // Verifies that the agent_id passed to evaluate() is accessible via
+    // context["agent_id"] in Starlark — matching the wire format expected by
+    // the before_tool_call plugin (which sends {agent_id: identity, ...}).
+    let tmp = TempDir::new().unwrap();
+    let policy = create_test_policy(
+        &tmp,
+        r#"
+def evaluate(tool, args, context):
+    if context.get("agent_id") == "librarian":
+        return {"verdict": "deny", "reason": "librarian restricted"}
+    return "allow"
+"#,
+    )
+    .await;
+
+    let engine = PolicyEngine::new(&policy).await.unwrap();
+
+    let denied = engine
+        .evaluate("shell", &serde_json::json!({}), Some("librarian"))
+        .await;
+    assert_eq!(denied.verdict, Verdict::Deny);
+    assert_eq!(
+        denied.reason.as_deref(),
+        Some("librarian restricted")
+    );
+
+    let allowed = engine
+        .evaluate("shell", &serde_json::json!({}), Some("custodian"))
+        .await;
+    assert_eq!(allowed.verdict, Verdict::Allow);
+}
+
+#[tokio::test]
+async fn test_missing_agent_id_does_not_panic() {
+    // When agent_id is None (no context from caller), the engine should
+    // still evaluate successfully with policy using context.get("agent_id") == None.
+    let tmp = TempDir::new().unwrap();
+    let policy = create_test_policy(
+        &tmp,
+        r#"
+def evaluate(tool, args, context):
+    agent = context.get("agent_id")
+    if agent == None:
+        return "allow"
+    return "deny"
+"#,
+    )
+    .await;
+
+    let engine = PolicyEngine::new(&policy).await.unwrap();
+    let result = engine.evaluate("test", &serde_json::json!({}), None).await;
+    assert_eq!(result.verdict, Verdict::Allow);
+}

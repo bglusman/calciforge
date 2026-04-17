@@ -154,7 +154,7 @@ async function evaluateWithClashd(
         tool: toolName,
         args,
         context: {
-          identity,
+          agent_id: identity,
           timestamp: new Date().toISOString(),
         },
       }),

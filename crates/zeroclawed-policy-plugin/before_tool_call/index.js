@@ -63,7 +63,7 @@ function beforeToolCall(context) {
                             body: JSON.stringify({
                                 tool: toolName,
                                 args: args,
-                                context: { identity: identity, timestamp: new Date().toISOString() }
+                                context: { agent_id: identity, timestamp: new Date().toISOString() }
                             }),
                             signal: controller_1.signal
                         })];
