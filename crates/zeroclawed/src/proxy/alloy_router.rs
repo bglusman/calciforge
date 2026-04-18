@@ -18,6 +18,7 @@ use crate::proxy::helicone_router::{HeliconeRouter, HeliconeRouterConfig};
 
 /// Alloy routing strategy (kept for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum AlloyStrategy {
     /// Round-robin between constituents
     RoundRobin,
@@ -29,6 +30,7 @@ pub enum AlloyStrategy {
 
 /// Provider configuration (kept for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ProviderConfig {
     /// Provider ID (e.g., "deepseek", "kimi")
     pub id: String,
@@ -44,6 +46,7 @@ pub struct ProviderConfig {
 
 /// Alloy configuration (kept for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct AlloyConfig {
     /// Alloy ID (e.g., "kimi-chat-rr")
     pub id: String,
@@ -68,6 +71,7 @@ pub struct AlloyStats {
 }
 
 /// Alloy router that delegates to HeliconeRouter
+#[allow(dead_code)]
 pub struct AlloyRouter {
     /// Helicone router for actual request handling
     helicone_router: Option<Arc<HeliconeRouter>>,
@@ -79,6 +83,7 @@ pub struct AlloyRouter {
     rr_counters: RwLock<std::collections::HashMap<String, usize>>,
 }
 
+#[allow(dead_code)]
 impl AlloyRouter {
     /// Create a new AlloyRouter with the given providers and alloys
     pub fn new(

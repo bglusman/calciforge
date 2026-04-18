@@ -366,8 +366,8 @@ async fn test_10_rate_limiting_simulation() {
                 .await
                 .map_err(|_| "Rate limit exceeded".to_string())?;
 
-            // Simulate processing
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            // Simulate processing (30ms × ⌈10/3⌉ batches = 120ms minimum, > 100ms threshold)
+            tokio::time::sleep(Duration::from_millis(30)).await;
 
             let mut processed = self.processed.lock().await;
             *processed += 1;

@@ -14,6 +14,7 @@ mod tests {
     /// TEST 1: Invalid model should return proper error (400/404), not 500
     /// CURRENTLY FAILING: Returns 500 "internal_error" instead of proper validation error
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Invalid model should return 400/404, not 500")]
     async fn test_invalid_model_proper_error() {
         let client = reqwest::Client::new();
@@ -57,6 +58,7 @@ mod tests {
     /// TEST 2: Rate limiting should be configurable and work
     /// CURRENTLY UNTESTED: May or may not be implemented
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Rate limiting not implemented or not working")]
     async fn test_rate_limiting_works() {
         let client = reqwest::Client::new();
@@ -101,6 +103,7 @@ mod tests {
     /// TEST 3: Streaming should work end-to-end
     /// CURRENTLY UNTESTED: May or may not be implemented
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Streaming not implemented or broken")]
     async fn test_streaming_works() {
         let client = reqwest::Client::new();
@@ -151,6 +154,7 @@ mod tests {
     /// TEST 4: Model fallback chain should work
     /// CURRENTLY UNIMPLEMENTED: ZeroClawed should support fallback models
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Model fallback not implemented")]
     async fn test_model_fallback_chain() {
         let client = reqwest::Client::new();
@@ -197,6 +201,7 @@ mod tests {
     /// TEST 5: Cost tracking should be accurate and consistent
     /// CURRENTLY UNTESTED: May have bugs
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Cost tracking may be inaccurate")]
     async fn test_cost_tracking_accuracy() {
         let client = reqwest::Client::new();
@@ -278,6 +283,7 @@ mod tests {
     /// TEST 6: Concurrent request handling shouldn't deadlock
     /// CURRENTLY SUSPECT: Test got stuck in integration test
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Concurrent requests may deadlock")]
     async fn test_concurrent_requests_no_deadlock() {
         let client = reqwest::Client::new();
@@ -330,6 +336,7 @@ mod tests {
     /// TEST 7: Error messages shouldn't leak sensitive info
     /// CURRENTLY FAILING: Error shows backend provider details
     #[tokio::test]
+    #[ignore = "requires running zeroclawed server at 192.168.1.210:8083"]
     #[should_panic(expected = "Error messages leak sensitive info")]
     async fn test_error_messages_no_leakage() {
         let client = reqwest::Client::new();

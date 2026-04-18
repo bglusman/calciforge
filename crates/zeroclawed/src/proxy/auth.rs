@@ -167,11 +167,9 @@ mod tests {
             max_body_mb: 50,
             default_policy: ProxyAccessPolicy::AllowAll,
             backend_type: "http".to_string(),
-            backend_url: "http://localhost:8080".to_string(),
-            backend_api_key: None,
-            headers: None,
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
+            headers: None,
             agents: vec![],
         };
 
@@ -196,15 +194,9 @@ mod tests {
             max_body_mb: 50,
             default_policy: ProxyAccessPolicy::DenyAll,
             backend_type: "http".to_string(),
-            backend_url: "http://localhost:8080".to_string(),
-            backend_api_key: None,
-            headers: None,
-            timeout_seconds: 300,
-            max_body_mb: 50,
-            default_policy: ProxyAccessPolicy::DenyAll,
-            backend_type: "http".to_string(),
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
+            headers: None,
             agents: vec![],
         };
 
@@ -229,7 +221,6 @@ mod tests {
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
             headers: None,
-            backend_api_key: None,
             agents: vec![ProxyAgentConfig {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),
@@ -277,10 +268,6 @@ mod tests {
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
             headers: None,
-            default_policy: ProxyAccessPolicy::AllowAll,
-            backend_type: "http".to_string(),
-            backend_url: "https://api.deepseek.com/v1".to_string(),
-            backend_api_key: None,
             agents: vec![ProxyAgentConfig {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),

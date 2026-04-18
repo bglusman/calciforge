@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::proxy::openai::{
         ChatCompletionResponse, ChatMessage, FunctionDefinition, MessageContent, ToolChoice,
         ToolDefinition, Usage,
@@ -15,9 +14,9 @@ mod tests {
     #[test]
     fn test_cache_key_generation() {
         // Create a simple router for testing
-        let _router = TraceloopRouter::new(vec![]).unwrap();
+        let router = TraceloopRouter::new(vec![]).unwrap();
 
-        let _messages = vec![ChatMessage {
+        let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: Some(MessageContent::Text("Hello".to_string())),
             name: None,
@@ -82,7 +81,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
-        }];
+        }]; // unused: test only verifies code compiles (mock provider not running)
 
         // First request should miss cache
         // Note: This will fail because the mock provider can't connect to localhost:9999

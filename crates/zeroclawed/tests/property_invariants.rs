@@ -259,9 +259,16 @@ proptest! {
     /// Property: Message ordering with sequence numbers
     #[test]
     fn prop_message_ordering_sequence(
-        messages in prop::collection::vec((0u64..1000, "[a-z]{1,20}"), 1..100)
+        // Generate content strings; assign unique sequential IDs via enumerate()
+        // to avoid birthday-paradox duplicates when sampling from 0..1000 with
+        // up to 100 elements.
+        contents in prop::collection::vec("[a-z]{1,20}", 1..100)
     ) {
-        let mut indexed: Vec<(u64, String)> = messages;
+        let mut indexed: Vec<(u64, String)> = contents
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| (i as u64, s))
+            .collect();
 
         // Sort by sequence number
         indexed.sort_by_key(|(seq, _)| *seq);

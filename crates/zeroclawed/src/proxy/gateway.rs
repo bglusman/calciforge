@@ -17,6 +17,7 @@ use crate::proxy::backend::{BackendError, ModelInfo, OneCliBackend};
 use crate::proxy::openai::{
     ChatCompletionRequest, ChatCompletionResponse,
 };
+#[allow(unused_imports)]
 use tracing::{info, warn};
 
 /// Configuration for a gateway backend
@@ -30,22 +31,28 @@ pub struct GatewayConfig {
     pub api_key: Option<String>,
     /// Timeout in seconds
     pub timeout_seconds: u64,
-    /// Additional configuration as JSON
+        /// Additional configuration as JSON
+    #[allow(dead_code)]
     pub extra_config: Option<serde_json::Value>,
 
     /// Custom headers to include in requests
+    #[allow(dead_code)]
     pub headers: Option<std::collections::HashMap<String, String>>,
 
     /// Enable retry logic (default: true)
+    #[allow(dead_code)]
     pub retry_enabled: bool,
 
     /// Maximum number of retries (default: 3)
+    #[allow(dead_code)]
     pub max_retries: u32,
 
     /// Base delay between retries in milliseconds (default: 1000)
+    #[allow(dead_code)]
     pub retry_base_delay_ms: u64,
 
     /// Maximum delay between retries in milliseconds (default: 10000)
+    #[allow(dead_code)]
     pub retry_max_delay_ms: u64,
 }
 
@@ -111,6 +118,7 @@ impl std::fmt::Display for GatewayType {
 
 /// Main trait for gateway backends
 #[async_trait]
+#[allow(dead_code)]
 pub trait GatewayBackend: Send + Sync + Debug {
     /// Get the type of this gateway
     fn gateway_type(&self) -> GatewayType;
@@ -190,7 +198,7 @@ pub fn create_gateway(
             Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
 
-        #[cfg(feature = "test")]
+        #[cfg(test)]
         GatewayType::Mock => {
             let inner_gateway = Arc::new(MockGateway::new(config.clone()));
 
@@ -198,7 +206,7 @@ pub fn create_gateway(
             Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
 
-        #[cfg(not(feature = "test"))]
+        #[cfg(not(test))]
         GatewayType::Mock => Err(BackendError::ConfigError(
             "Mock gateway only available in test mode".to_string(),
         )),
@@ -559,20 +567,23 @@ impl GatewayBackend for TraceloopGateway {
 // Mock Gateway Implementation (for testing)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "test")]
+#[cfg(test)]
+use crate::proxy::openai::Usage;
+
+#[cfg(test)]
 #[derive(Debug)]
 pub struct MockGateway {
     config: GatewayConfig,
 }
 
-#[cfg(feature = "test")]
+#[cfg(test)]
 impl MockGateway {
     pub fn new(config: GatewayConfig) -> Self {
         Self { config }
     }
 }
 
-#[cfg(feature = "test")]
+#[cfg(test)]
 #[async_trait]
 impl GatewayBackend for MockGateway {
     fn gateway_type(&self) -> GatewayType {
