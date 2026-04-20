@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = ["helicone", "traceloop"]
-channel-matrix = []  # temporarily disabled due to libsqlite3-sys conflict
+channel-matrix = []
 hegel = ["dep:hegeltest"]
 persistent-context = ["dep:sqlx"]
 helicone = []
@@ -41,8 +41,7 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
-# Matrix (temporarily disabled due to libsqlite3-sys conflict with ai-gateway)
-# matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown"] }
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["rustls-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
