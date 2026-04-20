@@ -170,6 +170,9 @@ mod tests {
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
             headers: None,
+            backend_api_key_file: None,
+            providers: vec![],
+            model_routes: vec![],
             agents: vec![],
         };
 
@@ -197,6 +200,9 @@ mod tests {
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
             headers: None,
+            backend_api_key_file: None,
+            providers: vec![],
+            model_routes: vec![],
             agents: vec![],
         };
 
@@ -221,6 +227,9 @@ mod tests {
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
             headers: None,
+            backend_api_key_file: None,
+            providers: vec![],
+            model_routes: vec![],
             agents: vec![ProxyAgentConfig {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),
@@ -268,6 +277,9 @@ mod tests {
             backend_url: "https://api.deepseek.com/v1".to_string(),
             backend_api_key: None,
             headers: None,
+            backend_api_key_file: None,
+            providers: vec![],
+            model_routes: vec![],
             agents: vec![ProxyAgentConfig {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),

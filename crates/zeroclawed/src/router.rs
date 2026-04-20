@@ -130,6 +130,7 @@ mod tests {
             model_shortcuts: vec![],
             security: None,
             proxy: None,
+            local_models: None,
         }
     }
 

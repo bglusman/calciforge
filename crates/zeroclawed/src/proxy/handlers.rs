@@ -17,7 +17,7 @@ use crate::proxy::{
         ApiError, ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, DeltaMessage,
         ErrorDetail, ModelInfo, ModelListResponse,
     },
-    ChatCompletionRequest, ProxyState,
+    routing, ChatCompletionRequest, ProxyState,
 };
 
 /// List of valid/known models - in production this would come from config or backend
@@ -61,10 +61,14 @@ pub async fn chat_completions(
         );
     }
 
-    // Validate model exists (either as alloy or known model).
-    // Skip for http backends — the upstream server enforces its own model list.
+    // Validate model exists. Skip when:
+    //  - A named provider matches (provider is authoritative for its models).
+    //  - Backend is http (upstream is authoritative).
+    //  - It's a configured alloy.
+    let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_http_backend = state.config.backend_type == "http";
-    let is_valid_model = is_http_backend
+    let is_valid_model = provider_matches
+        || is_http_backend
         || state.alloy_manager.get_alloy(&req.model).is_some()
         || KNOWN_MODELS.contains(&req.model.as_str());
 
@@ -151,21 +155,101 @@ async fn route_with_fallback(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No constituents available")))
 }
 
-/// Try a single provider
+/// Try a single provider, selecting the appropriate gateway by model name.
 async fn try_provider(
     state: &ProxyState,
     model: &str,
     req: &ChatCompletionRequest,
 ) -> anyhow::Result<ChatCompletionResponse> {
-    // Create a request with the specific model
     let mut gateway_req = req.clone();
     gateway_req.model = model.to_string();
 
-    // Use the gateway
-    match state.gateway.chat_completion(gateway_req).await {
+    // Check named providers first; fall back to default gateway.
+    let gateway = routing::find_provider(&state.providers, model)
+        .map(|e| &e.gateway)
+        .unwrap_or(&state.gateway);
+
+    match gateway.chat_completion(gateway_req).await {
         Ok(response) => Ok(response),
         Err(e) => {
             anyhow::bail!("Gateway error: {}", e);
+        }
+    }
+}
+
+/// Handler for POST /control/local/switch
+pub async fn local_model_switch(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    // Auth check — same key as the proxy API.
+    if let Some(ref expected_key) = state.config.api_key {
+        let provided = headers
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if provided != expected_key.as_str() {
+            return api_error(StatusCode::UNAUTHORIZED, "unauthorized", "Invalid API key", None);
+        }
+    }
+
+    let model_id = match body.get("model").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "Request body must include {\"model\": \"<id>\"}",
+                Some("model"),
+            );
+        }
+    };
+
+    let manager = match state.local_manager {
+        Some(ref m) => m.clone(),
+        None => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "local_models_disabled",
+                "Local model management is not configured (add [local_models] to config)",
+                None,
+            );
+        }
+    };
+
+    // Run the blocking switch on a blocking thread (avoids blocking the async runtime).
+    let model_id_clone = model_id.clone();
+    let result = tokio::task::spawn_blocking(move || manager.switch(&model_id_clone)).await;
+
+    match result {
+        Ok(Ok(loaded)) => {
+            info!(model = %loaded.id, "Local model switch succeeded");
+            Json(serde_json::json!({
+                "status": "ok",
+                "model": loaded.id,
+                "hf_id": loaded.hf_id,
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => {
+            warn!(model = %model_id, error = %e, "Local model switch failed");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "switch_failed",
+                &format!("Model switch failed: {e}"),
+                None,
+            )
+        }
+        Err(e) => {
+            error!(error = %e, "spawn_blocking panic during model switch");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Internal error during model switch",
+                None,
+            )
         }
     }
 }
@@ -177,8 +261,25 @@ pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
         .unwrap_or_default()
         .as_secs();
 
-    // Build model list from alloys + direct providers
     let mut models = vec![];
+
+    // Add configured local models (if any).
+    if let Some(ref mgr) = state.local_manager {
+        let current = mgr.current();
+        for m in mgr.models() {
+            let suffix = if current.as_ref().map(|c| c.id.as_str()) == Some(&m.id) {
+                " (loaded)"
+            } else {
+                ""
+            };
+            models.push(ModelInfo {
+                id: m.id.clone(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: format!("local/{}{}", m.provider_type, suffix),
+            });
+        }
+    }
 
     // Add configured alloys
     for alloy in state.alloy_manager.list_alloys() {

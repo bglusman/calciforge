@@ -15,6 +15,7 @@ mod context;
 mod hooks;
 #[cfg(test)]
 mod install;
+mod local_model;
 #[cfg(feature = "persistent-context")]
 mod persistent_context;
 mod providers;
@@ -199,13 +200,29 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Initialize local model manager early so CommandHandler and proxy both share it.
+    let local_manager_early: Option<Arc<local_model::LocalModelManager>> =
+        config.local_models.as_ref().and_then(|lm_cfg| {
+            if lm_cfg.enabled {
+                Some(Arc::new(local_model::LocalModelManager::new(lm_cfg.clone())))
+            } else {
+                None
+            }
+        });
+
     let command_handler = {
         let handler = CommandHandler::new(config.clone());
-        if let Some(manager) = alloy_manager {
-            Arc::new(handler.with_alloy_manager(manager))
+        let handler = if let Some(manager) = alloy_manager {
+            handler.with_alloy_manager(manager)
         } else {
-            Arc::new(handler)
-        }
+            handler
+        };
+        let handler = if let Some(ref lm) = local_manager_early {
+            handler.with_local_manager(Arc::clone(lm))
+        } else {
+            handler
+        };
+        Arc::new(handler)
     };
 
     // Detect enabled channels
@@ -324,9 +341,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Start proxy server if enabled
+    // Start proxy server if enabled.
+    // local_manager_early was created above and shared with CommandHandler.
     let proxy_config = config.proxy.clone().unwrap_or_default();
     let proxy_enabled = proxy_config.enabled;
+
+    // Auto-load startup model in background (if configured).
+    if let Some(ref lm) = local_manager_early {
+        if let Some(ref start_id) = config.local_models.as_ref().and_then(|c| c.current.clone()) {
+            let id = start_id.clone();
+            let mgr = Arc::clone(lm);
+            tokio::spawn(async move {
+                let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
+                match result {
+                    Ok(Ok(loaded)) => info!(model = %loaded.id, "Auto-loaded startup local model"),
+                    Ok(Err(e)) => error!(error = %e, "Failed to auto-load startup local model"),
+                    Err(e) => error!(error = %e, "spawn_blocking panic auto-loading local model"),
+                }
+            });
+        }
+    }
+
+    let local_manager = local_manager_early;
+
     let proxy_fut = async {
         if proxy_enabled {
             let alloy_mgr = command_handler
@@ -334,7 +371,7 @@ async fn main() -> Result<()> {
                 .map(|m| Arc::new((*m).clone()))
                 .unwrap_or_else(|| Arc::new(crate::providers::alloy::AlloyManager::empty()));
             let providers = Arc::new(crate::providers::ProviderRegistry::new());
-            proxy::start_proxy_server(proxy_config, alloy_mgr, providers)
+            proxy::start_proxy_server(proxy_config, alloy_mgr, providers, local_manager)
                 .await
                 .context("Proxy server error")
         } else {

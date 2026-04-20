@@ -147,6 +147,7 @@ mod tests {
             alloys: vec![],
             security: None,
             proxy: None,
+            local_models: None,
         }
     }
 
@@ -262,6 +263,7 @@ mod tests {
             alloys: vec![],
             security: None,
             proxy: None,
+            local_models: None,
         };
         assert!(resolve_telegram_sender(8465871195, &cfg).is_none());
         assert!(default_agent_for("anyone", &cfg).is_none());

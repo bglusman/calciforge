@@ -703,6 +703,7 @@ mod tests {
             alloys: vec![],
             security: None,
             proxy: None,
+            local_models: None,
         }
     }
 

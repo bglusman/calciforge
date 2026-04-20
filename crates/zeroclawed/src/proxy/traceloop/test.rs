@@ -22,6 +22,8 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
+            reasoning_content: None,
         }];
 
         let tools = Some(vec![ToolDefinition {
@@ -57,6 +59,8 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
+            reasoning_content: None,
         }];
         let key4 =
             router.generate_cache_key("test-model", &different_messages, &tools, &tool_choice);
@@ -81,6 +85,8 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
+            reasoning_content: None,
         }]; // unused: test only verifies code compiles (mock provider not running)
 
         // First request should miss cache
