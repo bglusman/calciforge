@@ -23,7 +23,10 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or_else(|| GatewayConfig::default().port);
 
-    let config = GatewayConfig { port, ..GatewayConfig::default() };
+    let config = GatewayConfig {
+        port,
+        ..GatewayConfig::default()
+    };
 
     // Build unified security proxy
     let mut proxy = SecurityProxy::new(

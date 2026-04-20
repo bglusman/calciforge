@@ -260,7 +260,7 @@ impl Provider for AnthropicProvider {
                 id,
                 object: "chat.completion".to_string(),
                 created: chrono::Utc::now().timestamp() as u64,
-                model: model,
+                model,
                 choices,
                 usage,
                 system_fingerprint: None,

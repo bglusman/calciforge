@@ -732,34 +732,34 @@ async fn handle_message(
         }
         Err(e) => {
             // Clash approval flow
-            if let Some(approval) = e.downcast_ref::<crate::adapters::AdapterError>() {
-                if let crate::adapters::AdapterError::ApprovalPending(req) = approval {
-                    let req = req.clone();
-                    debug!(
-                        request_id = %req.request_id,
-                        command = %req.command,
-                        "Matrix: clash approval request — forwarding to user"
-                    );
-                    cmd_handler
-                        .register_pending_approval(
-                            crate::adapters::openclaw::PendingApprovalMeta {
-                                request_id: req.request_id.clone(),
-                                nzc_endpoint: agent.endpoint.clone(),
-                                nzc_auth_token: agent.auth_token.clone().unwrap_or_default(),
-                                _summary: format!(
-                                    "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
-                                    req.command, req.reason, req.request_id
-                                ),
-                            },
-                        )
-                        .await;
-                    let notification = format!(
-                        "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
-                        req.command, req.reason, req.request_id
-                    );
-                    send(notification).await;
-                    return;
-                }
+            if let Some(crate::adapters::AdapterError::ApprovalPending(req)) =
+                e.downcast_ref::<crate::adapters::AdapterError>()
+            {
+                let req = req.clone();
+                debug!(
+                    request_id = %req.request_id,
+                    command = %req.command,
+                    "Matrix: clash approval request — forwarding to user"
+                );
+                cmd_handler
+                    .register_pending_approval(
+                        crate::adapters::openclaw::PendingApprovalMeta {
+                            request_id: req.request_id.clone(),
+                            nzc_endpoint: agent.endpoint.clone(),
+                            nzc_auth_token: agent.auth_token.clone().unwrap_or_default(),
+                            _summary: format!(
+                                "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
+                                req.command, req.reason, req.request_id
+                            ),
+                        },
+                    )
+                    .await;
+                let notification = format!(
+                    "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
+                    req.command, req.reason, req.request_id
+                );
+                send(notification).await;
+                return;
             }
             warn!(identity = %identity_id, error = %e, "Matrix: agent dispatch failed");
             send(format!("Agent error: {}", e)).await;

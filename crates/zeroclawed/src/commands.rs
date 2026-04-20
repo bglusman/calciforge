@@ -1117,11 +1117,7 @@ impl CommandHandler {
     fn cmd_metrics(&self) -> String {
         let routed = self.messages_routed.load(Ordering::Relaxed);
         let total_latency = self.total_latency_ms.load(Ordering::Relaxed);
-        let avg_latency = if routed > 0 {
-            total_latency / routed
-        } else {
-            0
-        };
+        let avg_latency = total_latency.checked_div(routed).unwrap_or(0);
 
         format!("ZeroClawed metrics:\n  messages routed: {routed}\n  avg latency: {avg_latency}ms")
     }

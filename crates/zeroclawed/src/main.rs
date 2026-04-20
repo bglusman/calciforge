@@ -142,14 +142,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // Extract ContextStore from UnifiedContextStore (assuming InMemory variant for now)
-    let context_store_arc = match unified_context_store {
-        UnifiedContextStore::InMemory(store) => store,
-        #[cfg(feature = "persistent-context")]
-        UnifiedContextStore::Persistent(_) => {
-            anyhow::bail!("Persistent context store requires persistence support")
-        }
-    };
+    let context_store_arc = unified_context_store.into_in_memory()?;
 
     // Clone the inner ContextStore for channel functions
     let context_store = (*context_store_arc).clone();

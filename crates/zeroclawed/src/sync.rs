@@ -178,6 +178,6 @@ mod tests {
 
         let atomic_bool = AtomicBool::new(false);
         atomic_bool.store(true, Ordering::SeqCst);
-        assert_eq!(atomic_bool.load(Ordering::SeqCst), true);
+        assert!(atomic_bool.load(Ordering::SeqCst));
     }
 }

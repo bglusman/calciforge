@@ -79,7 +79,7 @@ mod tests {
         }])
         .unwrap();
 
-        let _messages = vec![ChatMessage {
+        let _messages = [ChatMessage {
             role: "user".to_string(),
             content: Some(MessageContent::Text("Test message".to_string())),
             name: None,
@@ -87,7 +87,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             reasoning_content: None,
-        }]; // unused: test only verifies code compiles (mock provider not running)
+        }]; // test only verifies code compiles (mock provider not running)
 
         // First request should miss cache
         // Note: This will fail because the mock provider can't connect to localhost:9999

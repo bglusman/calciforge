@@ -106,7 +106,7 @@ pub fn build_provider_entries(
             api_key: Some(api_key),
             timeout_seconds: timeout,
             extra_config: None,
-            headers: headers,
+            headers,
             retry_enabled: true,
             max_retries: 3,
             retry_base_delay_ms: 1000,

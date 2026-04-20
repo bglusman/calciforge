@@ -98,6 +98,17 @@ pub enum UnifiedContextStore {
 }
 
 impl UnifiedContextStore {
+    /// Unwrap into the underlying `Arc<InMemoryContextStore>`, bailing if persistent.
+    pub fn into_in_memory(self) -> anyhow::Result<Arc<InMemoryContextStore>> {
+        match self {
+            UnifiedContextStore::InMemory(store) => Ok(store),
+            #[cfg(feature = "persistent-context")]
+            UnifiedContextStore::Persistent(_) => {
+                anyhow::bail!("Persistent context store not supported in this build configuration")
+            }
+        }
+    }
+
     /// Create a new context store based on configuration.
     pub async fn new(
         buffer_size: usize,

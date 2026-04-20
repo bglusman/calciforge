@@ -171,11 +171,7 @@ impl LatencyStats {
     }
 
     fn average_latency_ms(&self) -> Option<u64> {
-        if self.total_requests > 0 {
-            Some(self.total_latency_ms / self.total_requests)
-        } else {
-            None
-        }
+        self.total_latency_ms.checked_div(self.total_requests)
     }
 }
 

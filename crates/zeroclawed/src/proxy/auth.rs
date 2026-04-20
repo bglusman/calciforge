@@ -92,7 +92,7 @@ fn model_matches(model: &str, pattern: &str) -> bool {
         // Prefix match: "deepseek/*" matches "deepseek-chat" and "deepseek-reasoner"
         // "kimi/*" matches "kimi/kimi-for-coding" and "kimi/kimi-lite"
         // Remove the "/*" to get the prefix
-        let prefix = &pattern[..pattern.len() - 2];
+        let prefix = pattern.strip_suffix("/*").unwrap_or(pattern);
         model.starts_with(prefix)
     } else {
         // Exact match
