@@ -3,17 +3,21 @@
 #
 # Builds zeroclawed + clashd + security-proxy, installs all AI agents,
 # wires clashd as the shared policy engine, and starts all services.
+# Supports multi-node SSH deployment for homelab / Proxmox clusters.
 #
 # Flags:
-#   --yes              Non-interactive: install all missing tools automatically
-#   --configure-only   Skip installs; only configure (assumes everything present)
-#   --agents <list>    Comma-separated subset to include (default: all)
-#                      Valid values: claude,opencode,openclaw,zeroclaw
+#   --yes                Non-interactive: install all missing tools automatically
+#   --configure-only     Skip builds; only configure (assumes everything present)
+#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw
+#   --nodes-file <path>  JSON file listing SSH nodes to deploy to after local install
+#                        (see deploy/nodes.example.json)
+#   --nodes-only         Skip local install; only deploy to remote nodes
 #
 # Usage:
 #   cd ~/projects/zeroclawed && bash scripts/install.sh
 #   cd ~/projects/zeroclawed && bash scripts/install.sh --yes
-#   cd ~/projects/zeroclawed && bash scripts/install.sh --agents claude,opencode
+#   cd ~/projects/zeroclawed && bash scripts/install.sh --nodes-file deploy/nodes.json
+#   cd ~/projects/zeroclawed && bash scripts/install.sh --nodes-file deploy/nodes.json --nodes-only
 
 set -euo pipefail
 
@@ -28,12 +32,16 @@ LOG_DIR="$HOME/Library/Logs/clashd"
 
 YES=false
 CONFIGURE_ONLY=false
+NODES_ONLY=false
+NODES_FILE=""
 AGENTS="claude,opencode,openclaw,zeroclaw"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --yes)             YES=true ;;
         --configure-only)  CONFIGURE_ONLY=true ;;
+        --nodes-file)      NODES_FILE="$2"; shift ;;
+        --nodes-only)      NODES_ONLY=true ;;
         --agents)          AGENTS="$2"; shift ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
@@ -325,6 +333,189 @@ if agent_enabled zeroclaw; then
             ok "zeroclaw service already running"
         fi
     fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. Multi-node SSH deployment
+# ══════════════════════════════════════════════════════════════════════════════
+
+if [[ -n "$NODES_FILE" ]]; then
+    hdr "Multi-node deployment"
+
+    [[ -f "$NODES_FILE" ]] || die "Nodes file not found: $NODES_FILE"
+    command -v python3 &>/dev/null || die "python3 required for node deployment"
+
+    # ── binary build cache: arch → path ──────────────────────────────────────
+    # Maps "x86_64-unknown-linux-musl" → /path/to/built/binary
+    declare -A BUILT=()
+
+    build_for_arch() {
+        local target="$1" bin="$2"
+        local cache_key="${target}:${bin}"
+        [[ -n "${BUILT[$cache_key]+_}" ]] && { echo "${BUILT[$cache_key]}"; return; }
+
+        local out_path="$REPO_ROOT/target/${target}/release/${bin}"
+
+        if [[ "$target" == "aarch64-apple-darwin" ]]; then
+            # Native — use already-built binary if present
+            local native="$REPO_ROOT/target/release/${bin}"
+            if [[ -f "$native" ]]; then
+                BUILT[$cache_key]="$native"
+                echo "$native"; return
+            fi
+        fi
+
+        echo "  Building $bin for $target..." >&2
+        if command -v cross &>/dev/null; then
+            cross build --release -p "$bin" --target "$target" 2>&1 | \
+                grep -E "^error|Finished" >&2 || true
+        elif command -v cargo-zigbuild &>/dev/null; then
+            cargo zigbuild --release -p "$bin" --target "$target" 2>&1 | \
+                grep -E "^error|Finished" >&2 || true
+        else
+            warn "No cross-compilation tool found (install 'cross' or 'cargo-zigbuild')" >&2
+            echo ""; return 1
+        fi
+
+        [[ -f "$out_path" ]] && BUILT[$cache_key]="$out_path" && echo "$out_path" || \
+            { warn "Build failed for $target/$bin"; echo ""; return 1; }
+    }
+
+    # ── systemd unit generator ────────────────────────────────────────────────
+    systemd_unit() {
+        local bin="$1" install_dir="$2" env_pairs="$3"
+        local env_lines=""
+        while IFS='=' read -r k v; do
+            env_lines+="Environment=\"${k}=${v}\"\n"
+        done <<< "$env_pairs"
+
+        printf '[Unit]\nDescription=ZeroClawed %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n' \
+            "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")"
+    }
+
+    # ── launchd plist generator ───────────────────────────────────────────────
+    launchd_plist() {
+        local bin="$1" install_dir="$2" label="com.zeroclawed.${bin}" log_dir="$3"
+        local env_block=""
+        shift 3
+        for pair in "$@"; do
+            local k="${pair%%=*}" v="${pair#*=}"
+            env_block+="        <key>${k}</key><string>${v}</string>\n"
+        done
+
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n    <key>Label</key><string>%s</string>\n    <key>ProgramArguments</key><array><string>%s/%s</string></array>\n    <key>EnvironmentVariables</key><dict>\n%s    </dict>\n    <key>RunAtLoad</key><true/>\n    <key>KeepAlive</key><true/>\n    <key>StandardOutPath</key><string>%s/%s.log</string>\n    <key>StandardErrorPath</key><string>%s/%s.err</string>\n</dict></plist>\n' \
+            "$label" "$install_dir" "$bin" "$(printf '%b' "$env_block")" \
+            "$log_dir" "$bin" "$log_dir" "$bin"
+    }
+
+    # ── deploy one service to one node ───────────────────────────────────────
+    deploy_service() {
+        local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" os="$6"
+        local bin="$7" install_dir="$8" config_dir="$9"
+
+        local ssh_opts="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+        [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
+        local ssh_target="${user}@${host}"
+
+        echo "  [$name] deploying $bin..."
+
+        # ── get binary ───────────────────────────────────────────────────────
+        local bin_path
+        bin_path=$(build_for_arch "$arch" "$bin") || {
+            # Cross-compile failed — try building on remote
+            warn "  [$name] cross-compile unavailable; attempting remote build..."
+            ssh $ssh_opts "$ssh_target" bash -s -- "$bin" "$install_dir" <<'REMOTE_BUILD'
+set -e
+BIN=$1; INSTALL_DIR=$2
+command -v cargo &>/dev/null || {
+    curl -sf https://sh.rustup.rs | sh -s -- -y --quiet
+    source "$HOME/.cargo/env"
+}
+TMP=$(mktemp -d)
+# Expect the source to be pre-rsynced or pull from git
+if [[ -d /opt/zeroclawed ]]; then
+    cd /opt/zeroclawed && cargo build --release -p "$BIN" 2>&1 | tail -3
+    cp "target/release/$BIN" "$INSTALL_DIR/$BIN"
+fi
+REMOTE_BUILD
+            ok "  [$name] $bin built and installed on remote"
+            return
+        }
+
+        [[ -z "$bin_path" || ! -f "$bin_path" ]] && {
+            warn "  [$name] no binary available for $bin on $arch — skipping"
+            return
+        }
+
+        # ── rsync binary ─────────────────────────────────────────────────────
+        ssh $ssh_opts "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
+        rsync -az --checksum -e "ssh $ssh_opts" "$bin_path" "${ssh_target}:${install_dir}/${bin}"
+        ssh $ssh_opts "$ssh_target" "chmod +x ${install_dir}/${bin}"
+
+        # ── rsync config files ────────────────────────────────────────────────
+        if [[ "$bin" == "clashd" ]]; then
+            ssh $ssh_opts "$ssh_target" "mkdir -p $config_dir"
+            rsync -az -e "ssh $ssh_opts" \
+                "$REPO_ROOT/crates/clashd/config/claude-code-policy.star" \
+                "${ssh_target}:${config_dir}/policy.star" 2>/dev/null || true
+            # Write minimal agents.json if absent
+            ssh $ssh_opts "$ssh_target" \
+                "[[ -f ${config_dir}/agents.json ]] || echo '{\"agents\":[]}' > ${config_dir}/agents.json"
+        fi
+
+        # ── install service ───────────────────────────────────────────────────
+        local remote_log_dir
+        if [[ "$os" == "linux" ]]; then
+            remote_log_dir="/var/log/zeroclawed"
+            local env_pairs unit_content
+            case "$bin" in
+                clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                zeroclawed)     env_pairs="" ;;
+            esac
+            unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")")
+            ssh $ssh_opts "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${bin}.service" <<< "$unit_content"
+            ssh $ssh_opts "$ssh_target" "systemctl daemon-reload && systemctl enable --now ${bin}" 2>&1 | tail -2
+        else
+            remote_log_dir="\$HOME/Library/Logs/zeroclawed"
+            local plist_content label="com.zeroclawed.${bin}"
+            plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" \
+                "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}")
+            local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
+            ssh $ssh_opts "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/zeroclawed"
+            ssh $ssh_opts "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
+            ssh $ssh_opts "$ssh_target" "launchctl unload ${plist_path} 2>/dev/null; launchctl load ${plist_path}"
+        fi
+
+        ok "  [$name] $bin deployed and started"
+    }
+
+    # ── iterate nodes from JSON ───────────────────────────────────────────────
+    python3 - "$NODES_FILE" <<'PYEOF' | while IFS='|' read -r name host user ssh_key arch os services install_dir config_dir; do
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+for n in data.get("nodes", []):
+    print("|".join([
+        n.get("name", n["host"]),
+        n["host"],
+        n.get("user", "root"),
+        n.get("ssh_key", ""),
+        n.get("arch", "x86_64-unknown-linux-musl"),
+        n.get("os", "linux"),
+        ",".join(n.get("services", ["clashd","security-proxy"])),
+        n.get("install_dir", "/usr/local/bin"),
+        n.get("config_dir", "/etc/zeroclawed"),
+    ]))
+PYEOF
+        echo ""
+        echo "  Node: $name ($user@$host, $arch, $os)"
+        IFS=',' read -ra svc_list <<< "$services"
+        for svc in "${svc_list[@]}"; do
+            deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \
+                "$svc" "$install_dir" "$config_dir" || true
+        done
+    done
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
