@@ -27,58 +27,40 @@ impl Gateway for RetryGateway {
         let inner = self.inner.clone();
         let retry_config = self.config.clone();
         
-        // Create retryable operation
+        let is_retryable = |e: &BackendError| match e {
+            BackendError::HttpError(status) => status.is_server_error() || *status == 429,
+            BackendError::NetworkError(_) => true,
+            BackendError::TimeoutError => true,
+            BackendError::BackendError(_) => true,
+            _ => false,
+        };
+
         let operation = || async {
             let result = inner.chat_completion(request.clone()).await;
-            
-            // Check if we should retry
             match &result {
-                Ok(_) => {
-                    info!("RetryGateway: Request succeeded");
-                    result
-                }
-                Err(e) => {
-                    // Retry on 5xx errors and connection errors
-                    let should_retry = match e {
-                        BackendError::HttpError(status) => {
-                            status.is_server_error() || *status == 429 // rate limit
-                        }
-                        BackendError::NetworkError(_) => true,
-                        BackendError::TimeoutError => true,
-                        BackendError::BackendError(_) => true,
-                        _ => false, // Don't retry on 4xx errors (client errors)
-                    };
-                    
-                    if should_retry {
-                        warn!("RetryGateway: Retryable error: {}", e);
-                    } else {
-                        warn!("RetryGateway: Non-retryable error: {}", e);
-                    }
-                    
-                    result
-                }
+                Ok(_) => info!("RetryGateway: Request succeeded"),
+                Err(e) if is_retryable(e) => warn!("RetryGateway: Retryable error: {}", e),
+                Err(e) => warn!("RetryGateway: Non-retryable error: {}", e),
             }
+            result
         };
-        
-        // Apply retry based on config
+
         match retry_config {
             RetryConfig::Exponential { min_delay, max_delay, max_retries, factor } => {
-                let retry_policy = ExponentialBuilder::default()
+                let policy = ExponentialBuilder::default()
                     .with_min_delay(min_delay)
                     .with_max_delay(max_delay)
                     .with_max_times(max_retries as usize)
                     .with_factor(factor)
                     .with_jitter();
-                
-                operation.retry(&retry_policy).await
+                operation.retry_if(&policy, is_retryable).await
             }
             RetryConfig::Constant { delay, max_retries } => {
-                let retry_policy = ExponentialBuilder::default()
+                let policy = ExponentialBuilder::default()
                     .with_delay(delay)
                     .with_max_times(max_retries as usize)
                     .with_jitter();
-                
-                operation.retry(&retry_policy).await
+                operation.retry_if(&policy, is_retryable).await
             }
         }
     }

@@ -39,7 +39,10 @@ struct HookSpecificOutput {
     hook_event_name: String,
     #[serde(rename = "permissionDecision")]
     permission_decision: String,
-    #[serde(rename = "permissionDecisionReason", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "permissionDecisionReason",
+        skip_serializing_if = "Option::is_none"
+    )]
     permission_decision_reason: Option<String>,
 }
 
@@ -130,7 +133,10 @@ async fn claude_code_hook(
         "session_id": req.session_id.unwrap_or_default(),
     });
 
-    let result = state.engine.evaluate(&req.tool_name, &req.tool_input, Some("claude-code")).await;
+    let result = state
+        .engine
+        .evaluate(&req.tool_name, &req.tool_input, Some("claude-code"))
+        .await;
 
     let (decision, reason) = match result.verdict.to_string().as_str() {
         "deny" => ("deny", result.reason),

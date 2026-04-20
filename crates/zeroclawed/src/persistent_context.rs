@@ -4,13 +4,11 @@
 //! storage that persists across restarts. It implements the same interface as
 //! the in-memory `ContextStore` but stores exchanges in a SQLite database.
 
-use crate::sync::Arc;
 use anyhow::{Context as AnyhowContext, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::path::Path;
-use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Database schema

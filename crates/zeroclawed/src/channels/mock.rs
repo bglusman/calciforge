@@ -8,11 +8,9 @@
 //! [[channels]]
 //! kind = "mock"
 //! enabled = true
-//! # Optional: HTTP port for control API (default: 9090)
-//! control_port = 9090
-//! # Optional: Simulated user IDs
-//! test_users = ["test-user-1", "test-user-2"]
 //! ```
+//!
+//! The control API always binds to port 9090.
 
 use anyhow::{Context, Result};
 use axum::{

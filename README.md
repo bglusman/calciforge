@@ -218,7 +218,7 @@ Switch via API:
 ```bash
 curl -X POST http://localhost:8080/control/local/switch \
   -H "Content-Type: application/json" \
-  -d '{"model_id": "gemma4-26b"}'
+  -d '{"model": "gemma4-26b"}'
 ```
 
 ---
