@@ -61,8 +61,11 @@ pub async fn chat_completions(
         );
     }
 
-    // Validate model exists (either as alloy or known model)
-    let is_valid_model = state.alloy_manager.get_alloy(&req.model).is_some()
+    // Validate model exists (either as alloy or known model).
+    // Skip for http backends — the upstream server enforces its own model list.
+    let is_http_backend = state.config.backend_type == "http";
+    let is_valid_model = is_http_backend
+        || state.alloy_manager.get_alloy(&req.model).is_some()
         || KNOWN_MODELS.contains(&req.model.as_str());
 
     if !is_valid_model {

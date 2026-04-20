@@ -228,6 +228,8 @@ impl Provider for AnthropicProvider {
                         Some(tool_calls)
                     },
                     tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
                 },
                 finish_reason: response_json["stop_reason"].as_str().map(|s| s.to_string()),
                 logprobs: None,

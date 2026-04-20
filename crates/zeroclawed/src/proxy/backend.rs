@@ -270,6 +270,8 @@ impl OneCliBackend for MockBackend {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,

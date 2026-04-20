@@ -146,6 +146,14 @@ pub struct ChatMessage {
     /// Tool call ID this message is responding to (optional)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+
+    /// Chain-of-thought reasoning content (Qwen3 thinking mode, DeepSeek-R1, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+
+    /// Alias used by some providers (e.g. DeepSeek) for reasoning content
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// Tool/function definition
