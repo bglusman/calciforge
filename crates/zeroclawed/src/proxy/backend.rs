@@ -1,4 +1,4 @@
-//! Unified OneCLI backend interface for the Alloy proxy
+//! Unified backend interface for the model gateway
 //!
 //! Provides a trait-based abstraction for different OneCLI integration methods:
 //! - Embedded (spawns subprocess)

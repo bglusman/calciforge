@@ -30,7 +30,7 @@ pub struct InjectionReport {
 /// Configuration for the security gateway.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
-    /// Port to listen on (default: 8080)
+    /// Port to listen on (default: 8888; override with SECURITY_PROXY_PORT)
     pub port: u16,
     /// Whether to perform MITM for HTTPS (requires CA cert trusted by clients)
     pub mitm_enabled: bool,
@@ -53,7 +53,7 @@ pub struct GatewayConfig {
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
-            port: 8080,
+            port: 8888,
             mitm_enabled: true,
             ca_cert_path: None,
             ca_key_path: None,
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = GatewayConfig::default();
-        assert_eq!(config.port, 8080);
+        assert_eq!(config.port, 8888);
         assert!(config.mitm_enabled);
         assert!(config.scan_outbound);
         assert!(config.scan_inbound);

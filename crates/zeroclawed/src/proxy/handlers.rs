@@ -1,4 +1,4 @@
-//! HTTP request handlers for the Alloy proxy
+//! HTTP request handlers for the model gateway
 
 use axum::{
     extract::State,

@@ -4901,7 +4901,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "security-gateway"
+name = "security-proxy"
 version = "0.1.0"
 dependencies = [
  "adversary-detector",

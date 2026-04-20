@@ -1,7 +1,7 @@
-//! Alloy Model Proxy Server
+//! Model Gateway
 //!
-//! OpenAI-compatible HTTP server that routes requests through Alloy-managed
-//! model selection with graceful degradation and analytics.
+//! OpenAI-compatible HTTP server with multi-provider routing, retries,
+//! graceful degradation, Traceloop observability, and alloy support.
 
 use std::net::SocketAddr;
 
@@ -79,7 +79,7 @@ fn resolve_api_key(
     Ok(api_key.map(|s| s.to_string()))
 }
 
-/// Start the Alloy proxy HTTP server
+/// Start the model gateway HTTP server
 pub async fn start_proxy_server(
     config: ProxyConfig,
     alloy_manager: Arc<AlloyManager>,
@@ -204,7 +204,7 @@ pub async fn start_proxy_server(
         .route("/v1/tools/manifest", get(voice_handlers::tools_manifest))
         .with_state(state);
 
-    info!("Starting Alloy proxy server on {}", addr);
+    info!("Starting model gateway on {}", addr);
 
     let listener = TcpListener::bind(&addr)
         .await

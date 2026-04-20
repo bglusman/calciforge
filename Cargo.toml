@@ -3,7 +3,7 @@
 members = [
     "crates/zeroclawed",
     "crates/adversary-detector",
-    "crates/security-gateway",
+    "crates/security-proxy",
     "crates/host-agent",
     "crates/onecli-client",
     "crates/clashd",
@@ -14,7 +14,7 @@ members = [
 default-members = [
     "crates/zeroclawed",
     "crates/adversary-detector",
-    "crates/security-gateway",
+    "crates/security-proxy",
     "crates/host-agent",
     "crates/onecli-client",
     "crates/clashd",
@@ -67,7 +67,7 @@ mockito = "1.5"
 
 # Shared workspace crates
 adversary-detector = { path = "crates/adversary-detector" }
-security-gateway = { path = "crates/security-gateway" }
+security-proxy = { path = "crates/security-proxy" }
 
 [profile.release]
 opt-level = "z"

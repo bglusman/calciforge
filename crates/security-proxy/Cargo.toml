@@ -1,5 +1,5 @@
 [package]
-name = "security-gateway"
+name = "security-proxy"
 version = "0.1.0"
 edition = "2021"
 description = "ZeroClawed — Mandatory security proxy for agent traffic"
@@ -29,7 +29,7 @@ dashmap = "6"
 regex = "1"
 
 [[bin]]
-name = "security-gateway"
+name = "security-proxy"
 path = "src/main.rs"
 
 [dev-dependencies]
