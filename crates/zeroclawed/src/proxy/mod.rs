@@ -195,7 +195,10 @@ pub async fn start_proxy_server(
         .route("/health", get(handlers::health_check))
         .route("/control/local/switch", post(handlers::local_model_switch))
         // Voice passthrough — always registered; returns 501 when not configured.
-        .route("/v1/audio/transcriptions", post(voice_handlers::audio_transcriptions))
+        .route(
+            "/v1/audio/transcriptions",
+            post(voice_handlers::audio_transcriptions),
+        )
         .route("/v1/audio/speech", post(voice_handlers::audio_speech))
         // Tool manifest — always available; reflects what is actually configured.
         .route("/v1/tools/manifest", get(voice_handlers::tools_manifest))

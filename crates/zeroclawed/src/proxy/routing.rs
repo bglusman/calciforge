@@ -130,10 +130,7 @@ pub fn build_provider_entries(
                 id: format!("route:{}->{}", route.pattern, route.provider),
                 patterns: vec![route.pattern.clone()],
                 gateway: Arc::clone(gw),
-                on_switch: provider_on_switch
-                    .get(&route.provider)
-                    .cloned()
-                    .flatten(),
+                on_switch: provider_on_switch.get(&route.provider).cloned().flatten(),
             });
         } else {
             anyhow::bail!(

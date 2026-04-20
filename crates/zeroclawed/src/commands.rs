@@ -1012,9 +1012,10 @@ impl CommandHandler {
         // 3. Provider on_switch hook.
         if let Some(ref proxy_cfg) = self.config.proxy {
             for provider in &proxy_cfg.providers {
-                let model_matches = provider.models.iter().any(|p| {
-                    crate::proxy::routing::model_matches_pattern(model_id, p)
-                });
+                let model_matches = provider
+                    .models
+                    .iter()
+                    .any(|p| crate::proxy::routing::model_matches_pattern(model_id, p));
                 if model_matches {
                     if let Some(ref hook_script) = provider.on_switch {
                         if !hook_script.is_empty() {
@@ -1029,7 +1030,8 @@ impl CommandHandler {
                                         .arg(&script)
                                         .env("ZEROCLAWED_MODEL_ID", &model_id_owned)
                                         .output()
-                                }).await;
+                                })
+                                .await;
                                 match result {
                                     Ok(Ok(out)) if out.status.success() => {
                                         tracing::info!(provider = %provider_id, model = %model_id_log, "on_switch hook completed");

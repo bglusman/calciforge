@@ -381,9 +381,9 @@ impl HttpBackend {
         timeout_seconds: u64,
         headers: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
-        let mut client_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_seconds));
-        
+        let mut client_builder =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_seconds));
+
         // Add default headers if provided
         if let Some(headers) = &headers {
             let mut header_map = reqwest::header::HeaderMap::new();
@@ -396,10 +396,8 @@ impl HttpBackend {
             }
             client_builder = client_builder.default_headers(header_map);
         }
-        
-        let client = client_builder
-            .build()
-            .expect("Failed to build HTTP client");
+
+        let client = client_builder.build().expect("Failed to build HTTP client");
 
         Self {
             client,
@@ -412,7 +410,12 @@ impl HttpBackend {
 
     /// Create backend with OpenRouter configuration
     pub fn openrouter(api_key: String) -> Self {
-        Self::new("https://openrouter.ai/api/v1".to_string(), api_key, 120, None)
+        Self::new(
+            "https://openrouter.ai/api/v1".to_string(),
+            api_key,
+            120,
+            None,
+        )
     }
 
     /// Create backend with local OpenClaw gateway
@@ -454,15 +457,17 @@ impl OneCliBackend for HttpBackend {
                 serde_json::to_value(tool_choice).unwrap_or(serde_json::Value::Null);
         }
 
-        let mut request_builder = self.client.post(&url)
+        let mut request_builder = self
+            .client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json");
-        
+
         // Add custom headers from config
         for (key, value) in &self.headers {
             request_builder = request_builder.header(key, value);
         }
-        
+
         let response = request_builder
             .json(&request_body)
             .send()

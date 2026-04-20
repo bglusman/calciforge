@@ -14,9 +14,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::proxy::backend::{BackendError, ModelInfo, OneCliBackend};
-use crate::proxy::openai::{
-    ChatCompletionRequest, ChatCompletionResponse,
-};
+use crate::proxy::openai::{ChatCompletionRequest, ChatCompletionResponse};
 #[allow(unused_imports)]
 use tracing::{info, warn};
 
@@ -31,7 +29,7 @@ pub struct GatewayConfig {
     pub api_key: Option<String>,
     /// Timeout in seconds
     pub timeout_seconds: u64,
-        /// Additional configuration as JSON
+    /// Additional configuration as JSON
     #[allow(dead_code)]
     pub extra_config: Option<serde_json::Value>,
 
@@ -670,7 +668,7 @@ mod tests {
     #[test]
     fn test_mock_gateway() {
         use super::MockGateway;
-        
+
         let config = GatewayConfig {
             backend_type: GatewayType::Mock,
             base_url: None,

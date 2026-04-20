@@ -327,10 +327,7 @@ async fn join_matrix_room(
     room_id: &str,
 ) -> Result<()> {
     let encoded_room = encode_path_segment(room_id);
-    let url = format!(
-        "{}/_matrix/client/v3/join/{}",
-        homeserver, encoded_room
-    );
+    let url = format!("{}/_matrix/client/v3/join/{}", homeserver, encoded_room);
     let resp = http
         .post(&url)
         .header("Authorization", auth_header)
@@ -478,10 +475,7 @@ pub async fn run(
                 .find(|e| {
                     e.event_type == "m.room.member"
                         && e.state_key == my_user_id
-                        && e.content
-                            .get("membership")
-                            .and_then(|m| m.as_str())
-                            == Some("invite")
+                        && e.content.get("membership").and_then(|m| m.as_str()) == Some("invite")
                 })
                 .map(|e| e.sender.as_str())
                 .unwrap_or("");
@@ -523,7 +517,11 @@ pub async fn run(
                 }
 
                 // Extract plain text body (m.text and m.notice only)
-                let msgtype = event.content.get("msgtype").and_then(|v| v.as_str()).unwrap_or("");
+                let msgtype = event
+                    .content
+                    .get("msgtype")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if msgtype != "m.text" && msgtype != "m.notice" {
                     continue;
                 }
@@ -533,9 +531,10 @@ pub async fn run(
                 };
 
                 // Deduplication
-                let event_id = event.event_id.clone().unwrap_or_else(|| {
-                    format!("no-id-{}-{}", room_id, event.sender)
-                });
+                let event_id = event
+                    .event_id
+                    .clone()
+                    .unwrap_or_else(|| format!("no-id-{}-{}", room_id, event.sender));
                 if cache_event_id(&event_id, &mut dedup_order, &mut dedup_lookup) {
                     debug!(event_id = %event_id, "Matrix: duplicate event, skipping");
                     continue;

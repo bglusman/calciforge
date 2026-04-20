@@ -16,7 +16,6 @@ mod hooks;
 #[cfg(test)]
 mod install;
 mod local_model;
-mod voice;
 #[cfg(feature = "persistent-context")]
 mod persistent_context;
 mod providers;
@@ -24,6 +23,7 @@ mod proxy;
 mod router;
 mod sync;
 mod unified_context;
+mod voice;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -205,7 +205,9 @@ async fn main() -> Result<()> {
     let local_manager_early: Option<Arc<local_model::LocalModelManager>> =
         config.local_models.as_ref().and_then(|lm_cfg| {
             if lm_cfg.enabled {
-                Some(Arc::new(local_model::LocalModelManager::new(lm_cfg.clone())))
+                Some(Arc::new(local_model::LocalModelManager::new(
+                    lm_cfg.clone(),
+                )))
             } else {
                 None
             }

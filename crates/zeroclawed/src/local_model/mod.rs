@@ -190,10 +190,7 @@ fn run_hook(script: &str, env: &[(&str, &str)]) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "hook script exited with status {}: {stderr}",
-            output.status
-        );
+        bail!("hook script exited with status {}: {stderr}", output.status);
     }
     Ok(())
 }

@@ -57,7 +57,10 @@ impl MlxLmHandle {
                     }
                     std::thread::sleep(Duration::from_millis(500));
                 }
-                warn!(port = port, "Port may still be in use after killing previous process");
+                warn!(
+                    port = port,
+                    "Port may still be in use after killing previous process"
+                );
             }
             Ok(_) => {
                 debug!(port = port, "No existing process on port");
@@ -88,7 +91,14 @@ impl MlxLmHandle {
         Self::kill_existing_on_port(port);
 
         let child = Command::new("mlx_lm.server")
-            .args(["--model", hf_model_id, "--host", host, "--port", &port.to_string()])
+            .args([
+                "--model",
+                hf_model_id,
+                "--host",
+                host,
+                "--port",
+                &port.to_string(),
+            ])
             .args(extra_args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -149,7 +159,9 @@ impl MlxLmHandle {
         // Send SIGTERM via `kill` shell command (available on macOS/Linux).
         #[cfg(unix)]
         {
-            let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output();
         }
         #[cfg(not(unix))]
         {

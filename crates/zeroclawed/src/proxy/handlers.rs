@@ -191,7 +191,12 @@ pub async fn local_model_switch(
             .and_then(|s| s.strip_prefix("Bearer "))
             .unwrap_or("");
         if provided != expected_key.as_str() {
-            return api_error(StatusCode::UNAUTHORIZED, "unauthorized", "Invalid API key", None);
+            return api_error(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Invalid API key",
+                None,
+            );
         }
     }
 

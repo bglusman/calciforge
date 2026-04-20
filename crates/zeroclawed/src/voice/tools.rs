@@ -7,7 +7,7 @@
 //! A model querying this endpoint gets an accurate picture of what it can do
 //! on this specific zeroclawed instance without hardcoding assumptions.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::local_model::LocalModelManager;
 

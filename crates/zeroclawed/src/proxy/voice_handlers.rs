@@ -9,8 +9,8 @@ use axum::{
 };
 use tracing::{info, warn};
 
-use crate::voice::{forward, tools};
 use super::ProxyState;
+use crate::voice::{forward, tools};
 
 /// POST /v1/audio/transcriptions
 ///
@@ -40,11 +40,9 @@ pub async fn audio_transcriptions(
     info!(bytes = body.len(), url = %stt.url, "forwarding STT request");
 
     match forward::forward_stt(stt, body, content_type).await {
-        Ok((resp_body, resp_ct)) => (
-            [(axum::http::header::CONTENT_TYPE, resp_ct)],
-            resp_body,
-        )
-            .into_response(),
+        Ok((resp_body, resp_ct)) => {
+            ([(axum::http::header::CONTENT_TYPE, resp_ct)], resp_body).into_response()
+        }
         Err(e) => {
             warn!(error = %e, "STT forward failed");
             (
@@ -86,11 +84,9 @@ pub async fn audio_speech(
     info!(bytes = body.len(), url = %tts.url, "forwarding TTS request");
 
     match forward::forward_tts(tts, body, content_type).await {
-        Ok((resp_body, resp_ct)) => (
-            [(axum::http::header::CONTENT_TYPE, resp_ct)],
-            resp_body,
-        )
-            .into_response(),
+        Ok((resp_body, resp_ct)) => {
+            ([(axum::http::header::CONTENT_TYPE, resp_ct)], resp_body).into_response()
+        }
         Err(e) => {
             warn!(error = %e, "TTS forward failed");
             (
