@@ -398,7 +398,10 @@ async fn streaming_response(response: ChatCompletionResponse, model: &str) -> Re
                             .choices
                             .first()
                             .and_then(|c| c.message.content.as_ref().and_then(|c| c.to_text())),
-                        tool_calls: None,
+                        tool_calls: response
+                            .choices
+                            .first()
+                            .and_then(|c| c.message.tool_calls.clone()),
                     },
                     finish_reason: None,
                     logprobs: None,
