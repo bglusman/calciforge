@@ -16,6 +16,7 @@ mod hooks;
 #[cfg(test)]
 mod install;
 mod local_model;
+mod voice;
 #[cfg(feature = "persistent-context")]
 mod persistent_context;
 mod providers;

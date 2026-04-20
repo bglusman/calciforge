@@ -386,6 +386,10 @@ pub struct ProxyConfig {
     /// `models` patterns. Use `[[proxy.model_routes]]` in TOML.
     #[serde(default)]
     pub model_routes: Vec<ProxyModelRoute>,
+
+    /// Optional voice pipeline passthrough (`[proxy.voice]`).
+    #[serde(default)]
+    pub voice: Option<crate::voice::VoiceConfig>,
 }
 
 /// Agent-specific configuration for proxy access.
@@ -451,6 +455,7 @@ impl Default for ProxyConfig {
             backend_api_key_file: None,
             providers: Vec::new(),
             model_routes: Vec::new(),
+            voice: None,
         }
     }
 }

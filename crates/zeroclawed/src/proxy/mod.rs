@@ -27,6 +27,7 @@ mod handlers;
 mod openai;
 pub(crate) mod routing;
 mod streaming;
+mod voice_handlers;
 
 // Helicone AI Gateway router (HTTP-based)
 #[cfg(feature = "helicone")]
@@ -53,6 +54,8 @@ pub struct ProxyState {
     pub providers: Vec<ProviderEntry>,
     /// Local model lifecycle manager (present when `[local_models]` is configured).
     pub local_manager: Option<Arc<crate::local_model::LocalModelManager>>,
+    /// Voice pipeline config (present when `[proxy.voice]` is configured).
+    pub voice: Option<crate::voice::VoiceConfig>,
 }
 
 /// Read an API key from a file path, stripping trailing whitespace.
@@ -183,6 +186,7 @@ pub async fn start_proxy_server(
         gateway,
         providers,
         local_manager,
+        voice: config.voice.clone(),
     };
 
     let app = Router::new()
@@ -190,6 +194,11 @@ pub async fn start_proxy_server(
         .route("/v1/models", get(handlers::list_models))
         .route("/health", get(handlers::health_check))
         .route("/control/local/switch", post(handlers::local_model_switch))
+        // Voice passthrough — always registered; returns 501 when not configured.
+        .route("/v1/audio/transcriptions", post(voice_handlers::audio_transcriptions))
+        .route("/v1/audio/speech", post(voice_handlers::audio_speech))
+        // Tool manifest — always available; reflects what is actually configured.
+        .route("/v1/tools/manifest", get(voice_handlers::tools_manifest))
         .with_state(state);
 
     info!("Starting Alloy proxy server on {}", addr);

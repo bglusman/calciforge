@@ -174,6 +174,7 @@ mod tests {
             providers: vec![],
             model_routes: vec![],
             agents: vec![],
+            voice: None,
         };
 
         // With AllowAll policy, any model should be allowed
@@ -204,6 +205,7 @@ mod tests {
             providers: vec![],
             model_routes: vec![],
             agents: vec![],
+            voice: None,
         };
 
         // With DenyAll policy, no models should be allowed
@@ -239,6 +241,7 @@ mod tests {
                 rate_limit_rpm: 0,
                 rate_limit_tpm: 0,
             }],
+            voice: None,
         };
 
         // Agent should have access to allowed models
@@ -289,6 +292,7 @@ mod tests {
                 rate_limit_rpm: 0,
                 rate_limit_tpm: 0,
             }],
+            voice: None,
         };
 
         // Blocked models should be denied even if allowed_models says "*"
