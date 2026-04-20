@@ -163,6 +163,47 @@ async fn claude_code_hook(
     })
 }
 
+/// POST /hooks/zeroclaw-audit — zeroclaw webhook_audit receiver.
+///
+/// zeroclaw POSTs every matched tool invocation here (fire-and-forget).
+/// We evaluate against policy and log — zeroclaw does not read the response,
+/// so this is monitoring/alerting only (no blocking).
+async fn zeroclaw_audit_hook(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> StatusCode {
+    let tool = payload
+        .get("tool")
+        .or_else(|| payload.get("tool_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let args = payload
+        .get("args")
+        .or_else(|| payload.get("tool_input"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let result = state.engine.evaluate(tool, &args, Some("zeroclaw")).await;
+
+    info!(
+        tool = %tool,
+        verdict = %result.verdict,
+        reason = ?result.reason,
+        "zeroclaw-audit hook received"
+    );
+
+    if result.verdict.to_string() == "deny" {
+        warn!(
+            tool = %tool,
+            reason = ?result.reason,
+            "zeroclaw-audit: tool would be DENIED by policy (audit only — not blocked)"
+        );
+    }
+
+    StatusCode::OK
+}
+
 /// GET /health — health check
 async fn health() -> &'static str {
     "OK"
@@ -302,6 +343,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/evaluate", post(evaluate))
         .route("/hooks/claude-code", post(claude_code_hook))
+        .route("/hooks/zeroclaw-audit", post(zeroclaw_audit_hook))
         .route("/domains/summary", get(domain_summary))
         .route("/domains/check/{domain}", get(domain_check))
         .with_state(state);
