@@ -10,6 +10,16 @@ members = [
     "crates/loom-tests",
 ]
 
+# loom-tests requires RUSTFLAGS='--cfg loom' — exclude from default cargo test
+default-members = [
+    "crates/zeroclawed",
+    "crates/adversary-detector",
+    "crates/security-gateway",
+    "crates/host-agent",
+    "crates/onecli-client",
+    "crates/clashd",
+]
+
 resolver = "2"
 
 [workspace.dependencies]

@@ -481,6 +481,7 @@ mod tests {
         let ctx = DispatchContext {
             message: "hello",
             sender: Some("brian"),
+            model_override: None,
         };
         let result = a.dispatch_with_context(ctx).await;
 
@@ -569,6 +570,7 @@ mod tests {
             let ctx = DispatchContext {
                 message: msg,
                 sender: Some("brian"),
+                model_override: None,
             };
             let _ = a.dispatch_with_context(ctx).await;
         }
@@ -638,6 +640,7 @@ mod tests {
         let ctx = DispatchContext {
             message: "status check",
             sender: Some("renee"),
+            model_override: None,
         };
         let _ = a.dispatch_with_context(ctx).await;
 

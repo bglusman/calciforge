@@ -10,8 +10,13 @@ name = "zeroclawed"
 path = "src/main.rs"
 
 [features]
-channel-matrix = ["dep:matrix-sdk"]
+default = ["helicone", "traceloop"]
+channel-matrix = []
 hegel = ["dep:hegeltest"]
+persistent-context = ["dep:sqlx"]
+helicone = []
+traceloop = []
+test = []
 
 [[test]]
 name = "e2e"
@@ -28,6 +33,7 @@ axum = "0.7"
 
 # OneCLI client integration
 onecli-client = { path = "../onecli-client" }
+
 # Async runtime
 tokio = { version = "1", features = ["full", "net"] }
 
@@ -36,8 +42,8 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
-# Matrix
-matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
+# Matrix (optional — channel uses raw HTTP; dep kept for optional feature use)
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["rustls-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -85,12 +91,28 @@ base64 = "0.22"
 # Timestamp generation
 chrono = { version = "0.4", features = ["serde"] }
 
-# Property-based testing (optional, enable with --features hegel)
+# Random number generation (for alloy weighted selection)
+rand = "0.9"
+
+# UUID generation for API responses
+uuid = { version = "1", features = ["v4"] }
+
+# Retry logic (Helicone-style)
+backon = "0.4"
+
+# Property-based testing (optional)
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
+
+# SQLite for persistent session storage (optional feature)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono"], optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+futures-util = "0.3"
 loom = { version = "0.7", features = ["checkpoint"] }
 mockito = "1.5"
 proptest = "1.5"

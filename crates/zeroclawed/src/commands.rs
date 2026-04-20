@@ -14,13 +14,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Instant;
+
+use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
 use crate::config::PolyConfig;
+use crate::providers::alloy::AlloyManager;
 
 /// Default state directory: `~/.zeroclawed/state/`.
 fn default_state_dir() -> PathBuf {
@@ -73,6 +73,11 @@ pub struct CommandHandler {
     pub pending_approvals: SharedPendingApprovals,
     /// reqwest client reused for approve/deny HTTP calls.
     http_client: reqwest::Client,
+    /// Alloy manager for per-identity model/alloy selection.
+    alloy_manager: Option<AlloyManager>,
+    /// Local model lifecycle manager. When set, `!model <local-id>` triggers a
+    /// local model switch (unload current, load new mlx_lm.server process).
+    local_manager: Option<crate::sync::Arc<crate::local_model::LocalModelManager>>,
 }
 
 impl CommandHandler {
@@ -109,7 +114,29 @@ impl CommandHandler {
             state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
+            alloy_manager: None,
+            local_manager: None,
         }
+    }
+
+    /// Set the alloy manager for this command handler.
+    pub fn with_alloy_manager(mut self, manager: AlloyManager) -> Self {
+        self.alloy_manager = Some(manager);
+        self
+    }
+
+    /// Set the local model manager for this command handler.
+    pub fn with_local_manager(
+        mut self,
+        manager: crate::sync::Arc<crate::local_model::LocalModelManager>,
+    ) -> Self {
+        self.local_manager = Some(manager);
+        self
+    }
+
+    /// Get a reference to the alloy manager, if configured.
+    pub fn alloy_manager(&self) -> Option<&AlloyManager> {
+        self.alloy_manager.as_ref()
     }
 
     /// Record that a message was routed to an agent.
@@ -170,8 +197,9 @@ impl CommandHandler {
             "!switch" => None,
             // !default needs auth — switches back to the configured default agent.
             "!default" => None,
-            // !model shows model shortcuts — no auth needed for list, auth needed for set
-            "!model" => Some(self.cmd_model(trimmed)),
+            // !model shows model shortcuts/alloys — no auth needed for list.
+            // Setting an alloy requires auth; handle_model() is called post-auth.
+            "!model" => self.cmd_model_preauth(trimmed),
             _ => None, // Unknown !command — fall through to agent
         }
     }
@@ -204,6 +232,16 @@ impl CommandHandler {
         let trimmed = text.trim();
         let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
         cmd == "!default"
+    }
+
+    /// Returns `true` if the text is a `!model` command (case-insensitive).
+    ///
+    /// Use this AFTER auth to decide whether to call [`handle_model`] instead of
+    /// routing to the agent.
+    pub fn is_model_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        cmd == "!model"
     }
 
     /// Returns `true` if the text is a `!status` command (case-insensitive).
@@ -817,46 +855,235 @@ impl CommandHandler {
             "  !ping    — connectivity check (replies: pong)",
             "  !switch <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
-            "  !model [alias] — show model shortcuts or resolve an alias",
+            "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
         .join("\n")
     }
-
-    /// Handle the `!model` command — show shortcuts or resolve an alias.
-    fn cmd_model(&self, text: &str) -> String {
-        // Parse: "!model" or "!model <alias>"
+    /// Pre-auth handling for !model — lists shortcuts/alloys.
+    /// Returns None if an alloy is being selected (requires post-auth handling).
+    fn cmd_model_preauth(&self, text: &str) -> Option<String> {
         let args: Vec<&str> = text.trim().splitn(2, ' ').collect();
 
         if args.len() == 1 || args[1].trim().is_empty() {
-            // No alias provided — list all shortcuts
-            if self.config.model_shortcuts.is_empty() {
-                return "No model shortcuts configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string();
+            // No argument — list all shortcuts and alloys
+            let mut lines = vec![];
+
+            // Model shortcuts section
+            if !self.config.model_shortcuts.is_empty() {
+                lines.push("Model shortcuts:".to_string());
+                for shortcut in &self.config.model_shortcuts {
+                    lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
+                }
             }
 
-            let mut lines = vec!["Model shortcuts:".to_string()];
-            for shortcut in &self.config.model_shortcuts {
-                lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
+            // Alloys section
+            if let Some(ref manager) = self.alloy_manager {
+                if !manager.is_empty() {
+                    if !lines.is_empty() {
+                        lines.push(String::new());
+                    }
+                    lines.push("Configured alloys:".to_string());
+                    for alloy in manager.list() {
+                        let constituents: Vec<String> = alloy
+                            .constituents
+                            .iter()
+                            .map(|c| format!("{} (weight {})", c.model, c.weight))
+                            .collect();
+                        lines.push(format!(
+                            "  {} — {} ({:?}): {}",
+                            alloy.id,
+                            alloy.name,
+                            alloy.strategy,
+                            constituents.join(", ")
+                        ));
+                    }
+                }
             }
-            lines.push("\nUsage: !model <alias>".to_string());
-            lines.join("\n")
+
+            if lines.is_empty() {
+                return Some("No model shortcuts or alloys configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
+            }
+
+            lines.push("\nUsage:".to_string());
+            lines.push("  !model <alias> — show model for alias".to_string());
+            if self.alloy_manager.is_some() {
+                lines.push("  !model <alloy-id> — activate alloy for your identity".to_string());
+            }
+            Some(lines.join("\n"))
         } else {
-            // Resolve the alias
-            let alias = args[1].trim();
-            match self
-                .config
-                .model_shortcuts
-                .iter()
-                .find(|s| s.alias == alias)
-            {
-                Some(shortcut) => format!("{} → {}", shortcut.alias, shortcut.model),
-                None => format!(
-                    "Unknown alias: '{}'\n\nUse !model to see available shortcuts.",
-                    alias
-                ),
+            // Argument provided — check if it's a model shortcut or alloy selection
+            let arg = args[1].trim();
+
+            // First check if it's a model shortcut (show-only)
+            if let Some(shortcut) = self.config.model_shortcuts.iter().find(|s| s.alias == arg) {
+                return Some(format!("{} → {}", shortcut.alias, shortcut.model));
+            }
+
+            // If no alloy manager, unknown alias
+            if self.alloy_manager.is_none() {
+                return Some(format!(
+                    "Unknown alias: '{}',\n\nUse !model to see available shortcuts.",
+                    arg
+                ));
+            }
+
+            // Return None to trigger post-auth handling for alloy selection
+            None
+        }
+    }
+
+    /// Handle a `!model <id>` command for an authenticated identity.
+    ///
+    /// Dispatch order:
+    /// 1. If the ID matches a configured alloy → activate it (existing behavior).
+    /// 2. If the ID matches a local model in `[local_models]` → trigger a switch
+    ///    (async background task, returns immediately with status message).
+    /// 3. If a `[[proxy.providers]]` entry has an `on_switch` hook for this model
+    ///    → run the hook script in the background.
+    /// 4. Otherwise → show an error with available options.
+    pub fn handle_model(&self, text: &str, identity_id: &str) -> String {
+        let trimmed = text.trim();
+        let args: Vec<&str> = trimmed
+            .split_once(' ')
+            .map(|x| x.1)
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+
+        if args.is_empty() {
+            return "Usage: !model <id>\n\nUse !model to see available models.".to_string();
+        }
+
+        let model_id = args[0];
+
+        // 1. Alloy switch.
+        if let Some(ref manager) = self.alloy_manager {
+            if let Some(alloy) = manager.get(model_id) {
+                if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
+                    return format!("⚠️ Failed to activate alloy: {}", e);
+                }
+                let constituents: Vec<String> = alloy
+                    .definition()
+                    .constituents
+                    .iter()
+                    .map(|c| format!("{} (weight {})", c.model, c.weight))
+                    .collect();
+                return format!(
+                    "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
+                    model_id,
+                    alloy.definition().strategy,
+                    constituents.join(", ")
+                );
             }
         }
+
+        // 2. Local model switch.
+        if let Some(ref lm_mgr) = self.local_manager {
+            if let Some(model_def) = lm_mgr.find_model(model_id) {
+                let hf_id = model_def.hf_id.clone();
+                let id = model_id.to_string();
+                let mgr = crate::sync::Arc::clone(lm_mgr);
+                // Run the blocking switch in a background task — may take 1-2 minutes.
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
+                    match result {
+                        Ok(Ok(loaded)) => {
+                            tracing::info!(model = %loaded.id, "!model local switch complete");
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "!model local switch failed");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "!model local switch panic");
+                        }
+                    }
+                });
+                return format!(
+                    "🔄 Switching to local model '{}' (HF: {}).\n\
+                    This may take 1-2 minutes while the model loads.\n\
+                    The gateway will continue serving requests during the transition.",
+                    model_id, hf_id
+                );
+            }
+        }
+
+        // 3. Provider on_switch hook.
+        if let Some(ref proxy_cfg) = self.config.proxy {
+            for provider in &proxy_cfg.providers {
+                let model_matches = provider.models.iter().any(|p| {
+                    crate::proxy::routing::model_matches_pattern(model_id, p)
+                });
+                if model_matches {
+                    if let Some(ref hook_script) = provider.on_switch {
+                        if !hook_script.is_empty() {
+                            let script = hook_script.clone();
+                            let model_id_owned = model_id.to_string();
+                            let model_id_log = model_id.to_string();
+                            let provider_id = provider.id.clone();
+                            tokio::spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    std::process::Command::new("sh")
+                                        .arg("-c")
+                                        .arg(&script)
+                                        .env("ZEROCLAWED_MODEL_ID", &model_id_owned)
+                                        .output()
+                                }).await;
+                                match result {
+                                    Ok(Ok(out)) if out.status.success() => {
+                                        tracing::info!(provider = %provider_id, model = %model_id_log, "on_switch hook completed");
+                                    }
+                                    Ok(Ok(out)) => {
+                                        tracing::warn!(
+                                            provider = %provider_id,
+                                            stderr = %String::from_utf8_lossy(&out.stderr),
+                                            "on_switch hook failed"
+                                        );
+                                    }
+                                    Ok(Err(e)) => {
+                                        tracing::warn!(error = %e, "on_switch hook spawn error");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "on_switch hook panic");
+                                    }
+                                }
+                            });
+                            return format!(
+                                "🔄 Running on_switch hook for model '{}' (provider: {}).",
+                                model_id, provider.id
+                            );
+                        }
+                        // Provider matches but no hook — just acknowledge.
+                        return format!(
+                            "ℹ️ Model '{}' is served by provider '{}' (no on_switch hook configured).",
+                            model_id, provider.id
+                        );
+                    }
+                }
+            }
+        }
+
+        // 4. Unknown model — show what's available.
+        let mut available = vec![];
+        if let Some(ref mgr) = self.alloy_manager {
+            for a in mgr.list() {
+                available.push(format!("  {} (alloy)", a.id));
+            }
+        }
+        if let Some(ref lm) = self.local_manager {
+            for m in lm.models() {
+                available.push(format!("  {} (local/{})", m.id, m.provider_type));
+            }
+        }
+        if available.is_empty() {
+            return format!("⚠️ Unknown model: '{}'\n\nNo models configured.", model_id);
+        }
+        format!(
+            "⚠️ Unknown model: '{}'\n\nAvailable:\n{}",
+            model_id,
+            available.join("\n")
+        )
     }
 
     fn cmd_agents(&self) -> String {
@@ -1005,7 +1232,10 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
+            proxy: None,
+            local_models: None,
         }
     }
 
@@ -1197,7 +1427,10 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
+            proxy: None,
+            local_models: None,
         });
         let h = CommandHandler::new(config);
         let reply = h.handle("!agents").unwrap();

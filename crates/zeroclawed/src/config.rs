@@ -3,10 +3,12 @@
 //! Reads from `~/.zeroclawed/config.toml`. Supports the full config schema
 //! as defined in the spec (Section 3).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+pub mod validator;
 
 // ---------------------------------------------------------------------------
 // Schema types
@@ -46,10 +48,26 @@ pub struct PolyConfig {
     #[serde(default)]
     pub model_shortcuts: Vec<ModelShortcutConfig>,
 
+    /// `[[alloys]]` — model blending/mixing groups.
+    /// Use `!model <alloy-id>` to activate an alloy for an identity.
+    #[serde(default)]
+    pub alloys: Vec<AlloyConfig>,
+
     /// `[security]` — adversary detector profile and settings.
     /// Defaults to balanced if not specified in config.
     #[serde(default)]
     pub security: Option<SecuritySectionConfig>,
+
+    /// `[proxy]` — OpenAI-compatible HTTP API server settings.
+    /// Enables agents to use ZeroClawed as a model provider.
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
+
+    /// `[local_models]` — local inference server lifecycle management.
+    /// Enables `!model <id>` and `POST /control/local/switch` to hot-swap
+    /// which HF model is loaded in the local mlx_lm.server or llama-server.
+    #[serde(default)]
+    pub local_models: Option<LocalModelsConfig>,
 }
 
 /// A model shortcut entry (`[[model_shortcuts]]`).
@@ -59,6 +77,32 @@ pub struct ModelShortcutConfig {
     pub alias: String,
     /// Full provider/model string this alias expands to (e.g. "anthropic/claude-sonnet-4.6")
     pub model: String,
+}
+
+/// Alloy definition (`[[alloys]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AlloyConfig {
+    /// Alloy identifier used by commands (e.g. "free-alloy-1").
+    pub id: String,
+    /// Human-readable alloy name.
+    pub name: String,
+    /// Strategy: "weighted" or "round_robin".
+    pub strategy: String,
+    /// Constituent models for this alloy.
+    #[serde(default)]
+    pub constituents: Vec<AlloyConstituentConfig>,
+}
+
+/// One alloy constituent (`[[alloys.constituents]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AlloyConstituentConfig {
+    pub model: String,
+    #[serde(default = "default_alloy_weight")]
+    pub weight: u32,
+}
+
+fn default_alloy_weight() -> u32 {
+    1
 }
 
 /// `[zeroclawed]` header section.
@@ -268,6 +312,343 @@ impl Default for SecuritySectionConfig {
     }
 }
 
+/// `[proxy]` section — OpenAI-compatible HTTP API server.
+///
+/// Enables ZeroClawed to act as a model provider that agents can connect to.
+/// Supports alloy-based routing, graceful degradation, and streaming.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyConfig {
+    /// Whether the proxy server is enabled. Default: false.
+    #[serde(default = "default_proxy_enabled")]
+    pub enabled: bool,
+
+    /// Bind address for the HTTP server. Default: "127.0.0.1:8080"
+    #[serde(default = "default_proxy_bind")]
+    pub bind: String,
+
+    /// API key for authenticating requests (optional).
+    /// If set, all requests must include `Authorization: Bearer <key>`
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Path to file containing API key (alternative to `api_key`).
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Request timeout in seconds. Default: 300
+    #[serde(default = "default_proxy_timeout")]
+    pub timeout_seconds: u64,
+
+    /// Maximum request body size in MB. Default: 50
+    #[serde(default = "default_proxy_max_body_mb")]
+    pub max_body_mb: usize,
+
+    /// Agent authentication and model access control.
+    /// If empty, all agents can access all models (using global api_key if set).
+    #[serde(default)]
+    pub agents: Vec<ProxyAgentConfig>,
+
+    /// Default model access policy when no agent match.
+    /// "allow_all" = any model, "deny_all" = no models, "allow_configured" = only configured agents
+    #[serde(default = "default_proxy_default_policy")]
+    pub default_policy: ProxyAccessPolicy,
+
+    /// Backend type for proxy: "mock", "http", "embedded", "library"
+    /// Default: "mock" (for testing)
+    #[serde(default = "default_proxy_backend_type")]
+    pub backend_type: String,
+
+    /// Backend API key (for HTTP backend)
+    #[serde(default)]
+    pub backend_api_key: Option<String>,
+
+    /// Backend URL (for HTTP backend)
+    /// Default: "https://api.deepseek.com/v1" (DeepSeek API)
+    #[serde(default = "default_proxy_backend_url")]
+    pub backend_url: String,
+
+    /// Custom headers to include in backend requests
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
+
+    /// Path to file containing the backend API key (alternative to `backend_api_key`).
+    /// Contents are read at startup; trailing whitespace/newlines are stripped.
+    #[serde(default)]
+    pub backend_api_key_file: Option<PathBuf>,
+
+    /// Named provider configurations. Each provider handles a set of model patterns
+    /// and may have its own URL, API key, headers, and timeout.
+    /// Use `[[proxy.providers]]` in TOML.
+    #[serde(default)]
+    pub providers: Vec<ProxyProviderConfig>,
+
+    /// Explicit model-to-provider routing table. Takes precedence over provider
+    /// `models` patterns. Use `[[proxy.model_routes]]` in TOML.
+    #[serde(default)]
+    pub model_routes: Vec<ProxyModelRoute>,
+
+    /// Optional voice pipeline passthrough (`[proxy.voice]`).
+    #[serde(default)]
+    pub voice: Option<crate::voice::VoiceConfig>,
+}
+
+/// Agent-specific configuration for proxy access.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyAgentConfig {
+    /// Unique agent identifier (e.g., "lucien", "claude-code")
+    pub id: String,
+
+    /// Display name for the agent
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// API key for this agent (optional - can use global api_key)
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier")
+    /// If empty and default_policy is "allow_all", all models are allowed
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+
+    /// Blocked model patterns (takes precedence over allowed)
+    #[serde(default)]
+    pub blocked_models: Vec<String>,
+
+    /// Rate limit: requests per minute (0 = unlimited)
+    #[serde(default)]
+    pub rate_limit_rpm: u32,
+
+    /// Rate limit: tokens per minute (0 = unlimited)
+    #[serde(default)]
+    pub rate_limit_tpm: u32,
+}
+
+/// Default access policy for unconfigured agents.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyAccessPolicy {
+    /// Allow all models (default)
+    #[default]
+    AllowAll,
+    /// Deny all models
+    DenyAll,
+    /// Only allow models configured for specific agents
+    AllowConfigured,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_proxy_enabled(),
+            bind: default_proxy_bind(),
+            api_key: None,
+            api_key_file: None,
+            timeout_seconds: default_proxy_timeout(),
+            max_body_mb: default_proxy_max_body_mb(),
+            agents: Vec::new(),
+            default_policy: default_proxy_default_policy(),
+            backend_type: default_proxy_backend_type(),
+            backend_api_key: None,
+            backend_url: default_proxy_backend_url(),
+            headers: None,
+            backend_api_key_file: None,
+            providers: Vec::new(),
+            model_routes: Vec::new(),
+            voice: None,
+        }
+    }
+}
+
+fn default_proxy_enabled() -> bool {
+    false
+}
+
+fn default_proxy_bind() -> String {
+    "127.0.0.1:8080".to_string()
+}
+
+fn default_proxy_timeout() -> u64 {
+    300
+}
+
+fn default_proxy_max_body_mb() -> usize {
+    50
+}
+
+fn default_proxy_default_policy() -> ProxyAccessPolicy {
+    ProxyAccessPolicy::AllowAll
+}
+
+fn default_proxy_backend_type() -> String {
+    "mock".to_string()
+}
+
+fn default_proxy_backend_url() -> String {
+    "https://api.deepseek.com/v1".to_string()
+}
+
+/// A named backend provider (`[[proxy.providers]]`).
+///
+/// Each provider handles a set of model name patterns and has its own
+/// URL, credentials, headers, and timeout. Providers are checked in config
+/// order; `[[proxy.model_routes]]` takes precedence over provider `models` lists.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyProviderConfig {
+    /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
+    pub id: String,
+
+    /// Base URL for this provider's OpenAI-compatible API.
+    pub url: String,
+
+    /// API key for this provider (inline). Prefer `api_key_file`.
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Path to file containing this provider's API key.
+    /// Contents are read at startup; trailing whitespace stripped.
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Model name patterns this provider handles.
+    /// Supports exact matches and glob prefix (`kimi/*`).
+    /// The default backend is used when no provider matches.
+    #[serde(default)]
+    pub models: Vec<String>,
+
+    /// Request timeout in seconds (overrides proxy-level default).
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+
+    /// Custom headers included in every request to this provider.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Shell script path to run when `!model <id>` switches to any model
+    /// served by this provider. Env: ZEROCLAWED_MODEL_ID, ZEROCLAWED_MODEL_HF_ID,
+    /// ZEROCLAWED_PREV_MODEL_ID.
+    #[serde(default)]
+    pub on_switch: Option<String>,
+}
+
+/// Explicit model-name → provider routing entry (`[[proxy.model_routes]]`).
+/// Takes precedence over `[[proxy.providers]] models` patterns.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyModelRoute {
+    /// Model name pattern (exact or `prefix/*` glob).
+    pub pattern: String,
+    /// ID of the `[[proxy.providers]]` entry to use.
+    pub provider: String,
+}
+
+/// `[local_models]` section — local model process lifecycle management.
+///
+/// Zeroclawed manages starting/stopping the local inference server
+/// (mlx_lm or llama.cpp) when `!model <id>` or `POST /control/local/switch`
+/// is called.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct LocalModelsConfig {
+    /// Enable local model management. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Model ID to load on zeroclawed startup (optional).
+    #[serde(default)]
+    pub current: Option<String>,
+
+    /// Configured local models.
+    #[serde(default)]
+    pub models: Vec<LocalModelDef>,
+
+    /// Settings for the mlx_lm.server backend.
+    #[serde(default)]
+    pub mlx_lm: MlxLmConfig,
+}
+
+/// A local model definition (`[[local_models.models]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LocalModelDef {
+    /// Short ID used with `!model <id>` (e.g. "qwen3-8bit").
+    pub id: String,
+
+    /// HuggingFace model identifier (e.g. "unsloth/Qwen3.6-35B-A3B-MLX-8bit").
+    pub hf_id: String,
+
+    /// Backend type for this model. Currently only "mlx_lm" supported.
+    #[serde(default = "default_local_provider_type")]
+    pub provider_type: String,
+
+    /// Optional display name shown in `!model local` listing.
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+fn default_local_provider_type() -> String {
+    "mlx_lm".to_string()
+}
+
+/// Settings for the mlx_lm.server process (`[local_models.mlx_lm]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MlxLmConfig {
+    /// Host to bind (and connect to). Default: "127.0.0.1".
+    #[serde(default = "default_mlx_host")]
+    pub host: String,
+
+    /// Port to serve on. Default: 8080.
+    #[serde(default = "default_mlx_port")]
+    pub port: u16,
+
+    /// Seconds to wait for the server to become ready after spawn. Default: 120.
+    #[serde(default = "default_mlx_startup_timeout")]
+    pub startup_timeout_seconds: u64,
+
+    /// Extra CLI arguments passed to mlx_lm.server (e.g. ["--max-tokens", "4096"]).
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+
+    /// Lifecycle hooks.
+    #[serde(default)]
+    pub hooks: LocalModelHooks,
+}
+
+impl Default for MlxLmConfig {
+    fn default() -> Self {
+        Self {
+            host: default_mlx_host(),
+            port: default_mlx_port(),
+            startup_timeout_seconds: default_mlx_startup_timeout(),
+            extra_args: Vec::new(),
+            hooks: LocalModelHooks::default(),
+        }
+    }
+}
+
+fn default_mlx_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_mlx_port() -> u16 {
+    8080
+}
+
+fn default_mlx_startup_timeout() -> u64 {
+    120
+}
+
+/// Shell hook scripts for local model lifecycle (`[local_models.mlx_lm.hooks]`).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct LocalModelHooks {
+    /// Script run before unloading the current model.
+    /// Env: ZEROCLAWED_PREV_MODEL_ID, ZEROCLAWED_PREV_MODEL_HF_ID.
+    #[serde(default)]
+    pub pre_switch: Option<String>,
+
+    /// Script run after the new model is loaded and serving.
+    /// Env: ZEROCLAWED_MODEL_ID, ZEROCLAWED_MODEL_HF_ID, ZEROCLAWED_PREV_MODEL_ID.
+    #[serde(default)]
+    pub post_switch: Option<String>,
+}
+
 /// `[context]` section — conversation context ring buffer settings.
 ///
 /// Omitting the section from config.toml uses all defaults (enabled, 20/5).
@@ -281,6 +662,18 @@ pub struct ContextConfig {
     /// Set to 0 to disable injection.  Default: 5.
     #[serde(default = "default_inject_depth")]
     pub inject_depth: usize,
+    /// Persistent storage configuration.
+    /// If not specified, uses in-memory storage only.
+    #[serde(default)]
+    pub persistent: Option<PersistentContextConfig>,
+}
+
+/// Configuration for persistent context storage.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PersistentContextConfig {
+    /// SQLite database URL (e.g., "sqlite:///path/to/context.db")
+    /// or file path (e.g., "/var/lib/zeroclawed/context.db")
+    pub database_url: String,
 }
 
 fn default_buffer_size() -> usize {
@@ -295,6 +688,7 @@ impl Default for ContextConfig {
         Self {
             buffer_size: default_buffer_size(),
             inject_depth: default_inject_depth(),
+            persistent: None,
         }
     }
 }
@@ -304,11 +698,37 @@ impl Default for ContextConfig {
 // ---------------------------------------------------------------------------
 
 /// Load the PolyConfig from an explicit path.
+///
+/// Validates the configuration before returning it, catching common errors
+/// like duplicate IDs, invalid references, and malformed settings.
 pub fn load_config_from(path: &PathBuf) -> Result<PolyConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading config file: {}", path.display()))?;
+
+    // Validate TOML syntax first
+    validator::validate_toml_syntax(&raw)
+        .with_context(|| format!("validating TOML syntax: {}", path.display()))?;
+
+    // Parse the config
     let config: PolyConfig =
         toml::from_str(&raw).with_context(|| format!("parsing config file: {}", path.display()))?;
+
+    // Run semantic validation
+    let validation = validator::validate_config(&config);
+
+    if !validation.is_valid() {
+        let error_msg = format!(
+            "Configuration validation failed:\n{}",
+            validation.errors.join("\n")
+        );
+        bail!(error_msg);
+    }
+
+    // Log warnings if any
+    for warning in &validation.warnings {
+        tracing::warn!("Config warning: {}", warning);
+    }
+
     Ok(config)
 }
 
