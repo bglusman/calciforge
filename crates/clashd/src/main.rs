@@ -127,12 +127,6 @@ async fn claude_code_hook(
     State(state): State<AppState>,
     Json(req): Json<ClaudeHookRequest>,
 ) -> Json<ClaudeHookResponse> {
-    let context = serde_json::json!({
-        "agent_id": "claude-code",
-        "cwd": req.cwd.unwrap_or_default(),
-        "session_id": req.session_id.unwrap_or_default(),
-    });
-
     let result = state
         .engine
         .evaluate(&req.tool_name, &req.tool_input, Some("claude-code"))
@@ -148,11 +142,10 @@ async fn claude_code_hook(
         tool = %req.tool_name,
         decision = %decision,
         reason = ?reason,
+        cwd = ?req.cwd,
+        session_id = ?req.session_id,
         "claude-code hook evaluated"
     );
-
-    // Suppress unused variable warning — context available for future use
-    let _ = context;
 
     Json(ClaudeHookResponse {
         hook_specific_output: HookSpecificOutput {

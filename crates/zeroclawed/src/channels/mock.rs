@@ -10,7 +10,10 @@
 //! enabled = true
 //! ```
 //!
-//! The control API always binds to port 9090.
+//! The control port defaults to 9090 and can be overridden via `control_port` in channel config.
+//!
+//! Note: the `/send` endpoint is a stub — it logs the message and returns a fixed response.
+//! Wire `router`/`command_handler` here when full integration testing is needed.
 
 use anyhow::{Context, Result};
 use axum::{
@@ -91,7 +94,7 @@ pub async fn run(
     context_store: ContextStore,
 ) -> Result<()> {
     // Find the mock channel config
-    let _mock_channel = config
+    let mock_channel = config
         .channels
         .iter()
         .find(|c| c.kind == "mock" && c.enabled)
@@ -109,9 +112,7 @@ pub async fn run(
         config: config.clone(),
     };
 
-    // Use default control port (9090)
-    // TODO: Add control_port field to ChannelConfig
-    let control_port = 9090;
+    let control_port = mock_channel.control_port.unwrap_or(9090);
 
     // Start control API server
     let control_app = Router::new()

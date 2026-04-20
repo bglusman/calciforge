@@ -153,9 +153,10 @@ backend_url = "https://api.openai.com/v1"     # default fallback
 backend_api_key_file = "/etc/zeroclawed/secrets/openai-key"
 
 # Named providers — matched in order against incoming model name
+# Pattern syntax: exact match, "*" (any), or "prefix/*" (prefix glob)
 [[proxy.providers]]
 id = "local"
-models = ["local/*", "llama*", "qwen*", "gemma*"]
+models = ["local/*", "llama/*", "qwen/*", "gemma/*"]
 url = "http://localhost:8888/v1"
 
 [[proxy.providers]]
@@ -201,17 +202,21 @@ Run models locally via [mlx_lm](https://github.com/ml-explore/mlx-lm) (Apple Sil
 enabled = true
 current = "qwen3-35b"
 
+# mlx_lm.server settings (shared across all models)
+[local_models.mlx_lm]
+port = 8888
+host = "127.0.0.1"
+
 [[local_models.models]]
 id = "qwen3-35b"
-path = "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MLX-8bit"
-backend = "mlx_lm"
-port = 8888
+hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
+# provider_type = "mlx_lm"  # default
+display_name = "Qwen 3.5 35B"
 
 [[local_models.models]]
 id = "gemma4-26b"
-path = "~/.cache/huggingface/hub/models--unsloth--gemma-4-26b-a4b-it-MLX-8bit"
-backend = "mlx_lm"
-port = 8888
+hf_id = "mlx-community/gemma-4-26b-it-8bit"
+display_name = "Gemma 4 26B"
 ```
 
 Switch via API:

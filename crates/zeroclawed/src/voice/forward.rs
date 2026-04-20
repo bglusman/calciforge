@@ -4,6 +4,7 @@
 //! run a shell hook on the body, then proxy the (possibly transformed) request
 //! verbatim to the configured upstream URL.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -12,6 +13,14 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use tracing::{debug, info, warn};
 
 use super::VoiceEndpointConfig;
+
+const HOOK_TIMEOUT_SECS: u64 = 30;
+
+static VOICE_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn voice_client() -> &'static reqwest::Client {
+    VOICE_CLIENT.get_or_init(reqwest::Client::new)
+}
 
 /// Forward a raw request body (with its Content-Type) to the upstream STT URL.
 ///
@@ -43,7 +52,7 @@ pub async fn forward_tts(
 /// Run an optional shell hook: pipe `input` to stdin, collect stdout.
 ///
 /// If the hook path is None, returns the input unchanged.
-/// On hook failure the original input is returned and a warning is logged —
+/// On hook failure or timeout the original input is returned and a warning is logged —
 /// the pipeline degrades gracefully rather than erroring.
 pub async fn run_hook(hook_path: Option<&str>, input: Bytes) -> Bytes {
     let Some(path) = hook_path else {
@@ -52,7 +61,7 @@ pub async fn run_hook(hook_path: Option<&str>, input: Bytes) -> Bytes {
 
     debug!(hook = %path, bytes = input.len(), "running voice hook");
 
-    let result = tokio::task::spawn_blocking({
+    let task = tokio::task::spawn_blocking({
         let path = path.to_string();
         let input = input.clone();
         move || -> Result<Vec<u8>> {
@@ -86,20 +95,23 @@ pub async fn run_hook(hook_path: Option<&str>, input: Bytes) -> Bytes {
                 anyhow::bail!("hook exited with status {}", out.status);
             }
         }
-    })
-    .await;
+    });
 
-    match result {
-        Ok(Ok(out)) => {
+    match tokio::time::timeout(Duration::from_secs(HOOK_TIMEOUT_SECS), task).await {
+        Ok(Ok(Ok(out))) => {
             info!(hook = %path, output_bytes = out.len(), "voice hook succeeded");
             Bytes::from(out)
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             warn!(hook = %path, error = %e, "voice hook failed, passing through original");
             input
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             warn!(hook = %path, error = %e, "voice hook panicked, passing through original");
+            input
+        }
+        Err(_) => {
+            warn!(hook = %path, timeout_secs = HOOK_TIMEOUT_SECS, "voice hook timed out, passing through original");
             input
         }
     }
@@ -115,11 +127,6 @@ async fn forward_raw(
 ) -> Result<(Bytes, String)> {
     debug!(url = %url, body_bytes = body.len(), "forwarding voice request");
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .build()
-        .context("building reqwest client")?;
-
     let mut headers = HeaderMap::new();
     headers.insert(
         CONTENT_TYPE,
@@ -132,8 +139,9 @@ async fn forward_raw(
         );
     }
 
-    let resp = client
+    let resp = voice_client()
         .post(url)
+        .timeout(Duration::from_secs(config.timeout_seconds))
         .headers(headers)
         .body(body)
         .send()

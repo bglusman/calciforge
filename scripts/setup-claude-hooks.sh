@@ -39,8 +39,11 @@ echo "Building clashd and zeroclawed (release)..."
 CARGO="${HOME}/.cargo/bin/cargo"
 [[ -x "$CARGO" ]] || die "cargo not found at $CARGO"
 
-"$CARGO" build --release -p clashd -p zeroclawed 2>&1 \
-    | grep -E "^error|Compiling|Finished" || true
+if ! "$CARGO" build --release -p clashd -p zeroclawed > /tmp/zeroclawed-build.log 2>&1; then
+    grep "^error" /tmp/zeroclawed-build.log || true
+    die "cargo build failed — full log at /tmp/zeroclawed-build.log"
+fi
+grep -E "Compiling|Finished" /tmp/zeroclawed-build.log || true
 ok "Build complete"
 
 # ── 2. Install binaries ───────────────────────────────────────────────────────
@@ -73,12 +76,13 @@ if [[ ! -f "$AGENTS_JSON" ]]; then
     ok "Agent config → $AGENTS_JSON"
 fi
 
-# ── 4. launchd service (macOS) ────────────────────────────────────────────────
-mkdir -p "$HOME/Library/LaunchAgents"
-LOG_DIR="$HOME/Library/Logs/clashd"
-mkdir -p "$LOG_DIR"
+# ── 4. service setup ──────────────────────────────────────────────────────────
+if [[ "$(uname)" == "Darwin" ]]; then
+    mkdir -p "$HOME/Library/LaunchAgents"
+    LOG_DIR="$HOME/Library/Logs/clashd"
+    mkdir -p "$LOG_DIR"
 
-cat > "$PLIST_PATH" <<EOF
+    cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -110,21 +114,25 @@ cat > "$PLIST_PATH" <<EOF
 </dict>
 </plist>
 EOF
-ok "LaunchAgent plist → $PLIST_PATH"
+    ok "LaunchAgent plist → $PLIST_PATH"
 
-# (Re)load the service
-if launchctl list | grep -q "$PLIST_LABEL" 2>/dev/null; then
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
-fi
-launchctl load "$PLIST_PATH"
-ok "clashd service loaded (auto-starts at login)"
+    if launchctl list | grep -q "$PLIST_LABEL" 2>/dev/null; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    fi
+    launchctl load "$PLIST_PATH"
+    ok "clashd service loaded (auto-starts at login)"
 
-# Give it a moment to start
-sleep 1
-if curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null 2>&1; then
-    ok "clashd is running on port ${CLASHD_PORT}"
+    sleep 1
+    if curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null 2>&1; then
+        ok "clashd is running on port ${CLASHD_PORT}"
+    else
+        warn "clashd not yet responding — check $LOG_DIR/clashd.err"
+    fi
 else
-    warn "clashd not yet responding — check $LOG_DIR/clashd.err"
+    LOG_DIR="/var/log/clashd"
+    warn "Non-macOS: skipping launchd. Start clashd manually or add a systemd unit:"
+    warn "  ExecStart=$BIN_DIR/clashd"
+    warn "  Environment=CLASHD_PORT=$CLASHD_PORT CLASHD_POLICY=$CLASHD_POLICY"
 fi
 
 # ── 5. Update ~/.claude/settings.json ────────────────────────────────────────
@@ -188,7 +196,9 @@ echo "  Policy:  $CLASHD_POLICY"
 echo "  Logs:    $LOG_DIR/clashd.log"
 echo "  Test:    curl http://localhost:${CLASHD_PORT}/health"
 echo ""
-echo "To adjust policy, edit $CLASHD_POLICY and restart:"
-echo "  launchctl unload $PLIST_PATH"
-echo "  launchctl load   $PLIST_PATH"
+echo "To adjust policy, edit $CLASHD_POLICY and restart clashd."
+if [[ "$(uname)" == "Darwin" ]]; then
+    echo "  launchctl unload $PLIST_PATH"
+    echo "  launchctl load   $PLIST_PATH"
+fi
 echo ""

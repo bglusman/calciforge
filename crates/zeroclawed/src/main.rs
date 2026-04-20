@@ -142,6 +142,8 @@ async fn main() -> Result<()> {
     )
     .await?;
 
+    // Persistent context is feature-gated; when enabled it must be plumbed through
+    // all channel and command handler call sites (currently in-memory only).
     let context_store_arc = unified_context_store.into_in_memory()?;
 
     // Clone the inner ContextStore for channel functions

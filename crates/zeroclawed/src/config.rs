@@ -251,6 +251,10 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
 
+    // --- Mock channel settings ---
+    /// TCP port for the mock channel's control API. Default: 9090.
+    pub control_port: Option<u16>,
+
     // --- Adversary detector settings ---
     /// Enable inbound adversarial content scanning on this channel.
     /// Default: false (opt-in). The HTTP proxy is always-on regardless of this flag.

@@ -104,19 +104,14 @@ pub async fn start_proxy_server(
 
     // Create backend based on config
     let backend_config = match config.backend_type.as_str() {
-        "http" => {
-            let api_key = default_api_key
-                .clone()
-                .unwrap_or_else(|| "no-key".to_string());
-            backend::BackendConfig {
-                backend_type: backend::BackendType::Http,
-                url: Some(config.backend_url.clone()),
-                api_key: Some(api_key),
-                timeout_seconds: Some(config.timeout_seconds),
-                headers: config.headers.clone(),
-                ..Default::default()
-            }
-        }
+        "http" => backend::BackendConfig {
+            backend_type: backend::BackendType::Http,
+            url: Some(config.backend_url.clone()),
+            api_key: default_api_key.clone(),
+            timeout_seconds: Some(config.timeout_seconds),
+            headers: config.headers.clone(),
+            ..Default::default()
+        },
         "embedded" => backend::BackendConfig {
             backend_type: backend::BackendType::Embedded,
             headers: config.headers.clone(),

@@ -173,9 +173,7 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn OneCliBackend>, 
             let url = config.url.clone().ok_or_else(|| {
                 BackendError::ConfigError("Missing url for HTTP backend".to_string())
             })?;
-            let api_key = config.api_key.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing api_key for HTTP backend".to_string())
-            })?;
+            let api_key = config.api_key.clone().unwrap_or_default();
             let timeout = config.timeout_seconds.unwrap_or(30);
             let headers = config.headers.clone();
             Ok(Arc::new(HttpBackend::new(url, api_key, timeout, headers)))
@@ -460,8 +458,12 @@ impl OneCliBackend for HttpBackend {
         let mut request_builder = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json");
+
+        if !self.api_key.is_empty() {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
 
         // Add custom headers from config
         for (key, value) in &self.headers {
@@ -496,10 +498,11 @@ impl OneCliBackend for HttpBackend {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         let url = format!("{}/models", self.base_url);
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+        let mut req = self.client.get(&url);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        let response = req
             .send()
             .await
             .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
