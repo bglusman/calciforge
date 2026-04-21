@@ -68,7 +68,7 @@ async fn test_gateway_allows_clean_content() {
 /// Unit test — credential injection logic (no gateway needed)
 #[tokio::test]
 async fn test_credential_injection_logic() {
-    use security_gateway::credentials::CredentialInjector;
+    use security_proxy::credentials::CredentialInjector;
 
     let injector = CredentialInjector::new();
     injector.add("openai", "sk-test-key-123");
@@ -97,7 +97,7 @@ async fn test_credential_injection_logic() {
 /// Unit test — agent config loading
 #[tokio::test]
 async fn test_agent_config_parsing() {
-    use security_gateway::agent_config::AgentsConfig;
+    use security_proxy::agent_config::AgentsConfig;
 
     let config_json = r#"{
         "agents": [{

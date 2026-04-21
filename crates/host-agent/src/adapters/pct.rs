@@ -112,15 +112,12 @@ impl Adapter for PctAdapter {
 
         // Default: start/stop require approval unless explicitly allowed
         match command {
-            "start" | "stop" => {
-                // Check if there's an explicit allow rule; otherwise require approval
-                if config.find_rule(&operation_key).is_none() {
-                    return Ok(PolicyDecision::RequiresApproval {
-                        message: format!(
-                            "pct-{command}/{vmid} requires approval (no explicit allow rule found)"
-                        ),
-                    });
-                }
+            "start" | "stop" if config.find_rule(&operation_key).is_none() => {
+                return Ok(PolicyDecision::RequiresApproval {
+                    message: format!(
+                        "pct-{command}/{vmid} requires approval (no explicit allow rule found)"
+                    ),
+                });
             }
             "status" => {} // always allowed
             _ => {}

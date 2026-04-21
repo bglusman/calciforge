@@ -27,8 +27,9 @@
 //! ```
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
+
+use crate::sync::Arc;
 
 use async_trait::async_trait;
 use sacp::role::ClientToAgent;
@@ -513,7 +514,7 @@ mod tests {
                      req_cx: sacp::JrRequestCx<NewSessionResponse>,
                      _cx: JrConnectionCx<AgentToClient>| async move {
                         req_cx.respond(NewSessionResponse {
-                            session_id: SessionId(std::sync::Arc::from("test-session-1")),
+                            session_id: SessionId(crate::sync::Arc::from("test-session-1")),
                             modes: None,
                             meta: None,
                         })

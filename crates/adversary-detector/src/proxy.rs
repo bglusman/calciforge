@@ -140,7 +140,7 @@ impl RateLimiter {
         // Find and remove 20% oldest by last access time
         let to_remove = self.buckets.len() / 5;
         let mut entries: Vec<_> = self.buckets.iter().map(|(k, v)| (k.clone(), v.2)).collect();
-        entries.sort_by(|a, b| a.1.cmp(&b.1));
+        entries.sort_by_key(|a| a.1);
         for (key, _) in entries.into_iter().take(to_remove) {
             self.buckets.remove(&key);
         }

@@ -53,7 +53,7 @@ jobs:
           - host-agent
           - onecli-client
           - clashd
-          - security-gateway
+          - security-proxy
     steps:
       - uses: actions/checkout@v4
 
@@ -134,11 +134,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binaries
-        run: cargo build --release -p zeroclawed -p onecli-client -p security-gateway -p adversary-detector
+        run: cargo build --release -p zeroclawed -p onecli-client -p security-proxy -p adversary-detector
 
       - name: Check binary sizes
         run: |
           ls -lh target/release/zeroclawed || true
           ls -lh target/release/onecli || true
-          ls -lh target/release/security-gateway || true
+          ls -lh target/release/security-proxy || true
           ls -lh target/release/adversary-detector || true

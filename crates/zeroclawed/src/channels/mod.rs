@@ -19,6 +19,7 @@
 //! and sends replies via the /tools/invoke API.
 
 pub mod matrix;
+pub mod mock;
 pub mod signal;
 pub mod telegram;
 pub mod whatsapp;

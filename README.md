@@ -136,6 +136,130 @@ enabled = true
 
 ---
 
+## 🔌 AI Model Proxy
+
+ZeroClawed includes an **OpenAI-compatible HTTP proxy** (`[proxy]`) that routes model requests to one or more backends, with named provider routing, local model management, streaming support, and tool-call forwarding.
+
+### Multi-Provider Routing
+
+Route different model names to different providers — each with its own URL, API key, and timeout:
+
+```toml
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+backend_type = "http"
+backend_url = "https://api.openai.com/v1"     # default fallback
+backend_api_key_file = "/etc/zeroclawed/secrets/openai-key"
+
+# Named providers — matched in order against incoming model name
+# Pattern syntax: exact match, "*" (any), or "prefix/*" (prefix glob)
+[[proxy.providers]]
+id = "local"
+models = ["local/*", "llama/*", "qwen/*", "gemma/*"]
+url = "http://localhost:8888/v1"
+
+[[proxy.providers]]
+id = "fast-provider"
+models = ["fast/*"]
+url = "https://api.fast-provider.example.com/v1"
+api_key_file = "/etc/zeroclawed/secrets/fast-key"
+timeout_seconds = 30
+```
+
+### Model Alloys (Blended Routing)
+
+**Alloy** — inspired by [Alloy: A Model for Blended LLM Outputs](https://arxiv.org/abs/2410.10630) — routes requests across multiple backends for cost efficiency, quality blending, and graceful degradation:
+
+```toml
+[[alloys]]
+id = "balanced"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "openrouter/google/gemini-flash-1.5"
+weight = 80
+
+[[alloys.constituents]]
+model = "openrouter/anthropic/claude-3-haiku"
+weight = 20
+```
+
+Users switch alloys via chat:
+```
+!model                 # List available models/alloys
+!model balanced        # Activate an alloy
+```
+
+Strategies: `weighted` (random by weight) · `round_robin` (deterministic cycling)
+
+### Local Model Management
+
+Run models locally via [mlx_lm](https://github.com/ml-explore/mlx-lm) (Apple Silicon) or [llama.cpp](https://github.com/ggerganov/llama.cpp) and switch between them at runtime:
+
+```toml
+[local_models]
+enabled = true
+current = "qwen3-35b"
+
+# mlx_lm.server settings (shared across all models)
+[local_models.mlx_lm]
+port = 8888
+host = "127.0.0.1"
+
+[[local_models.models]]
+id = "qwen3-35b"
+hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
+# provider_type = "mlx_lm"  # default
+display_name = "Qwen 3.5 35B"
+
+[[local_models.models]]
+id = "gemma4-26b"
+hf_id = "mlx-community/gemma-4-26b-it-8bit"
+display_name = "Gemma 4 26B"
+```
+
+Switch via API:
+```bash
+curl -X POST http://localhost:8080/control/local/switch \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gemma4-26b"}'
+```
+
+---
+
+## 🎙️ Voice Pipeline
+
+ZeroClawed provides minimal, **non-opinionated** passthrough endpoints for speech-to-text and text-to-speech. It forwards audio/text to whatever STT/TTS servers you configure — no opinions about VAD, wakeword detection, or pipeline topology.
+
+```toml
+[proxy.voice.stt]
+url = "http://localhost:9000"          # any OpenAI-compatible STT server
+timeout_seconds = 60
+
+[proxy.voice.tts]
+url = "http://localhost:9001"          # any OpenAI-compatible TTS server
+timeout_seconds = 60
+
+[proxy.voice.hooks]
+on_audio_in = "/etc/zeroclawed/hooks/preprocess-audio.sh"   # optional
+on_text_out = "/etc/zeroclawed/hooks/postprocess-text.sh"   # optional
+```
+
+**Endpoints** (always registered; return `501` when not configured):
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/audio/transcriptions` | Forward audio to STT, return transcript |
+| `POST /v1/audio/speech` | Forward text to TTS, return audio |
+| `GET  /v1/tools/manifest` | OpenAI-compatible tool definitions for what's configured |
+
+**Hooks** receive the request body on stdin and write the (optionally transformed) body to stdout. On failure, the original body passes through unchanged — the pipeline degrades gracefully rather than erroring.
+
+The `GET /v1/tools/manifest` endpoint returns tool definitions a model can inject directly into its `tools` parameter: `zeroclawed_switch_model`, `zeroclawed_current_model`, `zeroclawed_transcribe`, `zeroclawed_speak` — only for features actually configured.
+
+---
+
 ## 🛡️ Policy Enforcement (clashd)
 
 clashd is a sidecar service that evaluates every tool call through a Starlark policy before execution.
@@ -256,6 +380,7 @@ cargo clippy --all-targets
 | `onecli-client` | Credential proxy service |
 | `host-agent` | System management agent (ZFS, systemd, Proxmox) |
 | `adversary-detector` | Content scanning, digest caching, skip protection |
+| `clashd` | Starlark policy engine with domain filtering and threat intel |
 
 ---
 
@@ -291,11 +416,11 @@ Built with:
 
 | Crate | Binary | Purpose |
 |-------|--------|---------|
-| `zeroclawed` | `zeroclawed` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents |
+| `zeroclawed` | `zeroclawed` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents. Includes OpenAI-compatible model proxy with multi-provider routing, local model management, and voice pipeline passthrough. |
 | `onecli-client` | `onecli` | **Credential Proxy** — VaultWarden integration, injects API keys without exposing them to agents |
 | `host-agent` | `host-agent` | **System Agent** — ZFS, systemd, Proxmox operations with approval gates |
-| `adversary-detector` | *(library)* | **Content Scanner** — three-layer detection, digest caching, skip protection, security profiles | [README](crates/adversary-detector/README.md) |
-| `clashd` | `clashd` | **Policy Engine** — Starlark policies, domain filtering, threat intel feeds, per-agent configs | [README](crates/clashd/README.md) |
+| `adversary-detector` | *(library)* | **Content Scanner** — three-layer detection, digest caching, skip protection, security profiles — [README](crates/adversary-detector/README.md) |
+| `clashd` | `clashd` | **Policy Engine** — Starlark policies, domain filtering, threat intel feeds, per-agent configs — [README](crates/clashd/README.md) |
 
 ### Message Flow
 
@@ -316,11 +441,9 @@ OneCLI can proxy **any** HTTP request with credential injection:
 # LLM APIs (auto-injected)
 /proxy/anthropic → api.anthropic.com + Authorization header
 /proxy/openai    → api.openai.com + Authorization header
-/proxy/kimi      → api.moonshot.cn + Authorization header
 
 # Any secret (explicit lookup)
 /vault/Brave%20Search%20API → returns {token: "..."}
-/vault/MAM                   → returns {token: "..."}
 /vault/Any%20Service         → returns {token: "..."}
 ```
 

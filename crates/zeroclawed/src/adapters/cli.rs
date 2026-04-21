@@ -434,9 +434,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_exit_nonzero_returns_protocol_error() {
-        // /bin/false always exits 1
+        // false(1) always exits 1; path differs by OS
+        let false_cmd = if std::path::Path::new("/bin/false").exists() {
+            "/bin/false"
+        } else {
+            "/usr/bin/false"
+        };
         let adapter = CliAdapter::new(
-            "/bin/false".to_string(),
+            false_cmd.to_string(),
             Some(vec![]),
             HashMap::new(),
             Some(2000),

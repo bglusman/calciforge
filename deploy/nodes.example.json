@@ -1,0 +1,37 @@
+{
+  "nodes": [
+    {
+      "name": "proxmox-node1",
+      "host": "192.168.1.10",
+      "user": "admin",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "arch": "x86_64-unknown-linux-musl",
+      "os": "linux",
+      "services": ["clashd", "security-proxy"],
+      "install_dir": "/usr/local/bin",
+      "config_dir": "/etc/zeroclawed"
+    },
+    {
+      "name": "proxmox-node2",
+      "host": "192.168.1.11",
+      "user": "admin",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "arch": "x86_64-unknown-linux-musl",
+      "os": "linux",
+      "services": ["clashd", "security-proxy", "zeroclawed"],
+      "install_dir": "/usr/local/bin",
+      "config_dir": "/etc/zeroclawed"
+    },
+    {
+      "name": "mac-satellite",
+      "host": "192.168.1.20",
+      "user": "admin",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "arch": "aarch64-apple-darwin",
+      "os": "macos",
+      "services": ["clashd", "security-proxy"],
+      "install_dir": "/usr/local/bin",
+      "config_dir": "/Users/admin/.clash"
+    }
+  ]
+}

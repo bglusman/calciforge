@@ -12,6 +12,40 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
+// ── Claude Code hook types ────────────────────────────────────────────────────
+
+/// Payload Claude Code sends to a PreToolUse hook.
+#[derive(Debug, Deserialize)]
+struct ClaudeHookRequest {
+    tool_name: String,
+    #[serde(default)]
+    tool_input: Value,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+/// Response Claude Code expects from a hook (hookSpecificOutput wrapper).
+#[derive(Debug, Serialize)]
+struct ClaudeHookResponse {
+    #[serde(rename = "hookSpecificOutput")]
+    hook_specific_output: HookSpecificOutput,
+}
+
+#[derive(Debug, Serialize)]
+struct HookSpecificOutput {
+    #[serde(rename = "hookEventName")]
+    hook_event_name: String,
+    #[serde(rename = "permissionDecision")]
+    permission_decision: String,
+    #[serde(
+        rename = "permissionDecisionReason",
+        skip_serializing_if = "Option::is_none"
+    )]
+    permission_decision_reason: Option<String>,
+}
+
 use clashd::policy::{AgentPolicyConfig, PolicyEngine};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +116,85 @@ async fn domain_check(
         "domain": domain,
         "checked_against": matched.len(),
     }))
+}
+
+/// POST /hooks/claude-code — Claude Code PreToolUse hook endpoint.
+///
+/// Receives Claude Code's hook payload, evaluates it against the loaded policy,
+/// and returns a `hookSpecificOutput` response Claude Code understands.
+/// Maps: allow → "allow", deny → "deny", review → "ask".
+async fn claude_code_hook(
+    State(state): State<AppState>,
+    Json(req): Json<ClaudeHookRequest>,
+) -> Json<ClaudeHookResponse> {
+    let result = state
+        .engine
+        .evaluate(&req.tool_name, &req.tool_input, Some("claude-code"))
+        .await;
+
+    let (decision, reason) = match result.verdict.to_string().as_str() {
+        "deny" => ("deny", result.reason),
+        "review" => ("ask", result.reason),
+        _ => ("allow", None),
+    };
+
+    info!(
+        tool = %req.tool_name,
+        decision = %decision,
+        reason = ?reason,
+        cwd = ?req.cwd,
+        session_id = ?req.session_id,
+        "claude-code hook evaluated"
+    );
+
+    Json(ClaudeHookResponse {
+        hook_specific_output: HookSpecificOutput {
+            hook_event_name: "PreToolUse".to_string(),
+            permission_decision: decision.to_string(),
+            permission_decision_reason: reason,
+        },
+    })
+}
+
+/// POST /hooks/zeroclaw-audit — zeroclaw webhook_audit receiver.
+///
+/// zeroclaw POSTs every matched tool invocation here (fire-and-forget).
+/// We evaluate against policy and log — zeroclaw does not read the response,
+/// so this is monitoring/alerting only (no blocking).
+async fn zeroclaw_audit_hook(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> StatusCode {
+    let tool = payload
+        .get("tool")
+        .or_else(|| payload.get("tool_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let args = payload
+        .get("args")
+        .or_else(|| payload.get("tool_input"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let result = state.engine.evaluate(tool, &args, Some("zeroclaw")).await;
+
+    info!(
+        tool = %tool,
+        verdict = %result.verdict,
+        reason = ?result.reason,
+        "zeroclaw-audit hook received"
+    );
+
+    if result.verdict.to_string() == "deny" {
+        warn!(
+            tool = %tool,
+            reason = ?result.reason,
+            "zeroclaw-audit: tool would be DENIED by policy (audit only — not blocked)"
+        );
+    }
+
+    StatusCode::OK
 }
 
 /// GET /health — health check
@@ -222,6 +335,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(version))
         .route("/health", get(health))
         .route("/evaluate", post(evaluate))
+        .route("/hooks/claude-code", post(claude_code_hook))
+        .route("/hooks/zeroclaw-audit", post(zeroclaw_audit_hook))
         .route("/domains/summary", get(domain_summary))
         .route("/domains/check/{domain}", get(domain_check))
         .with_state(state);
