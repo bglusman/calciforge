@@ -5,20 +5,28 @@ use axum::Router;
 use tracing::{error, info};
 
 use adversary_detector::{RateLimitConfig, ScannerConfig};
-use security_gateway::agent_config::AgentsConfig;
-use security_gateway::config::GatewayConfig;
-use security_gateway::proxy::{health_handler, proxy_handler, SecurityProxy};
+use security_proxy::agent_config::AgentsConfig;
+use security_proxy::config::GatewayConfig;
+use security_proxy::proxy::{health_handler, proxy_handler, SecurityProxy};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "security_gateway=info".into()),
+                .unwrap_or_else(|_| "security_proxy=info".into()),
         )
         .init();
 
-    let config = GatewayConfig::default();
+    let port = std::env::var("SECURITY_PROXY_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| GatewayConfig::default().port);
+
+    let config = GatewayConfig {
+        port,
+        ..GatewayConfig::default()
+    };
 
     // Build unified security proxy
     let mut proxy = SecurityProxy::new(
@@ -42,7 +50,6 @@ async fn main() -> anyhow::Result<()> {
             agents_config_path
         );
 
-        // Auto-load credentials from agent provider configs
         for provider in agents_config.all_providers() {
             if let Ok(api_key) = std::env::var(&provider.env_key) {
                 proxy.credentials.add(&provider.name, &api_key);
@@ -65,7 +72,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = Arc::new(proxy);
-    let port = config.port;
 
     let app = Router::new()
         .route("/health", get(health_handler))
@@ -73,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
-    info!("Security Gateway listening on {}", addr);
+    info!("Security proxy listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

@@ -144,7 +144,10 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
+            proxy: None,
+            local_models: None,
         }
     }
 
@@ -257,7 +260,10 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            alloys: vec![],
             security: None,
+            proxy: None,
+            local_models: None,
         };
         assert!(resolve_telegram_sender(7000000001, &cfg).is_none());
         assert!(default_agent_for("anyone", &cfg).is_none());

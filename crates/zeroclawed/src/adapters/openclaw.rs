@@ -16,9 +16,10 @@
 //! - ZeroClawed waits until the SSE stream terminates (`data: [DONE]`)
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+use crate::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -160,7 +161,10 @@ impl AgentAdapter for OpenClawHttpAdapter {
         );
 
         let body = ChatRequest {
-            model: self.model.clone(),
+            model: ctx
+                .model_override
+                .unwrap_or(self.model.as_str())
+                .to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: msg.to_string(),
@@ -355,6 +359,9 @@ struct NzcWebhookRequest<'a> {
     /// Resolved ZeroClawed identity name (e.g. "brian"). Omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     sender: Option<&'a str>,
+    /// Optional model override (used for alloy routing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
 }
 
 /// Wire-level approval request from NZC (deserialized from `/webhook` response).
@@ -397,6 +404,7 @@ impl AgentAdapter for NzcHttpAdapter {
         let body = NzcWebhookRequest {
             message: ctx.message,
             sender: ctx.sender,
+            model: ctx.model_override,
         };
 
         let resp = self
@@ -707,6 +715,7 @@ mod tests {
         let req = NzcWebhookRequest {
             message: "hello",
             sender: None,
+            model: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["message"], "hello");
@@ -722,6 +731,7 @@ mod tests {
         let req = NzcWebhookRequest {
             message: "hi",
             sender: Some("brian"),
+            model: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["message"], "hi");

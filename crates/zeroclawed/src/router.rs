@@ -48,6 +48,19 @@ impl Router {
         _config: &PolyConfig,
         sender: Option<&str>,
     ) -> Result<String> {
+        self.dispatch_with_sender_and_model(text, agent, _config, sender, None)
+            .await
+    }
+
+    /// Dispatch a message with sender identity and optional model override.
+    pub async fn dispatch_with_sender_and_model(
+        &self,
+        text: &str,
+        agent: &AgentConfig,
+        _config: &PolyConfig,
+        sender: Option<&str>,
+        model_override: Option<&str>,
+    ) -> Result<String> {
         let adapter = build_adapter(agent).map_err(|e| {
             anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
         })?;
@@ -63,6 +76,7 @@ impl Router {
         let ctx = DispatchContext {
             message: text,
             sender,
+            model_override,
         };
         adapter.dispatch_with_context(ctx).await.map_err(|e| {
             let msg = match &e {
@@ -108,12 +122,15 @@ mod tests {
             identities: vec![],
             agents: vec![],
             routing: vec![],
+            alloys: vec![],
             channels: vec![],
             permissions: None,
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
             security: None,
+            proxy: None,
+            local_models: None,
         }
     }
 
@@ -295,7 +312,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         // Shared buffer to capture the raw HTTP request received by the server.
-        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let captured = crate::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
         let captured_srv = captured.clone();
 
         // Serve exactly one connection, capture the request, send the canned
