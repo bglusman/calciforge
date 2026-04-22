@@ -1,0 +1,76 @@
+# .gitleaks.local.toml.example — Template for per-deployment disclosure rules.
+#
+# Copy this file to `.gitleaks.local.toml` (which is gitignored) and fill in
+# YOUR specific infrastructure identifiers. This is where patterns that would
+# themselves be infra disclosure if committed live. They never enter the repo.
+#
+# Use this to scan your commits before pushing:
+#     gitleaks detect --config .gitleaks.local.toml --source . --verbose
+#
+# The CI gate runs `.gitleaks.toml` (public, generic). Your local config adds
+# protections against leaking YOUR specific stuff — without publishing what
+# "your specific stuff" is.
+#
+# Tip: `.gitleaks.local.toml` can `[extend]` the public config so you get both
+# sets of rules in one scan.
+
+title = "personal local-only infra-leak rules (not committed)"
+
+[extend]
+# Pull in everything from the committed public config.
+path = "./.gitleaks.toml"
+
+# ── YOUR patterns go below. Examples (REPLACE these placeholders) ────────────
+#
+# Delete the examples after you populate; they're only here to show the shape.
+
+# Your personal domain(s) — any subdomain of domains you control.
+# Replace `yourdomain.com` with your actual domain. Add more rules for more
+# domains.
+#
+# [[rules]]
+# id = "personal-domain-primary"
+# description = "Primary personal domain — do not commit any subdomain"
+# regex = '''[a-z0-9-]+\.yourdomain\.com'''
+# tags = ["infra-leak", "personal"]
+
+# Dynamic-DNS hostnames you use. Consumer router vendors ship different
+# DDNS suffixes; naming a specific one in a public repo hints at your
+# router model, so keep it local. Replace `your-ddns-provider.net` with
+# whatever suffix your DDNS service assigns you (typically visible in the
+# router UI's DDNS settings).
+#
+# [[rules]]
+# id = "personal-ddns"
+# description = "DDNS service used by this deployment"
+# regex = '''[a-z0-9-]+\.yourddns\.net'''
+# tags = ["infra-leak", "personal"]
+
+# Chat service identifiers tied to your personal account.
+# Matrix handle, Discord user-id, Slack workspace URL, etc.
+#
+# [[rules]]
+# id = "personal-matrix-handle"
+# description = "Personal Matrix identifier via a specific bridge"
+# regex = '''@[a-zA-Z0-9._-]+:yourhomeserver\.example'''
+# tags = ["infra-leak", "personal"]
+
+# Service-specific user-ids (Telegram chat ids, Signal numbers, etc.)
+# These are public-ish but tie you to the repo as the maintainer.
+#
+# [[rules]]
+# id = "personal-telegram-chat-id"
+# description = "Maintainer's Telegram chat id"
+# regex = '''\b8465871000\b'''   # example ONLY — use your real id
+# tags = ["infra-leak", "personal"]
+
+# Model names you pay for that reveal commercial dependencies.
+# Whether this is worth hiding is a judgment call — naming "gpt-4" in a
+# readme is fine; naming "internal-foo-model" that only exists in your
+# private deployment is not.
+#
+# [[rules]]
+# id = "private-model-name"
+# description = "Model identifiers that exist only in this deployment"
+# regex = '''\b(?:internal-foo|private-bar)-[a-z0-9-]+\b'''
+# tags = ["infra-leak", "personal"]

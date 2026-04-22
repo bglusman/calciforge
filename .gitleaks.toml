@@ -1,0 +1,100 @@
+# .gitleaks.toml — Secret + infrastructure-disclosure scanner config (public).
+#
+# Enforced in CI via .github/workflows/secret-scan.yml. Fails the PR if any of
+# these patterns appear in the diff.
+#
+# TWO-LAYER DESIGN — why this file is deliberately generic:
+#   - This file ships in the public repo, so anything named here is itself
+#     disclosed. A rule that names a specific domain teaches attackers which
+#     domain to search for. So this file carries only patterns generic to a
+#     class of users, not specific to any deployment.
+#   - Personal / per-deployment patterns (specific domains, service
+#     identifiers tied to a real user) live in `.gitleaks.local.toml` — a
+#     gitignored file. See `.gitleaks.local.toml.example` for the template +
+#     how to extend. CI runs only this file; developers opt into the stricter
+#     local config for their own commits:
+#         gitleaks detect --config .gitleaks.local.toml
+#
+# Rules here catch the SHAPE of disclosure (private-IP ranges, generic
+# credential-in-header patterns), not any specific user's identifiers.
+
+title = "zeroclawed secret + infra-leak rules (public, generic)"
+
+# Start from gitleaks' curated default rules (40+ cloud/tool token patterns).
+[extend]
+useDefault = true
+
+# ── Private-network IP ranges — generic, not user-specific ───────────────────
+# Apply to everyone with any home/office LAN. Catching these prevents the
+# "oops I committed my workstation's LAN IP" footgun.
+
+[[rules]]
+id = "rfc1918-192-168"
+description = "RFC 1918 private range 192.168.0.0/16 — home LAN topology"
+regex = '''\b192\.168\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\b'''
+tags = ["infra-leak"]
+
+[[rules]]
+id = "rfc1918-10-net"
+description = "RFC 1918 private range 10.0.0.0/8 — private network topology"
+regex = '''\b10\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\b'''
+tags = ["infra-leak"]
+
+[[rules]]
+id = "rfc6598-cgnat"
+description = "RFC 6598 CGNAT range 100.64.0.0/10 — also used by Tailscale"
+regex = '''\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\.(?:25[0-5]|2[0-4]\d|1\d\d|\d\d?)\b'''
+tags = ["infra-leak"]
+
+# ── Generic credential-in-header / URL patterns ──────────────────────────────
+
+[[rules]]
+id = "bearer-token-in-header"
+description = "Hardcoded Bearer token in an Authorization header string literal"
+# Matches: Authorization: Bearer <16+ non-space chars>
+regex = '''[Aa]uthorization["']?\s*:\s*["']?Bearer\s+[A-Za-z0-9_\-\.]{16,}'''
+tags = ["secret"]
+
+[[rules]]
+id = "basic-auth-in-url"
+description = "user:password@ credentials embedded in a URL"
+regex = '''https?://[^/\s:@]+:[^/\s@]{4,}@[^/\s]+'''
+tags = ["secret"]
+
+# ── Allowlist — known-safe paths and values ──────────────────────────────────
+
+[allowlist]
+description = "Paths and literals that are always safe — never scan or flag"
+paths = [
+    '''\.gitleaks\.toml$''',
+    '''\.gitleaks\.local\.toml$''',
+    '''\.gitleaks\.local\.toml\.example$''',
+    '''\.github/workflows/secret-scan\.yml$''',
+    '''CLAUDE\.md$''',
+    '''(?i).*\.example\..*''',
+    '''tests/.*/fixtures/.*''',
+    '''CHANGELOG.*''',
+    # Lockfiles: crate checksums, not secrets.
+    '''Cargo\.lock$''',
+    '''package-lock\.json$''',
+    '''yarn\.lock$''',
+    '''bun\.lock$''',
+]
+regexes = [
+    # Loopback / unspecified — always safe
+    '''127\.0\.0\.1''',
+    '''0\.0\.0\.0''',
+    '''::1''',
+    '''localhost''',
+    # RFC 5737 — reserved for documentation
+    '''192\.0\.2\.\d{1,3}''',
+    '''198\.51\.100\.\d{1,3}''',
+    '''203\.0\.113\.\d{1,3}''',
+    # RFC 2606 — reserved example domains
+    '''example\.com''',
+    '''example\.net''',
+    '''example\.org''',
+    '''example\.test''',
+    # Common router-default gateway used as a placeholder in docs
+    '''192\.168\.1\.1''',
+]
