@@ -36,6 +36,11 @@ PLATFORM="$(uname -s)"
 # On Darwin we always use per-user LaunchAgents.
 IS_ROOT=false
 [[ $EUID -eq 0 ]] && IS_ROOT=true
+# systemd install target: system units use multi-user.target; user units
+# (systemctl --user) use default.target. Keep the generators in sync so
+# `systemctl enable` doesn't silently no-op on one mode.
+WANTED_BY_TARGET="default.target"
+$IS_ROOT && WANTED_BY_TARGET="multi-user.target"
 case "$PLATFORM" in
     Darwin)
         BIN_DIR="$HOME/.local/bin"
@@ -158,7 +163,7 @@ ensure_tool() {
     local brew_pkg="${2:-$1}"
     local npm_pkg="${3:-$1}"
     if command -v "$bin" &>/dev/null; then
-        ok "$bin $(${bin} --version 2>/dev/null | head -1 || echo '(installed)')"
+        ok "$bin $("$bin" --version 2>/dev/null | head -1 || echo '(installed)')"
         return 0
     fi
     case "$PLATFORM" in
@@ -170,12 +175,28 @@ ensure_tool() {
             ensure_npm "$npm_pkg" "$bin"
             ;;
         Linux)
-            # Try npm first (most universal); fall through to apt if available.
-            if command -v npm &>/dev/null || [[ "$YES" == true ]]; then
+            # Prefer npm (most universal across distros).
+            if command -v npm &>/dev/null; then
                 ensure_npm "$npm_pkg" "$bin"
                 return $?
             fi
-            warn "$bin not found and no package manager available — install manually"
+            # --yes: try the distro package manager to install node+npm, then
+            # retry via ensure_npm. Silent if no supported package manager.
+            if [[ "$YES" == true ]]; then
+                local sudo_cmd=""
+                $IS_ROOT || sudo_cmd="sudo"
+                if command -v apt-get &>/dev/null; then
+                    $sudo_cmd apt-get update -qq && \
+                        $sudo_cmd apt-get install -y -qq nodejs npm
+                elif command -v dnf &>/dev/null; then
+                    $sudo_cmd dnf install -y -q nodejs npm
+                fi
+                if command -v npm &>/dev/null; then
+                    ensure_npm "$npm_pkg" "$bin"
+                    return $?
+                fi
+            fi
+            warn "$bin not found and npm unavailable — install node+npm first, or rerun with --yes on apt/dnf systems"
             return 1
             ;;
     esac
@@ -288,7 +309,7 @@ StandardOutput=append:${LOG_DIR}/clashd.log
 StandardError=append:${LOG_DIR}/clashd.err
 
 [Install]
-WantedBy=default.target
+WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
     $SYSTEMCTL enable --now zeroclawed-clashd.service 2>&1 | tail -3 || \
@@ -346,7 +367,7 @@ StandardOutput=append:${SEC_LOG_DIR}/security-proxy.log
 StandardError=append:${SEC_LOG_DIR}/security-proxy.err
 
 [Install]
-WantedBy=default.target
+WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
     $SYSTEMCTL enable --now zeroclawed-security-proxy.service 2>&1 | tail -3 || \
@@ -543,8 +564,8 @@ if [[ -n "$NODES_FILE" ]]; then
             env_lines+="Environment=\"${k}=${v}\"\n"
         done <<< "$env_pairs"
 
-        printf '[Unit]\nDescription=ZeroClawed %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n' \
-            "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")"
+        printf '[Unit]\nDescription=ZeroClawed %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=%s\n' \
+            "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")" "$WANTED_BY_TARGET"
     }
 
     # ── launchd plist generator ───────────────────────────────────────────────

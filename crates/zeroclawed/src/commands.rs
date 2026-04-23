@@ -588,7 +588,7 @@ impl CommandHandler {
             .collect();
 
         if args.is_empty() {
-            return "Usage: !switch <agent> [session]  (alias: !agent)\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents.".to_string();
+            return "Usage: !switch <agent> [session] (alias: !agent)\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents.".to_string();
         }
 
         let agent_arg = args[0].to_string();
@@ -1508,6 +1508,18 @@ mod tests {
         assert!(!CommandHandler::is_switch_command("!help"));
         assert!(!CommandHandler::is_switch_command("switch custodian")); // no !
         assert!(!CommandHandler::is_switch_command("hello world"));
+    }
+
+    #[test]
+    fn test_agent_alias_for_switch() {
+        let h = make_handler();
+        // !agent is the alias for !switch — must behave identically:
+        // returns None from handle() (needs auth first) and is recognized
+        // by is_switch_command so the caller knows to route through auth.
+        assert!(h.handle("!agent custodian").is_none());
+        assert!(h.handle("!AGENT custodian").is_none());
+        assert!(CommandHandler::is_switch_command("!agent custodian"));
+        assert!(CommandHandler::is_switch_command("  !AGENT custodian  "));
     }
 
     #[test]
