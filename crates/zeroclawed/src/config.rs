@@ -91,6 +91,20 @@ pub struct AlloyConfig {
     /// Constituent models for this alloy.
     #[serde(default)]
     pub constituents: Vec<AlloyConstituentConfig>,
+    /// Minimum context window (tokens) required from every constituent.
+    ///
+    /// If set: alloy build fails when any constituent with a declared
+    /// `context_window` is smaller than this. Catches "I didn't mean to mix a
+    /// 32K local model into a 200K-context alloy" at config-load time.
+    ///
+    /// If unset: auto-computed as `min(constituent.context_window)` over
+    /// constituents that declare one. Constituents without a declared
+    /// `context_window` are treated as unknown and do not participate in
+    /// the minimum calculation.
+    ///
+    /// See `docs/rfcs/model-gateway-primitives.md`.
+    #[serde(default)]
+    pub min_context_window: Option<u32>,
 }
 
 /// One alloy constituent (`[[alloys.constituents]]`).
@@ -99,6 +113,13 @@ pub struct AlloyConstituentConfig {
     pub model: String,
     #[serde(default = "default_alloy_weight")]
     pub weight: u32,
+    /// Declared context window (tokens) for this constituent.
+    ///
+    /// **Required.** No sensible default — declared per-constituent so the
+    /// alloy can compute and enforce a safe effective ceiling. Without this,
+    /// oversized requests could be silently routed to a constituent that
+    /// can't hold them. See `docs/rfcs/model-gateway-primitives.md`.
+    pub context_window: u32,
 }
 
 fn default_alloy_weight() -> u32 {
