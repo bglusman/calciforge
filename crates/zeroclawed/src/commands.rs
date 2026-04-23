@@ -194,7 +194,8 @@ impl CommandHandler {
             "!sessions" => None,
             // !switch needs auth — return None here so the caller can do auth
             // first, then call handle_switch().
-            "!switch" => None,
+            // !agent is an alias: reads as "pick an agent" since !agents lists them.
+            "!switch" | "!agent" => None,
             // !default needs auth — switches back to the configured default agent.
             "!default" => None,
             // !model shows model shortcuts/alloys — no auth needed for list.
@@ -214,14 +215,14 @@ impl CommandHandler {
         cmd == "!sessions"
     }
 
-    /// Returns `true` if the text is a `!switch` command (case-insensitive).
+    /// Returns `true` if the text is a `!switch` (or `!agent` alias) command.
     ///
     /// Use this AFTER auth to decide whether to call [`handle_switch`] instead of
-    /// routing to the agent.
+    /// routing to the agent. `!agent <name>` reads naturally after `!agents` lists them.
     pub fn is_switch_command(text: &str) -> bool {
         let trimmed = text.trim();
         let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
-        cmd == "!switch"
+        cmd == "!switch" || cmd == "!agent"
     }
 
     /// Returns `true` if the text is a `!default` command (case-insensitive).
@@ -587,7 +588,7 @@ impl CommandHandler {
             .collect();
 
         if args.is_empty() {
-            return "Usage: !switch <agent> [session]\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents.".to_string();
+            return "Usage: !switch <agent> [session] (alias: !agent)\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents.".to_string();
         }
 
         let agent_arg = args[0].to_string();
@@ -853,7 +854,7 @@ impl CommandHandler {
             "  !sessions <agent> — list ACP sessions for an agent (requires auth)",
             "  !metrics — messages routed, average latency",
             "  !ping    — connectivity check (replies: pong)",
-            "  !switch <agent> [session] — switch active agent (requires auth)",
+            "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
@@ -1507,6 +1508,18 @@ mod tests {
         assert!(!CommandHandler::is_switch_command("!help"));
         assert!(!CommandHandler::is_switch_command("switch custodian")); // no !
         assert!(!CommandHandler::is_switch_command("hello world"));
+    }
+
+    #[test]
+    fn test_agent_alias_for_switch() {
+        let h = make_handler();
+        // !agent is the alias for !switch — must behave identically:
+        // returns None from handle() (needs auth first) and is recognized
+        // by is_switch_command so the caller knows to route through auth.
+        assert!(h.handle("!agent custodian").is_none());
+        assert!(h.handle("!AGENT custodian").is_none());
+        assert!(CommandHandler::is_switch_command("!agent custodian"));
+        assert!(CommandHandler::is_switch_command("  !AGENT custodian  "));
     }
 
     #[test]
