@@ -1083,4 +1083,37 @@ timeout_ms = 60000
         assert_eq!(agent.api_key.as_deref(), Some("REPLACE_WITH_AUTH_TOKEN"));
         assert!(agent.auth_token.is_none());
     }
+
+    #[test]
+    fn alloy_constituent_missing_context_window_fails_to_parse() {
+        // Guards against silently reintroducing a serde default on
+        // context_window. If someone flips it back to Option<u32> or adds a
+        // #[serde(default)], this test catches it at CI time.
+        let raw = r#"
+[zeroclawed]
+version = 2
+
+[[alloys]]
+id = "fast-smart"
+name = "Fast + Smart"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "gemini-2.5-flash"
+weight = 80
+
+[[alloys.constituents]]
+model = "claude-haiku-4-6"
+context_window = 200000
+weight = 20
+"#;
+        let err = toml::from_str::<PolyConfig>(raw)
+            .err()
+            .expect("missing context_window should fail to deserialize");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("context_window"),
+            "error should name the missing field, got: {msg}"
+        );
+    }
 }
