@@ -85,13 +85,25 @@ weight = 20
 
 **Purpose:** reliability. Try primary, on timeout/5xx/429 try secondary.
 
-**Today's behavior** (implicit in alloy `fallbacks` array) → **promoted** to its own named primitive for clarity:
+**Today's behavior:** there is no `fallbacks` field on `AlloyConfig`. Fallback
+is implicit — `AlloyProvider::select_plan()` returns an `ordered_models: Vec<String>`
+with every remaining constituent appended in deterministic order, and the proxy
+iterates them in `route_with_fallback()` until one succeeds. That "all
+constituents of the alloy are also fallbacks" pattern is what the cascade
+primitive **promotes** to its own named construct:
 
 ```toml
 [[cascades]]
 id = "kimi-with-fallback"
-# First success wins. Cascading ONLY on error (not on size).
-# Caller's responsibility: ensure request fits the NARROWEST member, OR wrap cascade inside a dispatcher.
+# First success wins.
+#
+# Cascade is TRIGGERED by errors (timeout, 5xx, 429) — it does not treat
+# "request too large" as a retry condition. But before each step is
+# attempted, the runtime pre-checks that the request fits that step's
+# context_window and SKIPS unfit steps (with a warning log) rather than
+# letting the model return an error. Think of it as: ineligibility is
+# cheap to detect up front, so we do; actual errors are what cascade
+# retries exist for.
 [[cascades.steps]]
 model = "opencode-go/kimi-k2.6"
 context_window = 262144
@@ -236,7 +248,7 @@ impl TokenEstimator for CharRatioEstimator {
 **Rationale for default values:**
 
 - **3.5 chars/token** — common average for English prose with GPT-family tokenizers. Code and Chinese text are denser (~2.5 and ~1.5 respectively). Under-estimating for code/non-English is the *risk case*, hence the safety margin.
-- **10% safety margin** — covers most under-estimates without wasting model context.
+- **10% safety margin** — covers most under-estimates for prose and moderate code. **Not sufficient on its own for CJK-heavy prompts**, where actual tokens can run >2× a 3.5-chars/token estimate even after the margin. For those workloads, either (a) override `chars_per_token` to a denser ratio (e.g., 1.8), (b) raise `safety_margin` substantially (2.0+), or (c) use the Tiktoken estimator (feature flag) where an exact BPE count eliminates the guesswork. The CharRatio defaults are safe for the English-first deployments this RFC targets; anything heavier should tune.
 
 Both fields are configurable, see "Config surface" below.
 
@@ -338,6 +350,8 @@ chars_per_token = 2.8      # Chinese-English mixed, code-heavy
 ```
 
 ### Config surface
+
+> **Note:** the `[tokenizer]`, `[model_defaults]`, and `[[models]]` sections below are **proposed additions** to `PolyConfig`. They do not exist in the current schema and will be added as part of the implementation of this RFC. A schema version bump is expected; existing configs stay valid without them (resolution falls through to built-in defaults).
 
 **Global default** in top-level config:
 
@@ -441,9 +455,9 @@ Function definitions + tool results add tokens not present in the user's message
 
 Addressed by the `estimate_chat` method taking tools explicitly, and by default safety margin. Power users with tool-heavy flows should bump `safety_margin` (0.15–0.20 reasonable).
 
-### 3. Streaming output doesn't count against context
+### 3. Output tokens DO count against the model's total context
 
-Output tokens don't count against the input-context budget. Our estimator is *input* estimator only.
+Correction to an earlier draft: for most providers the context window bounds `input_tokens + output_tokens`, not just input. A request that fits on input can still overflow at generation time if `max_tokens` is large. Our `TokenEstimator` measures *input* only, so the fit-check must reserve headroom for the output budget. Implementation detail: primitive runtime compares `estimate(input) + max_tokens_for_request` against `effective_ceiling`, not just `estimate(input)`. Callers who don't set `max_tokens` explicitly must supply a default output budget (e.g., 4K) so the check isn't silently bypassed.
 
 ### 4. Reasoning tokens (e.g., Kimi K2.6 reasoning mode)
 
@@ -451,21 +465,21 @@ Reasoning tokens add output cost but are usually *not* in the input context. Est
 
 ### 5. Context-window units
 
-All sizes are in **tokens**. Not characters, not bytes. Config authors can use `K` suffix for readability:
+All sizes are in **tokens**. Not characters, not bytes. Config authors can use `K` suffix for readability; `K` means `* 1024` (binary convention):
 
 ```toml
-context_window = 262144            # tokens
+context_window = 262144            # tokens (2^18)
 # equivalently:
-context_window = "262K"            # parsed as 262 * 1024
+context_window = "256K"            # parsed as 256 * 1024 = 262144
 ```
 
-### 6. What if model declares no context_window?
+A literal "262K" would parse as 262 * 1024 = 268288, not 262144 — use `"256K"` if you want the `262144` value.
 
-- **Alloy**: constituent can't be fit-checked; alloy's `min_context_window` is still honored if set, otherwise alloy has no enforced ceiling (runtime behavior: attempt and trust the model to error on its own).
+### 6. What if a model declares no context_window?
+
+- **Alloy**: not applicable. Alloy constituents REQUIRE `context_window` (validated at `AlloyProvider::from_config`, and `0` is rejected explicitly). No silent-truncation path.
 - **Dispatcher**: rule targets are either sized (matchable) or "any" (catch-all, always matches last). Unsized rules only make sense as catch-alls.
-- **Cascade**: unsized steps always considered eligible (no pre-skip).
-
-Explicit `context_window = 0` means "unknown/unbounded" and skips size-checks for that member.
+- **Cascade**: unsized steps are always considered eligible (no pre-skip); the step is attempted and errors surface as normal cascade failures.
 
 ## Migration
 
