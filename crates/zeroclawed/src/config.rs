@@ -1108,8 +1108,7 @@ context_window = 200000
 weight = 20
 "#;
         let err = toml::from_str::<PolyConfig>(raw)
-            .err()
-            .expect("missing context_window should fail to deserialize");
+            .expect_err("missing context_window should fail to deserialize");
         let msg = err.to_string();
         assert!(
             msg.contains("context_window"),
