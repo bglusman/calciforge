@@ -22,13 +22,62 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_DIR="$HOME/.local/bin"
 CLASH_DIR="$HOME/.clash"
 CLAUDE_DIR="$HOME/.claude"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
-PLIST_DIR="$HOME/Library/LaunchAgents"
-LOG_DIR="$HOME/Library/Logs/clashd"
+
+# ── platform detection ────────────────────────────────────────────────────────
+# Drives choice of service manager (launchd vs systemd --user) and package
+# installer fallbacks (brew vs apt/dnf). Scripts that don't have both paths
+# tested will warn rather than fail.
+PLATFORM="$(uname -s)"
+# Running as root on Linux installs system-wide; non-root uses --user.
+# On Darwin we always use per-user LaunchAgents.
+IS_ROOT=false
+[[ $EUID -eq 0 ]] && IS_ROOT=true
+# systemd install target: system units use multi-user.target; user units
+# (systemctl --user) use default.target. Keep the generators in sync so
+# `systemctl enable` doesn't silently no-op on one mode.
+WANTED_BY_TARGET="default.target"
+$IS_ROOT && WANTED_BY_TARGET="multi-user.target"
+case "$PLATFORM" in
+    Darwin)
+        BIN_DIR="$HOME/.local/bin"
+        PLIST_DIR="$HOME/Library/LaunchAgents"
+        LOG_DIR="$HOME/Library/Logs/clashd"
+        SEC_LOG_DIR="$HOME/Library/Logs/security-proxy"
+        SYSTEMCTL=""   # unused on Darwin
+        ;;
+    Linux)
+        if $IS_ROOT; then
+            BIN_DIR="/usr/local/bin"
+            PLIST_DIR="/etc/systemd/system"
+            LOG_DIR="/var/log/zeroclawed"
+            SEC_LOG_DIR="/var/log/zeroclawed"
+            SYSTEMCTL="systemctl"
+        else
+            BIN_DIR="$HOME/.local/bin"
+            PLIST_DIR="$HOME/.config/systemd/user"
+            LOG_DIR="$HOME/.local/state/zeroclawed/logs"
+            SEC_LOG_DIR="$HOME/.local/state/zeroclawed/logs"
+            SYSTEMCTL="systemctl --user"
+            # systemctl --user requires XDG_RUNTIME_DIR to locate the user bus.
+            # Login shells set this via pam_systemd; sudo / su / SSH-in-some-configs
+            # don't. Fill it in when missing so the script can still enable units.
+            if [[ -z "${XDG_RUNTIME_DIR:-}" ]] && [[ -d "/run/user/$EUID" ]]; then
+                export XDG_RUNTIME_DIR="/run/user/$EUID"
+            fi
+            if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && [[ -S "${XDG_RUNTIME_DIR:-}/bus" ]]; then
+                export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+            fi
+        fi
+        ;;
+    *)
+        echo "Unsupported platform: $PLATFORM" >&2
+        exit 1
+        ;;
+esac
 
 YES=false
 CONFIGURE_ONLY=false
@@ -106,6 +155,53 @@ ensure_npm() {
     fi
 }
 
+# Cross-platform package install: prefers brew on macOS, falls back to npm.
+# On Linux, goes straight to npm (which works on any node-enabled distro).
+# Args: <bin> [brew_pkg] [npm_pkg] — brew_pkg defaults to bin, npm_pkg to bin.
+ensure_tool() {
+    local bin="$1"
+    local brew_pkg="${2:-$1}"
+    local npm_pkg="${3:-$1}"
+    if command -v "$bin" &>/dev/null; then
+        ok "$bin $("$bin" --version 2>/dev/null | head -1 || echo '(installed)')"
+        return 0
+    fi
+    case "$PLATFORM" in
+        Darwin)
+            if command -v brew &>/dev/null; then
+                ensure_brew "$brew_pkg" "$bin"
+                return $?
+            fi
+            ensure_npm "$npm_pkg" "$bin"
+            ;;
+        Linux)
+            # Prefer npm (most universal across distros).
+            if command -v npm &>/dev/null; then
+                ensure_npm "$npm_pkg" "$bin"
+                return $?
+            fi
+            # --yes: try the distro package manager to install node+npm, then
+            # retry via ensure_npm. Silent if no supported package manager.
+            if [[ "$YES" == true ]]; then
+                local sudo_cmd=""
+                $IS_ROOT || sudo_cmd="sudo"
+                if command -v apt-get &>/dev/null; then
+                    $sudo_cmd apt-get update -qq && \
+                        $sudo_cmd apt-get install -y -qq nodejs npm
+                elif command -v dnf &>/dev/null; then
+                    $sudo_cmd dnf install -y -q nodejs npm
+                fi
+                if command -v npm &>/dev/null; then
+                    ensure_npm "$npm_pkg" "$bin"
+                    return $?
+                fi
+            fi
+            warn "$bin not found and npm unavailable — install node+npm first, or rerun with --yes on apt/dnf systems"
+            return 1
+            ;;
+    esac
+}
+
 # ── banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -124,15 +220,26 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
     CARGO="$HOME/.cargo/bin/cargo"
     [[ -x "$CARGO" ]] || die "cargo not found — install Rust from https://rustup.rs"
 
-    "$CARGO" build --release -p clashd -p zeroclawed -p security-proxy 2>&1 \
-        | grep -E "^error|Compiling (clashd|zeroclawed|security.proxy)|Finished" || true
+    # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
+    # Build each crate separately so --features only applies to zeroclawed.
+    "$CARGO" build --release -p clashd -p security-proxy 2>&1 \
+        | grep -E "^error|Compiling (clashd|security.proxy)|Finished" || true
+    "$CARGO" build --release -p zeroclawed --features channel-matrix 2>&1 \
+        | grep -E "^error|Compiling zeroclawed|Finished" || true
 
     mkdir -p "$BIN_DIR"
     for bin in clashd zeroclawed security-proxy; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
-        cp "$src" "$BIN_DIR/$bin"
-        chmod +x "$BIN_DIR/$bin"
+        # On Linux, overwriting a running binary fails with "Text file busy".
+        # `install` (coreutils) handles this by unlinking first — safe to call even when binary is running,
+        # since the live process keeps its mapping via the original inode until it exits.
+        install -m 755 "$src" "$BIN_DIR/$bin" 2>/dev/null || {
+            # install(1) not present (rare) — fall back to unlink+cp
+            rm -f "$BIN_DIR/$bin" 2>/dev/null
+            cp "$src" "$BIN_DIR/$bin"
+            chmod +x "$BIN_DIR/$bin"
+        }
         ok "Installed $bin → $BIN_DIR/$bin"
     done
 
@@ -161,8 +268,9 @@ fi
     { cp "$REPO_ROOT/crates/clashd/config/agents.example.json" "$AGENTS_JSON" 2>/dev/null || \
       echo '{"agents":[]}' > "$AGENTS_JSON"; ok "Agent config → $AGENTS_JSON"; }
 
-CLASHD_PLIST="$PLIST_DIR/com.zeroclawed.clashd.plist"
-cat > "$CLASHD_PLIST" <<EOF
+if [[ "$PLATFORM" == "Darwin" ]]; then
+    CLASHD_PLIST="$PLIST_DIR/com.zeroclawed.clashd.plist"
+    cat > "$CLASHD_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -180,9 +288,33 @@ cat > "$CLASHD_PLIST" <<EOF
     <key>StandardErrorPath</key><string>${LOG_DIR}/clashd.err</string>
 </dict></plist>
 EOF
+    launchctl unload "$CLASHD_PLIST" 2>/dev/null || true
+    launchctl load "$CLASHD_PLIST"
+else
+    CLASHD_UNIT="$PLIST_DIR/zeroclawed-clashd.service"
+    cat > "$CLASHD_UNIT" <<EOF
+[Unit]
+Description=ZeroClawed clashd policy engine
+After=network.target
 
-launchctl unload "$CLASHD_PLIST" 2>/dev/null || true
-launchctl load "$CLASHD_PLIST"
+[Service]
+Type=simple
+ExecStart=${BIN_DIR}/clashd
+Environment=CLASHD_PORT=${CLASHD_PORT}
+Environment=CLASHD_POLICY=${CLASHD_POLICY}
+Environment=CLASHD_AGENTS=${AGENTS_JSON}
+Restart=always
+RestartSec=5
+StandardOutput=append:${LOG_DIR}/clashd.log
+StandardError=append:${LOG_DIR}/clashd.err
+
+[Install]
+WantedBy=${WANTED_BY_TARGET}
+EOF
+    $SYSTEMCTL daemon-reload
+    $SYSTEMCTL enable --now zeroclawed-clashd.service 2>&1 | tail -3 || \
+        warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
+fi
 
 sleep 1
 curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null \
@@ -194,11 +326,11 @@ curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null \
 # ══════════════════════════════════════════════════════════════════════════════
 hdr "security-proxy"
 
-SEC_PLIST="$PLIST_DIR/com.zeroclawed.security-proxy.plist"
-SEC_LOG_DIR="$HOME/Library/Logs/security-proxy"
 mkdir -p "$SEC_LOG_DIR"
 
-cat > "$SEC_PLIST" <<EOF
+if [[ "$PLATFORM" == "Darwin" ]]; then
+    SEC_PLIST="$PLIST_DIR/com.zeroclawed.security-proxy.plist"
+    cat > "$SEC_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -215,9 +347,32 @@ cat > "$SEC_PLIST" <<EOF
     <key>StandardErrorPath</key><string>${SEC_LOG_DIR}/security-proxy.err</string>
 </dict></plist>
 EOF
+    launchctl unload "$SEC_PLIST" 2>/dev/null || true
+    launchctl load "$SEC_PLIST"
+else
+    SEC_UNIT="$PLIST_DIR/zeroclawed-security-proxy.service"
+    cat > "$SEC_UNIT" <<EOF
+[Unit]
+Description=ZeroClawed security-proxy (MITM traffic inspection)
+After=network.target
 
-launchctl unload "$SEC_PLIST" 2>/dev/null || true
-launchctl load "$SEC_PLIST"
+[Service]
+Type=simple
+ExecStart=${BIN_DIR}/security-proxy
+Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
+Environment=AGENT_CONFIG=${AGENTS_JSON}
+Restart=always
+RestartSec=5
+StandardOutput=append:${SEC_LOG_DIR}/security-proxy.log
+StandardError=append:${SEC_LOG_DIR}/security-proxy.err
+
+[Install]
+WantedBy=${WANTED_BY_TARGET}
+EOF
+    $SYSTEMCTL daemon-reload
+    $SYSTEMCTL enable --now zeroclawed-security-proxy.service 2>&1 | tail -3 || \
+        warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
+fi
 
 sleep 1
 curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
@@ -227,6 +382,15 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Claude Code hook
 # ══════════════════════════════════════════════════════════════════════════════
+# ── acpx — required for any agent with kind = "acpx" (claude, opencode, kilo, …)
+# Needs to be installed regardless of which specific agent is enabled, since
+# zeroclawed's ACPX adapter spawns `acpx` as a subprocess. Missing acpx means
+# "Failed to spawn acpx: No such file or directory" at first message dispatch.
+if agent_enabled claude || agent_enabled opencode; then
+    hdr "acpx (ACP agent runtime)"
+    ensure_npm acpx || warn "ACPX-kind agents (claude-acpx, opencode, kilo-qwen) will be unavailable without acpx"
+fi
+
 if agent_enabled claude; then
     hdr "Claude Code"
 
@@ -272,7 +436,8 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled opencode; then
     hdr "opencode"
-    ensure_brew opencode || true
+    # opencode on brew (mac), opencode-ai on npm (Linux)
+    ensure_tool opencode opencode opencode-ai || true
 
     PLUGIN_DIR="$REPO_ROOT/scripts/opencode-clashd-plugin"
     if [[ -d "$PLUGIN_DIR" ]]; then
@@ -311,7 +476,13 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled zeroclaw; then
     hdr "zeroclaw"
-    ensure_brew zeroclaw || true
+    # zeroclaw is only distributed via homebrew tap on macOS right now.
+    # On Linux, user needs to build from source; script will skip with a warning.
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        ensure_brew zeroclaw || true
+    elif ! command -v zeroclaw &>/dev/null; then
+        warn "zeroclaw has no Linux package — build from source: cargo install zeroclawlabs"
+    fi
 
     if command -v zeroclaw &>/dev/null; then
         zeroclaw config set hooks.enabled true 2>/dev/null
@@ -325,12 +496,16 @@ if agent_enabled zeroclaw; then
         if zeroclaw doctor 2>/dev/null | grep -q "no default_provider"; then
             warn "zeroclaw needs a provider configured before starting"
             warn "Run: zeroclaw onboard"
-        elif ! brew services list | grep -q "zeroclaw.*started"; then
-            brew services start zeroclaw 2>/dev/null \
-                && ok "zeroclaw service started" \
-                || warn "Could not start zeroclaw service — run: zeroclaw daemon"
+        elif [[ "$PLATFORM" == "Darwin" ]]; then
+            if ! brew services list 2>/dev/null | grep -q "zeroclaw.*started"; then
+                brew services start zeroclaw 2>/dev/null \
+                    && ok "zeroclaw service started" \
+                    || warn "Could not start zeroclaw service — run: zeroclaw daemon"
+            else
+                ok "zeroclaw service already running"
+            fi
         else
-            ok "zeroclaw service already running"
+            warn "Start zeroclaw manually on Linux: zeroclaw daemon &"
         fi
     fi
 fi
@@ -389,8 +564,8 @@ if [[ -n "$NODES_FILE" ]]; then
             env_lines+="Environment=\"${k}=${v}\"\n"
         done <<< "$env_pairs"
 
-        printf '[Unit]\nDescription=ZeroClawed %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n' \
-            "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")"
+        printf '[Unit]\nDescription=ZeroClawed %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=%s\n' \
+            "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")" "$WANTED_BY_TARGET"
     }
 
     # ── launchd plist generator ───────────────────────────────────────────────
