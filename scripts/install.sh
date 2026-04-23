@@ -155,6 +155,36 @@ ensure_npm() {
     fi
 }
 
+# fnox — secret resolver (brew on macOS, cargo fallback on Linux / no-brew).
+# Uses a dedicated helper because fnox isn't on npm; cargo is the
+# cross-platform fallback (install.sh already requires it for source builds).
+ensure_fnox() {
+    if command -v fnox &>/dev/null; then
+        ok "fnox $(fnox --version 2>/dev/null | head -1 || echo '(installed)')"
+        return 0
+    fi
+    if [[ "$CONFIGURE_ONLY" == true ]]; then
+        die "fnox not found — run without --configure-only to install"
+    fi
+    if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
+        if ask_install fnox "via brew install fnox"; then
+            echo "  Installing fnox..."
+            brew install fnox 2>&1 | tail -3
+            ok "fnox installed"
+            return 0
+        fi
+    fi
+    local cargo_bin="$HOME/.cargo/bin/cargo"
+    if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
+        echo "  Installing fnox via cargo..."
+        "$cargo_bin" install fnox 2>&1 | grep -E "Installing|Installed|error" | tail -3
+        ok "fnox installed"
+        return 0
+    fi
+    warn "fnox not installed — secret lookup will skip the fnox layer (env → vaultwarden still works)"
+    return 1
+}
+
 # Cross-platform package install: prefers brew on macOS, falls back to npm.
 # On Linux, goes straight to npm (which works on any node-enabled distro).
 # Args: <bin> [brew_pkg] [npm_pkg] — brew_pkg defaults to bin, npm_pkg to bin.
@@ -380,7 +410,17 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
     || warn "security-proxy not yet responding — check $SEC_LOG_DIR/security-proxy.err"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. Claude Code hook
+# 4. fnox — encrypted secret resolver (fallback between env and vaultwarden)
+# ══════════════════════════════════════════════════════════════════════════════
+# onecli-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
+# not hard-required (the resolver falls through if the binary is absent), but
+# installing it unlocks age/1Password/AWS SM/etc. secret backends without
+# extra config.
+hdr "fnox (secret resolver)"
+ensure_fnox || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Claude Code hook
 # ══════════════════════════════════════════════════════════════════════════════
 # ── acpx — required for any agent with kind = "acpx" (claude, opencode, kilo, …)
 # Needs to be installed regardless of which specific agent is enabled, since
@@ -432,7 +472,7 @@ PYEOF
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. opencode
+# 6. opencode
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled opencode; then
     hdr "opencode"
@@ -452,7 +492,7 @@ if agent_enabled opencode; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. openclaw
+# 7. openclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled openclaw; then
     hdr "openclaw"
@@ -472,7 +512,7 @@ PYEOF
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. zeroclaw
+# 8. zeroclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled zeroclaw; then
     hdr "zeroclaw"
@@ -511,7 +551,7 @@ if agent_enabled zeroclaw; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Multi-node SSH deployment
+# 9. Multi-node SSH deployment
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ -n "$NODES_FILE" ]]; then
