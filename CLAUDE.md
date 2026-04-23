@@ -53,11 +53,22 @@ They live in `.gitleaks.local.toml` (gitignored); see
 
 ## Pre-push local check
 
+For day-to-day "am I about to commit something bad?", use `protect --staged`
+— it only scans what you're about to commit, so existing-history findings
+don't drown out new ones:
+
 ```
 brew install gitleaks                                  # or apt/download
-gitleaks detect --source . --config .gitleaks.toml --verbose
+gitleaks protect --staged --config .gitleaks.toml --verbose
 # Optional, if you've populated a local-only config:
-gitleaks detect --source . --config .gitleaks.local.toml --verbose
+gitleaks protect --staged --config .gitleaks.local.toml --verbose
+```
+
+For a full audit (e.g., before a rename / history rewrite pass), scan the
+whole history:
+
+```
+gitleaks detect --source . --config .gitleaks.toml --verbose
 ```
 
 Exit 0 = safe. Any finding → fix before commit. A CI failure on

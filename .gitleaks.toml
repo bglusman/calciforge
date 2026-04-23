@@ -1,7 +1,10 @@
 # .gitleaks.toml — Secret + infrastructure-disclosure scanner config (public).
 #
-# Enforced in CI via .github/workflows/secret-scan.yml. Fails the PR if any of
-# these patterns appear in the diff.
+# Enforced in CI via .github/workflows/secret-scan.yml. The workflow fetches
+# full history (fetch-depth: 0) and the gitleaks action scans the repository +
+# git history, so findings anywhere in history will fail the job — not just
+# newly introduced diff. If that becomes noisy after history rewrites or
+# baseline work, switch the workflow to a diff-only scan.
 #
 # TWO-LAYER DESIGN — why this file is deliberately generic:
 #   - This file ships in the public repo, so anything named here is itself
