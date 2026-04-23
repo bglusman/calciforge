@@ -39,6 +39,8 @@ impl AlloyStrategy {
 pub struct AlloyConstituent {
     pub model: String,
     pub weight: u32,
+    /// Declared context window (tokens) for this constituent.
+    pub context_window: u32,
 }
 
 /// Immutable alloy definition.
@@ -48,6 +50,12 @@ pub struct AlloyDefinition {
     pub name: String,
     pub strategy: AlloyStrategy,
     pub constituents: Vec<AlloyConstituent>,
+    /// Effective minimum context window (tokens) the alloy will accept.
+    ///
+    /// Either the user's explicit `min_context_window` config or auto-computed
+    /// as `min(constituent.context_window)` when unset. Always known since
+    /// constituents' `context_window` is required at config load.
+    pub min_context_window: u32,
 }
 
 /// Per-constituent aggregate counters.
@@ -114,14 +122,50 @@ impl AlloyProvider {
             ));
         }
 
+        if matches!(cfg.min_context_window, Some(0)) {
+            return Err(format!(
+                "alloy '{}': min_context_window must be > 0 when set (omit the field for auto-compute)",
+                cfg.id
+            ));
+        }
+
         let mut constituents = Vec::with_capacity(cfg.constituents.len());
         for c in &cfg.constituents {
             validate_constituent(cfg, c)?;
             constituents.push(AlloyConstituent {
                 model: c.model.clone(),
                 weight: c.weight,
+                context_window: c.context_window,
             });
         }
+
+        // Context-window safety: if the user specified min_context_window, every
+        // constituent must meet it. Otherwise auto-compute as min of declared sizes.
+        // `context_window` is required on constituents (serde-enforced), so
+        // declared_min always exists when constituents list is non-empty.
+        let declared_min = constituents
+            .iter()
+            .map(|c| c.context_window)
+            .min()
+            .expect("validated above: constituents.len() >= 2");
+
+        let effective_min = match cfg.min_context_window {
+            Some(user_min) => {
+                for c in &constituents {
+                    if c.context_window < user_min {
+                        return Err(format!(
+                            "alloy '{}': constituent '{}' has context_window={} which is \
+                             below the alloy's min_context_window={}. Either raise the \
+                             constituent's declared size, lower the alloy's min, or remove \
+                             the constituent.",
+                            cfg.id, c.model, c.context_window, user_min
+                        ));
+                    }
+                }
+                user_min
+            }
+            None => declared_min,
+        };
 
         let mut stats_by_model = HashMap::new();
         for c in &constituents {
@@ -140,6 +184,7 @@ impl AlloyProvider {
                 name: cfg.name.clone(),
                 strategy,
                 constituents,
+                min_context_window: effective_min,
             },
             state: Mutex::new(AlloyState {
                 next_rr_index: 0,
@@ -254,6 +299,13 @@ impl AlloyProvider {
     pub fn definition(&self) -> &AlloyDefinition {
         &self.def
     }
+
+    /// Effective minimum context window (tokens) this alloy can safely serve.
+    ///
+    /// Always known — constituents are required to declare `context_window`.
+    pub fn min_context_window(&self) -> u32 {
+        self.def.min_context_window
+    }
 }
 
 fn validate_constituent(alloy: &AlloyConfig, c: &AlloyConstituentConfig) -> Result<(), String> {
@@ -266,6 +318,12 @@ fn validate_constituent(alloy: &AlloyConfig, c: &AlloyConstituentConfig) -> Resu
     if c.weight == 0 {
         return Err(format!(
             "alloy '{}': constituent '{}' weight must be > 0",
+            alloy.id, c.model
+        ));
+    }
+    if c.context_window == 0 {
+        return Err(format!(
+            "alloy '{}': constituent '{}' context_window must be > 0",
             alloy.id, c.model
         ));
     }
@@ -392,12 +450,32 @@ mod tests {
                 AlloyConstituentConfig {
                     model: "model-a".to_string(),
                     weight: 80,
+                    context_window: 128_000,
                 },
                 AlloyConstituentConfig {
                     model: "model-b".to_string(),
                     weight: 20,
+                    context_window: 128_000,
                 },
             ],
+            min_context_window: None,
+        }
+    }
+
+    fn alloy_with_sizes(sizes: &[(&str, u32, u32)], min_cw: Option<u32>) -> AlloyConfig {
+        AlloyConfig {
+            id: "sized".to_string(),
+            name: "Sized Alloy".to_string(),
+            strategy: "weighted".to_string(),
+            constituents: sizes
+                .iter()
+                .map(|(model, w, cw)| AlloyConstituentConfig {
+                    model: (*model).to_string(),
+                    weight: *w,
+                    context_window: *cw,
+                })
+                .collect(),
+            min_context_window: min_cw,
         }
     }
 
@@ -430,5 +508,65 @@ mod tests {
         assert_eq!(a.requests, 2);
         assert_eq!(a.successes, 1);
         assert_eq!(a.failures, 1);
+    }
+
+    #[test]
+    fn auto_computes_min_context_window_from_constituents() {
+        let cfg = alloy_with_sizes(
+            &[("big-model", 50, 262_144), ("small-model", 50, 32_768)],
+            None,
+        );
+        let p = AlloyProvider::from_config(&cfg).unwrap();
+        assert_eq!(p.min_context_window(), 32_768);
+    }
+
+    #[test]
+    fn equal_sized_constituents_use_shared_context_window() {
+        let p = AlloyProvider::from_config(&sample_alloy("weighted")).unwrap();
+        // sample_alloy constituents both declare 128K
+        assert_eq!(p.min_context_window(), 128_000);
+    }
+
+    #[test]
+    fn explicit_min_takes_priority_over_auto() {
+        let cfg = alloy_with_sizes(
+            &[("big", 50, 262_144), ("bigger", 50, 1_000_000)],
+            Some(100_000),
+        );
+        let p = AlloyProvider::from_config(&cfg).unwrap();
+        assert_eq!(p.min_context_window(), 100_000);
+    }
+
+    #[test]
+    fn rejects_constituent_below_explicit_min() {
+        let cfg = alloy_with_sizes(
+            &[("kimi-k2", 50, 262_144), ("local-qwen", 50, 32_768)],
+            Some(200_000),
+        );
+        let err = AlloyProvider::from_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("local-qwen") && err.contains("32768") && err.contains("200000"),
+            "expected explanatory error naming the offending constituent, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_context_window_on_constituent() {
+        let cfg = alloy_with_sizes(&[("a", 50, 0), ("b", 50, 128_000)], None);
+        let err = AlloyProvider::from_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("context_window must be > 0"),
+            "expected explanatory error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_min_context_window() {
+        let cfg = alloy_with_sizes(&[("a", 50, 128_000), ("b", 50, 128_000)], Some(0));
+        let err = AlloyProvider::from_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("min_context_window must be > 0"),
+            "expected explanatory error, got: {err}"
+        );
     }
 }
