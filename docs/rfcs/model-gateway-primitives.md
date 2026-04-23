@@ -1,6 +1,18 @@
 # RFC: Model-gateway primitives (Alloy + Cascade + Dispatcher)
 
-Status: **draft** — open for discussion before implementation.
+Status: **draft — decisions incorporated from first review round.** Implementation PRs can start.
+
+## Decisions (from first review)
+
+| # | Question | Resolution |
+|---|----------|------------|
+| 1 | Name for the size-routing primitive | **`dispatcher`** ("router" too generic) |
+| 2 | Cascade as a named primitive | **Yes** — own `[[cascades]]` table |
+| 3 | Safety margin default | **Two knobs** — estimator `safety_margin` (default 1.10) AND per-model `capacity_fraction` (default 1.0; users lower to e.g. 0.85 when a model degrades near its ceiling). Composition formula and rationale in the updated section below. |
+| 4 | Per-primitive tokenizer override + second tokenizer impl | **`TiktokenEstimator` ships in v1** behind a feature flag. **`SentencePieceEstimator` deferred** (C++ dep + per-model vocab files are too much plumbing for v1). Per-primitive override stays in v1 config schema. |
+| 5 | Re-evaluation default for dispatchers | **`per_turn`** (re-evaluate each message — never dies from size). `sticky` as opt-in for flows where model-voice continuity matters. `sticky_escalate` as a middle-ground convenience (sticky, permit one auto-promotion on ceiling, then sticky at the new tier). `worst_case` advanced opt-in with required growth prior. |
+| 6 | Back-compat: allow missing `context_window` on alloy constituents | **No — required field.** Prototype phase, all installations owned in-house. Forcing size declaration at config load prevents silent truncation forever; trivial one-time config edit. |
+| 7 | Dispatcher rule semantics + capacity_fraction interaction | **Default: "first target whose effective ceiling fits the request."** No `max_input_tokens` thresholds needed for the common case. `capacity_fraction` lives on each model individually and feeds the effective-ceiling computation. Explicit `when.max_input_tokens` rules remain available for non-size routing (cost tier, agent-id, etc.). |
 
 ## TL;DR
 
@@ -101,38 +113,52 @@ context_window = 32768
 
 **Purpose:** route requests to the **smallest-sufficient** model (or, future: by other properties).
 
-**MVP rule type:** `max_input_tokens` thresholds. Extensible to other matchers later (agent id, content type, time of day, whatever).
+**Default behavior:** ordered list of targets; first target whose *effective ceiling* can hold the request wins. No thresholds to maintain — the size check uses each target's own declared `context_window × capacity_fraction`.
 
 ```toml
 [[dispatchers]]
 id = "kimi-smart"
-# First matching rule wins. Rules evaluated in declared order.
-# Unmatched requests (bigger than any rule's threshold) → error with a clear message.
-
-[[dispatchers.rules]]
-when.max_input_tokens = 30000           # with ~2K safety margin from Qwen's 32K
-target = "local/qwen3.5-35b"
-
-[[dispatchers.rules]]
-when.max_input_tokens = 250000          # ~12K margin from Kimi's 262K
-target = "opencode-go/kimi-k2.6"
-
-[[dispatchers.rules]]
-when.max_input_tokens = 900000
-target = "gemini-2.5-flash"             # 1M context for monsters
+reevaluate = "per_turn"
+# Try in order. First target whose effective ceiling fits the request wins.
+# Error if no target fits.
+targets = [
+    "local/qwen3.5-35b",            # effective ≈  24,576
+    "opencode-go/kimi-k2.6",        # effective ≈ 222,822
+    "gemini-2.5-flash",             # effective ≈ 996,147
+]
 ```
 
-**Target can be a model OR another primitive:**
+The effective ceiling is `context_window × capacity_fraction`, computed per-model. Adding or removing a model from the list doesn't require re-computing thresholds — the model's own declaration drives the fit check.
+
+**Targets can be models OR other primitives:**
 
 ```toml
-[[dispatchers.rules]]
-when.max_input_tokens = 180000
-target = "alloy/gemini-claude-200k"      # for ≤180K, blend our 200K-safe alloy
+targets = [
+    "local/qwen3.5-35b",
+    "alloy/claude-gemini-200k",     # for requests that fit the alloy's effective ceiling
+    "gemini-2.5-flash",
+]
 ```
 
-This composition is how you get the user's original "kimi + local hybrid" goal safely:
-- `dispatcher[ ≤30K → local, ≤250K → kimi-go ]`
-- Below 30K, requests hit local (free, fast). Above, Kimi.
+**Explicit rules for non-size decisions** (advanced — cost tier, agent id, request content, time of day):
+
+```toml
+[[dispatchers]]
+id = "cost-aware"
+# When explicit rules are present, they override the default fit-first-target behavior.
+# Rules evaluated in declared order; first match wins.
+
+[[dispatchers.rules]]
+when.max_input_tokens = 10000           # hand-set floor, tighter than capacity_fraction would imply
+target = "cheap-model"
+
+[[dispatchers.rules]]
+fits_target = true                      # fall back to implicit fit check against the target's effective ceiling
+target = "expensive-model"
+```
+
+This composition is how the "kimi + local hybrid" goal is expressed safely:
+- Most requests fit local (free, fast, ≈24K effective). Above, Kimi.
 - No silent truncation, no wasted Kimi calls on small requests.
 
 ### On naming — I'm calling it "dispatcher"
@@ -213,6 +239,59 @@ impl TokenEstimator for CharRatioEstimator {
 - **10% safety margin** — covers most under-estimates without wasting model context.
 
 Both fields are configurable, see "Config surface" below.
+
+### Two distinct safety knobs
+
+The original draft conflated two things. They're separate concerns with different defaults and scopes:
+
+**Knob A — estimator `safety_margin` (multiplier on the estimate):**
+"I might under-count tokens because my heuristic is approximate."
+- Multiplicative factor applied to the estimate itself
+- Default `1.10` for char-ratio; a real tokenizer like tiktoken can use `1.02` since it's accurate to ~1%
+- Belongs to the estimator; each estimator implementation carries its own default
+- Tighter → risks silent truncation; looser → wastes headroom
+
+**Knob B — model `capacity_fraction` (multiplier on the declared window):**
+"Even if I knew the exact count, some models degrade near their ceiling. Don't push them there."
+- Multiplicative factor applied to the model's *declared* `context_window`
+- Default `1.0` (use the full declared window). Users lower it per-model when they see quality drop-off.
+- Per-model because behavior-near-ceiling varies (e.g., Claude reportedly holds up to ~95% of ceiling; some models noticeably degrade past ~70%)
+- Users who say "I want a much higher buffer because I've noticed dumbing" set `capacity_fraction = 0.7` — clean separation from the estimator concern.
+
+**Fit-check composition:**
+
+```
+// Rejected if:  estimate × safety_margin  >  context_window × capacity_fraction
+//
+// equivalent to:  estimate > context_window × (capacity_fraction / safety_margin)
+//
+// e.g. safety_margin=1.10 + capacity_fraction=0.85 on a 262144-token model
+//      → effective usable ceiling ≈ 262144 × (0.85 / 1.10) ≈ 202,566 tokens
+```
+
+**Config:**
+
+```toml
+[tokenizer]
+kind = "char_ratio"
+chars_per_token = 3.5
+safety_margin = 1.10        # estimator knob
+
+[[models]]
+id = "kimi-k2.6"
+context_window = 262144
+capacity_fraction = 0.85     # avoid top 15% where Kimi reportedly degrades
+
+[[models]]
+id = "claude-sonnet-4-6"
+context_window = 200000
+capacity_fraction = 0.95     # Claude holds up closer to ceiling
+
+[[models]]
+id = "local/qwen3.5-35b"
+context_window = 32768
+capacity_fraction = 0.75     # user has observed noticeable drop past 24K
+```
 
 ### Pluggable implementations (future)
 
@@ -342,13 +421,19 @@ A dispatcher picks at request time. By message 20, the cumulative context may ha
 - **(b) Re-evaluate per turn**: dispatcher runs every turn. Session continuity breaks when the tier changes (different model, different "memory"). Bad UX.
 - **(c) Always pick for session worst-case**: dispatcher uses an estimate of "this session's max context," picks a ceiling that covers it. Conservative, wastes smaller-model opportunities.
 
-**Recommendation**: Configurable. Default **(a) sticky** with a clear error when the session outgrows its chosen tier, so the user knows to start a new session on a bigger tier. **(b)** as an opt-in for stateless contexts.
+**Decision**: default to **`per_turn`**. Chat APIs are stateless; re-picking per message mechanically works. For task-completion flows (zeroclawed's main use case) the cost of an occasional model swap is lower than the cost of a session that dies at a ceiling.
 
 ```toml
 [[dispatchers]]
 id = "smart"
-re_evaluate = "sticky"   # "sticky" | "per_turn" | "worst_case"
+reevaluate = "per_turn"          # default — re-pick each message
+# reevaluate = "sticky"          # pick once, error on ceiling (for voice-continuity flows)
+# reevaluate = "sticky_escalate" # sticky, auto-promote once on ceiling, then sticky at new tier
+# reevaluate = "worst_case"      # advanced — requires growth prior below
+# assume_session_max_tokens = 100000
 ```
+
+Pragmatic default for most flows: `sticky_escalate` is arguably the sweet spot (stability most of the session, graceful upgrade when needed). Listed as an opt-in for now since `per_turn` is simplest and always works.
 
 ### 2. Tool-use inflates context invisibly
 
@@ -384,7 +469,13 @@ Explicit `context_window = 0` means "unknown/unbounded" and skips size-checks fo
 
 ## Migration
 
-**Alloys today** continue working. Adding `min_context_window` is optional but **auto-computed** as `min(constituent.context_window)` if not specified. Constituents without a declared `context_window` are treated as unknown (see previous section).
+**Alloy constituents now REQUIRE `context_window`.** No back-compat for missing fields. Prototype phase, all installations owned in-house — fixing existing config files is a one-time edit; the upside (no silent truncation, ever) is worth breaking the schema. `min_context_window` on the alloy stays optional and auto-computes as `min(constituent.context_window)` when not specified.
+
+**Existing config files needing updates:**
+- `.210` `/etc/zeroclawed/config.toml`: `kimi-for-coding` alloy (Kimi + DeepSeek constituents)
+- Anywhere else currently using `[[alloys]]`
+
+Migration done in the same PR that introduces the required field.
 
 **Cascades today** are implicit inside alloy's `fallbacks` behavior. This RFC promotes them to a named `[[cascades]]` primitive. Transition: existing alloy-with-fallbacks behavior becomes sugar for `alloy-wrapped-in-cascade`; we keep the sugar so existing configs don't break.
 
@@ -408,13 +499,13 @@ Explicit `context_window = 0` means "unknown/unbounded" and skips size-checks fo
 - Per-session routing memory (noted in edge case #1; follow-up if needed)
 - Docs: this will be captured in README + a dedicated `docs/model-gateway.md` when implementation lands
 
-## Open questions for reviewers
+## Open questions (resolved — see Decisions at top of doc)
 
-1. **Naming: `dispatcher` vs alternatives?** (See table above.)
-2. **Cascade as a named primitive — worth it, or keep implicit inside alloy?** My lean: promote to named primitive because it simplifies composition stories.
-3. **Safety margin default (10%) — too much, too little, or right?** Based on anecdotal reports; worth revisiting with real telemetry once we have token counts vs. char counts from a week of live traffic.
-4. **Per-primitive tokenizer override — useful, or premature?** If most users will only ever use the default, we could defer the config surface for per-primitive overrides to v2.
-5. **Re-evaluation strategy (sticky vs per_turn vs worst_case) default — which one?** I proposed sticky; alternative: worst_case for stateless API callers.
+All initial review questions have been resolved. Remaining open items surface during implementation:
+
+1. **`capacity_fraction` defaults per known model family** — need empirical data. Initial defaults: `1.0` (no derate) until a model proves it needs less. Claude ~0.95, Kimi ~0.85 recommended starting points in docs, not hardcoded.
+2. **Tiktoken encoding selection** — does the config need to specify `cl100k_base` vs `o200k_base` per model, or pick a sensible default? Open; likely per-model override.
+3. **Dispatcher fit-check evaluation cost** — for very long histories, char-counting on every turn is cheap but non-zero. Measure once implementation lands; add a caching layer only if it shows up in profiles.
 
 ## Next steps if this RFC lands
 
