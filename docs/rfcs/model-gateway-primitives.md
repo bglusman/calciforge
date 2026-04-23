@@ -61,6 +61,7 @@ All three primitives need to respect context-window math.
 ```toml
 [[alloys]]
 id = "fast-smart-blend"
+name = "Fast + Smart Blend"
 strategy = "weighted"
 # Effective ceiling for the alloy. If not set, auto-computed as min(constituents.context_window).
 # Requests above this ceiling are rejected at alloy level (loudly, not silently).
@@ -77,7 +78,7 @@ context_window = 200000
 weight = 20
 ```
 
-**Validation:** at `AlloyProvider::new()`, error if any constituent's declared `context_window < min_context_window`. Catches the "I didn't mean to put a 32K and a 262K in the same alloy" footgun at config-load time.
+**Validation:** at `AlloyProvider::from_config()`, error if any constituent's declared `context_window < min_context_window`. Catches the "I didn't mean to put a 32K and a 262K in the same alloy" footgun at config-load time.
 
 **Runtime check:** when request arrives, estimate tokens (via `TokenEstimator`) and reject with clear error if `estimate > min_context_window`. Never truncate silently.
 
@@ -87,10 +88,14 @@ weight = 20
 
 **Today's behavior:** there is no `fallbacks` field on `AlloyConfig`. Fallback
 is implicit — `AlloyProvider::select_plan()` returns an `ordered_models: Vec<String>`
-with every remaining constituent appended in deterministic order, and the proxy
-iterates them in `route_with_fallback()` until one succeeds. That "all
-constituents of the alloy are also fallbacks" pattern is what the cascade
-primitive **promotes** to its own named construct:
+listing every constituent as a potential fallback, and the proxy iterates them
+in `route_with_fallback()` until one succeeds. Order within that list is
+**deterministic for `round_robin`** (rotating from the last selected index)
+but **varies per request for `weighted`** (weighted sampling without
+replacement). That "all constituents of the alloy are also fallbacks" pattern
+is what the cascade primitive **promotes** to its own named construct, with
+the important distinction that cascade ordering is *always* deterministic
+(declaration order):
 
 ```toml
 [[cascades]]
@@ -272,14 +277,34 @@ The original draft conflated two things. They're separate concerns with differen
 
 **Fit-check composition:**
 
+Convention: `TokenEstimator::estimate_*` returns a **conservative** count
+with `safety_margin` already applied (see the `CharRatioEstimator::estimate_text`
+impl above — the `* self.safety_margin` happens inside). Callers never
+multiply by `safety_margin` a second time. The per-model `capacity_fraction`
+is applied once, on the *declared* `context_window`, to derive an "effective
+ceiling". The fit check is then a direct comparison:
+
 ```
-// Rejected if:  estimate × safety_margin  >  context_window × capacity_fraction
-//
-// equivalent to:  estimate > context_window × (capacity_fraction / safety_margin)
-//
-// e.g. safety_margin=1.10 + capacity_fraction=0.85 on a 262144-token model
-//      → effective usable ceiling ≈ 262144 × (0.85 / 1.10) ≈ 202,566 tokens
+estimate  = TokenEstimator::estimate_*(...)     // already margin-applied
+ceiling   = model.context_window * model.capacity_fraction
+
+Rejected if:  estimate > ceiling
 ```
+
+Worked example (prose so the formula stays the single source of truth):
+
+- Raw input measured at roughly 180k tokens. Estimator applies its
+  internal 10% margin, so the returned estimate is about 198k.
+- Model has a declared context window of 262_144 tokens; the operator
+  has set `capacity_fraction` to 0.85, giving an effective ceiling near
+  222,822.
+- 198k < 222k, so the request is accepted.
+- If we had double-applied the margin (caller multiplying again after
+  the estimator already did), we would compare roughly 217,800 against
+  the same 222,822 — still under, but needlessly close.
+
+Dispatcher rule language uses "effective ceiling" to mean
+`context_window × capacity_fraction` consistently.
 
 **Config:**
 
@@ -453,7 +478,7 @@ Pragmatic default for most flows: `sticky_escalate` is arguably the sweet spot (
 
 Function definitions + tool results add tokens not present in the user's message. A `list_files` tool definition is ~100 tokens; a directory listing result can be thousands.
 
-Addressed by the `estimate_chat` method taking tools explicitly, and by default safety margin. Power users with tool-heavy flows should bump `safety_margin` (0.15–0.20 reasonable).
+Addressed by the `estimate_chat` method taking tools explicitly, and by default safety margin. Power users with tool-heavy flows should bump `safety_margin` (a multiplier — try 1.15 or 1.20, i.e. +15–20%, rather than the default 1.10).
 
 ### 3. Output tokens DO count against the model's total context
 
