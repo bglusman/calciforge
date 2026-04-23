@@ -9,3 +9,27 @@ mutants.out.old/
 src-backup/
 infra/
 node_modules/
+
+# ── secrets / credentials — never commit ────────────────────────────────────
+# Defense in depth; main guard is .gitleaks.toml + CI. These keep obvious
+# secret-file shapes out of accidental adds.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.secret
+*.secret.*
+secrets/
+*_rsa
+*_rsa.pub
+*_ed25519
+*_ed25519.pub
+*.pem
+*.key
+!tests/**/*.pem
+!tests/**/*.key
+
+# Per-deployment gitleaks rules (holds personal infra patterns)
+# — see .gitleaks.local.toml.example for the template
+.gitleaks.local.toml
+homeserver.log
