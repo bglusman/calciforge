@@ -98,11 +98,7 @@ pub struct AlloyConfig {
     /// 32K local model into a 200K-context alloy" at config-load time.
     ///
     /// If unset: auto-computed as `min(constituent.context_window)` over
-    /// constituents that declare one. Constituents without a declared
-    /// `context_window` are treated as unknown and do not participate in
-    /// the minimum calculation.
-    ///
-    /// See `docs/rfcs/model-gateway-primitives.md`.
+    /// all constituents.
     #[serde(default)]
     pub min_context_window: Option<u32>,
 }

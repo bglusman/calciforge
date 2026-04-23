@@ -122,6 +122,13 @@ impl AlloyProvider {
             ));
         }
 
+        if matches!(cfg.min_context_window, Some(0)) {
+            return Err(format!(
+                "alloy '{}': min_context_window must be > 0 when set (omit the field for auto-compute)",
+                cfg.id
+            ));
+        }
+
         let mut constituents = Vec::with_capacity(cfg.constituents.len());
         for c in &cfg.constituents {
             validate_constituent(cfg, c)?;
@@ -314,6 +321,12 @@ fn validate_constituent(alloy: &AlloyConfig, c: &AlloyConstituentConfig) -> Resu
             alloy.id, c.model
         ));
     }
+    if c.context_window == 0 {
+        return Err(format!(
+            "alloy '{}': constituent '{}' context_window must be > 0",
+            alloy.id, c.model
+        ));
+    }
     Ok(())
 }
 
@@ -500,10 +513,7 @@ mod tests {
     #[test]
     fn auto_computes_min_context_window_from_constituents() {
         let cfg = alloy_with_sizes(
-            &[
-                ("big-model", 50, 262_144),
-                ("small-model", 50, 32_768),
-            ],
+            &[("big-model", 50, 262_144), ("small-model", 50, 32_768)],
             None,
         );
         let p = AlloyProvider::from_config(&cfg).unwrap();
@@ -537,6 +547,26 @@ mod tests {
         assert!(
             err.contains("local-qwen") && err.contains("32768") && err.contains("200000"),
             "expected explanatory error naming the offending constituent, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_context_window_on_constituent() {
+        let cfg = alloy_with_sizes(&[("a", 50, 0), ("b", 50, 128_000)], None);
+        let err = AlloyProvider::from_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("context_window must be > 0"),
+            "expected explanatory error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_min_context_window() {
+        let cfg = alloy_with_sizes(&[("a", 50, 128_000), ("b", 50, 128_000)], Some(0));
+        let err = AlloyProvider::from_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("min_context_window must be > 0"),
+            "expected explanatory error, got: {err}"
         );
     }
 }
