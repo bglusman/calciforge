@@ -157,7 +157,11 @@ impl SecurityProxy {
             return Ok(self.forward_upstream(req, &target_url).await);
         }
 
-        // Capture headers before consuming body
+        // Capture headers before consuming body. Hop-by-hop headers
+        // are dropped per RFC 7230 §6.1. `content-length` is ALSO
+        // dropped because body substitution can change the byte
+        // length — letting reqwest recompute it from the forwarded
+        // payload avoids an IncompleteBody error at upstream.
         let original_headers: Vec<(String, String)> = req
             .headers()
             .iter()
@@ -167,6 +171,7 @@ impl SecurityProxy {
                     key_str.as_str(),
                     "host"
                         | "connection"
+                        | "content-length"
                         | "keep-alive"
                         | "proxy-authenticate"
                         | "proxy-authorization"
@@ -184,12 +189,75 @@ impl SecurityProxy {
             })
             .collect();
 
+        // Substitute {{secret:NAME}} refs in header VALUES (not names —
+        // agents can't usefully parameterize header names, and
+        // substituting into names would enable a class of bypass where
+        // a secret ends up as a header key attackers can read server
+        // side). Fail-closed on unresolvable refs, same as the URL.
+        let mut substituted_headers: Vec<(String, String)> =
+            Vec::with_capacity(original_headers.len());
+        for (k, v) in &original_headers {
+            match self.resolve_and_substitute(v).await {
+                Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
+                Err(e) => {
+                    warn!("BLOCKED: header substitution failed: {}", e);
+                    return Ok(blocked_response("Request rejected"));
+                }
+            }
+        }
+        let original_headers = substituted_headers;
+
+        // Find the content-type for body-substitution routing. Default
+        // to None; body_substitution_mode() treats that as RawScan
+        // (fail-closed if refs present).
+        let content_type = original_headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == "content-type")
+            .map(|(_, v)| v.as_str());
+        let body_mode = Self::body_substitution_mode(content_type);
+
         // Read request body
         let body_bytes = match req.into_body().collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 error!("Failed to read request body: {}", e);
                 return Ok(blocked_response("Failed to read request body"));
+            }
+        };
+
+        // Substitute in the body depending on content-type. For
+        // unsupported types we still run a raw-bytes scan for
+        // `{{secret:` so an agent can't smuggle a ref by claiming
+        // multipart/form-data (see RFC §11.8).
+        let body_bytes: bytes::Bytes = if body_bytes.is_empty() {
+            body_bytes
+        } else {
+            match body_mode {
+                BodyMode::FullSubstitute => {
+                    let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+                    match self.resolve_and_substitute(&body_str).await {
+                        Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
+                        Err(e) => {
+                            warn!("BLOCKED: body substitution failed: {}", e);
+                            return Ok(blocked_response("Request rejected"));
+                        }
+                    }
+                }
+                BodyMode::RawScan => {
+                    // Raw memchr-style check on the undecoded bytes.
+                    // We don't try to parse — any occurrence of the
+                    // ref opener in a content-type we can't safely
+                    // edit is a fail-closed signal.
+                    if memchr_substr(&body_bytes, b"{{secret:") {
+                        warn!(
+                            "BLOCKED: secret reference in body with \
+                             unsupported content-type ({:?})",
+                            content_type.unwrap_or("unset")
+                        );
+                        return Ok(blocked_response("Request rejected"));
+                    }
+                    body_bytes
+                }
             }
         };
         let body_str = String::from_utf8_lossy(&body_bytes);
@@ -336,15 +404,20 @@ impl SecurityProxy {
         }
     }
 
-    /// Resolve any `{{secret:NAME}}` refs in the URL and return the
-    /// substituted form. Uses the shared onecli-client vault resolver
-    /// for each name. On any error (unresolvable, malformed, nested)
-    /// returns the error so the caller can fail the outbound request.
-    async fn substitute_url(&self, url: &str) -> Result<String, String> {
-        // Parse first to reject malformed/nested input before any I/O.
-        let names = crate::substitution::find_refs(url).map_err(|e| e.to_string())?;
+    /// Resolve any `{{secret:NAME}}` refs in `input` and return the
+    /// substituted form. Uses the shared `onecli_client::vault::get_secret`
+    /// resolver for each name. On any error (unresolvable, malformed,
+    /// nested) returns the error so the caller can fail the outbound
+    /// request.
+    ///
+    /// Zero-allocation fast path: if `find_refs` returns an empty set,
+    /// we return without a resolver round-trip. The cost of substitution
+    /// is thus proportional to the number of refs, not the size of the
+    /// input string.
+    async fn resolve_and_substitute(&self, input: &str) -> Result<String, String> {
+        let names = crate::substitution::find_refs(input).map_err(|e| e.to_string())?;
         if names.is_empty() {
-            return Ok(url.to_string());
+            return Ok(input.to_string());
         }
         let mut resolved = std::collections::HashMap::new();
         for name in names {
@@ -355,9 +428,49 @@ impl SecurityProxy {
                 Err(e) => return Err(format!("unresolvable secret ref {name:?}: {e}")),
             }
         }
-        crate::substitution::substitute(url, &resolved)
+        crate::substitution::substitute(input, &resolved)
             .map(|cow| cow.into_owned())
             .map_err(|e| e.to_string())
+    }
+
+    /// Backwards-compatible alias so the URL-substitution call site
+    /// doesn't need to change shape. `substitute_url` used to be the
+    /// only consumer; now `resolve_and_substitute` handles headers and
+    /// bodies too.
+    async fn substitute_url(&self, url: &str) -> Result<String, String> {
+        self.resolve_and_substitute(url).await
+    }
+
+    /// Decide whether a request body of `content_type` is eligible for
+    /// full-text substitution, or needs the defensive raw-bytes scan
+    /// for `{{secret:` (fail-closed if found, pass-through otherwise).
+    ///
+    /// Supported content-types for full substitution:
+    /// - `application/json`, `application/*+json`
+    /// - `application/x-www-form-urlencoded`
+    /// - `text/*`
+    ///
+    /// Everything else (multipart/form-data, application/octet-stream,
+    /// images, etc.) takes the raw-bytes path. Rationale in
+    /// `docs/rfcs/agent-secret-gateway.md` §11.8 — a binary body that
+    /// claims `multipart/form-data` would otherwise bypass substitution
+    /// entirely; the raw scan makes sure any ref-shaped content either
+    /// substitutes or blocks the request.
+    fn body_substitution_mode(content_type: Option<&str>) -> BodyMode {
+        let Some(ct) = content_type else {
+            return BodyMode::RawScan;
+        };
+        let ct_lower = ct.to_lowercase();
+        let head = ct_lower.split(';').next().unwrap_or("").trim();
+        if head == "application/json"
+            || head.ends_with("+json")
+            || head == "application/x-www-form-urlencoded"
+            || head.starts_with("text/")
+        {
+            BodyMode::FullSubstitute
+        } else {
+            BodyMode::RawScan
+        }
     }
 
     /// Check whether the bypass list allows skipping inbound/outbound
@@ -436,6 +549,18 @@ enum BypassMatcher {
     Invalid,
 }
 
+/// How to handle substitution for a request body of a given
+/// content-type. See `SecurityProxy::body_substitution_mode`.
+enum BodyMode {
+    /// Full find-and-substitute pass over the body text. Used for
+    /// JSON, form-urlencoded, and text/* content-types.
+    FullSubstitute,
+    /// Body format doesn't support inline substitution (e.g.,
+    /// multipart, binary). Fail closed if the raw bytes contain
+    /// `{{secret:`; pass through otherwise.
+    RawScan,
+}
+
 // ── HTTP handler ─────────────────────────────────────────────────────────────
 
 /// Axum handler — delegates to [`SecurityProxy::intercept`].
@@ -461,6 +586,17 @@ pub async fn health_handler(State(state): State<Arc<SecurityProxy>>) -> impl Int
             blocked
         )))
         .unwrap()
+}
+
+/// True if `haystack` contains `needle` as a contiguous byte sequence.
+/// Used only for the defensive "body claims multipart/form-data but has
+/// `{{secret:` in it" raw-bytes check. Naive O(n*m); fine because
+/// `needle` is a fixed 9-byte literal and we exit on first hit.
+fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn blocked_response(reason: &str) -> Response {
