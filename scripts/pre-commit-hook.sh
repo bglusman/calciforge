@@ -55,20 +55,27 @@ fi
 # dangerous leaks (API keys in docs, hardcoded URLs in installer
 # scripts) aren't in .rs files.
 note "gitleaks (staged only)..."
-if ! command -v gitleaks >/dev/null 2>&1; then
-    if [[ -x /opt/homebrew/bin/gitleaks ]]; then
-        GITLEAKS=/opt/homebrew/bin/gitleaks
-    elif [[ -x /usr/local/bin/gitleaks ]]; then
-        GITLEAKS=/usr/local/bin/gitleaks
-    else
-        note "gitleaks not installed — skipping (install: brew install gitleaks)"
-        GITLEAKS=""
-    fi
-else
+GITLEAKS=""
+if command -v gitleaks >/dev/null 2>&1; then
     GITLEAKS="$(command -v gitleaks)"
+elif [[ -x /opt/homebrew/bin/gitleaks ]]; then
+    GITLEAKS=/opt/homebrew/bin/gitleaks
+elif [[ -x /usr/local/bin/gitleaks ]]; then
+    GITLEAKS=/usr/local/bin/gitleaks
 fi
 
-if [[ -n "$GITLEAKS" ]]; then
+if [[ -z "$GITLEAKS" ]]; then
+    # Fail closed — CLAUDE.md explicitly forbids bypassing the scan,
+    # and silently skipping it when the binary is absent is just a
+    # slower bypass. Opting out requires a conscious PRE_COMMIT_SKIP_GITLEAKS=1
+    # (use sparingly and document why in the commit message).
+    if [[ "${PRE_COMMIT_SKIP_GITLEAKS:-}" == "1" ]]; then
+        note "gitleaks missing and PRE_COMMIT_SKIP_GITLEAKS=1 — skipping by override"
+    else
+        fail "gitleaks not installed. Install it (\`brew install gitleaks\`) or set \
+PRE_COMMIT_SKIP_GITLEAKS=1 for this commit (document why in the message)."
+    fi
+else
     if ! "$GITLEAKS" protect --staged --config .gitleaks.toml >/dev/null 2>&1; then
         "$GITLEAKS" protect --staged --config .gitleaks.toml 2>&1 | tail -20
         fail "gitleaks found a secret-shaped pattern in staged changes"

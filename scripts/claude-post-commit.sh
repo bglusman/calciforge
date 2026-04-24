@@ -16,16 +16,36 @@
 set -euo pipefail
 
 # The Claude Code hook passes tool input/output as JSON on stdin.
-# We grep defensively rather than parsing — jq may not be installed
-# everywhere, and this script needs to be a no-op failure if the
-# environment is unexpected.
+# Parse it properly so we only fire on actual `git commit` invocations
+# — not `git commit --dry-run`, `git commit --help`, `echo "git commit"`,
+# or any other Bash call that happens to contain the substring.
 TOOL_INPUT="$(cat || true)"
 
-# Bail silently if this isn't a git-commit invocation. We look for the
-# literal "git commit" substring in the tool input — a couple of false
-# positives (e.g. `echo "git commit"` in an explanation) are fine
-# because the rest of the script checks for an actual new commit.
-if ! printf '%s' "$TOOL_INPUT" | grep -q 'git commit'; then
+# Extract the actual command from the JSON. Require jq — it's present
+# on every platform we support via the installer's toolchain. If jq is
+# missing we bail cleanly rather than falling back to a permissive
+# grep that fires on text-about-commits.
+if ! command -v jq >/dev/null 2>&1; then
+    exit 0
+fi
+CMD="$(printf '%s' "$TOOL_INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+if [[ -z "$CMD" ]]; then
+    exit 0
+fi
+
+# Normalize: strip leading `cd …&&` wrappers and any `env` prefix so
+# `cd /path && git commit -m "..."` still matches.
+NORMALIZED="$(printf '%s' "$CMD" | tr -s ' ')"
+
+# Only act on commands that *run* git commit, not describe it.
+# - Must contain `git commit` as a standalone action
+# - Must NOT be a dry-run / help / man / discussion form
+case " $NORMALIZED " in
+    *" git commit --dry-run"*|*" git commit -n --dry-run"*|*" git commit --help"*|*" man git-commit "*)
+        exit 0
+        ;;
+esac
+if ! printf '%s' "$NORMALIZED" | grep -qE '(^|&&|;|\|\|)[[:space:]]*git commit([[:space:]]|$)'; then
     exit 0
 fi
 
@@ -37,11 +57,18 @@ fi
 
 cd "$REPO_ROOT"
 
-# Newest commit SHA. If HEAD hasn't moved since the last file we
-# wrote, the bash call didn't actually produce a commit (maybe it was
-# `git commit --dry-run` or a noop). Bail.
+# Newest commit SHA. Compare to the previously-seen HEAD (stored in a
+# tiny state file) so a Bash call that didn't actually produce a new
+# commit can't queue a review. This is the backstop for the JSON-parse
+# check above — belt and suspenders.
 SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 [[ -n "$SHA" ]] || exit 0
+
+LAST_SHA_FILE="$REPO_ROOT/.claude/.last-reviewed-sha"
+if [[ -f "$LAST_SHA_FILE" ]] && [[ "$(cat "$LAST_SHA_FILE")" == "$SHA" ]]; then
+    # HEAD hasn't moved since last invocation — no new commit.
+    exit 0
+fi
 
 REVIEW_DIR="$REPO_ROOT/.claude/pending-reviews"
 mkdir -p "$REVIEW_DIR"
@@ -65,6 +92,10 @@ fi
     git show --format='' "$SHA" | head -c 400000
     printf '\n```\n'
 } > "$OUT"
+
+# Record the SHA we just queued so a subsequent hook invocation for
+# the same commit (e.g. during retry or across tool calls) skips.
+printf '%s' "$SHA" > "$LAST_SHA_FILE"
 
 # A zero-byte trigger file so the next turn's context includes a
 # reminder without needing to list the directory. Claude can grep

@@ -18,13 +18,21 @@ install_hook() {
     local rel_source="../../$source"
 
     if [[ ! -f "$source" ]]; then
-        echo "  ✗ source missing: $source"
+        echo "  ✗ source missing: $source" >&2
         return 1
     fi
 
+    # Pre-existing non-symlink hook: back it up (so nothing is lost)
+    # and continue with the install. The user/reviewer may want the
+    # old hook back; `.git/hooks/<name>.backup-<timestamp>` makes
+    # that a one-step restore. Returning nonzero on this branch
+    # would also be defensible, but the silent-no-op the original
+    # code did was the real bug — the user believed the install
+    # succeeded when their old hook was still the active one.
     if [[ -e "$target" ]] && [[ ! -L "$target" ]]; then
-        echo "  ! $target exists and is not a symlink — leaving alone"
-        return 0
+        local backup="$target.backup-$(date +%Y%m%dT%H%M%S)"
+        mv "$target" "$backup"
+        echo "  ! backed up existing $name → $backup"
     fi
 
     if [[ -L "$target" ]]; then

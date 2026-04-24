@@ -36,3 +36,4 @@ homeserver.log
 .claude/REVIEW_PENDING
 .claude/pending-reviews/
 .claude/settings.local.json
+.claude/.last-reviewed-sha
