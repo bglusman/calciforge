@@ -102,7 +102,15 @@ Inbound scan (separate pass) looks for injection patterns in the response.
 - URL query params ✓
 - Headers ✓
 - Body: `application/json` and `application/x-www-form-urlencoded` only ✓
-- Body: other content types — pass through unchanged, log warning
+- Body: other content types (e.g. `multipart/form-data`, binary
+  uploads) — **a cheap raw-bytes scan runs first**; if the bytes
+  contain `{{secret:` we fail the request closed rather than forward.
+  If the raw scan finds nothing, the body passes through unchanged
+  (with a `warn!` log so operators know substitution was skipped).
+  Rationale: without the pre-scan an agent could bypass detection by
+  claiming `multipart/form-data` with a ref in the body; per §11.8,
+  fail-closed on untrusted content is the rule, and the cost is one
+  memchr-level scan per request.
 
 ### What could go wrong
 
@@ -207,10 +215,10 @@ Current state (as of this branch):
 
 | Component              | Built? | Service? | Start-before-exit? | Gaps |
 |---|---|---|---|---|
-| zeroclawed             | ✅ | ✅ (this PR) | ✅ | none on Mac; Linux pending real test |
+| zeroclawed             | ✅ | ✅ (feat/fnox-integration, PR #15) | ✅ | none on Mac; Linux pending real test |
 | clashd                 | ✅ | ✅ | ✅ | none |
 | security-proxy         | ✅ | ✅ | ✅ | does NOT yet absorb onecli (task #28) |
-| fnox                   | ✅ (this PR) | n/a (CLI) | n/a | no `fnox init` seed — config expected to pre-exist |
+| fnox                   | ✅ (feat/fnox-integration, PR #15) | n/a (CLI) | n/a | no `fnox init` seed — config expected to pre-exist |
 | zeroclawed-MCP         | ❌ | ❌ | ❌ | doesn't exist yet (task #30) |
 | Agent MCP wiring       | ❌ | n/a | n/a | task #32 |
 | `!secure` commands     | ❌ | n/a | n/a | task #31 |
@@ -325,7 +333,7 @@ with the section that makes the claim.
   re-exposes knowledge to the client.
 - **Streaming responses** (SSE, chat completions) — inbound scanning for
   injection on a streaming response is tricky. Current
-  `security-gateway.md` doesn't address it. For v1, skip scan on
+  `docs/security-gateway.md` doesn't address it. For v1, skip scan on
   streaming responses; revisit.
 - **Multi-tenant isolation** — if this host serves multiple users
   (unlikely today but relevant for .210 shared deploy), per-user secret
@@ -434,7 +442,7 @@ passes that body back to the agent. Now the agent has a substring of
 the real key in its context. **Guard**: outbound response scanning for
 patterns that look like known secret prefixes (sk-, Bearer, etc.) and
 redact before returning to agent. This is the "inbound scan" leg of
-security-gateway.md, but now with secret-awareness — scan for values
+`docs/security-gateway.md`, but now with secret-awareness — scan for values
 we just substituted, not just PII/injection.
 
 ### 11.7 Indirect disclosure via derived outputs (Chaos lesson #3)
