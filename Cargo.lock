@@ -4914,6 +4914,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
+ "onecli-client",
  "rcgen",
  "regex",
  "reqwest 0.12.28",

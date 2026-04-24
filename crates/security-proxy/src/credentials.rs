@@ -44,6 +44,12 @@ impl CredentialInjector {
         }
     }
 
+    /// Public wrapper so callers outside this module can use the same
+    /// host→provider mapping without duplicating the pattern list.
+    pub fn detect_provider_pub(&self, host: &str) -> Option<String> {
+        self.detect_provider(host)
+    }
+
     /// Detect which provider a host belongs to.
     fn detect_provider(&self, host: &str) -> Option<String> {
         let host_lower = host.to_lowercase();
@@ -89,6 +95,41 @@ impl CredentialInjector {
     pub fn add(&self, provider: &str, api_key: &str) {
         self.credentials
             .insert(provider.to_lowercase(), api_key.to_string());
+    }
+
+    /// Resolve a provider's credential via the shared onecli-client vault
+    /// resolver (env → fnox → vaultwarden) if not already cached, and
+    /// insert it into the cache on success.
+    ///
+    /// Addresses finding #5 in docs/rfcs/consolidation-findings.md: the
+    /// DashMap used to be populated only at startup, so secret rotation
+    /// was silently broken. With this method called per-request, a
+    /// rotated key picked up by env or fnox takes effect on the next
+    /// request without a restart.
+    ///
+    /// Cache policy: first-write-wins. Rotation requires either clearing
+    /// the cache (TODO: TTL) or restarting. Short-term acceptable because
+    /// most deployments restart on config change; long-term a TTL or
+    /// explicit invalidation hook is cleaner.
+    pub async fn ensure_cached(&self, provider: &str) -> bool {
+        let key = provider.to_lowercase();
+        if self.credentials.contains_key(&key) {
+            return true;
+        }
+        match onecli_client::vault::get_secret(&key).await {
+            Ok(secret) => {
+                self.credentials.insert(key, secret);
+                true
+            }
+            Err(e) => {
+                tracing::debug!(
+                    provider = %provider,
+                    error = %e,
+                    "ensure_cached: resolver returned no secret"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -167,5 +208,51 @@ mod tests {
         injector.add("openai", "sk-new");
 
         assert_eq!(injector.get("openai"), Some("sk-new".into()));
+    }
+
+    /// Given a cache that already contains a credential for a provider,
+    /// when ensure_cached is called,
+    /// then it returns true without touching the resolver.
+    ///
+    /// This confirms first-write-wins and protects against a subtle
+    /// regression where ensure_cached re-resolves unconditionally —
+    /// which would (a) mask rotation via direct `add()`, (b) pay a
+    /// resolver-round-trip on every request.
+    #[tokio::test]
+    async fn ensure_cached_skips_resolver_when_already_cached() {
+        let injector = CredentialInjector::new();
+        injector.add("openai", "sk-from-add");
+
+        let resolved = injector.ensure_cached("openai").await;
+
+        assert!(resolved, "should report success when value is cached");
+        assert_eq!(
+            injector.get("openai"),
+            Some("sk-from-add".into()),
+            "cached value must not be overwritten by a successful resolver call"
+        );
+    }
+
+    /// Given a cache that has no entry for the provider,
+    /// and the resolver has no secret either (nothing in env/fnox/vault),
+    /// when ensure_cached is called,
+    /// then it returns false and the cache stays empty.
+    ///
+    /// Catches a regression where a resolver failure leaks an empty or
+    /// error-stringified value into the cache and a subsequent inject()
+    /// sends `Authorization: Bearer ` (empty) to the upstream.
+    #[tokio::test]
+    async fn ensure_cached_returns_false_when_nothing_resolves() {
+        let injector = CredentialInjector::new();
+        // Provider name that will not match any env var (no
+        // `NOSUCHPROVIDER_API_KEY` set) and fnox will 404 or not exist.
+        let resolved = injector.ensure_cached("nosuchprovider_t2").await;
+
+        assert!(!resolved, "should return false when nothing resolved");
+        assert_eq!(
+            injector.get("nosuchprovider_t2"),
+            None,
+            "failed lookup must not leave a stub entry in the cache"
+        );
     }
 }

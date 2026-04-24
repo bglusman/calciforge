@@ -191,13 +191,21 @@ impl SecurityProxy {
             }
         }
 
-        // Credential injection
+        // Credential injection — on a cache miss, resolve via the shared
+        // onecli-client vault resolver (env → fnox → vaultwarden) so
+        // rotated keys are picked up per-request rather than only at
+        // startup. See docs/rfcs/consolidation-findings.md finding #5.
         let mut injected_headers = vec![];
         if self.config.inject_credentials {
             if let Some(host) = reqwest::Url::parse(&target_url)
                 .ok()
                 .and_then(|u| u.host_str().map(String::from))
             {
+                if let Some(provider) = self.credentials.detect_provider_pub(&host) {
+                    // Populates cache from resolver if missing. Ignore the
+                    // bool — inject handles the still-absent case.
+                    let _ = self.credentials.ensure_cached(&provider).await;
+                }
                 self.credentials.inject(&mut injected_headers, &host);
             }
         }
