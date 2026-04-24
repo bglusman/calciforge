@@ -27,8 +27,23 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
     }
 
     let config = VaultConfig::default();
-    if config.token.is_empty() {
-        anyhow::bail!("No ONECLI_VAULT_TOKEN set and no env var for '{}'", name);
+    // Both URL and token are now mandatory — no hardcoded default for
+    // either. If the user wants the vaultwarden layer, they set both;
+    // otherwise we stop here with a clear message instead of making a
+    // bad request against the empty URL.
+    if config.url.is_empty() || config.token.is_empty() {
+        anyhow::bail!(
+            "Secret '{}' not found in env; vaultwarden fallback unavailable \
+             (requires ONECLI_VAULT_URL and ONECLI_VAULT_TOKEN, both currently {})",
+            name,
+            if config.url.is_empty() && config.token.is_empty() {
+                "unset"
+            } else if config.url.is_empty() {
+                "URL unset"
+            } else {
+                "token unset"
+            }
+        );
     }
 
     debug!("Looking up {} in VaultWarden at {}", name, config.url);
