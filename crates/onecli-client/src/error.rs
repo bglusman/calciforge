@@ -124,4 +124,36 @@ mod tests {
         let err = OneCliError::RateLimited { retry_after: 5 };
         assert_eq!(err.to_string(), "Rate limited: retry after 5s");
     }
+
+    /// Given a real reqwest error wrapped as `OneCliError::Http`,
+    /// when `is_retryable()` is called,
+    /// then the result is true. Guards the contract declared in
+    /// `is_retryable` — `Http` errors are included because they
+    /// usually represent transient upstream problems (5xx, timeouts,
+    /// DNS, connection reset) where a retry has a reasonable chance
+    /// of succeeding.
+    ///
+    /// Built the reqwest error by connecting to a port nothing is
+    /// listening on. Round-2 test audit flagged `Http(_)` as the only
+    /// is_retryable variant with no test coverage.
+    #[tokio::test]
+    async fn http_variant_is_retryable() {
+        // 127.0.0.1:1 — almost certainly nothing listening. If this
+        // machine has something there and the test passes connect,
+        // the reqwest error type will still be one we can match.
+        let bad_url = "http://127.0.0.1:1/";
+        let reqwest_err = reqwest::get(bad_url)
+            .await
+            .expect_err("connecting to :1 must fail");
+        let onecli_err: OneCliError = reqwest_err.into();
+        assert!(
+            matches!(onecli_err, OneCliError::Http(_)),
+            "conversion from reqwest::Error must produce Http variant, got: {onecli_err:?}"
+        );
+        assert!(
+            onecli_err.is_retryable(),
+            "Http variant must be retryable — the is_retryable contract \
+             declared Http alongside Unreachable and RateLimited"
+        );
+    }
 }
