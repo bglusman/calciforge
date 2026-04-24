@@ -278,12 +278,197 @@ pub fn validate_config_file(path: &std::path::PathBuf) -> Result<ValidationResul
     Ok(result)
 }
 
-// TODO: Fix tests - config structs have changed significantly
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::config::*;
-//
-//     // Tests removed temporarily due to struct changes
-//     // Need to update test data to match new config structure
-// }
+#[cfg(test)]
+mod tests {
+    //! Behavioral tests for `validate_config`. Round-2 test quality
+    //! audit (2026-04-24) flagged this module as having zero tests
+    //! despite ~290 lines of validation logic. These tests close the
+    //! most important invariants (duplicates, dangling references,
+    //! out-of-range fields) so future refactors can't silently regress.
+    use super::*;
+    use crate::config::PolyConfig;
+
+    /// Minimal TOML that passes validation. Each negative test
+    /// derives from this by prepending/appending ONE targeted
+    /// deviation so the failing invariant is the only difference
+    /// between the valid fixture and the test under test.
+    const MIN_VALID: &str = r#"
+[zeroclawed]
+version = 2
+
+[context]
+buffer_size = 20
+inject_depth = 5
+
+[[identities]]
+id = "alice"
+aliases = [{ channel = "telegram", id = "7000000001" }]
+role = "owner"
+
+[[agents]]
+id = "bot"
+kind = "cli"
+command = "/bin/echo"
+args = []
+
+[[channels]]
+kind = "telegram"
+bot_token_file = "/tmp/nope"
+"#;
+
+    fn parse(toml: &str) -> PolyConfig {
+        toml::from_str(toml).expect("fixture should parse")
+    }
+
+    /// Given a minimal config with no violations,
+    /// when validate_config runs,
+    /// then `is_valid()` is true. Positive baseline.
+    #[test]
+    fn baseline_minimum_config_validates_clean() {
+        let config = parse(MIN_VALID);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "baseline fixture should validate clean; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a config with two agents sharing the same id,
+    /// when validate_config runs,
+    /// then an error naming the duplicated id is produced.
+    #[test]
+    fn duplicate_agent_id_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n[[agents]]\nid = \"bot\"\nkind = \"cli\"\ncommand = \"/bin/echo\"\nargs = []\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "duplicate agent id must fail");
+        assert!(
+            result.errors.iter().any(|e| e.contains("bot")),
+            "error must name the duplicated id 'bot'; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a config with two identities sharing the same id,
+    /// when validate_config runs,
+    /// then an error naming the duplicated id is produced.
+    #[test]
+    fn duplicate_identity_id_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n[[identities]]\nid = \"alice\"\naliases = [{{ channel = \"signal\", id = \"7000000099\" }}]\nrole = \"user\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "duplicate identity id must fail");
+        assert!(
+            result.errors.iter().any(|e| e.contains("alice")),
+            "error must name the duplicated id 'alice'; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a proxy config with an unparseable bind address,
+    /// when validate_config runs,
+    /// then an error is produced naming the bind/address problem.
+    #[test]
+    fn malformed_proxy_bind_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"not-an-address\"\nbackend_type = \"http\"\nbackend_url = \"https://api.example.com\"\ntimeout_seconds = 10\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "invalid bind address must fail; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                let lower = e.to_lowercase();
+                lower.contains("bind") || lower.contains("address")
+            }),
+            "error should name the bind/address problem; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a proxy config with `timeout_seconds = 0`,
+    /// when validate_config runs,
+    /// then an error is produced — a zero timeout means requests
+    /// hang indefinitely, which is never the intent.
+    #[test]
+    fn zero_proxy_timeout_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"http\"\nbackend_url = \"https://api.example.com\"\ntimeout_seconds = 0\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "zero proxy timeout must fail; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a routing rule referencing an agent id that doesn't
+    /// exist in the agent list,
+    /// when validate_config runs,
+    /// then an error naming the missing agent is produced.
+    ///
+    /// Catches the most common cause of silent "agent unavailable"
+    /// at runtime: typo in a routing rule.
+    #[test]
+    fn routing_rule_default_to_nonexistent_agent_is_an_error() {
+        let fixture =
+            format!("{MIN_VALID}\n[[routing]]\nidentity = \"alice\"\ndefault_agent = \"ghost\"\n");
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "routing default_agent pointing at a non-existent agent must fail; \
+             errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("ghost")),
+            "error should name the missing agent id 'ghost'; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a routing rule whose `default_agent` is valid but whose
+    /// `allowed_agents` list contains an id not in the agent list,
+    /// when validate_config runs,
+    /// then an error naming both the identity and the missing agent
+    /// is produced.
+    ///
+    /// Validates the branch in `validate_routing_rules` that walks
+    /// each entry of `allowed_agents` — a test for
+    /// `default_agent` alone wouldn't exercise this code path.
+    #[test]
+    fn routing_rule_allowed_list_with_nonexistent_agent_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n[[routing]]\nidentity = \"alice\"\ndefault_agent = \"bot\"\nallowed_agents = [\"bot\", \"ghost\"]\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "allowed_agents pointing at a non-existent agent must fail; \
+             errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("ghost") && e.contains("alice")),
+            "error should name both the identity 'alice' and missing agent \
+             'ghost'; errors: {:?}",
+            result.errors
+        );
+    }
+}
