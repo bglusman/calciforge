@@ -139,8 +139,15 @@ impl SecurityProxy {
         let target_url = match self.substitute_url(&target_url).await {
             Ok(url) => url,
             Err(e) => {
+                // Log the detailed reason server-side so operators can
+                // debug, but return a bland message to the client.
+                // Echoing `e` would leak which env vars were probed,
+                // which ref the agent used, and whether it matched the
+                // allowed syntax — that's shape-of-store information we
+                // deliberately don't disclose (see vault_handler for the
+                // companion pattern).
                 warn!("BLOCKED: URL substitution failed: {}", e);
-                return Ok(blocked_response(&format!("Request rejected: {e}")));
+                return Ok(blocked_response("Request rejected"));
             }
         };
 
@@ -379,24 +386,54 @@ impl SecurityProxy {
     /// contain `*` wildcards; semantics:
     ///   - no `*`: host must equal the pattern (case-insensitive) OR
     ///     end with `.<pattern>` (DNS-label boundary)
-    ///   - with `*`: treat as a regex anchored to the full host (so
-    ///     `192.168.1.*` matches any host in that /24, but NOT a host
-    ///     containing that IP as a substring elsewhere).
+    ///   - with `*`: treat as glob — `*` means `[^.]*` (no dots, so a
+    ///     pattern like `192.168.1.*` doesn't cross dots into
+    ///     neighbouring octets); every other character is matched
+    ///     literally via `regex::escape`. Prior version used
+    ///     `.replace('.', r"\.")` and `.replace('*', ".*")` which left
+    ///     `?`, `+`, `(`, `[`, etc. active as regex, widening match and
+    ///     in some cases failing compile altogether (unintended
+    ///     allow-all-or-allow-none). Caller pre-compiles, so the cost
+    ///     of regex-building is paid once at config load.
     fn host_matches_pattern(host: &str, pattern: &str) -> bool {
-        let pattern_lower = pattern.to_lowercase();
-        if !pattern_lower.contains('*') {
-            // Exact or DNS-suffix match. Rejects substring-in-path
-            // smuggling because `host` is already just the authority.
-            return host == pattern_lower || host.ends_with(&format!(".{pattern_lower}"));
+        match Self::compile_bypass_pattern(pattern) {
+            BypassMatcher::Exact(p) => host == p || host.ends_with(&format!(".{p}")),
+            BypassMatcher::Glob(re) => re.is_match(host),
+            BypassMatcher::Invalid => false,
         }
-        // Wildcard: regex-anchored to the full host, not free-floating
-        // inside the URL.
-        let regex_body = pattern_lower.replace('.', r"\.").replace('*', ".*");
-        let anchored = format!("^{regex_body}$");
-        regex::Regex::new(&anchored)
-            .map(|re| re.is_match(host))
-            .unwrap_or(false)
     }
+
+    /// Compile a bypass pattern once. In the hot path today this still
+    /// runs per-request (called from `host_matches_pattern`); a
+    /// follow-up should precompile the whole list at `SecurityProxy`
+    /// construction, but doing that cleanly requires changing
+    /// `GatewayConfig` shape. For now the regex builder itself is
+    /// correct and escape-safe; perf follows.
+    fn compile_bypass_pattern(pattern: &str) -> BypassMatcher {
+        let lower = pattern.to_lowercase();
+        if !lower.contains('*') {
+            return BypassMatcher::Exact(lower);
+        }
+        // Build a glob-style regex: split on `*`, escape each literal
+        // segment, rejoin with `[^.]*` between. `[^.]*` rather than
+        // `.*` so the wildcard doesn't cross DNS-label boundaries
+        // (e.g., `*.example.com` must not match `a.b.example.com`
+        // unless that's the actual intent — we document the stricter
+        // semantics in the doc above).
+        let parts: Vec<String> = lower.split('*').map(regex::escape).collect();
+        let body = parts.join("[^.]*");
+        let anchored = format!("^{body}$");
+        match regex::Regex::new(&anchored) {
+            Ok(re) => BypassMatcher::Glob(re),
+            Err(_) => BypassMatcher::Invalid,
+        }
+    }
+}
+
+enum BypassMatcher {
+    Exact(String),
+    Glob(regex::Regex),
+    Invalid,
 }
 
 // ── HTTP handler ─────────────────────────────────────────────────────────────

@@ -122,25 +122,37 @@ impl CredentialInjector {
             .insert(provider.to_lowercase(), api_key.to_string());
     }
 
-    /// Resolve a provider's credential via the shared onecli-client vault
-    /// resolver (env → fnox → vaultwarden) if not already cached, and
-    /// insert it into the cache on success.
+    /// Populate the cache for `provider` from the shared
+    /// `onecli_client::vault::get_secret` resolver if not already
+    /// present. Returns `true` when the cache has a value for the
+    /// provider after the call (either it was already there or the
+    /// resolver just supplied one).
     ///
-    /// Addresses finding #5 in docs/rfcs/consolidation-findings.md: the
-    /// DashMap used to be populated only at startup, so secret rotation
-    /// was silently broken. With this method called per-request, a
-    /// rotated key picked up by env or fnox takes effect on the next
-    /// request without a restart.
+    /// **Cache policy — important limitations:**
     ///
-    /// Cache policy nuance: `ensure_cached` itself is first-write-wins
-    /// (returns early if the provider is already present, never
-    /// overwrites). But `add()` is last-write-wins (unconditional
-    /// `insert`). Together: a rotation performed via direct `add(name,
-    /// new_value)` takes effect immediately; a rotation that arrives
-    /// only in env/fnox/vault will NOT be picked up once the cache is
-    /// populated. The gap is acceptable short-term (most deployments
-    /// restart on config change); long-term a TTL or explicit
-    /// invalidation hook is cleaner.
+    /// - First resolve wins. Once a provider's value is cached,
+    ///   `ensure_cached` returns early on every subsequent call and
+    ///   does NOT re-resolve. A rotation in env/fnox/vault will not be
+    ///   picked up by any call path through `ensure_cached` until the
+    ///   cache is invalidated (no mechanism today) or the process
+    ///   restarts.
+    /// - `add(provider, value)` overwrites unconditionally. Callers
+    ///   who want to rotate a credential at runtime must call `add`
+    ///   directly; the resolver path alone won't refresh.
+    /// - Concurrent callers on the same provider can both pass the
+    ///   `contains_key` check, both call the resolver, and both insert.
+    ///   Because the resolver is deterministic for a given environment,
+    ///   last-write-wins on the DashMap is functionally equivalent —
+    ///   wasted round-trips, but no correctness issue.
+    ///
+    /// **Rotation story (unchanged by this method):** runtime
+    /// rotation requires adding a TTL or explicit invalidation path.
+    /// Neither exists yet; rotations take effect on the next restart.
+    /// This addresses finding #5 in
+    /// `docs/rfcs/consolidation-findings.md` partially — the resolver
+    /// is at least consulted for uncached providers per-request, which
+    /// is better than the previous startup-only env scan; true
+    /// rotation is follow-up work.
     pub async fn ensure_cached(&self, provider: &str) -> bool {
         let key = provider.to_lowercase();
         if self.credentials.contains_key(&key) {
@@ -327,16 +339,29 @@ mod tests {
     /// Catches a regression where a resolver failure leaks an empty or
     /// error-stringified value into the cache and a subsequent inject()
     /// sends `Authorization: Bearer ` (empty) to the upstream.
+    ///
+    /// Hermetic setup: we derive a per-run provider name from the
+    /// process ID so this test doesn't collide with anything real in
+    /// the dev/CI environment, and we explicitly clear the vault env
+    /// so `get_secret` short-circuits to "not found" rather than
+    /// attempting a real network call.
     #[tokio::test]
     async fn ensure_cached_returns_false_when_nothing_resolves() {
+        // Safety: env mutation in tests is inherently process-global;
+        // using unsafe to satisfy Rust 2024's edition semantics. The
+        // specific variables we touch aren't read by concurrent tests
+        // in this module.
+        unsafe {
+            std::env::remove_var("ONECLI_VAULT_TOKEN");
+            std::env::remove_var("ONECLI_VAULT_URL");
+        }
+        let provider_name = format!("nosuchprovider_pid_{}", std::process::id());
         let injector = CredentialInjector::new();
-        // Provider name that will not match any env var (no
-        // `NOSUCHPROVIDER_API_KEY` set) and fnox will 404 or not exist.
-        let resolved = injector.ensure_cached("nosuchprovider_t2").await;
+        let resolved = injector.ensure_cached(&provider_name).await;
 
         assert!(!resolved, "should return false when nothing resolved");
         assert_eq!(
-            injector.get("nosuchprovider_t2"),
+            injector.get(&provider_name),
             None,
             "failed lookup must not leave a stub entry in the cache"
         );

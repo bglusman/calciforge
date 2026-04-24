@@ -1,8 +1,12 @@
 // Env mutation is serialized via ENV_MUTEX; holding a std Mutex across
-// `.await` is therefore safe here (each #[tokio::test] has its own
-// single-threaded runtime, no re-entrant lock attempts). Opt out of
-// the lint narrowly rather than using tokio::sync::Mutex which isn't
-// const-constructible for a static.
+// `.await` needs the clippy opt-out because the default multi-threaded
+// Tokio runtime in `#[tokio::test]` could schedule another task onto
+// the same thread that tries to acquire the mutex → theoretical
+// deadlock. In practice these tests do ONE async request while
+// holding the lock and don't spawn inner tasks that reacquire it, so
+// the deadlock path is unreachable. If the pattern expands, switch to
+// `tokio::sync::Mutex` inside a `OnceLock`, or adopt the `serial_test`
+// crate for env-mutation tests across the workspace.
 #![allow(clippy::await_holding_lock)]
 
 //! Behavioral tests for the `/vault/:secret` route migrated from
@@ -50,9 +54,28 @@ async fn spawn_server() -> String {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    // Give the server a moment to start accepting.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    format!("http://{addr}")
+    let base = format!("http://{addr}");
+
+    // Poll /health until it responds, rather than a fixed sleep.
+    // Fixed sleeps flake on loaded CI runners; polling gives us a
+    // true readiness signal with a bounded upper limit.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if client
+            .get(format!("{base}/health"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+        {
+            return base;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("spawn_server: health check did not become ready within 2s");
 }
 
 /// Given an env var `TVROUTE_T1_API_KEY=hello` set,
