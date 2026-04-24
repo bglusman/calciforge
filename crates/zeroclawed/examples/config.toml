@@ -27,7 +27,7 @@ role = "owner"
 id = "david"
 display_name = "David"
 aliases = [
-  { channel = "telegram", id = "15555550002" },
+  { channel = "telegram", id = "7000000002" },
 ]
 role = "user"
 

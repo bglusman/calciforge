@@ -96,7 +96,7 @@ mod tests {
                     display_name: Some("Brian".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "8465871195".to_string(),
+                        id: "7000000001".to_string(),
                     }],
                     role: Some("owner".to_string()),
                 },
@@ -105,7 +105,7 @@ mod tests {
                     display_name: Some("David".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "15555550002".to_string(),
+                        id: "7000000002".to_string(),
                     }],
                     role: Some("user".to_string()),
                 },
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_resolve_known_telegram_sender() {
         let cfg = make_config();
-        let identity = resolve_telegram_sender(8465871195, &cfg);
+        let identity = resolve_telegram_sender(7000000001, &cfg);
         assert!(identity.is_some());
         let id = identity.unwrap();
         assert_eq!(id.id, "brian");
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_resolve_second_identity() {
         let cfg = make_config();
-        let identity = resolve_telegram_sender(15555550002, &cfg);
+        let identity = resolve_telegram_sender(7000000002, &cfg);
         assert!(identity.is_some());
         assert_eq!(identity.unwrap().id, "david");
     }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn test_resolve_channel_sender_generic() {
         let cfg = make_config();
-        let identity = resolve_channel_sender("telegram", "8465871195", &cfg);
+        let identity = resolve_channel_sender("telegram", "7000000001", &cfg);
         assert!(identity.is_some());
         assert_eq!(identity.unwrap().id, "brian");
     }
@@ -191,7 +191,7 @@ mod tests {
     fn test_resolve_wrong_channel_drops() {
         let cfg = make_config();
         // Brian is only registered for telegram, not signal
-        let identity = resolve_channel_sender("signal", "8465871195", &cfg);
+        let identity = resolve_channel_sender("signal", "7000000001", &cfg);
         assert!(identity.is_none());
     }
 
@@ -265,7 +265,7 @@ mod tests {
             proxy: None,
             local_models: None,
         };
-        assert!(resolve_telegram_sender(8465871195, &cfg).is_none());
+        assert!(resolve_telegram_sender(7000000001, &cfg).is_none());
         assert!(default_agent_for("anyone", &cfg).is_none());
         assert!(find_agent("any", &cfg).is_none());
     }
@@ -273,18 +273,18 @@ mod tests {
     #[test]
     fn test_resolve_sender_id_as_string_not_integer() {
         let cfg = make_config();
-        let identity = resolve_channel_sender("telegram", "8465871195", &cfg);
+        let identity = resolve_channel_sender("telegram", "7000000001", &cfg);
         assert!(identity.is_some());
-        let identity2 = resolve_channel_sender("telegram", "08465871195", &cfg);
+        let identity2 = resolve_channel_sender("telegram", "07000000001", &cfg);
         assert!(identity2.is_none(), "leading zeros should not match");
     }
 
     #[test]
     fn test_wrong_channel_drops() {
         let cfg = make_config();
-        let tg = resolve_channel_sender("telegram", "8465871195", &cfg);
+        let tg = resolve_channel_sender("telegram", "7000000001", &cfg);
         assert!(tg.is_some());
-        let sig = resolve_channel_sender("signal", "8465871195", &cfg);
+        let sig = resolve_channel_sender("signal", "7000000001", &cfg);
         assert!(sig.is_none());
     }
 
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_unknown_channel_kind_drops() {
         let cfg = make_config();
-        let identity = resolve_channel_sender("discord", "8465871195", &cfg);
+        let identity = resolve_channel_sender("discord", "7000000001", &cfg);
         assert!(identity.is_none(), "unknown channel should return None");
     }
 

@@ -127,6 +127,23 @@ impl SecurityProxy {
 
         info!("{} {}", method, target_url);
 
+        // Substitute {{secret:NAME}} references in the URL before any
+        // further processing. Rationale: the URL is built by the agent
+        // and may contain refs like `?key={{secret:BRAVE}}`; we need
+        // the substituted URL for routing decisions (bypass, host
+        // detect) and for the outbound request. Fail-closed on any
+        // unresolvable ref — see docs/rfcs/agent-secret-gateway.md §3.
+        //
+        // NOTE: this only covers URL path+query. Header and body
+        // substitution lands in a follow-up with content-type gating.
+        let target_url = match self.substitute_url(&target_url).await {
+            Ok(url) => url,
+            Err(e) => {
+                warn!("BLOCKED: URL substitution failed: {}", e);
+                return Ok(blocked_response(&format!("Request rejected: {e}")));
+            }
+        };
+
         // Bypass check
         if self.check_bypassed(&target_url) {
             info!("Bypassing: {}", target_url);
@@ -310,6 +327,30 @@ impl SecurityProxy {
                 blocked_response(&format!("Upstream error: {}", e))
             }
         }
+    }
+
+    /// Resolve any `{{secret:NAME}}` refs in the URL and return the
+    /// substituted form. Uses the shared onecli-client vault resolver
+    /// for each name. On any error (unresolvable, malformed, nested)
+    /// returns the error so the caller can fail the outbound request.
+    async fn substitute_url(&self, url: &str) -> Result<String, String> {
+        // Parse first to reject malformed/nested input before any I/O.
+        let names = crate::substitution::find_refs(url).map_err(|e| e.to_string())?;
+        if names.is_empty() {
+            return Ok(url.to_string());
+        }
+        let mut resolved = std::collections::HashMap::new();
+        for name in names {
+            match onecli_client::vault::get_secret(&name).await {
+                Ok(value) => {
+                    resolved.insert(name, value);
+                }
+                Err(e) => return Err(format!("unresolvable secret ref {name:?}: {e}")),
+            }
+        }
+        crate::substitution::substitute(url, &resolved)
+            .map(|cow| cow.into_owned())
+            .map_err(|e| e.to_string())
     }
 
     /// Check whether the bypass list allows skipping inbound/outbound

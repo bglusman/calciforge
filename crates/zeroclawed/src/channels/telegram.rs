@@ -664,7 +664,7 @@ mod tests {
                 display_name: Some("Brian".to_string()),
                 aliases: vec![ChannelAlias {
                     channel: "telegram".to_string(),
-                    id: "8465871195".to_string(),
+                    id: "7000000001".to_string(),
                 }],
                 role: Some("owner".to_string()),
             }],
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn test_auth_resolves_known_sender() {
         let config = make_test_config();
-        let id = resolve_telegram_sender(8465871195, &config);
+        let id = resolve_telegram_sender(7000000001, &config);
         assert!(id.is_some());
         assert_eq!(id.unwrap().id, "brian");
     }
@@ -828,10 +828,10 @@ mod tests {
     #[test]
     fn test_context_key_format() {
         // Verify the key format used: "{chat_id}-{identity_id}"
-        let chat_id: i64 = 8465871195;
+        let chat_id: i64 = 7000000001;
         let identity_id = "brian";
         let key = format!("{}-{}", chat_id, identity_id);
-        assert_eq!(key, "8465871195-brian");
+        assert_eq!(key, "7000000001-brian");
     }
 
     // -----------------------------------------------------------------------
