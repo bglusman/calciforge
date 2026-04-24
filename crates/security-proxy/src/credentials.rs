@@ -21,13 +21,30 @@ impl CredentialInjector {
     }
 
     /// Load credentials from environment variables.
-    /// Pattern: ZEROGATE_KEY_<PROVIDER> = <api_key>
+    ///
+    /// Legacy convention: `ZEROGATE_KEY_<PROVIDER>` — populated into the
+    /// cache at startup. Kept for back-compat; new code should rely on
+    /// the on-demand resolver (`ensure_cached`) which looks up
+    /// `<NAME>_API_KEY` (the convention used by most SDKs and by
+    /// `onecli-client::vault::get_secret`). See
+    /// docs/rfcs/consolidation-findings.md finding #1.
+    ///
+    /// Deprecation path: this method emits a per-key warning when a
+    /// `ZEROGATE_KEY_*` var is found, so operators notice and can
+    /// migrate to the standard form. A future PR removes this method
+    /// outright once all deployments have migrated.
     pub fn load_from_env(&mut self) {
         for (key, value) in std::env::vars() {
             if let Some(provider) = key.strip_prefix("ZEROGATE_KEY_") {
-                let provider = provider.to_lowercase();
-                info!("Loaded credential for provider: {}", provider);
-                self.credentials.insert(provider, value);
+                let provider_lower = provider.to_lowercase();
+                tracing::warn!(
+                    env_var = %key,
+                    provider = %provider_lower,
+                    "ZEROGATE_KEY_* is deprecated — set {}_API_KEY instead \
+                     so the shared resolver (env/fnox/vault) finds it",
+                    provider
+                );
+                self.credentials.insert(provider_lower, value);
             }
         }
     }
@@ -115,10 +132,15 @@ impl CredentialInjector {
     /// rotated key picked up by env or fnox takes effect on the next
     /// request without a restart.
     ///
-    /// Cache policy: first-write-wins. Rotation requires either clearing
-    /// the cache (TODO: TTL) or restarting. Short-term acceptable because
-    /// most deployments restart on config change; long-term a TTL or
-    /// explicit invalidation hook is cleaner.
+    /// Cache policy nuance: `ensure_cached` itself is first-write-wins
+    /// (returns early if the provider is already present, never
+    /// overwrites). But `add()` is last-write-wins (unconditional
+    /// `insert`). Together: a rotation performed via direct `add(name,
+    /// new_value)` takes effect immediately; a rotation that arrives
+    /// only in env/fnox/vault will NOT be picked up once the cache is
+    /// populated. The gap is acceptable short-term (most deployments
+    /// restart on config change); long-term a TTL or explicit
+    /// invalidation hook is cleaner.
     pub async fn ensure_cached(&self, provider: &str) -> bool {
         let key = provider.to_lowercase();
         if self.credentials.contains_key(&key) {
