@@ -51,27 +51,35 @@ impl CredentialInjector {
     }
 
     /// Detect which provider a host belongs to.
+    ///
+    /// Matching is suffix-bounded on a DNS label boundary, not a plain
+    /// substring: `host == domain || host.ends_with(".domain")`. This
+    /// prevents an attacker-registered domain like
+    /// `api.openai.com.evil.example` from being identified as
+    /// `openai` (which would trigger credential injection to the
+    /// wrong party). A prior substring implementation had this bug;
+    /// see the `detect_provider_rejects_lookalike_suffix_hosts` test.
     fn detect_provider(&self, host: &str) -> Option<String> {
         let host_lower = host.to_lowercase();
-        if host_lower.contains("openai.com") {
-            Some("openai".into())
-        } else if host_lower.contains("api.anthropic.com") {
-            Some("anthropic".into())
-        } else if host_lower.contains("generativelanguage.googleapis.com") {
-            Some("google".into())
-        } else if host_lower.contains("openrouter.ai") {
-            Some("openrouter".into())
-        } else if host_lower.contains("api.moonshot.cn") || host_lower.contains("kimi.moonshot.cn")
-        {
-            Some("kimi".into())
-        } else if host_lower.contains("api.github.com") || host_lower.contains("github.com") {
-            Some("github".into())
-        } else if host_lower.contains("api.cloudflare.com") || host_lower.contains("cloudflare.com")
-        {
-            Some("cloudflare".into())
-        } else {
-            None
+        // Table of (domain, provider-name). Order is first-match-wins;
+        // put more-specific before more-general (api.github.com would
+        // match before github.com if both were listed separately — but
+        // we only list one per provider so it doesn't matter today).
+        const PROVIDERS: &[(&str, &str)] = &[
+            ("openai.com", "openai"),
+            ("anthropic.com", "anthropic"),
+            ("generativelanguage.googleapis.com", "google"),
+            ("openrouter.ai", "openrouter"),
+            ("moonshot.cn", "kimi"),
+            ("github.com", "github"),
+            ("cloudflare.com", "cloudflare"),
+        ];
+        for (domain, provider) in PROVIDERS {
+            if host_lower == *domain || host_lower.ends_with(&format!(".{domain}")) {
+                return Some((*provider).into());
+            }
         }
+        None
     }
 
     /// Format the auth header based on provider conventions.
@@ -231,6 +239,62 @@ mod tests {
             Some("sk-from-add".into()),
             "cached value must not be overwritten by a successful resolver call"
         );
+    }
+
+    /// Given a URL host that contains a provider name as a substring
+    /// but is NOT a legitimate subdomain of that provider,
+    /// when detect_provider is called,
+    /// then it returns None.
+    ///
+    /// This is a security-critical assertion. A naive substring match
+    /// against `host.contains("openai.com")` would happily match
+    /// `api.openai.com.evil.example` and inject the user's OpenAI
+    /// credential into a request to the attacker's server. The match
+    /// must be suffix-bounded on a dot boundary (host is exactly the
+    /// domain, or ends with `.<domain>`). Discovered by the
+    /// test-quality audit subagent on 2026-04-24.
+    #[test]
+    fn detect_provider_rejects_lookalike_suffix_hosts() {
+        let injector = CredentialInjector::new();
+        let lookalikes = [
+            "api.openai.com.evil.example",
+            "openai.com.attacker.test",
+            "api.anthropic.com.evil.xyz",
+            "openrouter.ai.evil.test",
+            "github.com.phish.example",
+            "generativelanguage.googleapis.com.attacker.test",
+        ];
+        for host in lookalikes {
+            assert_eq!(
+                injector.detect_provider(host),
+                None,
+                "lookalike host {host:?} must NOT be identified as a known provider — \
+                 a non-None here means an attacker who registers a .evil.example \
+                 subdomain can trigger credential injection for the named provider"
+            );
+        }
+    }
+
+    /// Positive companion to the above: legitimate subdomains must still
+    /// be detected. `api.openai.com` is openai; the bare `openai.com`
+    /// is openai too (some legitimate callers may hit the apex).
+    #[test]
+    fn detect_provider_accepts_real_subdomains() {
+        let injector = CredentialInjector::new();
+        let cases = [
+            ("api.openai.com", "openai"),
+            ("openai.com", "openai"),
+            ("api.anthropic.com", "anthropic"),
+            ("api.github.com", "github"),
+            ("github.com", "github"),
+        ];
+        for (host, expected) in cases {
+            assert_eq!(
+                injector.detect_provider(host),
+                Some(expected.into()),
+                "legitimate host {host:?} must be detected as {expected:?}"
+            );
+        }
     }
 
     /// Given a cache that has no entry for the provider,

@@ -312,30 +312,49 @@ impl SecurityProxy {
         }
     }
 
+    /// Check whether the bypass list allows skipping inbound/outbound
+    /// scanning for this URL. Match is performed against the URL's HOST
+    /// only, never against path/query/fragment — otherwise a URL like
+    /// `https://evil.com/?redirect=localhost` would "match" the bypass
+    /// list by substring and smuggle the request past the scanner.
     fn check_bypassed(&self, url: &str) -> bool {
+        let Some(host) = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+        else {
+            // Unparseable URL: fail closed (do not bypass).
+            return false;
+        };
+        let host_lower = host.to_lowercase();
         for pattern in &self.config.bypass_domains {
-            if Self::match_wildcard(url, pattern) {
+            if Self::host_matches_pattern(&host_lower, pattern) {
                 return true;
             }
         }
         false
     }
 
-    /// Matches a URL against a pattern that may contain `*` wildcards.
-    fn match_wildcard(url: &str, pattern: &str) -> bool {
-        if !pattern.contains('*') {
-            // Simple substring match for non-wildcard patterns
-            return url.contains(pattern);
+    /// Match a parsed host against a bypass pattern. Patterns may
+    /// contain `*` wildcards; semantics:
+    ///   - no `*`: host must equal the pattern (case-insensitive) OR
+    ///     end with `.<pattern>` (DNS-label boundary)
+    ///   - with `*`: treat as a regex anchored to the full host (so
+    ///     `192.168.1.*` matches any host in that /24, but NOT a host
+    ///     containing that IP as a substring elsewhere).
+    fn host_matches_pattern(host: &str, pattern: &str) -> bool {
+        let pattern_lower = pattern.to_lowercase();
+        if !pattern_lower.contains('*') {
+            // Exact or DNS-suffix match. Rejects substring-in-path
+            // smuggling because `host` is already just the authority.
+            return host == pattern_lower || host.ends_with(&format!(".{pattern_lower}"));
         }
-        // Convert wildcard pattern to regex-like matching
-        // Escape special regex chars, then replace \* with .*
-        let regex_pattern = pattern.replace('.', r"\.").replace('*', ".*");
-        if let Ok(re) = regex::Regex::new(&regex_pattern) {
-            re.is_match(url)
-        } else {
-            // Fallback to simple contains if regex fails
-            url.contains(&pattern.replace('*', ""))
-        }
+        // Wildcard: regex-anchored to the full host, not free-floating
+        // inside the URL.
+        let regex_body = pattern_lower.replace('.', r"\.").replace('*', ".*");
+        let anchored = format!("^{regex_body}$");
+        regex::Regex::new(&anchored)
+            .map(|re| re.is_match(host))
+            .unwrap_or(false)
     }
 }
 
@@ -678,5 +697,48 @@ mod tests {
         assert!(proxy.check_bypassed("http://192.168.1.100:3000/data"));
         assert!(!proxy.check_bypassed("https://evil.com/steal"));
         assert!(!proxy.check_bypassed("https://api.openai.com/v1/chat"));
+    }
+
+    /// Given a bypass list containing "localhost" (a hostname pattern),
+    /// and an outbound URL that embeds the string "localhost" in its path
+    /// or query (but is actually targeted at an external host),
+    /// when check_bypassed is called,
+    /// then it returns false — the URL is NOT bypassed.
+    ///
+    /// This prevents a URL like `https://evil.com/?redirect=localhost.com`
+    /// from smuggling a bypass via substring match. Discovered in the
+    /// test-quality audit on 2026-04-24.
+    #[test]
+    fn check_bypassed_rejects_host_string_embedded_in_path() {
+        let config = GatewayConfig {
+            bypass_domains: vec!["localhost".into(), "192.168.1.*".into()],
+            ..Default::default()
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let proxy = rt.block_on(async {
+            SecurityProxy::new(config, ScannerConfig::default(), RateLimitConfig::default()).await
+        });
+
+        let smuggled = [
+            // Plain substring in path
+            "https://evil.com/steal?redirect=localhost",
+            // IP in query param
+            "https://evil.com/?target=192.168.1.42",
+            // Fragment
+            "https://evil.com/api#localhost",
+            // Userinfo (ugly but valid URL)
+            "https://user:pass@evil.com/?where=localhost",
+        ];
+        for url in smuggled {
+            assert!(
+                !proxy.check_bypassed(url),
+                "URL {url:?} must NOT bypass scanning — the bypass list is \
+                 a host pattern, not a free-form URL-substring pattern"
+            );
+        }
+
+        // Sanity: legitimate same-host bypasses still work.
+        assert!(proxy.check_bypassed("http://localhost:8080/api"));
+        assert!(proxy.check_bypassed("http://192.168.1.1/anything"));
     }
 }
