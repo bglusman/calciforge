@@ -166,7 +166,7 @@ fn handle_message_nonblocking(
     }
 
     // If the text looks like a !command but wasn't handled as a pre-auth
-    // local command and it is NOT a post-auth command (status/switch/default/sessions),
+    // local command and it is NOT a post-auth command (status/switch/default/sessions/secure),
     // reply with a helpful unknown-command message rather than routing it to an agent.
     if CommandHandler::is_command(&text)
         && !CommandHandler::is_status_command(&text)
@@ -174,6 +174,7 @@ fn handle_message_nonblocking(
         && !CommandHandler::is_default_command(&text)
         && !CommandHandler::is_sessions_command(&text)
         && !CommandHandler::is_model_command(&text)
+        && !CommandHandler::is_secure_command(&text)
     {
         let reply = command_handler.unknown_command(&text);
         let bot2 = bot.clone();
@@ -250,6 +251,32 @@ fn handle_message_nonblocking(
         tokio::spawn(async move {
             if let Err(e) = bot2.send_message(chat_id, &reply).await {
                 warn!(chat_id = %chat_id, error = %e, "failed to send default reply");
+            }
+        });
+        return;
+    }
+
+    // !secure — store/list secrets without ever routing the value to an
+    // agent. Runs post-auth so we can audit who set what; doesn't yet
+    // gate by role (open for any authenticated identity). The handler
+    // is async because it shells out to `fnox`.
+    //
+    // We deliberately do NOT log `text` here or in the handler — the
+    // `!secure set NAME=value` form contains a secret value that must
+    // not appear in ops logs. debug! logs only that a !secure command
+    // was handled; the handler never logs `text` either.
+    if CommandHandler::is_secure_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        let cmd_handler = command_handler.clone();
+        let identity_id = identity.id.clone();
+        let bot2 = bot.clone();
+        let text_for_handler = text.clone();
+        tokio::spawn(async move {
+            let reply = cmd_handler
+                .handle_secure(&text_for_handler, &identity_id)
+                .await;
+            if let Err(e) = bot2.send_message(chat_id, &reply).await {
+                warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
             }
         });
         return;
@@ -543,6 +570,18 @@ async fn handle_message(
         let reply = command_handler.handle_default(&identity.id);
         if let Err(e) = bot.send_message(chat_id, &reply).await {
             warn!(chat_id = %chat_id, error = %e, "failed to send default reply");
+        }
+        return;
+    }
+
+    // !secure — store/list secrets without routing the value to an
+    // agent. Logged debug-level with no text to keep the value out of
+    // ops logs (`!secure set NAME=value` would otherwise be visible).
+    if CommandHandler::is_secure_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        let reply = command_handler.handle_secure(&text, &identity.id).await;
+        if let Err(e) = bot.send_message(chat_id, &reply).await {
+            warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
         }
         return;
     }
