@@ -33,3 +33,6 @@ secrets/
 # — see .gitleaks.local.toml.example for the template
 .gitleaks.local.toml
 homeserver.log
+.claude/REVIEW_PENDING
+.claude/pending-reviews/
+.claude/settings.local.json
