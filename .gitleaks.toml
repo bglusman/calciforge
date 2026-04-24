@@ -77,6 +77,11 @@ paths = [
     '''(?i).*\.example\..*''',
     '''tests/.*/fixtures/.*''',
     '''CHANGELOG.*''',
+    # RFC/design docs quote secret-shaped strings (e.g. example keys in
+    # illustrative snippets, audit notes describing a pattern). These
+    # files are human-authored prose, not code or configs, so the entropy
+    # heuristics produce false positives when they talk *about* secrets.
+    '''docs/rfcs/.*\.md$''',
     # Lockfiles: crate checksums, not secrets.
     '''Cargo\.lock$''',
     '''package-lock\.json$''',
@@ -100,4 +105,11 @@ regexes = [
     '''example\.test''',
     # Common router-default gateway used as a placeholder in docs
     '''192\.168\.1\.1''',
+    # Adversarial test fixtures that intentionally contain shapes the
+    # scanner should catch — e.g. private IPs, user:pass@host URLs —
+    # to prove detection. Specific values only; generic ranges still
+    # fail so this list stays tight.
+    '''192\.168\.1\.42''',
+    '''192\.168\.1\.100''',
+    '''user:pass@evil\.com''',
 ]
