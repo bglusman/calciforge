@@ -169,17 +169,29 @@ ensure_fnox() {
     if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
         if ask_install fnox "via brew install fnox"; then
             echo "  Installing fnox..."
+            # Use PIPESTATUS to catch brew's real exit code — `| tail -3`
+            # would otherwise bury a failure behind a successful `tail`.
             brew install fnox 2>&1 | tail -3
-            ok "fnox installed"
-            return 0
+            local brew_rc=${PIPESTATUS[0]}
+            if [[ $brew_rc -eq 0 ]]; then
+                ok "fnox installed"
+                return 0
+            fi
+            warn "brew install fnox failed (exit $brew_rc); falling back to cargo path"
         fi
     fi
     local cargo_bin="$HOME/.cargo/bin/cargo"
     if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
         echo "  Installing fnox via cargo..."
+        # Same pattern as above — the grep|tail pipeline masks
+        # `cargo install`'s exit code otherwise.
         "$cargo_bin" install fnox 2>&1 | grep -E "Installing|Installed|error" | tail -3
-        ok "fnox installed"
-        return 0
+        local cargo_rc=${PIPESTATUS[0]}
+        if [[ $cargo_rc -eq 0 ]]; then
+            ok "fnox installed"
+            return 0
+        fi
+        warn "cargo install fnox failed (exit $cargo_rc) — see output above"
     fi
     warn "fnox not installed — secret lookup will skip the fnox layer (env → vaultwarden still works)"
     return 1
