@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("usage: zeroclawed-secret-paste NAME [DESCRIPTION]"))?;
     let description = args.next().unwrap_or_default();
 
-    let handle = spawn_request(
+    let mut handle = spawn_request(
         name,
         description,
         onecli_client::FnoxClient::new(),
@@ -39,12 +39,26 @@ async fn main() -> anyhow::Result<()> {
     stdout().flush()?;
     eprintln!("Open the URL above in a browser. Server will exit on submit or 5-min expiry.");
 
-    // Keep the process alive until the spawn task ends OR the expiry
-    // passes. Currently no shutdown signal from inside the request
-    // handlers; expiry is the upper bound.
+    // Race submission against expiry. Whichever fires first wins; on
+    // submit we trigger graceful shutdown so axum drains in-flight
+    // requests (the confirmation page render in particular) before the
+    // process exits.
     let until_expiry = (handle.expires_at - chrono::Utc::now())
         .to_std()
         .unwrap_or_default();
-    tokio::time::sleep(until_expiry).await;
+
+    tokio::select! {
+        result = handle.wait_submitted() => {
+            match result {
+                Ok(()) => eprintln!("Submitted. Shutting down."),
+                Err(()) => eprintln!("Server stopped before submission."),
+            }
+        }
+        _ = tokio::time::sleep(until_expiry) => {
+            eprintln!("Expired without submission.");
+        }
+    }
+
+    handle.shutdown();
     Ok(())
 }

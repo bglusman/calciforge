@@ -43,7 +43,7 @@ use tracing::{debug, info, warn};
 
 /// Per-deployment configuration for the paste server. Defaults match
 /// the conservative recommendations in the RFC: 5-min expiry, no
-/// preview, Origin check on.
+/// preview, Origin check on, opaque Origin rejected.
 #[derive(Debug, Clone)]
 pub struct PasteConfig {
     /// How long a single token stays valid before being purged.
@@ -55,6 +55,12 @@ pub struct PasteConfig {
     /// localhost origin. On by default — defends against DNS-rebinding
     /// from an attacker page that resolves to 127.0.0.1.
     pub require_localhost_origin: bool,
+    /// Whether `Origin: null` (sandboxed iframes, file://, certain
+    /// sandbox attributes) counts as a valid localhost origin. OFF by
+    /// default — opaque origins can be smuggled by an attacker page that
+    /// embeds the paste form in a sandboxed iframe and weakens the
+    /// rebinding defense the localhost check exists for.
+    pub allow_null_origin: bool,
 }
 
 impl Default for PasteConfig {
@@ -63,6 +69,7 @@ impl Default for PasteConfig {
             expiry: Duration::from_secs(5 * 60),
             preview_chars: None,
             require_localhost_origin: true,
+            allow_null_origin: false,
         }
     }
 }
@@ -81,17 +88,58 @@ struct ServerState {
     fnox: onecli_client::FnoxClient,
     config: PasteConfig,
     requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    /// One-shot sender used by `post_submit` to signal that the user
+    /// has successfully submitted a value. The CLI awaits the receiving
+    /// half (via [`PasteHandle::wait_submitted`]) so it can exit
+    /// immediately on submit instead of sleeping until expiry.
+    /// Wrapped in a Mutex<Option<_>> because oneshot::Sender::send
+    /// consumes self, and the handler holds &state.
+    submitted: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
-/// Spawned paste-request handle. Carries the URL the user visits.
-/// Drop the handle to stop the server; the listener will refuse new
-/// connections cleanly.
+/// Spawned paste-request handle. Carries the URL the user visits and a
+/// graceful shutdown channel. Dropping the handle still tears down the
+/// server (legacy behavior preserved), but callers are encouraged to
+/// call [`PasteHandle::shutdown`] explicitly so axum's connection-drain
+/// runs and submitted submissions actually flush their fnox set.
 #[derive(Debug)]
 pub struct PasteHandle {
     pub url: String,
     pub token: String,
     pub expires_at: chrono::DateTime<chrono::Utc>,
-    _shutdown: tokio::task::JoinHandle<()>,
+    /// JoinHandle for the server task; kept so dropping the handle
+    /// aborts the task. Real shutdown goes via the oneshot below so
+    /// the server drains in-flight requests first.
+    _server_task: tokio::task::JoinHandle<()>,
+    /// Send-half of the graceful-shutdown signal. Send `()` to ask
+    /// `axum::serve(...).with_graceful_shutdown(...)` to stop accepting
+    /// new connections and drain. Wrapped in Option so `shutdown()`
+    /// can take and consume it.
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Receive-half of the "submitted" signal. None after the first
+    /// `wait_submitted` call (oneshot recv consumes the receiver).
+    submitted_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl PasteHandle {
+    /// Block until the user submits the form successfully, the server
+    /// shuts down, or the receiver is otherwise dropped. Returns
+    /// `Ok(())` on submit, `Err(())` on any other terminal state.
+    /// Callable at most once per handle.
+    pub async fn wait_submitted(&mut self) -> Result<(), ()> {
+        let Some(rx) = self.submitted_rx.take() else {
+            return Err(());
+        };
+        rx.await.map_err(|_| ())
+    }
+
+    /// Trigger graceful shutdown: server stops accepting new
+    /// connections and drains in-flight requests. Idempotent.
+    pub fn shutdown(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 /// Errors callers may need to handle.
@@ -105,11 +153,14 @@ pub enum PasteError {
 
 /// Spawn a one-shot paste server bound to a random localhost port.
 /// Returns immediately with the URL the user should open. The server
-/// runs in a background tokio task and shuts itself down on
-/// completion or expiry.
+/// runs in a background tokio task; call [`PasteHandle::wait_submitted`]
+/// to block until the user submits, and [`PasteHandle::shutdown`] to
+/// trigger graceful drain.
 ///
-/// Port: 0 (kernel picks a free port). Override via `PORT` env if you
-/// need a stable port for testing.
+/// Port: 0 (kernel picks a free port). The previous doc claimed a
+/// `PORT` env override existed; it didn't, so the claim is removed
+/// rather than papered over. If a stable port is needed (e.g.
+/// integration testing), expose it via PasteConfig in a follow-up.
 pub async fn spawn_request(
     name: impl Into<String>,
     description: impl Into<String>,
@@ -134,10 +185,15 @@ pub async fn spawn_request(
             completed: false,
         },
     );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (submitted_tx, submitted_rx) = tokio::sync::oneshot::channel::<()>();
+
     let state = ServerState {
         fnox,
         config: config.clone(),
         requests: Arc::new(Mutex::new(state_requests)),
+        submitted: Arc::new(Mutex::new(Some(submitted_tx))),
     };
 
     let app = Router::new()
@@ -155,15 +211,21 @@ pub async fn spawn_request(
     info!(secret = %name, addr = %addr, "secret-paste server listening");
     debug!(secret = %name, %url, "secret-paste full URL (debug-only)");
 
-    let shutdown = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+    let server_task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
     });
 
     Ok(PasteHandle {
         url,
         token,
         expires_at,
-        _shutdown: shutdown,
+        _server_task: server_task,
+        shutdown_tx: Some(shutdown_tx),
+        submitted_rx: Some(submitted_rx),
     })
 }
 
@@ -225,10 +287,11 @@ async fn post_submit(
     axum::Form(form): axum::Form<SubmitForm>,
 ) -> impl IntoResponse {
     if state.config.require_localhost_origin {
+        let allow_null = state.config.allow_null_origin;
         let ok = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(is_localhost_origin);
+            .is_some_and(|o| is_localhost_origin(o, allow_null));
         if !ok {
             warn!("rejecting paste POST: missing/non-localhost Origin header");
             return (
@@ -302,6 +365,14 @@ async fn post_submit(
                     r.completed = true;
                 }
             }
+            // Signal the spawning task that submission succeeded so the
+            // CLI can exit immediately instead of sleeping until expiry.
+            // The send may fail if the receiver was already dropped
+            // (handle gone, second submit on same token) — both are
+            // benign, ignore the result.
+            if let Some(tx) = state.submitted.lock().await.take() {
+                let _ = tx.send(());
+            }
             let preview = state
                 .config
                 .preview_chars
@@ -322,11 +393,13 @@ async fn post_submit(
     }
 }
 
-fn is_localhost_origin(origin: &str) -> bool {
+fn is_localhost_origin(origin: &str, allow_null: bool) -> bool {
+    if origin == "null" {
+        return allow_null;
+    }
     origin.starts_with("http://127.0.0.1:")
         || origin.starts_with("http://localhost:")
         || origin == "http://localhost"
-        || origin == "null" // chrome sets "null" for file:// + some sandbox cases; we accept
 }
 
 fn truncated_preview(value: &str, n: usize) -> String {
@@ -619,5 +692,128 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 403);
+    }
+
+    /// Given the default config (allow_null_origin=false) and a POST
+    /// with `Origin: null` (sandboxed iframe / file://),
+    /// when the user POSTs,
+    /// then the server returns 403. This guards the regression where
+    /// `is_localhost_origin` previously accepted "null" unconditionally,
+    /// weakening the DNS-rebinding defense an attacker page could chain
+    /// through a sandboxed iframe.
+    #[tokio::test]
+    async fn null_origin_rejected_by_default() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(&dir, "exit 0");
+        let client = onecli_client::FnoxClient::with_binary(bin);
+
+        let handle = spawn_request("K", "", client, PasteConfig::default())
+            .await
+            .unwrap();
+
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(&handle.url)
+            .header("Origin", "null")
+            .form(&[("value", "v")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            403,
+            "Origin: null must be 403 by default — opaque origin can be \
+             smuggled via sandboxed iframe; need explicit allow_null_origin=true"
+        );
+    }
+
+    /// Given allow_null_origin=true and a POST with `Origin: null`,
+    /// when the user POSTs (assuming no other guards reject),
+    /// then the server proceeds (here: 200 confirmation page on a
+    /// freshly-spawned new-secret request). Pairs with the negative
+    /// test above to prove the flag actually toggles behavior, not just
+    /// passes through.
+    #[tokio::test]
+    async fn null_origin_accepted_when_explicitly_allowed() {
+        let dir = TempDir::new().unwrap();
+        // Fake fnox: list returns nothing (so "new-only" check passes),
+        // set succeeds.
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then exit 0; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = onecli_client::FnoxClient::with_binary(bin);
+
+        let handle = spawn_request(
+            "K",
+            "",
+            client,
+            PasteConfig {
+                allow_null_origin: true,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(&handle.url)
+            .header("Origin", "null")
+            .form(&[("value", "v")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "Origin: null must be accepted when allow_null_origin=true"
+        );
+    }
+
+    /// Given a freshly-spawned paste server,
+    /// when the user successfully submits,
+    /// then `wait_submitted()` returns Ok(()) — proves the
+    /// "exit on submit" plumbing wires the handler signal to the
+    /// handle's awaitable.
+    #[tokio::test]
+    async fn wait_submitted_returns_on_successful_submit() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then exit 0; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = onecli_client::FnoxClient::with_binary(bin);
+
+        let mut handle = spawn_request(
+            "MY_KEY",
+            "",
+            client,
+            PasteConfig {
+                require_localhost_origin: false, // simplify: skip Origin in the test
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let url = handle.url.clone();
+
+        // Spawn the submit in another task; await the signal in the
+        // main test body so the handle's wait_submitted is the
+        // observable assertion.
+        tokio::spawn(async move {
+            let http = reqwest::Client::new();
+            let _ = http.post(&url).form(&[("value", "v")]).send().await;
+        });
+
+        // 2-second cap so the test can never hang the suite.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait_submitted()).await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "wait_submitted should resolve Ok(()) on submit; got {result:?}"
+        );
+
+        handle.shutdown();
     }
 }
