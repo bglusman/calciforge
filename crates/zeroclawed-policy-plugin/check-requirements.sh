@@ -1,13 +1,13 @@
 #!/bin/bash
 # check-openclaw-version.sh
-# Verify OpenClaw version meets requirements for zeroclawed-policy-plugin
+# Verify OpenClaw version meets requirements for calciforge-policy-plugin
 
 set -e
 
 MIN_VERSION="2026.3.24-beta.2"
 REQUIRED_FEATURE="before_tool_call hook with requireApproval"
 
-echo "Checking OpenClaw version requirements for ZeroClawed policy enforcement..."
+echo "Checking OpenClaw version requirements for Calciforge policy enforcement..."
 echo ""
 
 # Check if openclaw command exists
@@ -51,7 +51,7 @@ if version_ge "$OPENCLAW_VERSION" "$MIN_VERSION"; then
     echo "  ✅ before_tool_call hook"
     echo "  ✅ requireApproval in hook results"
     echo ""
-    echo "You can now install the zeroclawed-policy-plugin"
+    echo "You can now install the calciforge-policy-plugin"
 else
     echo "❌ OpenClaw version check FAILED"
     echo ""
@@ -78,10 +78,10 @@ else
     echo "   The plugin will not work without clashd."
     echo ""
     echo "Start clashd with:"
-    echo "  docker run -d --name clashd -p 9001:9001 zeroclawed/clashd:latest"
+    echo "  docker run -d --name clashd -p 9001:9001 calciforge/clashd:latest"
     echo ""
     echo "Or from source:"
-    echo "  cd /path/to/zeroclawed && cargo run -p clashd"
+    echo "  cd /path/to/calciforge && cargo run -p clashd"
     exit 1
 fi
 

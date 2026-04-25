@@ -1,14 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# ZeroClawed Security Stack Installer
+# Calciforge Security Stack Installer
 # Deploys: adversary-detector + security-gateway + clashd
 # Reads agents.json to auto-configure credentials and proxy settings
 #
 # Supports multiple hosts — pass them all as args or via targets.txt
 
-INSTALL_DIR="/opt/zeroclawed"
-CONFIG_DIR="/etc/zeroclawed"
+INSTALL_DIR="/opt/calciforge"
+CONFIG_DIR="/etc/calciforge"
 GATEWAY_PORT="8080"
 DETECTOR_PORT="9800"
 CLASHD_PORT="9001"
@@ -33,7 +33,7 @@ else
     exit 1
 fi
 
-echo "=== ZeroClawed Security Stack ==="
+echo "=== Calciforge Security Stack ==="
 echo "Action: $ACTION"
 echo "Targets: ${TARGETS[*]}"
 echo ""
@@ -52,7 +52,7 @@ copy_to() {
 # ── Actions ────────────────────────────────────────────────────────
 build() {
     echo "Building release binaries..."
-    cd /root/projects/zeroclawed
+    cd /root/projects/calciforge
     cargo build --release -p adversary-detector -p security-gateway -p clashd 2>&1 | tail -3
     echo "Build complete."
 }
@@ -69,18 +69,18 @@ deploy_host() {
 
     # Copy binaries
     for bin in adversary-detector security-gateway clashd; do
-        copy_to "/root/projects/zeroclawed/target/release/$bin" "$host" "$INSTALL_DIR/bin/$bin" 2>&1
+        copy_to "/root/projects/calciforge/target/release/$bin" "$host" "$INSTALL_DIR/bin/$bin" 2>&1
         run_on "$host" "chmod +x $INSTALL_DIR/bin/$bin"
     done
 
     # Copy config
-    copy_to "/root/projects/zeroclawed/crates/clashd/config/agents.json" "$host" "$CONFIG_DIR/agents.json" 2>&1
-    copy_to "/root/projects/zeroclawed/crates/clashd/config/default-policy.star" "$host" "$CONFIG_DIR/default-policy.star" 2>&1
+    copy_to "/root/projects/calciforge/crates/clashd/config/agents.json" "$host" "$CONFIG_DIR/agents.json" 2>&1
+    copy_to "/root/projects/calciforge/crates/clashd/config/default-policy.star" "$host" "$CONFIG_DIR/default-policy.star" 2>&1
 
     # Install systemd services
     run_on "$host" "cat > /etc/systemd/system/adversary-detector.service << 'EOF'
 [Unit]
-Description=ZeroClawed Adversary Detector
+Description=Calciforge Adversary Detector
 After=network.target
 
 [Service]
@@ -97,7 +97,7 @@ EOF
 
 cat > /etc/systemd/system/security-gateway.service << 'EOF'
 [Unit]
-Description=ZeroClawed Security Gateway
+Description=Calciforge Security Gateway
 After=network.target adversary-detector.service
 
 [Service]
@@ -115,7 +115,7 @@ EOF
 
 cat > /etc/systemd/system/clashd.service << 'EOF'
 [Unit]
-Description=ZeroClawed Clashd Policy Engine
+Description=Calciforge Clashd Policy Engine
 After=network.target
 
 [Service]
@@ -135,14 +135,14 @@ systemctl enable adversary-detector security-gateway clashd
 systemctl restart adversary-detector security-gateway clashd" 2>&1
 
     # Setup proxy env vars
-    run_on "$host" "cat > /etc/profile.d/zeroclawed-proxy.sh << 'EOF'
-# ZeroClawed Security Gateway — Tier 1 Enforcement
+    run_on "$host" "cat > /etc/profile.d/calciforge-proxy.sh << 'EOF'
+# Calciforge Security Gateway — Tier 1 Enforcement
 # All HTTP/HTTPS traffic is routed through the security gateway
 export HTTP_PROXY=http://127.0.0.1:$GATEWAY_PORT
 export HTTPS_PROXY=http://127.0.0.1:$GATEWAY_PORT
 export NO_PROXY=localhost,127.0.0.1,192.168.1.*,10.*.*.*
 EOF
-chmod +x /etc/profile.d/zeroclawed-proxy.sh" 2>&1
+chmod +x /etc/profile.d/calciforge-proxy.sh" 2>&1
 
     echo "  ✅ Deployed to $host"
 }
@@ -205,7 +205,7 @@ case "$ACTION" in
         ;;
     help|*)
         cat << 'USAGE'
-ZeroClawed Security Stack Installer
+Calciforge Security Stack Installer
 
 Usage:
   scripts/install-security-stack.sh <action> [host1 host2 ...]

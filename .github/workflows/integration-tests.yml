@@ -1,4 +1,4 @@
-name: ZeroClawed Integration Tests
+name: Calciforge Integration Tests
 
 on:
   push:
@@ -43,7 +43,7 @@ jobs:
           # Skip tests that require running services in CI
           SKIP_LIVE_TESTS: 1
 
-  test-onecli:
+  test-secrets:
     name: OneCLI Proxy Tests
     runs-on: ubuntu-latest
     needs: test
@@ -56,13 +56,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build OneCLI
-        run: cargo build -p onecli-client --release
+        run: cargo build -p secrets-client --release
 
       - name: Start OneCLI service
         run: |
-          cargo run -p onecli-client --release &
-          ONECLI_PID=$!
-          echo "ONECLI_PID=$ONECLI_PID" >> $GITHUB_ENV
+          cargo run -p secrets-client --release &
+          SECRETS_PID=$!
+          echo "SECRETS_PID=$SECRETS_PID" >> $GITHUB_ENV
           for i in {1..30}; do
             if curl -s http://127.0.0.1:8081/health > /dev/null; then
               echo "OneCLI is ready"
@@ -72,15 +72,15 @@ jobs:
           done
 
       - name: Run OneCLI proxy tests
-        run: cargo test -p zeroclawed test_proxy_ -- --nocapture
+        run: cargo test -p calciforge test_proxy_ -- --nocapture
         env:
-          ONECLI_URL: http://127.0.0.1:8081
+          SECRETS_URL: http://127.0.0.1:8081
 
       - name: Stop OneCLI service
         if: always()
         run: |
-          if [ -n "$ONECLI_PID" ]; then
-            kill $ONECLI_PID || true
+          if [ -n "$SECRETS_PID" ]; then
+            kill $SECRETS_PID || true
           fi
 
   lint:

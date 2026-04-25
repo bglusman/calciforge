@@ -91,8 +91,8 @@ async fn spawn_gateway(allowlist: HashMap<String, Vec<String>>) -> (String, Mock
 #[tokio::test]
 async fn no_allowlist_entry_means_no_restriction() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TDA_BASE_API_KEY", "value-base");
 
     let (gateway, upstream) = spawn_gateway(HashMap::new()).await;
@@ -125,8 +125,8 @@ async fn no_allowlist_entry_means_no_restriction() {
 #[tokio::test]
 async fn allowlist_with_matching_host_pattern_substitutes() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TDA_MATCH_API_KEY", "value-match");
 
     // Spawn the upstream first so we know its host pattern.
@@ -213,8 +213,8 @@ async fn allowlist_with_matching_host_pattern_substitutes() {
 #[tokio::test]
 async fn allowlist_blocks_substitution_to_disallowed_host() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     // Even setting the value — substitution should never get to the
     // resolver because the allowlist gate fires first.
     set_env("TDA_LOCKED_API_KEY", "should-never-leave-the-process");
@@ -264,8 +264,8 @@ async fn allowlist_blocks_substitution_to_disallowed_host() {
 #[tokio::test]
 async fn empty_allowlist_locks_secret_completely() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TDA_DISABLED_API_KEY", "irrelevant");
 
     let mut allow = HashMap::new();
@@ -305,8 +305,8 @@ async fn empty_allowlist_locks_secret_completely() {
 #[tokio::test]
 async fn allowlist_wildcard_pattern_matches() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TDA_GLOB_API_KEY", "via-glob");
 
     // wiremock binds to 127.0.0.1; pattern uses 127.* so it should
@@ -352,8 +352,8 @@ async fn allowlist_wildcard_pattern_matches() {
 #[tokio::test]
 async fn allowlist_blocks_url_embedded_secret_to_disallowed_host() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TDA_URL_API_KEY", "should-never-leave-the-process");
 
     let mut allow = HashMap::new();

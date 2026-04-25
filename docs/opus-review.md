@@ -1,7 +1,7 @@
 # Opus Code Review — 2026-03-30
 
 _Reviewer: Claude Opus 4.6 (subagent session)_
-_Scope: Sessions 1–4 of zeroclawed vault/migration/installer sprint_
+_Scope: Sessions 1–4 of calciforge vault/migration/installer sprint_
 _Lines reviewed: ~6,873 new across vault, migration, and installer modules_
 
 ---
@@ -59,7 +59,7 @@ The `_expected_expiry` is unused. The cached entry's own `expires_at` (set at ca
 
 ### C4. `strip_json_comments_simple` in executor.rs has a `prev` tracking bug
 
-**File:** `crates/zeroclawed/src/install/executor.rs` (the `strip_json_comments_simple` function)
+**File:** `crates/calciforge/src/install/executor.rs` (the `strip_json_comments_simple` function)
 
 ```rust
 let mut prev = '\0';
@@ -85,16 +85,16 @@ The NZC version in `migration.rs` handles this correctly with an `escape_next` b
 
 `nonzeroclaw::onboard::migration::strip_json_comments` (correct, tested, handles edge cases)
 vs
-`zeroclawed::install::executor::strip_json_comments_simple` (simpler, has the `prev` bug above)
+`calciforge::install::executor::strip_json_comments_simple` (simpler, has the `prev` bug above)
 
 The INSTALLER-IMPL-NOTES.md already calls this out. This is the canonical case for extraction into a shared crate.
 
-**Fix:** Create `crates/claw-types/` (or `crates/zeroclawed-shared/`) containing:
+**Fix:** Create `crates/claw-types/` (or `crates/calciforge-shared/`) containing:
 - `strip_json_comments` / `parse_json5_relaxed`
 - `OpenClawInstallation` and detection logic
 - `DetectedChannel`, `ChannelOwner`, `ChannelAssignment`
 
-Both `nonzeroclaw` and `zeroclawed` depend on this shared crate. This eliminates the duplication and the circular dependency problem.
+Both `nonzeroclaw` and `calciforge` depend on this shared crate. This eliminates the duplication and the circular dependency problem.
 
 ### D2. `VaultAdapter::get_secret(key)` vs `VaultSecretConfig::bw_item_id` — naming gap
 
@@ -151,7 +151,7 @@ When the installer detects an existing OpenClaw installation and needs to route 
 
 **Fix:** Unify these types in the shared crate. `ChannelRouting` should reference a `ChannelAssignment` or at least share a common channel identity type.
 
-### D5. `MigrationWizardResult` is `pub(crate)` — can't be used by ZeroClawed
+### D5. `MigrationWizardResult` is `pub(crate)` — can't be used by Calciforge
 
 **File:** `crates/nonzeroclaw/src/onboard/wizard.rs`
 
@@ -159,7 +159,7 @@ When the installer detects an existing OpenClaw installation and needs to route 
 pub(crate) struct MigrationWizardResult {
 ```
 
-The installer docs say ZeroClawed needs this struct. But it's `pub(crate)`, so the zeroclawed crate can't access it. The struct needs to be `pub` and re-exported from `onboard::mod.rs`.
+The installer docs say Calciforge needs this struct. But it's `pub(crate)`, so the calciforge crate can't access it. The struct needs to be `pub` and re-exported from `onboard::mod.rs`.
 
 ### D6. `master_password` stored in memory for adapter lifetime
 
@@ -227,8 +227,8 @@ No test verifies that a round-trip (write → read) preserves the content for ed
 ### Current State
 
 - **47 total commits** on `host-agent-v3` branch (currently checked out)
-- **Origin:** `git@github.com-zeroclawed:upstream-fork/zeroclawed.git` — Brian's own repo
-- **Upstream NZC:** The `nonzeroclaw` crate appears to be a local (non-forked) copy within the zeroclawed monorepo
+- **Origin:** `git@github.com-calciforge:upstream-fork/calciforge.git` — Brian's own repo
+- **Upstream NZC:** The `nonzeroclaw` crate appears to be a local (non-forked) copy within the calciforge monorepo
 - **No upstream remote** for NZC — there's no `git remote` pointing to an NZC upstream
 
 ### What We've Added to NZC
@@ -245,7 +245,7 @@ The uncommitted changes (visible in `git status`) add:
 
 1. The vault interface (`VaultAdapter` trait, approval relay, `VaultManager`) is **generic and reusable**. If NZC were an external project, this would be a strong upstream contribution candidate.
 
-2. The migration module is **ZeroClawed-specific** (migrating from OpenClaw to NZC). It's in the NZC crate because it needs access to NZC's config types, but conceptually it's a ZeroClawed installer concern.
+2. The migration module is **Calciforge-specific** (migrating from OpenClaw to NZC). It's in the NZC crate because it needs access to NZC's config types, but conceptually it's a Calciforge installer concern.
 
 3. The wizard changes are **NZC-specific** — they add a step to NZC's own onboarding flow.
 
@@ -253,11 +253,11 @@ The uncommitted changes (visible in `git status`) add:
 
 The monorepo structure is correct for now. Brian owns both crates. The risk isn't "upstream divergence" — it's **crate boundary hygiene**:
 
-- Migration types (`OpenClawInstallation`, `DetectedChannel`, `ChannelAssignment`) are defined in NZC but needed by ZeroClawed. These should live in a shared crate (see D1).
-- The vault module is NZC-specific infrastructure that ZeroClawed _uses_ through the install flow. This is fine where it is.
+- Migration types (`OpenClawInstallation`, `DetectedChannel`, `ChannelAssignment`) are defined in NZC but needed by Calciforge. These should live in a shared crate (see D1).
+- The vault module is NZC-specific infrastructure that Calciforge _uses_ through the install flow. This is fine where it is.
 - If NZC ever becomes a published crate, the `pub(crate)` visibility on `MigrationWizardResult` needs to become `pub` with a considered public API.
 
-**No urgent restructuring needed.** Extract the shared types crate, keep the vault in NZC, keep the installer in ZeroClawed.
+**No urgent restructuring needed.** Extract the shared types crate, keep the vault in NZC, keep the installer in Calciforge.
 
 ---
 
@@ -268,12 +268,12 @@ From `installer-open-questions.md`:
 ### Priority 1 — Breaks without it
 
 1. **`apply_remote_config` real implementation** (the JSON/TOML patching stub)
-   - **Impact:** Without this, the installer can go through all steps but the actual config change is a stub marker, not a real ZeroClawed integration.
+   - **Impact:** Without this, the installer can go through all steps but the actual config change is a stub marker, not a real Calciforge integration.
    - **Effort:** Medium. The JSON comment stripper exists (from NZC), the backup/rollback infrastructure is tested, the SSH wiring works. Just needs the actual patching logic.
    - **Can the bugfix session tackle this?** Yes. This is the single most important thing.
 
-2. **Config write-back** (persist `ChannelRouting` to `~/.zeroclawed/config.toml`)
-   - **Impact:** The wizard collects channel routing but doesn't write it. ZeroClawed can't route anything.
+2. **Config write-back** (persist `ChannelRouting` to `~/.calciforge/config.toml`)
+   - **Impact:** The wizard collects channel routing but doesn't write it. Calciforge can't route anything.
    - **Effort:** Low. Write the `[[routing]]` TOML entries from collected data.
    - **Bugfix session?** Yes.
 
@@ -320,15 +320,15 @@ Bugfix session priorities: **1 → 2 → 3 → 4 → 5** (in that order). Items 
 
 1. **Real `apply_remote_config`** — replace stub with actual JSON/TOML patching
    - For OpenClaw: add `hooks.enabled`, `hooks.token` to JSON
-   - For NZC: add `[zeroclawed]` section to TOML
+   - For NZC: add `[calciforge]` section to TOML
    - Use `parse_json5_relaxed` from NZC (requires step 3 or a temporary copy)
 
-2. **Persist channel routing** — write `[[routing]]` entries to ZeroClawed config
+2. **Persist channel routing** — write `[[routing]]` entries to Calciforge config
    - Read existing config → merge routing → write back
 
 3. **Extract shared crate** — `crates/claw-types/`
    - Move: `strip_json_comments`, `parse_json5_relaxed`, `OpenClawInstallation`, `DetectedChannel`, `ChannelOwner`, `ChannelAssignment`
-   - Update imports in both NZC and ZeroClawed
+   - Update imports in both NZC and Calciforge
 
 4. **Fix C1** (remove `Clone` from `Secret`/`SecretValue`)
 5. **Fix C2** (pass master password via stdin or child env, not argv)

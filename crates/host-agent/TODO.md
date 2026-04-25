@@ -1,4 +1,4 @@
-# ZeroClawed Host-Agent — Phase 2 TODO
+# Calciforge Host-Agent — Phase 2 TODO
 
 ## Signal Integration
 

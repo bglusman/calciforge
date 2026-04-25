@@ -1,8 +1,8 @@
 {
-  "name": "@zeroclawed/policy-plugin",
+  "name": "@calciforge/policy-plugin",
   "version": "0.1.0",
   "type": "module",
-  "description": "ZeroClawed policy enforcement plugin - integrates clashd for tool call approval",
+  "description": "Calciforge policy enforcement plugin - integrates clashd for tool call approval",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {

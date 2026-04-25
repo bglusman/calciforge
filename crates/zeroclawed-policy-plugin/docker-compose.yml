@@ -1,4 +1,4 @@
-# Docker Compose for ZeroClawed Policy Stack
+# Docker Compose for Calciforge Policy Stack
 # Runs clashd sidecar + OpenClaw with policy plugin for testing
 
 version: "3.8"
@@ -18,7 +18,7 @@ services:
       timeout: 3s
       retries: 3
     networks:
-      - zeroclawed-policy
+      - calciforge-policy
 
   # Mock OpenClaw service for testing the plugin
   # In production, this would be your actual OpenClaw gateway
@@ -36,7 +36,7 @@ services:
       clashd:
         condition: service_healthy
     networks:
-      - zeroclawed-policy
+      - calciforge-policy
     volumes:
       - ./test-config:/config:ro
 
@@ -52,7 +52,7 @@ services:
       - CLASHD_URL=http://clashd:9001
       - OPENCLAW_URL=http://openclaw-mock:18789
     networks:
-      - zeroclawed-policy
+      - calciforge-policy
     command: >
       sh -c "
         echo 'Waiting for services...' &&
@@ -69,5 +69,5 @@ services:
       "
 
 networks:
-  zeroclawed-policy:
+  calciforge-policy:
     driver: bridge

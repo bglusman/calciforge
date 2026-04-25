@@ -2,7 +2,7 @@
 name = "adversary-detector"
 version = "0.1.0"
 edition = "2021"
-description = "ZeroClawed — Adversarial content detection and scanning"
+description = "Calciforge — Adversarial content detection and scanning"
 license = "MIT"
 
 [dependencies]

@@ -1,4 +1,4 @@
-# ACP Adapter for ZeroClawed - Design & Usage Guide
+# ACP Adapter for Calciforge - Design & Usage Guide
 
 **Date:** 2026-03-18  
 **Status:** Implementation Complete (using existing crates)  
@@ -8,7 +8,7 @@
 
 ## Overview
 
-This document describes the ACP (Agent Communication Protocol) adapter for ZeroClawed, which enables users to interact with ACP-compatible coding agents (Claude Code, Codex, OpenCode, etc.) through ZeroClawed's messaging interfaces (Telegram, Signal, WhatsApp, Matrix).
+This document describes the ACP (Agent Communication Protocol) adapter for Calciforge, which enables users to interact with ACP-compatible coding agents (Claude Code, Codex, OpenCode, etc.) through Calciforge's messaging interfaces (Telegram, Signal, WhatsApp, Matrix).
 
 ## What is ACP?
 
@@ -34,7 +34,7 @@ ACP (Agent Communication Protocol) is an open standard for agent communication, 
        └───────────────────┴───────────────────┘         │
                            │                             │
                     ┌──────▼──────┐                      │
-                    │  ZeroClawed   │◄─────────────────────┘
+                    │  Calciforge   │◄─────────────────────┘
                     │   Gateway   │
                     └──────┬──────┘
                            │
@@ -56,7 +56,7 @@ ACP (Agent Communication Protocol) is an open standard for agent communication, 
 
 ### Basic ACP Agent Configuration
 
-Add ACP agents to your `~/.zeroclawed/config.toml`:
+Add ACP agents to your `~/.calciforge/config.toml`:
 
 ```toml
 version = 2
@@ -131,16 +131,16 @@ allowed_agents = ["codex"]
 ### 1. Inbound Message Processing
 
 ```
-[User Message] → [Channel Adapter] → [ZeroClawed Router] → [Identity Check]
+[User Message] → [Channel Adapter] → [Calciforge Router] → [Identity Check]
                                                             ↓
 [ACP Adapter] ← [Session Lookup] ← [Permission Check] ← [Agent Resolution]
 ```
 
 ### 2. ACP Protocol Translation
 
-ZeroClawed converts its normalized message format to ACP JSON-RPC:
+Calciforge converts its normalized message format to ACP JSON-RPC:
 
-**ZeroClawed Message:**
+**Calciforge Message:**
 ```json
 {
   "content": "Refactor this function to use async/await",
@@ -213,7 +213,7 @@ ACP supports steering commands during execution:
 }
 ```
 
-ZeroClawed surfaces these as messages to the user:
+Calciforge surfaces these as messages to the user:
 
 ```
 [Claude Code] Delete file src/main.rs?
@@ -239,7 +239,7 @@ while let Some(chunk) = stream.recv().await {
 ### File Structure
 
 ```
-crates/zeroclawed/
+crates/calciforge/
 ├── src/
 │   ├── lib.rs           # Main library
 │   ├── main.rs          # Binary entry point
@@ -299,7 +299,7 @@ async fn test_acp_stdio_connection() {
 #[tokio::test]
 async fn test_message_translation() {
     let msg = Message::new("Hello", "user1", "signal");
-    let acp = adapter.zeroclawed_to_acp(&msg, "session_123");
+    let acp = adapter.calciforge_to_acp(&msg, "session_123");
     
     assert_eq!(acp.method, "prompt");
 }
@@ -337,9 +337,9 @@ cargo test --features e2e -- --test-threads=1
 
 **A:** Steering flows through these steps:
 1. ACP agent sends `steering/confirm` notification
-2. ZeroClawed receives and surfaces to user
+2. Calciforge receives and surfaces to user
 3. User responds with `!confirm <id> <response>`
-4. ZeroClawed routes confirmation back to ACP agent
+4. Calciforge routes confirmation back to ACP agent
 5. Agent continues with approved action
 
 ### Q: What about agent-to-agent delegation?
@@ -351,7 +351,7 @@ specialties = ["coding", "debugging"]
 access = ["filesystem", "git"]
 ```
 
-When Librarian hits an infra task, ZeroClawed can delegate to Custodian based on registry matching.
+When Librarian hits an infra task, Calciforge can delegate to Custodian based on registry matching.
 
 ## Future Enhancements
 
@@ -368,6 +368,6 @@ See `acp-adapter-implementation.md` for detailed middleware architecture.
 ## References
 
 - [ACP Specification](https://github.com/i-am-bee/acp)
-- [ZeroClawed Spec](/root/.openclaw/workspace/research/zeroclawed-spec.md)
-- [Adapter Trait](/root/.openclaw/workspace/crates/zeroclawed/src/adapters.rs)
-- [ACP Implementation](/root/.openclaw/workspace/crates/zeroclawed/src/providers/acp.rs)
+- [Calciforge Spec](/root/.openclaw/workspace/research/calciforge-spec.md)
+- [Adapter Trait](/root/.openclaw/workspace/crates/calciforge/src/adapters.rs)
+- [ACP Implementation](/root/.openclaw/workspace/crates/calciforge/src/providers/acp.rs)

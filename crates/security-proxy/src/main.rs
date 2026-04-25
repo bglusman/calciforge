@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load from agents.json config
     let agents_config_path =
-        std::env::var("AGENT_CONFIG").unwrap_or_else(|_| "/etc/zeroclawed/agents.json".into());
+        std::env::var("AGENT_CONFIG").unwrap_or_else(|_| "/etc/calciforge/agents.json".into());
 
     if let Ok(agents_config) = AgentsConfig::load(&agents_config_path) {
         info!(

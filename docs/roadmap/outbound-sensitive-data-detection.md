@@ -82,7 +82,7 @@ security:
 
 ### Integration Points
 
-1. **Channel Layer** (ZeroClawed)
+1. **Channel Layer** (Calciforge)
    - Scan agent responses before transmission
    - Configurable per-channel (DMs vs groups)
    - Respect user trust levels

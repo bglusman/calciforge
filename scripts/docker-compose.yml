@@ -1,6 +1,6 @@
 version: "3.9"
 
-# Realistic integration test stack for ZeroClawed + OneCLI
+# Realistic integration test stack for Calciforge + OneCLI
 # This stack reproduces the bugs we found manually:
 # 1. Path routing 404s
 # 2. Credential injection
@@ -27,13 +27,13 @@ services:
       retries: 10
 
   # OneCLI credential proxy
-  onecli:
+  secrets:
     build:
       context: ../../
-      dockerfile: crates/onecli-client/Dockerfile
-    container_name: test-onecli
+      dockerfile: crates/secrets-client/Dockerfile
+    container_name: test-secrets
     environment:
-      - ONECLI_BIND=0.0.0.0:8081
+      - SECRETS_BIND=0.0.0.0:8081
       - VAULTWARDEN_URL=http://vaultwarden:80
       - VAULTWARDEN_TOKEN=test-admin-token
     ports:
@@ -62,21 +62,21 @@ services:
       timeout: 2s
       retries: 10
 
-  # ZeroClawed with test config
-  zeroclawed:
+  # Calciforge with test config
+  calciforge:
     build:
       context: ../../
-      dockerfile: crates/zeroclawed/Dockerfile
-    container_name: test-zeroclawed
+      dockerfile: crates/calciforge/Dockerfile
+    container_name: test-calciforge
     volumes:
-      - ./test-config.toml:/root/.zeroclawed/config.toml:ro
+      - ./test-config.toml:/root/.calciforge/config.toml:ro
     environment:
       - RUST_LOG=debug
     ports:
       - "18792:18792"
       - "18793:18793"
     depends_on:
-      onecli:
+      secrets:
         condition: service_healthy
       mock-llm:
         condition: service_healthy

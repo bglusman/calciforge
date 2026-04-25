@@ -1,4 +1,4 @@
-//! Named security profiles for ZeroClawed installation.
+//! Named security profiles for Calciforge installation.
 //!
 //! Each profile bundles a set of reasonable defaults for different paranoia levels.
 //! Profiles are composable — users can pick a base profile and override individual fields.

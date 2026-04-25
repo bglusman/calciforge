@@ -34,8 +34,8 @@ check_health() {
 }
 
 check_health "http://localhost:8000/health" "mock-llm"
-check_health "http://localhost:8081/health" "onecli" 
-check_health "http://localhost:18792/health" "zeroclawed"
+check_health "http://localhost:8081/health" "secrets" 
+check_health "http://localhost:18792/health" "calciforge"
 
 echo ""
 echo "=== TEST 1: Path routing (Bug #2) ==="
@@ -98,9 +98,9 @@ fi
 
 echo ""
 echo "=== TEST 3: Config validation (Bugs #4, #5, #6) ==="
-echo "Checking ZeroClawed logs for config errors..."
+echo "Checking Calciforge logs for config errors..."
 
-LOGS=$(docker compose -f scripts/docker-compose.yml logs zeroclawed 2>&1 | head -50)
+LOGS=$(docker compose -f scripts/docker-compose.yml logs calciforge 2>&1 | head -50)
 
 if echo "$LOGS" | grep -qi "unknown.*kind"; then
     echo "✅ Config validation caught unknown adapter kind"
@@ -116,12 +116,12 @@ fi
 
 echo ""
 echo "=== TEST 4: Full stack integration ==="
-echo "Sending message through ZeroClawed..."
+echo "Sending message through Calciforge..."
 
 # This would require a more complex setup with actual channels
-# For now, we just verify ZeroClawed started with the test config
+# For now, we just verify Calciforge started with the test config
 echo "ℹ️  Full message flow test requires channel setup (Telegram/WhatsApp mock)"
-echo "   ZeroClawed started: $(curl -sf http://localhost:18792/health && echo 'YES' || echo 'NO')"
+echo "   Calciforge started: $(curl -sf http://localhost:18792/health && echo 'YES' || echo 'NO')"
 
 echo ""
 echo "=== Summary ==="

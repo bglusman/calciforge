@@ -1,4 +1,4 @@
-# Cross-compilation configuration for zeroclawed
+# Cross-compilation configuration for calciforge
 # Used by the `cross` tool for cross-compilation and QEMU testing
 # https://github.com/cross-rs/cross
 

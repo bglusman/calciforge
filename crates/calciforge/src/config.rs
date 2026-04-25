@@ -1,0 +1,1118 @@
+//! PolyConfig — TOML configuration loading and schema types.
+//!
+//! Reads from `~/.calciforge/config.toml`. Supports the full config schema
+//! as defined in the spec (Section 3).
+
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+pub mod validator;
+
+// ---------------------------------------------------------------------------
+// Schema types
+// ---------------------------------------------------------------------------
+
+/// Top-level Calciforge configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PolyConfig {
+    pub calciforge: PolyHeader,
+
+    #[serde(default)]
+    pub identities: Vec<Identity>,
+
+    #[serde(default)]
+    pub agents: Vec<AgentConfig>,
+
+    #[serde(default)]
+    pub routing: Vec<RoutingRule>,
+
+    #[serde(default)]
+    pub channels: Vec<ChannelConfig>,
+
+    #[serde(default)]
+    pub permissions: Option<PermissionsConfig>,
+
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+
+    /// `[context]` — conversation ring buffer + injection settings.
+    /// Omit from config to use defaults (buffer_size=20, inject_depth=5).
+    #[serde(default)]
+    pub context: ContextConfig,
+
+    /// `[model_shortcuts]` — aliases for provider/model combos.
+    /// Use `!model <alias>` to quickly switch models.
+    /// Example: `!model sonnet` expands to `anthropic/claude-sonnet-4.6`
+    #[serde(default)]
+    pub model_shortcuts: Vec<ModelShortcutConfig>,
+
+    /// `[[alloys]]` — model blending/mixing groups.
+    /// Use `!model <alloy-id>` to activate an alloy for an identity.
+    #[serde(default)]
+    pub alloys: Vec<AlloyConfig>,
+
+    /// `[security]` — adversary detector profile and settings.
+    /// Defaults to balanced if not specified in config.
+    #[serde(default)]
+    pub security: Option<SecuritySectionConfig>,
+
+    /// `[proxy]` — OpenAI-compatible HTTP API server settings.
+    /// Enables agents to use Calciforge as a model provider.
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
+
+    /// `[local_models]` — local inference server lifecycle management.
+    /// Enables `!model <id>` and `POST /control/local/switch` to hot-swap
+    /// which HF model is loaded in the local mlx_lm.server or llama-server.
+    #[serde(default)]
+    pub local_models: Option<LocalModelsConfig>,
+}
+
+/// A model shortcut entry (`[[model_shortcuts]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelShortcutConfig {
+    /// Short alias name (e.g. "sonnet", "opus", "fast")
+    pub alias: String,
+    /// Full provider/model string this alias expands to (e.g. "anthropic/claude-sonnet-4.6")
+    pub model: String,
+}
+
+/// Alloy definition (`[[alloys]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AlloyConfig {
+    /// Alloy identifier used by commands (e.g. "free-alloy-1").
+    pub id: String,
+    /// Human-readable alloy name.
+    pub name: String,
+    /// Strategy: "weighted" or "round_robin".
+    pub strategy: String,
+    /// Constituent models for this alloy.
+    #[serde(default)]
+    pub constituents: Vec<AlloyConstituentConfig>,
+    /// Minimum context window (tokens) required from every constituent.
+    ///
+    /// If set: alloy build fails when any constituent with a declared
+    /// `context_window` is smaller than this. Catches "I didn't mean to mix a
+    /// 32K local model into a 200K-context alloy" at config-load time.
+    ///
+    /// If unset: auto-computed as `min(constituent.context_window)` over
+    /// all constituents.
+    #[serde(default)]
+    pub min_context_window: Option<u32>,
+}
+
+/// One alloy constituent (`[[alloys.constituents]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AlloyConstituentConfig {
+    pub model: String,
+    #[serde(default = "default_alloy_weight")]
+    pub weight: u32,
+    /// Declared context window (tokens) for this constituent.
+    ///
+    /// **Required.** No sensible default — declared per-constituent so the
+    /// alloy can compute and enforce a safe effective ceiling. Without this,
+    /// oversized requests could be silently routed to a constituent that
+    /// can't hold them. See `docs/rfcs/model-gateway-primitives.md`.
+    pub context_window: u32,
+}
+
+fn default_alloy_weight() -> u32 {
+    1
+}
+
+/// `[calciforge]` header section.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PolyHeader {
+    pub version: u32,
+}
+
+/// An identity entry (`[[identities]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Identity {
+    pub id: String,
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<ChannelAlias>,
+    pub role: Option<String>,
+}
+
+/// A channel alias (e.g. `{ channel = "telegram", id = "12345" }`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ChannelAlias {
+    pub channel: String,
+    pub id: String,
+}
+
+/// An agent entry (`[[agents]]`).
+///
+/// Fields vary by `kind`:
+/// - `"openclaw-http"`: uses `endpoint`, `api_key` / `auth_token`, `model`
+/// - `"zeroclaw"`:      uses `endpoint`, `api_key` (required)
+/// - `"cli"`:           uses `command`, `args`, `env`, `timeout_ms`
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AgentConfig {
+    pub id: String,
+    pub kind: String,
+    /// Base URL for HTTP agents (openclaw-http, zeroclaw).
+    #[serde(default)]
+    pub endpoint: String,
+    pub timeout_ms: Option<u64>,
+    pub model: Option<String>,
+    /// Legacy auth token field (openclaw-http). `api_key` takes precedence when present.
+    pub auth_token: Option<String>,
+    /// Per-agent API key / Bearer token. Overrides global `CALCIFORGE_AGENT_TOKEN`.
+    pub api_key: Option<String>,
+    /// OpenClaw agent lane id for kind = "openclaw-channel" (defaults to this agent id).
+    #[serde(default)]
+    pub openclaw_agent_id: Option<String>,
+    /// Local port for OpenClaw callback replies on POST /hooks/reply (default 18797).
+    #[serde(default)]
+    pub reply_port: Option<u16>,
+    /// Optional bearer token required on POST /hooks/reply callbacks.
+    #[serde(default)]
+    pub reply_auth_token: Option<String>,
+    /// Path to binary for `kind = "cli"`.
+    pub command: Option<String>,
+    /// Argument template for `kind = "cli"`. `{message}` is substituted at dispatch time.
+    pub args: Option<Vec<String>>,
+    /// Environment variables for `kind = "cli"`.
+    pub env: Option<HashMap<String, String>>,
+    /// Optional registry metadata (ignored at runtime, used for !agents output).
+    pub registry: Option<AgentRegistry>,
+    /// Optional aliases for this agent (e.g. `["native", "nzc"]`).
+    /// When resolving `!switch <name>`, both `id` and any alias are matched.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// Agent registry metadata (inside `[agents.<id>.registry]`).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AgentRegistry {
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub specialties: Vec<String>,
+    #[serde(default)]
+    pub access: Vec<String>,
+    #[serde(default)]
+    pub primary_channels: Vec<String>,
+}
+
+/// A routing rule (`[[routing]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RoutingRule {
+    pub identity: String,
+    pub default_agent: String,
+    #[serde(default)]
+    pub allowed_agents: Vec<String>,
+}
+
+/// A channel entry (`[[channels]]`).
+///
+/// Supports `kind = "telegram"`, `kind = "matrix"`, `kind = "whatsapp"`, and `kind = "signal"`.
+/// For Telegram: set `bot_token_file`.
+/// For Matrix: set `homeserver`, `access_token_file`, `room_id`, and optionally `allowed_users`.
+/// For WhatsApp: set `nzc_endpoint`, `nzc_auth_token`, `webhook_listen`, and `allowed_numbers`.
+/// For Signal: set `nzc_endpoint`, `nzc_auth_token`, `webhook_listen`, and `allowed_numbers` (same fields as WhatsApp).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ChannelConfig {
+    pub kind: String,
+    /// Path to bot token file (Telegram only).
+    pub bot_token_file: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+
+    // --- Matrix-specific fields ---
+    /// Matrix homeserver URL, e.g. `"https://matrix.org"`.
+    pub homeserver: Option<String>,
+
+    /// Path to a file containing the Matrix bot access token.
+    /// Generate with: `curl -XPOST 'https://matrix.org/_matrix/client/v3/login' -d '{"type":"m.login.password","user":"@bot:matrix.org","password":"..."}'`
+    pub access_token_file: Option<String>,
+
+    /// Matrix room ID the bot should join and listen in, e.g. `"!abc123:matrix.org"`.
+    pub room_id: Option<String>,
+
+    /// List of Matrix user IDs allowed to send commands, e.g. `["@brian:matrix.org"]`.
+    /// If empty, all room members can interact (not recommended).
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+
+    // --- WhatsApp/Signal-specific fields (shared) ---
+    /// NZC (NonZeroClaw) / OpenClaw gateway endpoint that owns the WA Web or Signal session.
+    /// Calciforge will POST reply messages to `{nzc_endpoint}/tools/invoke`.
+    /// Example: `"http://127.0.0.1:18789"` (local OpenClaw) or
+    ///          `"http://10.0.0.10:18789"` (remote Lucien/NZC instance).
+    pub nzc_endpoint: Option<String>,
+
+    /// Bearer token for the NZC / OpenClaw gateway.
+    pub nzc_auth_token: Option<String>,
+
+    /// HTTP address to listen on for incoming webhook POSTs from NZC.
+    /// Defaults to `"0.0.0.0:18795"`.
+    pub webhook_listen: Option<String>,
+
+    /// URL path Calciforge registers for incoming WhatsApp webhooks.
+    /// Defaults to `"/webhooks/whatsapp"`.
+    pub webhook_path: Option<String>,
+
+    /// Optional HMAC-SHA256 secret for `X-Hub-Signature-256` webhook verification.
+    /// Leave unset to skip signature checking (not recommended for production).
+    pub webhook_secret: Option<String>,
+
+    /// Allowed sender phone numbers in E.164 format, e.g. `["+15555550001"]`.
+    /// Use `"*"` to allow any number (not recommended).
+    /// Must correspond to identity aliases with `channel = "whatsapp"` or `channel = "signal"`.
+    #[serde(default)]
+    pub allowed_numbers: Vec<String>,
+
+    // --- Mock channel settings ---
+    /// TCP port for the mock channel's control API. Default: 9090.
+    pub control_port: Option<u16>,
+
+    // --- Adversary detector settings ---
+    /// Enable inbound adversarial content scanning on this channel.
+    /// Default: false (opt-in). The HTTP proxy is always-on regardless of this flag.
+    #[serde(default)]
+    pub scan_messages: bool,
+}
+
+/// `[permissions]` section.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PermissionsConfig {
+    pub default: Option<String>,
+    #[serde(default)]
+    pub rules: Vec<PermissionRule>,
+}
+
+/// A permission rule.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PermissionRule {
+    pub identity: String,
+    pub effect: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// `[memory]` section (no-op for now, parsed so config doesn't break).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct MemoryConfig {
+    pub pre_read_hook: Option<String>,
+    pub post_write_hook: Option<String>,
+    pub store: Option<String>,
+    pub store_path: Option<String>,
+}
+
+/// `[security]` section — adversary detector settings.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SecuritySectionConfig {
+    /// Security profile: open, balanced, hardened, paranoid
+    #[serde(default = "default_security_profile")]
+    pub profile: String,
+    /// Enable outbound message scanning
+    #[serde(default = "default_scan_outbound")]
+    pub scan_outbound: bool,
+}
+
+fn default_security_profile() -> String {
+    "balanced".to_string()
+}
+
+fn default_scan_outbound() -> bool {
+    false
+}
+
+impl Default for SecuritySectionConfig {
+    fn default() -> Self {
+        Self {
+            profile: default_security_profile(),
+            scan_outbound: default_scan_outbound(),
+        }
+    }
+}
+
+/// `[proxy]` section — OpenAI-compatible HTTP API server.
+///
+/// Enables Calciforge to act as a model provider that agents can connect to.
+/// Supports alloy-based routing, graceful degradation, and streaming.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyConfig {
+    /// Whether the proxy server is enabled. Default: false.
+    #[serde(default = "default_proxy_enabled")]
+    pub enabled: bool,
+
+    /// Bind address for the HTTP server. Default: "127.0.0.1:8080"
+    #[serde(default = "default_proxy_bind")]
+    pub bind: String,
+
+    /// API key for authenticating requests (optional).
+    /// If set, all requests must include `Authorization: Bearer <key>`
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Path to file containing API key (alternative to `api_key`).
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Request timeout in seconds. Default: 300
+    #[serde(default = "default_proxy_timeout")]
+    pub timeout_seconds: u64,
+
+    /// Maximum request body size in MB. Default: 50
+    #[serde(default = "default_proxy_max_body_mb")]
+    pub max_body_mb: usize,
+
+    /// Agent authentication and model access control.
+    /// If empty, all agents can access all models (using global api_key if set).
+    #[serde(default)]
+    pub agents: Vec<ProxyAgentConfig>,
+
+    /// Default model access policy when no agent match.
+    /// "allow_all" = any model, "deny_all" = no models, "allow_configured" = only configured agents
+    #[serde(default = "default_proxy_default_policy")]
+    pub default_policy: ProxyAccessPolicy,
+
+    /// Backend type for proxy: "mock", "http", "embedded", "library"
+    /// Default: "mock" (for testing)
+    #[serde(default = "default_proxy_backend_type")]
+    pub backend_type: String,
+
+    /// Backend API key (for HTTP backend)
+    #[serde(default)]
+    pub backend_api_key: Option<String>,
+
+    /// Backend URL (for HTTP backend)
+    /// Default: "https://api.deepseek.com/v1" (DeepSeek API)
+    #[serde(default = "default_proxy_backend_url")]
+    pub backend_url: String,
+
+    /// Custom headers to include in backend requests
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
+
+    /// Path to file containing the backend API key (alternative to `backend_api_key`).
+    /// Contents are read at startup; trailing whitespace/newlines are stripped.
+    #[serde(default)]
+    pub backend_api_key_file: Option<PathBuf>,
+
+    /// Named provider configurations. Each provider handles a set of model patterns
+    /// and may have its own URL, API key, headers, and timeout.
+    /// Use `[[proxy.providers]]` in TOML.
+    #[serde(default)]
+    pub providers: Vec<ProxyProviderConfig>,
+
+    /// Explicit model-to-provider routing table. Takes precedence over provider
+    /// `models` patterns. Use `[[proxy.model_routes]]` in TOML.
+    #[serde(default)]
+    pub model_routes: Vec<ProxyModelRoute>,
+
+    /// Optional voice pipeline passthrough (`[proxy.voice]`).
+    #[serde(default)]
+    pub voice: Option<crate::voice::VoiceConfig>,
+}
+
+/// Agent-specific configuration for proxy access.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyAgentConfig {
+    /// Unique agent identifier (e.g., "lucien", "claude-code")
+    pub id: String,
+
+    /// Display name for the agent
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// API key for this agent (optional - can use global api_key)
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier")
+    /// If empty and default_policy is "allow_all", all models are allowed
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+
+    /// Blocked model patterns (takes precedence over allowed)
+    #[serde(default)]
+    pub blocked_models: Vec<String>,
+
+    /// Rate limit: requests per minute (0 = unlimited)
+    #[serde(default)]
+    pub rate_limit_rpm: u32,
+
+    /// Rate limit: tokens per minute (0 = unlimited)
+    #[serde(default)]
+    pub rate_limit_tpm: u32,
+}
+
+/// Default access policy for unconfigured agents.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyAccessPolicy {
+    /// Allow all models (default)
+    #[default]
+    AllowAll,
+    /// Deny all models
+    DenyAll,
+    /// Only allow models configured for specific agents
+    AllowConfigured,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_proxy_enabled(),
+            bind: default_proxy_bind(),
+            api_key: None,
+            api_key_file: None,
+            timeout_seconds: default_proxy_timeout(),
+            max_body_mb: default_proxy_max_body_mb(),
+            agents: Vec::new(),
+            default_policy: default_proxy_default_policy(),
+            backend_type: default_proxy_backend_type(),
+            backend_api_key: None,
+            backend_url: default_proxy_backend_url(),
+            headers: None,
+            backend_api_key_file: None,
+            providers: Vec::new(),
+            model_routes: Vec::new(),
+            voice: None,
+        }
+    }
+}
+
+fn default_proxy_enabled() -> bool {
+    false
+}
+
+fn default_proxy_bind() -> String {
+    "127.0.0.1:8080".to_string()
+}
+
+fn default_proxy_timeout() -> u64 {
+    300
+}
+
+fn default_proxy_max_body_mb() -> usize {
+    50
+}
+
+fn default_proxy_default_policy() -> ProxyAccessPolicy {
+    ProxyAccessPolicy::AllowAll
+}
+
+fn default_proxy_backend_type() -> String {
+    "mock".to_string()
+}
+
+fn default_proxy_backend_url() -> String {
+    "https://api.deepseek.com/v1".to_string()
+}
+
+/// A named backend provider (`[[proxy.providers]]`).
+///
+/// Each provider handles a set of model name patterns and has its own
+/// URL, credentials, headers, and timeout. Providers are checked in config
+/// order; `[[proxy.model_routes]]` takes precedence over provider `models` lists.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyProviderConfig {
+    /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
+    pub id: String,
+
+    /// Base URL for this provider's OpenAI-compatible API.
+    pub url: String,
+
+    /// API key for this provider (inline). Prefer `api_key_file`.
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Path to file containing this provider's API key.
+    /// Contents are read at startup; trailing whitespace stripped.
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Model name patterns this provider handles.
+    /// Supports exact matches and glob prefix (`kimi/*`).
+    /// The default backend is used when no provider matches.
+    #[serde(default)]
+    pub models: Vec<String>,
+
+    /// Request timeout in seconds (overrides proxy-level default).
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+
+    /// Custom headers included in every request to this provider.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Shell script path to run when `!model <id>` switches to any model
+    /// served by this provider. Env: CALCIFORGE_MODEL_ID, CALCIFORGE_MODEL_HF_ID,
+    /// CALCIFORGE_PREV_MODEL_ID.
+    #[serde(default)]
+    pub on_switch: Option<String>,
+}
+
+/// Explicit model-name → provider routing entry (`[[proxy.model_routes]]`).
+/// Takes precedence over `[[proxy.providers]] models` patterns.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyModelRoute {
+    /// Model name pattern (exact or `prefix/*` glob).
+    pub pattern: String,
+    /// ID of the `[[proxy.providers]]` entry to use.
+    pub provider: String,
+}
+
+/// `[local_models]` section — local model process lifecycle management.
+///
+/// Calciforge manages starting/stopping the local inference server
+/// (mlx_lm or llama.cpp) when `!model <id>` or `POST /control/local/switch`
+/// is called.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct LocalModelsConfig {
+    /// Enable local model management. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Model ID to load on calciforge startup (optional).
+    #[serde(default)]
+    pub current: Option<String>,
+
+    /// Configured local models.
+    #[serde(default)]
+    pub models: Vec<LocalModelDef>,
+
+    /// Settings for the mlx_lm.server backend.
+    #[serde(default)]
+    pub mlx_lm: MlxLmConfig,
+}
+
+/// A local model definition (`[[local_models.models]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LocalModelDef {
+    /// Short ID used with `!model <id>` (e.g. "qwen3-8bit").
+    pub id: String,
+
+    /// HuggingFace model identifier (e.g. "unsloth/Qwen3.6-35B-A3B-MLX-8bit").
+    pub hf_id: String,
+
+    /// Backend type for this model. Currently only "mlx_lm" supported.
+    #[serde(default = "default_local_provider_type")]
+    pub provider_type: String,
+
+    /// Optional display name shown in `!model local` listing.
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+fn default_local_provider_type() -> String {
+    "mlx_lm".to_string()
+}
+
+/// Settings for the mlx_lm.server process (`[local_models.mlx_lm]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MlxLmConfig {
+    /// Host to bind (and connect to). Default: "127.0.0.1".
+    #[serde(default = "default_mlx_host")]
+    pub host: String,
+
+    /// Port to serve on. Default: 8080.
+    #[serde(default = "default_mlx_port")]
+    pub port: u16,
+
+    /// Seconds to wait for the server to become ready after spawn. Default: 120.
+    #[serde(default = "default_mlx_startup_timeout")]
+    pub startup_timeout_seconds: u64,
+
+    /// Extra CLI arguments passed to mlx_lm.server (e.g. ["--max-tokens", "4096"]).
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+
+    /// Lifecycle hooks.
+    #[serde(default)]
+    pub hooks: LocalModelHooks,
+}
+
+impl Default for MlxLmConfig {
+    fn default() -> Self {
+        Self {
+            host: default_mlx_host(),
+            port: default_mlx_port(),
+            startup_timeout_seconds: default_mlx_startup_timeout(),
+            extra_args: Vec::new(),
+            hooks: LocalModelHooks::default(),
+        }
+    }
+}
+
+fn default_mlx_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_mlx_port() -> u16 {
+    8080
+}
+
+fn default_mlx_startup_timeout() -> u64 {
+    120
+}
+
+/// Shell hook scripts for local model lifecycle (`[local_models.mlx_lm.hooks]`).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct LocalModelHooks {
+    /// Script run before unloading the current model.
+    /// Env: CALCIFORGE_PREV_MODEL_ID, CALCIFORGE_PREV_MODEL_HF_ID.
+    #[serde(default)]
+    pub pre_switch: Option<String>,
+
+    /// Script run after the new model is loaded and serving.
+    /// Env: CALCIFORGE_MODEL_ID, CALCIFORGE_MODEL_HF_ID, CALCIFORGE_PREV_MODEL_ID.
+    #[serde(default)]
+    pub post_switch: Option<String>,
+}
+
+/// `[context]` section — conversation context ring buffer settings.
+///
+/// Omitting the section from config.toml uses all defaults (enabled, 20/5).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ContextConfig {
+    /// Maximum exchanges to retain per chat.  Older exchanges are evicted.
+    /// Default: 20.
+    #[serde(default = "default_buffer_size")]
+    pub buffer_size: usize,
+    /// How many recent unseen exchanges to prepend when dispatching to an agent.
+    /// Set to 0 to disable injection.  Default: 5.
+    #[serde(default = "default_inject_depth")]
+    pub inject_depth: usize,
+    /// Persistent storage configuration.
+    /// If not specified, uses in-memory storage only.
+    #[serde(default)]
+    pub persistent: Option<PersistentContextConfig>,
+}
+
+/// Configuration for persistent context storage.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PersistentContextConfig {
+    /// SQLite database URL (e.g., "sqlite:///path/to/context.db")
+    /// or file path (e.g., "/var/lib/calciforge/context.db")
+    pub database_url: String,
+}
+
+fn default_buffer_size() -> usize {
+    20
+}
+fn default_inject_depth() -> usize {
+    5
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            buffer_size: default_buffer_size(),
+            inject_depth: default_inject_depth(),
+            persistent: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+/// Load the PolyConfig from an explicit path.
+///
+/// Validates the configuration before returning it, catching common errors
+/// like duplicate IDs, invalid references, and malformed settings.
+pub fn load_config_from(path: &PathBuf) -> Result<PolyConfig> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config file: {}", path.display()))?;
+
+    // Validate TOML syntax first
+    validator::validate_toml_syntax(&raw)
+        .with_context(|| format!("validating TOML syntax: {}", path.display()))?;
+
+    // Parse the config
+    let config: PolyConfig =
+        toml::from_str(&raw).with_context(|| format!("parsing config file: {}", path.display()))?;
+
+    // Run semantic validation
+    let validation = validator::validate_config(&config);
+
+    if !validation.is_valid() {
+        let error_msg = format!(
+            "Configuration validation failed:\n{}",
+            validation.errors.join("\n")
+        );
+        bail!(error_msg);
+    }
+
+    // Log warnings if any
+    for warning in &validation.warnings {
+        tracing::warn!("Config warning: {}", warning);
+    }
+
+    Ok(config)
+}
+
+/// Returns the canonical config file path: `~/.calciforge/config.toml`.
+pub fn config_path() -> Result<PathBuf> {
+    let home = home::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".calciforge").join("config.toml"))
+}
+
+/// Expand a `~`-prefixed path using the home directory.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Some(home) = home::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    PathBuf::from(path)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_CONFIG: &str = r#"
+[calciforge]
+version = 2
+
+[[identities]]
+id = "brian"
+aliases = [{ channel = "telegram", id = "7000000001" }]
+role = "owner"
+
+[[identities]]
+id = "david"
+display_name = "David"
+aliases = [{ channel = "telegram", id = "7000000002" }]
+role = "user"
+
+[[agents]]
+id = "librarian"
+kind = "openclaw-http"
+endpoint = "http://10.0.0.20:18789"
+timeout_ms = 120000
+registry = { display_name = "Librarian", specialties = ["general", "homelab-ops"] }
+aliases = ["lib", "main"]
+
+[[agents]]
+id = "zeroclaw"
+kind = "zeroclaw"
+endpoint = "http://127.0.0.1:18792"
+api_key = "zc_test_placeholder_0000000000000000000000000000000000000000000"
+timeout_ms = 90000
+
+[[agents]]
+id = "ironclaw"
+kind = "cli"
+command = "/usr/local/bin/ironclaw"
+args = ["run", "-m", "{message}"]
+timeout_ms = 60000
+env = { "LLM_BACKEND" = "openai_compatible", "LLM_MODEL" = "kimi-k2.5" }
+
+[[agents]]
+id = "claude-code"
+kind = "acp"
+command = "claude"
+args = ["--acp"]
+model = "claude-sonnet-4-5"
+timeout_ms = 300000
+aliases = ["cc", "claude"]
+registry = { display_name = "Claude Code", specialties = ["coding", "refactoring"] }
+
+[[routing]]
+identity = "brian"
+default_agent = "librarian"
+
+[[routing]]
+identity = "david"
+default_agent = "librarian"
+allowed_agents = ["librarian"]
+
+[[channels]]
+kind = "telegram"
+bot_token_file = "~/.calciforge/secrets/telegram-token"
+enabled = true
+
+[memory]
+pre_read_hook = "none"
+post_write_hook = "none"
+"#;
+
+    #[test]
+    fn test_parse_sample_config() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        assert_eq!(cfg.calciforge.version, 2);
+        assert_eq!(cfg.identities.len(), 2);
+        assert_eq!(cfg.identities[0].id, "brian");
+        assert_eq!(cfg.identities[1].id, "david");
+        assert_eq!(cfg.agents.len(), 4); // librarian + zeroclaw + ironclaw + claude-code
+        assert_eq!(cfg.agents[0].id, "librarian");
+        assert_eq!(cfg.agents[0].endpoint, "http://10.0.0.20:18789");
+        assert_eq!(cfg.agents[0].timeout_ms, Some(120000));
+        assert_eq!(cfg.routing.len(), 2);
+        assert_eq!(cfg.routing[0].default_agent, "librarian");
+        assert_eq!(cfg.channels.len(), 1);
+        assert_eq!(cfg.channels[0].kind, "telegram");
+        assert!(cfg.channels[0].enabled);
+    }
+
+    #[test]
+    fn test_identity_aliases() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let brian = &cfg.identities[0];
+        assert_eq!(brian.aliases.len(), 1);
+        assert_eq!(brian.aliases[0].channel, "telegram");
+        assert_eq!(brian.aliases[0].id, "7000000001");
+    }
+
+    #[test]
+    fn test_routing_allowed_agents() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        // brian's routing has no allowed_agents (defaults to empty)
+        assert!(cfg.routing[0].allowed_agents.is_empty());
+        // david's routing specifies allowed_agents
+        assert_eq!(cfg.routing[1].allowed_agents, vec!["librarian"]);
+    }
+
+    #[test]
+    fn test_expand_tilde() {
+        let p = expand_tilde("~/.calciforge/secrets/telegram-token");
+        assert!(p.to_string_lossy().contains(".calciforge"));
+        assert!(!p.to_string_lossy().starts_with('~'));
+    }
+
+    #[test]
+    fn test_version_field() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        assert_eq!(cfg.calciforge.version, 2, "must be version 2");
+    }
+
+    #[test]
+    fn test_optional_fields_absent() {
+        let minimal = r#"
+[calciforge]
+version = 2
+"#;
+        let cfg: PolyConfig = toml::from_str(minimal).expect("parse failed");
+        assert!(cfg.identities.is_empty());
+        assert!(cfg.agents.is_empty());
+        assert!(cfg.routing.is_empty());
+        assert!(cfg.channels.is_empty());
+        assert!(cfg.permissions.is_none());
+        assert!(cfg.memory.is_none());
+    }
+
+    #[test]
+    fn test_zeroclaw_agent_parses() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let zc = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "zeroclaw")
+            .expect("zeroclaw agent missing");
+        assert_eq!(zc.kind, "zeroclaw");
+        assert_eq!(zc.endpoint, "http://127.0.0.1:18792");
+        assert_eq!(
+            zc.api_key.as_deref(),
+            Some("zc_test_placeholder_0000000000000000000000000000000000000000000")
+        );
+        assert_eq!(zc.timeout_ms, Some(90000));
+        assert!(zc.command.is_none());
+        assert!(zc.env.is_none());
+    }
+
+    #[test]
+    fn test_cli_agent_parses() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let ic = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "ironclaw")
+            .expect("ironclaw agent missing");
+        assert_eq!(ic.kind, "cli");
+        assert_eq!(ic.command.as_deref(), Some("/usr/local/bin/ironclaw"));
+        assert_eq!(
+            ic.args.as_deref(),
+            Some(&["run".to_string(), "-m".to_string(), "{message}".to_string()][..])
+        );
+        let env = ic.env.as_ref().expect("env should be set");
+        assert_eq!(env["LLM_BACKEND"], "openai_compatible");
+        assert_eq!(env["LLM_MODEL"], "kimi-k2.5");
+        assert!(ic.api_key.is_none());
+        assert!(ic.endpoint.is_empty());
+    }
+
+    #[test]
+    fn test_registry_metadata_parses() {
+        // Registry uses inline table syntax (registry = { ... }) to be parseable
+        // as a Vec<Agent> field. The production config's [agents.id.registry] dotted
+        // table syntax is valid TOML but is silently ignored by the toml crate when
+        // deserializing array-of-tables — it's documentation only.
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let lib = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "librarian")
+            .expect("librarian missing");
+        let reg = lib
+            .registry
+            .as_ref()
+            .expect("registry should be present (inline table)");
+        assert_eq!(reg.display_name.as_deref(), Some("Librarian"));
+        assert!(reg.specialties.contains(&"general".to_string()));
+    }
+
+    #[test]
+    fn test_memory_config_parses() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let mem = cfg.memory.as_ref().expect("memory section should parse");
+        assert_eq!(mem.pre_read_hook.as_deref(), Some("none"));
+        assert_eq!(mem.post_write_hook.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn test_context_config_defaults_when_omitted() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        // SAMPLE_CONFIG has no [context] section — defaults must kick in
+        assert_eq!(cfg.context.buffer_size, 20);
+        assert_eq!(cfg.context.inject_depth, 5);
+    }
+
+    #[test]
+    fn test_context_config_parses_explicit() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[context]
+buffer_size = 10
+inject_depth = 3
+"#;
+        let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
+        assert_eq!(cfg.context.buffer_size, 10);
+        assert_eq!(cfg.context.inject_depth, 3);
+    }
+
+    #[test]
+    fn test_context_config_partial_override() {
+        // Only override one field; the other should use its default
+        let raw = r#"
+[calciforge]
+version = 2
+
+[context]
+inject_depth = 0
+"#;
+        let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
+        assert_eq!(
+            cfg.context.buffer_size, 20,
+            "buffer_size should default to 20"
+        );
+        assert_eq!(
+            cfg.context.inject_depth, 0,
+            "inject_depth should be 0 (disabled)"
+        );
+    }
+
+    #[test]
+    fn test_agent_aliases_parse() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let lib = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "librarian")
+            .expect("librarian missing");
+        assert_eq!(lib.aliases, vec!["lib".to_string(), "main".to_string()]);
+    }
+
+    #[test]
+    fn test_agent_aliases_default_empty() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        // zeroclaw agent has no aliases field — should default to empty
+        let zc = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "zeroclaw")
+            .expect("zeroclaw missing");
+        assert!(
+            zc.aliases.is_empty(),
+            "missing aliases field should default to empty vec"
+        );
+    }
+
+    #[test]
+    fn test_acp_agent_parses() {
+        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cc = cfg
+            .agents
+            .iter()
+            .find(|a| a.id == "claude-code")
+            .expect("claude-code agent missing");
+        assert_eq!(cc.kind, "acp");
+        assert_eq!(cc.command.as_deref(), Some("claude"));
+        assert_eq!(cc.args.as_deref(), Some(&["--acp".to_string()][..]));
+        assert_eq!(cc.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(cc.timeout_ms, Some(300000));
+        assert_eq!(cc.aliases, vec!["cc".to_string(), "claude".to_string()]);
+        let reg = cc.registry.as_ref().expect("registry should be present");
+        assert_eq!(reg.display_name.as_deref(), Some("Claude Code"));
+        assert!(reg.specialties.contains(&"coding".to_string()));
+    }
+
+    #[test]
+    fn test_openclaw_agent_api_key_field() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "custodian"
+kind = "openclaw-http"
+endpoint = "http://10.0.0.60:18790"
+api_key = "REPLACE_WITH_AUTH_TOKEN"
+timeout_ms = 60000
+"#;
+        let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
+        let agent = &cfg.agents[0];
+        assert_eq!(agent.api_key.as_deref(), Some("REPLACE_WITH_AUTH_TOKEN"));
+        assert!(agent.auth_token.is_none());
+    }
+
+    #[test]
+    fn alloy_constituent_missing_context_window_fails_to_parse() {
+        // Guards against silently reintroducing a serde default on
+        // context_window. If someone flips it back to Option<u32> or adds a
+        // #[serde(default)], this test catches it at CI time.
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[alloys]]
+id = "fast-smart"
+name = "Fast + Smart"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "gemini-2.5-flash"
+weight = 80
+
+[[alloys.constituents]]
+model = "claude-haiku-4-6"
+context_window = 200000
+weight = 20
+"#;
+        let err = toml::from_str::<PolyConfig>(raw)
+            .expect_err("missing context_window should fail to deserialize");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("context_window"),
+            "error should name the missing field, got: {msg}"
+        );
+    }
+}

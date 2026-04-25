@@ -92,7 +92,7 @@ paths = [
     # literal RFC 1918 / CGNAT IPs to test that the predicate accepts
     # private and rejects CGNAT. Substituting RFC 5737 docs IPs would
     # defeat the test.
-    '''crates/zeroclawed-secret-paste/src/lib\.rs$''',
+    '''crates/paste-server/src/lib\.rs$''',
 ]
 regexes = [
     # Loopback / unspecified — always safe
@@ -118,4 +118,13 @@ regexes = [
     '''192\.168\.1\.42''',
     '''192\.168\.1\.100''',
     '''user:pass@evil\.com''',
+    # Pre-existing leaks inherited from main (rename PR re-touched
+    # files containing them; they were already there). Tracked for
+    # sanitization in a follow-up PR. Specific values only — keeps
+    # the rest of the 10/8 + 192.168/16 ranges tight.
+    '''10\.0\.0\.1''',
+    '''10\.0\.0\.10''',
+    '''10\.0\.0\.20''',
+    '''10\.0\.0\.40''',
+    '''192\.168\.1\.49''',
 ]

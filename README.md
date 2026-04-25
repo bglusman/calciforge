@@ -1,4 +1,4 @@
-# 🐾 ZeroClawed
+# 🐾 Calciforge
 
 > *The Claw without the scratch.*
 > 
@@ -8,11 +8,11 @@
 
 ## 🤔 What is this?
 
-**ZeroClawed** is an agent gateway that lets you chat with AI from **any** channel (Telegram, WhatsApp, Signal, Matrix) while keeping your credentials locked away and your tools sandboxed.
+**Calciforge** is an agent gateway that lets you chat with AI from **any** channel (Telegram, WhatsApp, Signal, Matrix) while keeping your credentials locked away and your tools sandboxed.
 
 Think of it as a universal remote for AI agents — but one that won't accidentally delete your hard drive because it routes everything through a policy engine first.
 
-### Why "ZeroClawed"?
+### Why "Calciforge"?
 
 Because it wraps [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) with safety features.
 
@@ -27,14 +27,14 @@ Because it wraps [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) with safe
 
 ```bash
 # Clone it
-git clone https://github.com/bglusman/zeroclawed
-cd zeroclawed
+git clone https://github.com/bglusman/calciforge
+cd calciforge
 
 # Build the router
-cargo build --release -p zeroclawed
+cargo build --release -p calciforge
 
 # Build the credential proxy (optional but recommended)
-cargo build --release -p onecli-client
+cargo build --release -p secrets-client
 
 # Deploy to your server
 ./infra/deploy-210.sh --with-zeroclaw --with-claw-code
@@ -46,7 +46,7 @@ cargo build --release -p onecli-client
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      ZeroClawed Router                      │
+│                      Calciforge Router                      │
 │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────────┐  │
 │  │Telegram │ │WhatsApp │ │ Signal  │ │ Matrix          │  │
 │  └────┬────┘ └────┬────┘ └────┬────┘ └────────┬────────┘  │
@@ -101,7 +101,7 @@ cargo build --release -p onecli-client
 ## 🎛️ Configuration
 
 ```toml
-# /etc/zeroclawed/config.toml
+# /etc/calciforge/config.toml
 
 [[identities]]
 id = "brian"
@@ -130,7 +130,7 @@ allowed_agents = ["claw-code", "zeroclawlabs", "librarian"]
 
 [[channels]]
 kind = "telegram"
-bot_token_file = "/etc/zeroclawed/secrets/telegram-token"
+bot_token_file = "/etc/calciforge/secrets/telegram-token"
 enabled = true
 ```
 
@@ -138,7 +138,7 @@ enabled = true
 
 ## 🔌 AI Model Proxy
 
-ZeroClawed includes an **OpenAI-compatible HTTP proxy** (`[proxy]`) that routes model requests to one or more backends, with named provider routing, local model management, streaming support, and tool-call forwarding.
+Calciforge includes an **OpenAI-compatible HTTP proxy** (`[proxy]`) that routes model requests to one or more backends, with named provider routing, local model management, streaming support, and tool-call forwarding.
 
 ### Multi-Provider Routing
 
@@ -150,7 +150,7 @@ enabled = true
 bind = "127.0.0.1:8080"
 backend_type = "http"
 backend_url = "https://api.openai.com/v1"     # default fallback
-backend_api_key_file = "/etc/zeroclawed/secrets/openai-key"
+backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
 # Named providers — matched in order against incoming model name
 # Pattern syntax: exact match, "*" (any), or "prefix/*" (prefix glob)
@@ -163,7 +163,7 @@ url = "http://localhost:8888/v1"
 id = "fast-provider"
 models = ["fast/*"]
 url = "https://api.fast-provider.example.com/v1"
-api_key_file = "/etc/zeroclawed/secrets/fast-key"
+api_key_file = "/etc/calciforge/secrets/fast-key"
 timeout_seconds = 30
 ```
 
@@ -230,7 +230,7 @@ curl -X POST http://localhost:8080/control/local/switch \
 
 ## 🎙️ Voice Pipeline
 
-ZeroClawed provides minimal, **non-opinionated** passthrough endpoints for speech-to-text and text-to-speech. It forwards audio/text to whatever STT/TTS servers you configure — no opinions about VAD, wakeword detection, or pipeline topology.
+Calciforge provides minimal, **non-opinionated** passthrough endpoints for speech-to-text and text-to-speech. It forwards audio/text to whatever STT/TTS servers you configure — no opinions about VAD, wakeword detection, or pipeline topology.
 
 ```toml
 [proxy.voice.stt]
@@ -242,8 +242,8 @@ url = "http://localhost:9001"          # any OpenAI-compatible TTS server
 timeout_seconds = 60
 
 [proxy.voice.hooks]
-on_audio_in = "/etc/zeroclawed/hooks/preprocess-audio.sh"   # optional
-on_text_out = "/etc/zeroclawed/hooks/postprocess-text.sh"   # optional
+on_audio_in = "/etc/calciforge/hooks/preprocess-audio.sh"   # optional
+on_text_out = "/etc/calciforge/hooks/postprocess-text.sh"   # optional
 ```
 
 **Endpoints** (always registered; return `501` when not configured):
@@ -256,7 +256,7 @@ on_text_out = "/etc/zeroclawed/hooks/postprocess-text.sh"   # optional
 
 **Hooks** receive the request body on stdin and write the (optionally transformed) body to stdout. On failure, the original body passes through unchanged — the pipeline degrades gracefully rather than erroring.
 
-The `GET /v1/tools/manifest` endpoint returns tool definitions a model can inject directly into its `tools` parameter: `zeroclawed_switch_model`, `zeroclawed_current_model`, `zeroclawed_transcribe`, `zeroclawed_speak` — only for features actually configured.
+The `GET /v1/tools/manifest` endpoint returns tool definitions a model can inject directly into its `tools` parameter: `calciforge_switch_model`, `calciforge_current_model`, `calciforge_transcribe`, `calciforge_speak` — only for features actually configured.
 
 ---
 
@@ -360,8 +360,8 @@ See [crates/adversary-detector/README.md](crates/adversary-detector/README.md) f
 cargo test
 
 # Run specific crate tests
-cargo test -p zeroclawed
-cargo test -p onecli-client
+cargo test -p calciforge
+cargo test -p secrets-client
 
 # Check formatting
 cargo fmt --all -- --check
@@ -376,8 +376,8 @@ cargo clippy --all-targets
 
 | Crate | Purpose |
 |-------|---------|
-| `zeroclawed` | The main router/gateway binary |
-| `onecli-client` | Credential proxy service |
+| `calciforge` | The main router/gateway binary |
+| `secrets-client` | Credential proxy service |
 | `host-agent` | System management agent (ZFS, systemd, Proxmox) |
 | `adversary-detector` | Content scanning, digest caching, skip protection |
 | `clashd` | Starlark policy engine with domain filtering and threat intel |
@@ -416,8 +416,8 @@ Built with:
 
 | Crate | Binary | Purpose |
 |-------|--------|---------|
-| `zeroclawed` | `zeroclawed` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents. Includes OpenAI-compatible model proxy with multi-provider routing, local model management, and voice pipeline passthrough. |
-| `onecli-client` | `onecli` | **Credential Proxy** — VaultWarden integration, injects API keys without exposing them to agents |
+| `calciforge` | `calciforge` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents. Includes OpenAI-compatible model proxy with multi-provider routing, local model management, and voice pipeline passthrough. |
+| `secrets-client` | `secrets` | **Credential Proxy** — VaultWarden integration, injects API keys without exposing them to agents |
 | `host-agent` | `host-agent` | **System Agent** — ZFS, systemd, Proxmox operations with approval gates |
 | `adversary-detector` | *(library)* | **Content Scanner** — three-layer detection, digest caching, skip protection, security profiles — [README](crates/adversary-detector/README.md) |
 | `clashd` | `clashd` | **Policy Engine** — Starlark policies, domain filtering, threat intel feeds, per-agent configs — [README](crates/clashd/README.md) |
@@ -426,7 +426,7 @@ Built with:
 
 ```
 [Telegram] ──┐
-[Matrix]   ──┤──▶ [ZeroClawed] ──▶ [Auth] ──▶ [Router] ──▶ [Agent]
+[Matrix]   ──┤──▶ [Calciforge] ──▶ [Auth] ──▶ [Router] ──▶ [Agent]
 [Signal]   ──┘        │                                    │
 [WhatsApp] ──┘   [adversary-detector]               [OneCLI proxy]
                                                            │
@@ -451,4 +451,4 @@ Agents use OneCLI transparently — the wrapper scripts set the proxy URL, agent
 
 ---
 
-**ZeroClawed** — *Chat safely. Route wisely. Keep your claws retracted.* 🐾
+**Calciforge** — *Chat safely. Route wisely. Keep your claws retracted.* 🐾

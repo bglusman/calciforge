@@ -1,4 +1,4 @@
-//! Audit logging: append JSONL events to `~/.zeroclawed/logs/adversary-audit.jsonl`.
+//! Audit logging: append JSONL events to `~/.calciforge/logs/adversary-audit.jsonl`.
 
 use crate::verdict::{ScanContext, ScanVerdict};
 use chrono::Utc;
@@ -41,7 +41,7 @@ impl AuditEntry {
     }
 }
 
-/// Async audit logger that appends JSONL to `~/.zeroclawed/logs/adversary-audit.jsonl`.
+/// Async audit logger that appends JSONL to `~/.calciforge/logs/adversary-audit.jsonl`.
 pub struct AuditLogger {
     log_path: PathBuf,
     claw_id: String,
@@ -54,7 +54,7 @@ impl AuditLogger {
     pub fn new(claw_id: impl Into<String>) -> Self {
         let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
         Self {
-            log_path: home.join(".zeroclawed/logs/adversary-audit.jsonl"),
+            log_path: home.join(".calciforge/logs/adversary-audit.jsonl"),
             claw_id: claw_id.into(),
             total_requests: AtomicU64::new(0),
             blocked_or_reviewed: AtomicU64::new(0),

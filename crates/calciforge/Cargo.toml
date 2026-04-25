@@ -1,0 +1,119 @@
+[package]
+name = "calciforge"
+version = "0.1.0"
+edition = "2021"
+description = "Calciforge — Rust agent gateway (ZeroClaw fork)"
+license = "MIT"
+
+[[bin]]
+name = "calciforge"
+path = "src/main.rs"
+
+[features]
+default = ["helicone", "traceloop"]
+channel-matrix = []
+hegel = ["dep:hegeltest"]
+persistent-context = ["dep:sqlx"]
+helicone = []
+traceloop = []
+test = []
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+harness = true
+
+[[test]]
+name = "loom"
+path = "tests/loom.rs"
+harness = true
+
+[dependencies]
+axum = "0.7"
+
+# OneCLI client integration
+secrets-client = { path = "../secrets-client" }
+
+# Async runtime
+tokio = { version = "1", features = ["full", "net"] }
+
+# Crypto (for Signal channel)
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# Matrix (optional — channel uses raw HTTP; dep kept for optional feature use)
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+# Telegram
+teloxide = { version = "0.13", features = ["macros", "ctrlc_handler"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# ACP (Agent Client Protocol) - for coding agent integration
+sacp = "6"
+sacp-tokio = "6"
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Home directory expansion
+home = "0.5"
+
+# Adversary detector module (shared workspace crate)
+adversary-detector = { path = "../adversary-detector" }
+
+# TUI wizard
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+console = "0.15"
+indicatif = "0.17"
+base64 = "0.22"
+
+# Timestamp generation
+chrono = { version = "0.4", features = ["serde"] }
+
+# Random number generation (for alloy weighted selection)
+rand = "0.9"
+
+# UUID generation for API responses
+uuid = { version = "1", features = ["v4"] }
+
+# Retry logic (Helicone-style)
+backon = "0.4"
+
+# Property-based testing (optional)
+hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
+
+# SQLite for persistent session storage (optional feature)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono"], optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+futures-util = "0.3"
+loom = { version = "0.7", features = ["checkpoint"] }
+mockito = "1.5"
+proptest = "1.5"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

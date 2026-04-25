@@ -1,4 +1,4 @@
-//! Loom concurrency tests for ZeroClawed
+//! Loom concurrency tests for Calciforge
 //!
 //! These tests use Loom to exhaustively explore all possible thread interleavings
 //! to detect data races, deadlocks, and memory ordering bugs.

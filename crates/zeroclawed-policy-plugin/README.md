@@ -1,4 +1,4 @@
-# zeroclawed-policy-plugin
+# calciforge-policy-plugin
 
 OpenClaw plugin for policy enforcement via clashd sidecar.
 

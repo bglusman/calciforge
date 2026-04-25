@@ -1,6 +1,6 @@
 # Security Gateway Architecture
 
-The `security-gateway` is the mandatory network enforcement point for all ZeroClawed agent traffic. It replaces the legacy "opt-in" outpost model with a "fail-closed" transparent proxy.
+The `security-gateway` is the mandatory network enforcement point for all Calciforge agent traffic. It replaces the legacy "opt-in" outpost model with a "fail-closed" transparent proxy.
 
 ## 🛡️ Traffic Flow
 

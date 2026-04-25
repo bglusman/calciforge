@@ -1,6 +1,6 @@
 {
-  "id": "zeroclawed-policy",
-  "name": "ZeroClawed Policy Enforcement",
+  "id": "calciforge-policy",
+  "name": "Calciforge Policy Enforcement",
   "description": "Enforces tool call policies via clashd sidecar. Blocks destructive commands and requires custodian approval for config changes.",
   "version": "0.1.0",
   "configSchema": {

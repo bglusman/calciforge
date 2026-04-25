@@ -21,7 +21,7 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # Run cargo test, capture output
-    if cargo test -p zeroclawed --no-fail-fast 2>&1 | tee /tmp/ralph-output.log; then
+    if cargo test -p calciforge --no-fail-fast 2>&1 | tee /tmp/ralph-output.log; then
         echo ""
         echo "✅ ALL TESTS PASSED after $ITERATION iterations"
         echo ""
@@ -70,7 +70,7 @@ grep -A 5 "FAILED" /tmp/ralph-output.log | tail -30 || true
 echo ""
 echo "Consider:"
 echo "  1. Running with --max-iterations N for more attempts"
-echo "  2. Checking specific test: cargo test -p zeroclawed TEST_NAME"
+echo "  2. Checking specific test: cargo test -p calciforge TEST_NAME"
 echo "  3. Running with RUST_BACKTRACE=1 for more details"
 
 exit 1

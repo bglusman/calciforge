@@ -15,9 +15,9 @@ A test is rejected if any of these apply:
 7. Duplicates another test with no additional coverage.
 8. Flaky by design.
 
-## Round 1: onecli-client + security-proxy
+## Round 1: secrets-client + security-proxy
 
-### crates/onecli-client/src/client.rs
+### crates/secrets-client/src/client.rs
 
 - REWRITE · `client.rs:84 test_client_creation_with_valid_config` · `.is_ok()` without value inspection; creation of a reqwest client with default timeout is essentially infallible here, so this only guards a panic.
   - should assert: the builder uses the configured timeout and agent_id (exercise via a spawned mock server and observe outgoing request headers/timeout behavior).
@@ -32,17 +32,17 @@ A test is rejected if any of these apply:
 - REWRITE · `client.rs:156 test_client_url_trailing_slash_stripped` · Comment says what *should* happen, body does not check it. No assertion.
   - should assert: after configuring `http://proxy:8081/` (trailing slash), the request sent to the mock server hits the root path exactly once (no `//`), and the `X-Target-URL` header is unmodified.
 
-### crates/onecli-client/src/config.rs
+### crates/secrets-client/src/config.rs
 
 - REWRITE · `config.rs:99 test_retry_config_defaults` · Tautological: asserts the same constants the `Default` impl hard-codes. Any change to defaults updates the test in lockstep; it cannot catch regressions in behavior, only accidental typos.
   - should assert: defaults produce expected retry *behavior* (e.g., max total wait bounded by `max_delay * max_retries`), tested through `execute_with_retry`. At minimum document the defaults as policy-bound in a comment so the test has a reason to exist.
-- REWRITE · `config.rs:107 test_onecli_config_defaults` · Same tautology as above; plus the default `url` is `http://localhost:8081` — if that default changes (likely, see CLAUDE.md re: no hard-coded URLs), this test breaks without exercising any behavior.
-  - should assert: the default config produces a working `OneCliClient::new(...)` and the default URL is *some* localhost URL (regex), so tests don't pin a specific port.
-- KEEP · `config.rs:115 test_onecli_config_toml_roundtrip` · Real roundtrip with non-default values; would catch serde attribute drift (e.g. `humantime_serde` removal). Useful.
+- REWRITE · `config.rs:107 test_secrets_config_defaults` · Same tautology as above; plus the default `url` is `http://localhost:8081` — if that default changes (likely, see CLAUDE.md re: no hard-coded URLs), this test breaks without exercising any behavior.
+  - should assert: the default config produces a working `SecretsClient::new(...)` and the default URL is *some* localhost URL (regex), so tests don't pin a specific port.
+- KEEP · `config.rs:115 test_secrets_config_toml_roundtrip` · Real roundtrip with non-default values; would catch serde attribute drift (e.g. `humantime_serde` removal). Useful.
 - KEEP · `config.rs:129 test_retry_config_toml_roundtrip` · Same rationale as above.
-- Missing coverage: `OneCliServiceConfig::from_env_or_file` is entirely untested despite having non-trivial env-var fallback logic and TOML parsing. Add tests using `ONECLI_CONFIG=<tempfile>` and env-var paths (but beware: env tests need serial execution / `#[serial_test]`).
+- Missing coverage: `SecretsServiceConfig::from_env_or_file` is entirely untested despite having non-trivial env-var fallback logic and TOML parsing. Add tests using `SECRETS_CONFIG=<tempfile>` and env-var paths (but beware: env tests need serial execution / `#[serial_test]`).
 
-### crates/onecli-client/src/error.rs
+### crates/secrets-client/src/error.rs
 
 - REWRITE · `error.rs:66 test_unreachable_is_retryable` · Name is wrong: body asserts `RateLimited`, not `Unreachable`. Comment acknowledges reqwest::Error is hard to construct. Test mislabels what it checks.
   - should assert: rename to `test_rate_limited_is_retryable_v2` or use a feature-gated helper that constructs a reqwest error (e.g., via `reqwest::get("http://127.0.0.1:1")` in tokio test) to actually cover `Unreachable`. Otherwise delete — it duplicates `test_rate_limited_is_retryable`.
@@ -56,9 +56,9 @@ A test is rejected if any of these apply:
 - REWRITE · `error.rs:117 test_error_display` · Pins message text to exact string — this is a near-tautology of the `#[error(...)]` annotation. Low-value but not harmful; if kept, add one test per variant to make it a real contract.
   - should assert: all variants produce a Display string containing the variant-specific *fact* (e.g., the policy reason, the URL), without asserting the surrounding boilerplate.
 - KEEP · `error.rs:123 test_rate_limited_display` · Same caveat as above; OK.
-- Missing coverage: `OneCliError::Http(_)` retryability is claimed by `is_retryable` but never tested; consider building a reqwest error via a real failing request in a tokio test.
+- Missing coverage: `SecretsError::Http(_)` retryability is claimed by `is_retryable` but never tested; consider building a reqwest error via a real failing request in a tokio test.
 
-### crates/onecli-client/src/retry.rs
+### crates/secrets-client/src/retry.rs
 
 - KEEP · `retry.rs:80 test_default_retry_strategy` · Covers three distinct variant classifications in one test. Clear.
 - KEEP · `retry.rs:89 test_execute_with_retry_success_first_attempt` · Verifies both result and call count. Good.
@@ -143,21 +143,21 @@ A test is rejected if any of these apply:
 
 ## Scope notes
 
-- Audited: `crates/onecli-client/src/{client,config,error,retry}.rs` and `crates/security-proxy/src/{credentials,config,scanner,scanner_test,proxy}.rs` + `crates/security-proxy/tests/integration.rs`.
-- Not audited (out of scope): `crates/security-proxy/src/{agent_config,audit,main}.rs`, `crates/security-proxy/src/lib.rs`, `crates/onecli-client/src/{lib,main,vault}.rs`. None of these contain `#[cfg(test)]` modules based on the grep above, except possibly `agent_config` and `audit` which did not appear in the test-grep — confirmed no inline tests to review.
-- `crates/onecli-client/tests/` does not exist.
+- Audited: `crates/secrets-client/src/{client,config,error,retry}.rs` and `crates/security-proxy/src/{credentials,config,scanner,scanner_test,proxy}.rs` + `crates/security-proxy/tests/integration.rs`.
+- Not audited (out of scope): `crates/security-proxy/src/{agent_config,audit,main}.rs`, `crates/security-proxy/src/lib.rs`, `crates/secrets-client/src/{lib,main,vault}.rs`. None of these contain `#[cfg(test)]` modules based on the grep above, except possibly `agent_config` and `audit` which did not appear in the test-grep — confirmed no inline tests to review.
+- `crates/secrets-client/tests/` does not exist.
 
 ## Top priorities for follow-up
 
-1. **False-positive safety nets.** Many `.is_ok()` / non-panic tests in `onecli-client/client.rs` can't fail. Either wire up mock-server integration tests or delete them outright — they give a misleading green.
+1. **False-positive safety nets.** Many `.is_ok()` / non-panic tests in `secrets-client/client.rs` can't fail. Either wire up mock-server integration tests or delete them outright — they give a misleading green.
 2. **`scanner_test.rs` is dead code.** Either delete the file or wire it into `lib.rs`. Right now it lies about the coverage.
 3. **Silent-green integration tests.** `integration.rs` tests swallow network errors and print them. Failing tests should fail.
 4. **Missing negative tests on security-critical logic.** `check_bypassed` has a likely substring-match bug where URL-embedded IPs bypass scanning; `detect_provider` similarly. These need explicit negative tests.
 5. **Perf-threshold test (`test_scan_performance_sanity`).** Delete or move to a benchmark — flaky-by-design.
-6. **Duplicate default-config tautologies.** `test_default_config`, `test_retry_config_defaults`, `test_onecli_config_defaults` all re-assert the `Default` impl. Replace with behavioral invariants.
+6. **Duplicate default-config tautologies.** `test_default_config`, `test_retry_config_defaults`, `test_secrets_config_defaults` all re-assert the `Default` impl. Replace with behavioral invariants.
 
 
-## Round 2: zeroclawed + adversary-detector + clashd
+## Round 2: calciforge + adversary-detector + clashd
 
 Incremental audit; findings appended as each file is evaluated.
 
@@ -309,39 +309,39 @@ Incremental audit; findings appended as each file is evaluated.
   - `digest_cache_ttl_secs` invariant: strictly non-increasing across profiles (24h → 1h → 5min → 0). Untested.
   - `SecurityProfile` roundtrip through serde (lowercase rename) is untested — a change to the serde rename would silently break YAML/TOML configs.
 
-### crates/zeroclawed/tests/e2e/onecli_proxy.rs
+### crates/calciforge/tests/e2e/secrets_proxy.rs
 
-- DELETE · `onecli_proxy.rs:16 test_proxy_openai_models_endpoint` · Silent-green: connection refused returns early with `println!`. Assumes a service listening on 8081. Also passes on `success OR 401` which is far too broad (assertion only catches 404). Even when "running" it doesn't assert credentials were injected — the test title lies.
+- DELETE · `secrets_proxy.rs:16 test_proxy_openai_models_endpoint` · Silent-green: connection refused returns early with `println!`. Assumes a service listening on 8081. Also passes on `success OR 401` which is far too broad (assertion only catches 404). Even when "running" it doesn't assert credentials were injected — the test title lies.
   - should assert: spawn OneCLI in-process with a wiremock upstream; assert that the upstream received a request with `Authorization: Bearer <real-injected-token>` (not the dummy the test sent).
-- DELETE · `onecli_proxy.rs:54 test_proxy_brave_uses_subscription_token_header` · Same silent-green pattern; asserts `status != 404` only — completely misses the stated intent (verifying `X-Subscription-Token` header). The header the test promises to check is never observed.
+- DELETE · `secrets_proxy.rs:54 test_proxy_brave_uses_subscription_token_header` · Same silent-green pattern; asserts `status != 404` only — completely misses the stated intent (verifying `X-Subscription-Token` header). The header the test promises to check is never observed.
   - should assert: wiremock upstream, verify `X-Subscription-Token` present and `Authorization` absent.
-- DELETE · `onecli_proxy.rs:91 test_proxy_preserves_request_body` · Same silent-green + only asserts `status != 404`. The word "preserves" is aspirational — body contents are never compared.
+- DELETE · `secrets_proxy.rs:91 test_proxy_preserves_request_body` · Same silent-green + only asserts `status != 404`. The word "preserves" is aspirational — body contents are never compared.
   - should assert: wiremock echoes request body; assert `resp.body == sent.body`, with particular attention to the `tools` array.
-- DELETE · `onecli_proxy.rs:136 test_proxy_path_stripping` · Same silent-green; the `Err(_) => continue` arm on the third iteration makes this silently pass even when every call fails.
+- DELETE · `secrets_proxy.rs:136 test_proxy_path_stripping` · Same silent-green; the `Err(_) => continue` arm on the third iteration makes this silently pass even when every call fails.
   - should assert: wiremock upstream records request path; assert path stripping yielded the expected upstream path for each case.
 
-Summary: every test in this file is either silent-green-on-error or so permissive its assertion couldn't catch the exact bug cited in its own comment ("the bug we caught"). Recommend rewriting the file against an in-process OneCLI + wiremock fixture, or deleting it and trusting `onecli-client` unit tests.
+Summary: every test in this file is either silent-green-on-error or so permissive its assertion couldn't catch the exact bug cited in its own comment ("the bug we caught"). Recommend rewriting the file against an in-process OneCLI + wiremock fixture, or deleting it and trusting `secrets-client` unit tests.
 
-### crates/zeroclawed/tests/e2e/config_sanity.rs
+### crates/calciforge/tests/e2e/config_sanity.rs
 
-- DELETE · `config_sanity.rs:20 test_agents_after_memory_section_load` · The file comment cites "Agents defined after [memory] section were silently ignored" as the bug — but the test parses via raw `toml::Value` (not the zeroclawed Config struct that had the bug). Generic TOML parsing obviously doesn't care about ordering. Test does not exercise the buggy code path.
-  - should assert: parse via `zeroclawed::config::Config` (the struct that had the bug), and check `config.agents.len() == 1`. Otherwise this is a test of the `toml` crate, not of zeroclawed.
+- DELETE · `config_sanity.rs:20 test_agents_after_memory_section_load` · The file comment cites "Agents defined after [memory] section were silently ignored" as the bug — but the test parses via raw `toml::Value` (not the calciforge Config struct that had the bug). Generic TOML parsing obviously doesn't care about ordering. Test does not exercise the buggy code path.
+  - should assert: parse via `calciforge::config::Config` (the struct that had the bug), and check `config.agents.len() == 1`. Otherwise this is a test of the `toml` crate, not of calciforge.
 - REWRITE · `config_sanity.rs:54 test_unknown_adapter_kind_fails` · The assertion calls a *test-local helper* `is_valid_adapter_kind` that re-implements the list. This is tautological — the test asserts that the helper it also defines returns true/false for the inputs it specifies. It does not test the real adapter-kind validator in the crate.
   - should assert: call the actual config-parsing code (e.g., via `Config::load(&path)` for a config with `kind = "openclaw"`) and assert an error is returned.
-- DELETE · `config_sanity.rs:111 test_duplicate_agents_array_works` · Raw `toml::Value` parse, not the zeroclawed Config. Tests the `toml` crate's aggregation of `[[agents]]` tables — already well-covered upstream.
+- DELETE · `config_sanity.rs:111 test_duplicate_agents_array_works` · Raw `toml::Value` parse, not the calciforge Config. Tests the `toml` crate's aggregation of `[[agents]]` tables — already well-covered upstream.
 - DELETE · `config_sanity.rs:140 test_nzc_native_without_command` · Same problem: parses via raw `toml::Value` and asserts `get("command").is_none()` — which is true because the test author literally didn't write a `command` field. Tautology. Real question ("does nzc-native adapter config validate with no command field?") is not tested.
 - DELETE · `config_sanity.rs:174 test_empty_agents_array_valid` · Raw toml parse; asserts `get("agents").is_none()` after writing a config without an agents section. Tautology.
 
-Summary: this entire file tests the `toml` crate instead of the zeroclawed config loader. All five tests need to be rewritten to exercise `Config::load` (or whatever the real loader is) or deleted. Currently they provide no regression coverage for the bugs described in their own comments.
+Summary: this entire file tests the `toml` crate instead of the calciforge config loader. All five tests need to be rewritten to exercise `Config::load` (or whatever the real loader is) or deleted. Currently they provide no regression coverage for the bugs described in their own comments.
 
-### crates/zeroclawed/tests/e2e/adapter_edge_cases.rs
+### crates/calciforge/tests/e2e/adapter_edge_cases.rs
 
-- DELETE (whole file) · `adapter_edge_cases.rs:1..222` · File header: "self-contained, no zeroclawed imports." The `run_cmd` helper is entirely test-local — these tests exercise `std::process::Command` and `/bin/echo` / `/bin/sh` / `/bin/false`, not any zeroclawed adapter code. They test the Rust stdlib + the host's coreutils, not the CLI adapter in `crates/zeroclawed/src/adapters/cli.rs`. The "adapter" in the filename is misleading.
+- DELETE (whole file) · `adapter_edge_cases.rs:1..222` · File header: "self-contained, no calciforge imports." The `run_cmd` helper is entirely test-local — these tests exercise `std::process::Command` and `/bin/echo` / `/bin/sh` / `/bin/false`, not any calciforge adapter code. They test the Rust stdlib + the host's coreutils, not the CLI adapter in `crates/calciforge/src/adapters/cli.rs`. The "adapter" in the filename is misleading.
   - individual notes (if the file is kept):
     - `test_binary_not_found` (62): tests `Command::spawn`, not the adapter.
     - `test_timeout_produces_clear_error` (74): tests the local `run_cmd` helper's timeout logic. Could be flaky under extreme load.
     - `test_echo_passes_message` (93): tests `/bin/echo`.
-    - `test_shell_safety` (108): claim-title is misleading — it tests that `std::process::Command::args` does NOT shell-interpret (which is a Rust stdlib property, not an adapter property). Doesn't test zeroclawed's shell-safety at all.
+    - `test_shell_safety` (108): claim-title is misleading — it tests that `std::process::Command::args` does NOT shell-interpret (which is a Rust stdlib property, not an adapter property). Doesn't test calciforge's shell-safety at all.
     - `test_empty_message` (126): `echo ""` works. Low-value.
     - `test_exit_code_propagation` (137): tests the local helper's Err-on-failure behavior.
     - `test_stderr_capture` (149): tests the local helper.
@@ -350,50 +350,50 @@ Summary: this entire file tests the `toml` crate instead of the zeroclawed confi
     - `test_two_instances_isolated` (194): two sequential `echo` calls. Not isolated in any meaningful sense.
     - `test_invalid_utf8_handled` (207): `Ok(s) | Err(s) => { let _ = s.len(); }` — the match arm literally discards the result. Cannot fail (only would fail if `run_cmd` panicked). Pure non-panic smoke test.
 
-Recommendation: replace the whole file with tests against the actual `CliAdapter` in `crates/zeroclawed/src/adapters/cli.rs`. Every test here either tests the stdlib or the test-local helper; zero test zeroclawed behavior.
+Recommendation: replace the whole file with tests against the actual `CliAdapter` in `crates/calciforge/src/adapters/cli.rs`. Every test here either tests the stdlib or the test-local helper; zero test calciforge behavior.
 
-### crates/zeroclawed/tests/e2e/property_tests.rs
+### crates/calciforge/tests/e2e/property_tests.rs
 
-- DELETE · `property_tests.rs:12 test_url_reconstruction_lossless` · The test implements its OWN `strip_prefix` logic inline, then asserts the output equals `path`. It does not call any zeroclawed code. Tautological: tests `str::strip_prefix` (stdlib).
+- DELETE · `property_tests.rs:12 test_url_reconstruction_lossless` · The test implements its OWN `strip_prefix` logic inline, then asserts the output equals `path`. It does not call any calciforge code. Tautological: tests `str::strip_prefix` (stdlib).
   - should assert: invoke the real OneCLI path-stripping function, not reimplement it.
-- REWRITE · `property_tests.rs:36 test_tool_payload_preservation` · Serde `to_string` → `from_str` roundtrip on `serde_json::Value` always preserves structure — this is tested by the serde_json crate itself. Tests the wrong thing; doesn't exercise zeroclawed's tool-payload handling.
-  - should assert: roundtrip through whatever zeroclawed type wraps tool definitions, not a bare `serde_json::Value`.
+- REWRITE · `property_tests.rs:36 test_tool_payload_preservation` · Serde `to_string` → `from_str` roundtrip on `serde_json::Value` always preserves structure — this is tested by the serde_json crate itself. Tests the wrong thing; doesn't exercise calciforge's tool-payload handling.
+  - should assert: roundtrip through whatever calciforge type wraps tool definitions, not a bare `serde_json::Value`.
 - DELETE · `property_tests.rs:72 test_adapter_kind_exhaustive` · The test defines `valid_kinds` as an array AND the `matches!` block as two copies of the same list. Asserts the two copies agree — pure tautology. Catches only transcription errors between the array and the match block, both of which are in the test.
-  - should assert: pass the kind string to the real `Config`/adapter loader in zeroclawed and assert accept/reject.
-- DELETE · `property_tests.rs:105 test_phone_normalization_idempotent` · Defines `normalize_phone` inline (not imported from zeroclawed). Tests a test-local helper's idempotence — a property of the helper itself, not of any zeroclawed code.
-- DELETE · `property_tests.rs:123 test_phone_normalization_plus_prefix` · Same: tests the test-local helper. If zeroclawed has a real phone-normalization function, this property is worth testing against *that* function.
+  - should assert: pass the kind string to the real `Config`/adapter loader in calciforge and assert accept/reject.
+- DELETE · `property_tests.rs:105 test_phone_normalization_idempotent` · Defines `normalize_phone` inline (not imported from calciforge). Tests a test-local helper's idempotence — a property of the helper itself, not of any calciforge code.
+- DELETE · `property_tests.rs:123 test_phone_normalization_plus_prefix` · Same: tests the test-local helper. If calciforge has a real phone-normalization function, this property is worth testing against *that* function.
 
-Summary: every property test in this file tests a test-local helper or the stdlib, not zeroclawed code. Property-based testing is valuable, but only when pointed at the system under test. Recommend rewriting against the real zeroclawed functions (URL-stripper, tool-payload type, phone normalizer, adapter-kind validator) or deleting the file. Currently provides zero regression coverage for the crate.
+Summary: every property test in this file tests a test-local helper or the stdlib, not calciforge code. Property-based testing is valuable, but only when pointed at the system under test. Recommend rewriting against the real calciforge functions (URL-stripper, tool-payload type, phone normalizer, adapter-kind validator) or deleting the file. Currently provides zero regression coverage for the crate.
 
-### crates/zeroclawed/tests/e2e/security_tests.rs
+### crates/calciforge/tests/e2e/security_tests.rs
 
-- DELETE (whole file) · `security_tests.rs:1..263` · Same problem as `adapter_edge_cases.rs`: the file header says "no zeroclawed imports" and it means it. Every test invokes `/bin/echo`, `/bin/env`, or `nonexistent_bin_xyz` via `std::process::Command` directly. Zero of these exercise zeroclawed code. The "security properties" tested are properties of the POSIX shell, not of zeroclawed.
+- DELETE (whole file) · `security_tests.rs:1..263` · Same problem as `adapter_edge_cases.rs`: the file header says "no calciforge imports" and it means it. Every test invokes `/bin/echo`, `/bin/env`, or `nonexistent_bin_xyz` via `std::process::Command` directly. Zero of these exercise calciforge code. The "security properties" tested are properties of the POSIX shell, not of calciforge.
   - individual notes:
-    - `test_error_no_file_path_leak` (21): tests that `spawn("nonexistent_bin_xyz")` error doesn't contain "/root" or "/etc". It's the kernel's ENOENT message — a property of libc, not zeroclawed.
+    - `test_error_no_file_path_leak` (21): tests that `spawn("nonexistent_bin_xyz")` error doesn't contain "/root" or "/etc". It's the kernel's ENOENT message — a property of libc, not calciforge.
     - `test_error_no_credential_leak` (39): runs `env NONEXISTENT_VAR` and asserts stderr doesn't contain "password"/"token". env's error message is "NONEXISTENT_VAR: No such file" — of course it doesn't contain "password". Tautology. Security claim is aspirational.
-    - `test_injection_payloads_safe` (79): asserts `echo 'ignore previous instructions'` outputs "ignore previous instructions" literally. Tests `echo`, not zeroclawed's prompt handling. Name promises injection safety — test is trivial.
+    - `test_injection_payloads_safe` (79): asserts `echo 'ignore previous instructions'` outputs "ignore previous instructions" literally. Tests `echo`, not calciforge's prompt handling. Name promises injection safety — test is trivial.
     - `test_env_secret_not_leaked` (120): sets `SECRET_KEY=sk-…REDACTED…`, runs `echo hello`, asserts output doesn't contain the secret. `echo` does not read environment variables unless you pass `$SECRET_KEY`, which the test does not. Tautology — it can't leak what it doesn't reference.
     - `test_empty_input_handling` (151): `echo ""` exits 0. Trivial.
     - `test_long_input_handling` (172): `let _ = output.status;` — result is discarded. Cannot fail.
     - `test_unicode_input_handling` (203): `Ok(_) => {}` arm — cannot fail on success path. Pure non-panic smoke.
-    - `test_concurrent_subprocess_safety` (239): tests `std::thread` + `std::process::Command`. Not a zeroclawed test.
+    - `test_concurrent_subprocess_safety` (239): tests `std::thread` + `std::process::Command`. Not a calciforge test.
 
-Recommendation: delete or repoint. If there are zeroclawed security properties worth testing (there are — credential-injection sanitization, adversary-detector fail-closed, etc.), write tests that exercise those actual code paths. The current file is a security theater directory.
+Recommendation: delete or repoint. If there are calciforge security properties worth testing (there are — credential-injection sanitization, adversary-detector fail-closed, etc.), write tests that exercise those actual code paths. The current file is a security theater directory.
 
-### crates/zeroclawed/tests/loom.rs
+### crates/calciforge/tests/loom.rs
 
-- REWRITE · `loom.rs:33 test_concurrent_registry_access` · Uses `loom::sync` primitives but the types exercised are `loom::sync::Mutex<HashMap<String,String>>` — that's loom validating its OWN Mutex correctness, not validating any zeroclawed code. The comment says "similar to AdapterRegistry" but never imports `AdapterRegistry`. The final assertion (`len() == 2`, values match) is trivially true once both joins succeed, because there's only one writer.
+- REWRITE · `loom.rs:33 test_concurrent_registry_access` · Uses `loom::sync` primitives but the types exercised are `loom::sync::Mutex<HashMap<String,String>>` — that's loom validating its OWN Mutex correctness, not validating any calciforge code. The comment says "similar to AdapterRegistry" but never imports `AdapterRegistry`. The final assertion (`len() == 2`, values match) is trivially true once both joins succeed, because there's only one writer.
   - should assert: exercise the actual `AdapterRegistry` under loom, or at least a `#[cfg(loom)]` stub that shares the same locking discipline.
 - REWRITE · `loom.rs:67 test_concurrent_session_management` · Same pattern: tests loom's RwLock on a HashMap, not the ACP session-management code. The final `len() == 3` and 3 value lookups are trivially deterministic given the writers don't race (each inserts different keys).
-- REWRITE · `loom.rs:110 test_arc_lifecycle` · Asserts `*guard == 2` after two increment threads (correct) and `Arc::strong_count == 1` at the end. These are Arc+Mutex properties — loom validating its own primitives. Not zeroclawed code.
+- REWRITE · `loom.rs:110 test_arc_lifecycle` · Asserts `*guard == 2` after two increment threads (correct) and `Arc::strong_count == 1` at the end. These are Arc+Mutex properties — loom validating its own primitives. Not calciforge code.
 - REWRITE · `loom.rs:138 test_message_passing_pattern` · Comment says "simulates the mpsc pattern used in send_streaming" but no mpsc is used. Producer does 3 `fetch_add`s; final assertion is `counter == 3`. No race can make this false because producer runs to completion before join. Can't fail.
 - REWRITE · `loom.rs:170 test_no_deadlock_with_consistent_ordering` · Explicitly acquires both locks in the same order, which is the documented way to NOT deadlock. A test that asserts "if I don't do the buggy thing, there is no bug" is not useful. The interesting test would be opposite-order acquisition to prove the *deadlock detector* catches it — but this test intentionally avoids that.
   - should assert: either write a matching `#[should_panic]` test that acquires in inverse order and proves loom detects the deadlock, OR delete this test as vacuous.
 - REWRITE · `loom.rs:199 test_session_cache_invalidation_pattern` · Comment admits "This is a template for future integration tests." It's a placeholder. Writer and reader don't share any data dependency worth observing; reader's `if let Some(&active) = ...` block discards the value. Cannot fail.
 
-Summary: every test in this file tests loom's own primitives and has no reference to any type defined in the `zeroclawed` crate. The tests are well-intentioned templates but currently provide no coverage of concurrent code paths in zeroclawed itself. Either wire them up to real types (`AdapterRegistry`, session caches, request queues) or mark them as examples/docs, not as regression tests.
+Summary: every test in this file tests loom's own primitives and has no reference to any type defined in the `calciforge` crate. The tests are well-intentioned templates but currently provide no coverage of concurrent code paths in calciforge itself. Either wire them up to real types (`AdapterRegistry`, session caches, request queues) or mark them as examples/docs, not as regression tests.
 
-### crates/zeroclawed/src/auth.rs
+### crates/calciforge/src/auth.rs
 
 - SECURITY FLAG (non-test): the test fixture `make_config()` at `auth.rs:97-108` hard-codes Telegram numeric IDs `7000000001` and `15555550002` attached to an `owner`-role identity named "brian". Per CLAUDE.md, "Real chat identifiers (Matrix handles, Discord user-ids, Telegram chat ids) tied to specific users" must not be committed to this public repo. At minimum, verify with the maintainer that these are not real; if they are, rotate/replace with RFC-style placeholders (e.g., `1`/`2`) and rename "brian" to `user_a`/`user_b`. This is a CLAUDE.md violation that the scanner may or may not catch.
 - KEEP · `auth.rs:155 test_resolve_known_telegram_sender` · Real behavioral: identity + role propagation through resolution.
@@ -421,7 +421,7 @@ Summary: every test in this file tests loom's own primitives and has no referenc
   - Role `None` — does resolution still work? Covered by default case but worth an explicit test.
   - Case sensitivity of `channel_kind` — `Telegram` vs `telegram` — is this case-sensitive? Spec ambiguous; test would pin it.
 
-### crates/zeroclawed/src/proxy/auth.rs
+### crates/calciforge/src/proxy/auth.rs
 
 - KEEP · `proxy/auth.rs:127 test_model_matches_exact` · Positive + negative exact match. Good.
 - KEEP · `proxy/auth.rs:136 test_model_matches_wildcard` · Prefix wildcard with positive + negative cross-provider. Good.
@@ -436,7 +436,7 @@ Summary: every test in this file tests loom's own primitives and has no referenc
   - `AllowConfigured` policy + agent IS configured but has empty `allowed_models` — per impl, empty means unrestricted; test should confirm.
 - Note: commented-out `validate_api_key` and `constant_time_eq` are dead code. Corresponding commented test for `constant_time_eq` at :312 should be dropped too. If constant-time comparison comes back, restore both.
 
-### crates/zeroclawed/src/config/validator.rs
+### crates/calciforge/src/config/validator.rs
 
 - No active tests. The module has a commented-out `mod tests` block (`validator.rs:281-289`) with a TODO: "config structs have changed significantly… Tests removed temporarily due to struct changes."
 - CRITICAL gap: this is the validator that gates agent/identity/alloy misconfiguration. Zero current coverage for:
@@ -451,15 +451,15 @@ Summary: every test in this file tests loom's own primitives and has no referenc
   - `validate_toml_syntax` on malformed TOML
 - Recommendation: restoring these tests is higher priority than almost any other Round 2 finding — the validator is the safety net for user-authored config.
 
-### crates/zeroclawed/src/sync.rs
+### crates/calciforge/src/sync.rs
 
 - DELETE · `sync.rs:132 test_shared_mutex` · Single-threaded smoke test. Mutates via one clone, reads via another, both in the same thread. `.lock().is_ok()` is infallible for a std Mutex held by this thread. Test can only fail if the locking API changes shape.
 - DELETE · `sync.rs:152 test_shared_rwlock` · Same pattern: single-threaded write-then-read on two clones. Tests nothing about RwLock semantics — those are stdlib guarantees.
 - DELETE · `sync.rs:170 test_atomic_types` · `store(42); load()` returning 42 — tests the stdlib atomic. Cannot fail in a universe where Rust's atomic types work.
 
-The entire module is a thin conditional-re-export of std/loom primitives. If any test here is worth keeping, it'd be a loom-gated test that proves a specific ZeroClawed concurrent type (not std primitives) is race-free. Currently there are none.
+The entire module is a thin conditional-re-export of std/loom primitives. If any test here is worth keeping, it'd be a loom-gated test that proves a specific Calciforge concurrent type (not std primitives) is race-free. Currently there are none.
 
-### crates/zeroclawed/src/adapters/mod.rs
+### crates/calciforge/src/adapters/mod.rs
 
 - KEEP (group) · `build_openclaw_adapter`, `build_zeroclaw_adapter`, `build_cli_adapter`, `build_acp_adapter`, `build_openclaw_native_adapter`, `build_nzc_native_adapter` · Each just asserts `adapter.kind() == "<same string>"`. Shallow but cheap — they serve as a smoke that every `kind` branch in `build_adapter` compiles and returns something. The per-test assertion is weak (one field, one branch) but collectively they catch the common "rename kind string without updating factory" regression.
 - KEEP · `adapters/mod.rs:446 test_build_unknown_kind_returns_error` · Real negative: unknown kind → Err, and err message contains "unknown agent kind". Good.
@@ -476,13 +476,13 @@ The entire module is a thin conditional-re-export of std/loom primitives. If any
 - Missing coverage:
   - `openclaw-channel` factory branch has no build-test (only kind-smoke absent for it).
   - `nzc-http` factory branch has no build-test.
-  - Precedence order when BOTH `api_key` AND env var `ZEROCLAWED_AGENT_TOKEN` are set — untested.
+  - Precedence order when BOTH `api_key` AND env var `CALCIFORGE_AGENT_TOKEN` are set — untested.
   - `DispatchContext::message_only` is constructed but never asserted-against.
   - `RuntimeStatus` default impl (`None`) untested.
 
 Note: `test-librarian` with `api_key: "REPLACE_WITH_HOOKS_TOKEN"` is a placeholder, which is fine per CLAUDE.md conventions.
 
-### crates/zeroclawed/src/router.rs
+### crates/calciforge/src/router.rs
 
 - DELETE · `router.rs:198 test_router_creates` · `let _r = Router::new();` — pure non-panic smoke. Cannot fail.
 - KEEP · `router.rs:203 test_unknown_kind_returns_error` · Negative path. Duplicates `adapters/mod.rs:446` but through the router surface — integration-level, defensible.
@@ -505,65 +505,65 @@ Note: `test-librarian` with `api_key: "REPLACE_WITH_HOOKS_TOKEN"` is a placehold
 - `crates/adversary-detector/src/digest.rs`
 - `crates/adversary-detector/src/middleware.rs`
 - `crates/adversary-detector/src/profiles.rs`
-- `crates/zeroclawed/tests/e2e/onecli_proxy.rs`
-- `crates/zeroclawed/tests/e2e/config_sanity.rs`
-- `crates/zeroclawed/tests/e2e/adapter_edge_cases.rs`
-- `crates/zeroclawed/tests/e2e/property_tests.rs`
-- `crates/zeroclawed/tests/e2e/security_tests.rs`
-- `crates/zeroclawed/tests/loom.rs`
-- `crates/zeroclawed/src/auth.rs`
-- `crates/zeroclawed/src/proxy/auth.rs`
-- `crates/zeroclawed/src/config/validator.rs` (status: no tests; gap documented)
-- `crates/zeroclawed/src/sync.rs`
-- `crates/zeroclawed/src/adapters/mod.rs`
-- `crates/zeroclawed/src/router.rs`
+- `crates/calciforge/tests/e2e/secrets_proxy.rs`
+- `crates/calciforge/tests/e2e/config_sanity.rs`
+- `crates/calciforge/tests/e2e/adapter_edge_cases.rs`
+- `crates/calciforge/tests/e2e/property_tests.rs`
+- `crates/calciforge/tests/e2e/security_tests.rs`
+- `crates/calciforge/tests/loom.rs`
+- `crates/calciforge/src/auth.rs`
+- `crates/calciforge/src/proxy/auth.rs`
+- `crates/calciforge/src/config/validator.rs` (status: no tests; gap documented)
+- `crates/calciforge/src/sync.rs`
+- `crates/calciforge/src/adapters/mod.rs`
+- `crates/calciforge/src/router.rs`
 
 ### Unaudited in Round 2 (inline `#[cfg(test)]` modules, in-scope but out of time)
 
 Listed roughly in descending test-count; those with more tests / security-critical names should be prioritized for a follow-up pass.
 
 High priority (security/correctness-adjacent, large test surfaces):
-- `crates/zeroclawed/src/commands.rs` (44 tests — by far the largest inline test module)
-- `crates/zeroclawed/src/install/ssh.rs` (23)
-- `crates/zeroclawed/src/install/cli.rs` (23)
-- `crates/zeroclawed/src/context.rs` (19)
-- `crates/zeroclawed/src/config.rs` (18)
-- `crates/zeroclawed/src/install/executor.rs` (17)
-- `crates/zeroclawed/src/adapters/cli.rs` (17)
+- `crates/calciforge/src/commands.rs` (44 tests — by far the largest inline test module)
+- `crates/calciforge/src/install/ssh.rs` (23)
+- `crates/calciforge/src/install/cli.rs` (23)
+- `crates/calciforge/src/context.rs` (19)
+- `crates/calciforge/src/config.rs` (18)
+- `crates/calciforge/src/install/executor.rs` (17)
+- `crates/calciforge/src/adapters/cli.rs` (17)
 
 Medium priority (moderate surface):
-- `crates/zeroclawed/src/channels/whatsapp.rs` (16)
-- `crates/zeroclawed/src/install/model.rs` (13)
-- `crates/zeroclawed/src/channels/telegram.rs` (13)
-- `crates/zeroclawed/src/channels/signal.rs` (13)
-- `crates/zeroclawed/src/adapters/acpx.rs` (13)
-- `crates/zeroclawed/src/adapters/openclaw_native.rs` (12)
-- `crates/zeroclawed/src/channels/matrix.rs` (11)
-- `crates/zeroclawed/src/adapters/openclaw.rs` (11)
+- `crates/calciforge/src/channels/whatsapp.rs` (16)
+- `crates/calciforge/src/install/model.rs` (13)
+- `crates/calciforge/src/channels/telegram.rs` (13)
+- `crates/calciforge/src/channels/signal.rs` (13)
+- `crates/calciforge/src/adapters/acpx.rs` (13)
+- `crates/calciforge/src/adapters/openclaw_native.rs` (12)
+- `crates/calciforge/src/channels/matrix.rs` (11)
+- `crates/calciforge/src/adapters/openclaw.rs` (11)
 
 Low priority (smaller surfaces):
-- `crates/zeroclawed/src/providers/alloy.rs` (9)
-- `crates/zeroclawed/src/install/health.rs` (9)
-- `crates/zeroclawed/src/adapters/nzc_native.rs` (9)
-- `crates/zeroclawed/src/install/json5.rs` (8)
-- `crates/zeroclawed/src/adapters/zeroclaw.rs` (7)
-- `crates/zeroclawed/src/persistent_context.rs` (6)
-- `crates/zeroclawed/src/hooks/memory.rs` (6)
-- `crates/zeroclawed/src/adapters/acp.rs` (6)
-- `crates/zeroclawed/src/install/wizard.rs` (5)
-- `crates/zeroclawed/src/proxy/traceloop/test.rs` (4)
-- `crates/zeroclawed/src/unified_context.rs` (3)
-- `crates/zeroclawed/src/proxy/gateway.rs` (3)
-- `crates/zeroclawed/src/install/migration_types.rs` (3)
-- `crates/zeroclawed/src/proxy/helicone_router.rs` (2)
-- `crates/zeroclawed/src/proxy/alloy_router.rs` (2)
-- `crates/zeroclawed/src/providers/mod.rs` (2)
-- `crates/zeroclawed/src/adapters/openclaw_channel.rs` (2)
+- `crates/calciforge/src/providers/alloy.rs` (9)
+- `crates/calciforge/src/install/health.rs` (9)
+- `crates/calciforge/src/adapters/nzc_native.rs` (9)
+- `crates/calciforge/src/install/json5.rs` (8)
+- `crates/calciforge/src/adapters/zeroclaw.rs` (7)
+- `crates/calciforge/src/persistent_context.rs` (6)
+- `crates/calciforge/src/hooks/memory.rs` (6)
+- `crates/calciforge/src/adapters/acp.rs` (6)
+- `crates/calciforge/src/install/wizard.rs` (5)
+- `crates/calciforge/src/proxy/traceloop/test.rs` (4)
+- `crates/calciforge/src/unified_context.rs` (3)
+- `crates/calciforge/src/proxy/gateway.rs` (3)
+- `crates/calciforge/src/install/migration_types.rs` (3)
+- `crates/calciforge/src/proxy/helicone_router.rs` (2)
+- `crates/calciforge/src/proxy/alloy_router.rs` (2)
+- `crates/calciforge/src/providers/mod.rs` (2)
+- `crates/calciforge/src/adapters/openclaw_channel.rs` (2)
 
 ### Round 2 cross-cutting themes
 
-1. **"Tests its own helper, not zeroclawed code."** `tests/e2e/{config_sanity, adapter_edge_cases, property_tests, security_tests}.rs` and `tests/loom.rs` all follow this pattern: a test-local helper is defined in the test file and then validated. No production code path is exercised. If repointed at real zeroclawed types, these files could provide real coverage; as-is they are aspirational.
-2. **Silent-green on network errors.** `tests/e2e/onecli_proxy.rs` follows the same pattern flagged in Round 1's `security-proxy/tests/integration.rs` — if the server is unreachable, the test `return`s with a `println!` and passes.
+1. **"Tests its own helper, not calciforge code."** `tests/e2e/{config_sanity, adapter_edge_cases, property_tests, security_tests}.rs` and `tests/loom.rs` all follow this pattern: a test-local helper is defined in the test file and then validated. No production code path is exercised. If repointed at real calciforge types, these files could provide real coverage; as-is they are aspirational.
+2. **Silent-green on network errors.** `tests/e2e/secrets_proxy.rs` follows the same pattern flagged in Round 1's `security-proxy/tests/integration.rs` — if the server is unreachable, the test `return`s with a `println!` and passes.
 3. **Silent-green on "Clean OR Review OR Ok"-style match arms.** Seen in `middleware.rs:249`, `proxy.rs:575`, `scanner.rs:280`. When a test "passes either way" it can't distinguish intended behavior from regression.
 4. **Default-constant tautologies.** `profiles.rs:357,371,380` re-assert the same constants the constructor hard-codes. Same pattern as Round 1's `test_default_config`/`test_retry_config_defaults`. Replace with behavioral invariants (monotonicity, self-consistency) — `profiles.rs:390 test_profiles_are_progressively_stricter` is a good model.
 5. **Validator has NO tests (`config/validator.rs`).** A 290-line module that gates agent/identity/alloy/proxy/security config has a commented-out `mod tests` block. This is the single biggest coverage gap found in Round 2 — higher impact than any individual REWRITE above.
@@ -571,7 +571,7 @@ Low priority (smaller surfaces):
 7. **Rate-limiter tautology** (`proxy.rs:659 test_rate_limiter_cooldown_calculation`): impl echoes config verbatim; test verifies the echo. Either make cooldown dynamic or drop the test.
 
 
-## Round 3: host-agent + zeroclawed priority files
+## Round 3: host-agent + calciforge priority files
 
 Continues from Round 2. Same KEEP / REWRITE / DELETE format. `proxy/auth.rs` was already audited in Round 2 (line 424) and is NOT re-audited here. Host-agent has no `tests/` directory; only inline `#[cfg(test)]` modules.
 
@@ -798,13 +798,13 @@ Continues from Round 2. Same KEEP / REWRITE / DELETE format. `proxy/auth.rs` was
   - `cleanup_task` background expiry sweep — untested by design (60s interval).
   - `list_all_pending` — untested.
 
-### crates/zeroclawed/src/config.rs
+### crates/calciforge/src/config.rs
 
 - KEEP · `config.rs:847 test_parse_sample_config` · End-to-end TOML parse with 8+ field assertions across sections. Strong baseline for serde drift.
 - KEEP · `config.rs:865 test_identity_aliases` · Parses inline-table alias and asserts both fields.
 - KEEP · `config.rs:874 test_routing_allowed_agents` · Two cases: empty (default) AND populated. Covers both branches.
 - KEEP · `config.rs:883 test_expand_tilde` · Positive: `~/...` is expanded; AND negative: result no longer starts with `~`. Cross-platform OK (uses `dirs::home_dir`).
-- DELETE · `config.rs:890 test_version_field` · Asserts `cfg.zeroclawed.version == 2` — already asserted by `test_parse_sample_config:850`. Pure duplicate, no new coverage.
+- DELETE · `config.rs:890 test_version_field` · Asserts `cfg.calciforge.version == 2` — already asserted by `test_parse_sample_config:850`. Pure duplicate, no new coverage.
 - KEEP · `config.rs:896 test_optional_fields_absent` · Strong: minimal config with just version, asserts every Optional field defaults to empty/None. Catches `#[serde(default)]` drift.
 - KEEP · `config.rs:911 test_zeroclaw_agent_parses` · Asserts kind, endpoint, api_key, timeout, AND that command/env are None. Multi-field roundtrip.
 - KEEP · `config.rs:930 test_cli_agent_parses` · Asserts command, args, env (with two specific keys), AND that api_key is None. Strong.
@@ -826,7 +826,7 @@ Continues from Round 2. Same KEEP / REWRITE / DELETE format. `proxy/auth.rs` was
   - Routing rule with an `allowed_agents` entry that doesn't exist in `agents[]` — should the loader reject? Currently appears to silently allow. Worth a negative test.
   - `version != 2` (e.g., `version = 1` or `version = 3`) — backward/forward-compat behavior is undocumented and untested.
 
-### crates/zeroclawed/src/context.rs
+### crates/calciforge/src/context.rs
 
 - KEEP · `context.rs:281 test_empty_context_no_preamble` · Cheap negative-baseline: empty buffer → no preamble.
 - KEEP · `context.rs:287 test_push_increments_len` · Two pushes, len goes 0 → 1 → 2. Real counter test.
@@ -878,20 +878,20 @@ Host-agent (all inline `#[cfg(test)]` modules):
 - `crates/host-agent/src/approval/token.rs`
 - `crates/host-agent/src/approval/mod.rs`
 
-Zeroclawed priority files (per Round 2 unaudited list):
-- `crates/zeroclawed/src/config.rs` (18 tests)
-- `crates/zeroclawed/src/context.rs` (19 tests)
+Calciforge priority files (per Round 2 unaudited list):
+- `crates/calciforge/src/config.rs` (18 tests)
+- `crates/calciforge/src/context.rs` (19 tests)
 
 ### Unaudited in Round 3 (in-scope but exceeded time cap)
 
 Remaining Round 2 high-priority list (largest test surfaces first):
-- `crates/zeroclawed/src/commands.rs` (44 tests, 2158 lines — by far the largest)
-- `crates/zeroclawed/src/install/ssh.rs` (23 tests, 775 lines)
-- `crates/zeroclawed/src/install/cli.rs` (23 tests, 727 lines)
-- `crates/zeroclawed/src/install/executor.rs` (17 tests)
-- `crates/zeroclawed/src/adapters/cli.rs` (17 tests)
+- `crates/calciforge/src/commands.rs` (44 tests, 2158 lines — by far the largest)
+- `crates/calciforge/src/install/ssh.rs` (23 tests, 775 lines)
+- `crates/calciforge/src/install/cli.rs` (23 tests, 727 lines)
+- `crates/calciforge/src/install/executor.rs` (17 tests)
+- `crates/calciforge/src/adapters/cli.rs` (17 tests)
 
-Note: `crates/zeroclawed/src/proxy/auth.rs` is already audited in Round 2 (line 424) and was correctly skipped.
+Note: `crates/calciforge/src/proxy/auth.rs` is already audited in Round 2 (line 424) and was correctly skipped.
 
 ### Round 3 cross-cutting themes
 
@@ -901,6 +901,6 @@ Note: `crates/zeroclawed/src/proxy/auth.rs` is already audited in Round 2 (line 
 4. **Validators have great input coverage; decision trees have ZERO coverage.** Across `adapters/{exec,systemd,git,pct,zfs}.rs` the `is_valid_*` validators are well-tested (lots of injection patterns, boundary values). But the `Adapter::validate` and `execute` methods that USE those validators — the entire policy-decision logic — have NO tests. This is the single biggest theme of Round 3: input validation is fenced, but the security-critical authorization logic that gates `sudo` is not.
 5. **Approval lifecycle has only the negative path tested.** `host-agent/approval/mod.rs` tests `validate_and_consume_token` ONLY for the wrong-caller negative case. The full happy-path (create → Signal-confirm → consume) is uncovered, as are token-replay, expiration, target-mismatch, and not-yet-approved branches. The entire P1-5/P1-6/P3-18 approval state machine has no end-to-end test.
 6. **Duplicate-test pattern between adapter and validator modules.** `host-agent/adapters/zfs.rs:227-260` re-tests the same validators as `zfs/mod.rs:303-333`. Pick one canonical location.
-7. **Likely real Telegram IDs and a real-looking API token still in the public repo.** `zeroclawed/config.rs:786, 792, 807, 923` ship `7000000001`, `15555550002`, and `zc_4f5c220eec86...`. Round 2 flagged the auth.rs Telegram IDs and Round 2's "Top priorities" listed sanitization (`commit 2b7116c0`); the `config.rs` SAMPLE_CONFIG appears to have been missed by that pass. Re-run the sanitization on this file.
-8. **`context.rs` is a positive example.** The 19 tests in `crates/zeroclawed/src/context.rs` are uniformly behavioral, multi-assertion, edge-case-aware, and have descriptive names. Use as a reference for what good test coverage looks like in this codebase.
+7. **Likely real Telegram IDs and a real-looking API token still in the public repo.** `calciforge/config.rs:786, 792, 807, 923` ship `7000000001`, `15555550002`, and `zc_4f5c220eec86...`. Round 2 flagged the auth.rs Telegram IDs and Round 2's "Top priorities" listed sanitization (`commit 2b7116c0`); the `config.rs` SAMPLE_CONFIG appears to have been missed by that pass. Re-run the sanitization on this file.
+8. **`context.rs` is a positive example.** The 19 tests in `crates/calciforge/src/context.rs` are uniformly behavioral, multi-assertion, edge-case-aware, and have descriptive names. Use as a reference for what good test coverage looks like in this codebase.
 

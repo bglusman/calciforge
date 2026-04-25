@@ -672,6 +672,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bd91ee7b2422bcb158d90ef4d14f75ef67f340943fc4149891dcce8f8b972a3"
 
 [[package]]
+name = "calciforge"
+version = "0.1.0"
+dependencies = [
+ "adversary-detector",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "backon 0.4.4",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "console 0.15.11",
+ "dialoguer",
+ "futures-util",
+ "hegeltest",
+ "hex",
+ "hmac",
+ "home",
+ "indicatif",
+ "loom",
+ "matrix-sdk",
+ "mockito",
+ "proptest",
+ "rand 0.9.2",
+ "reqwest 0.12.28",
+ "sacp",
+ "sacp-tokio",
+ "secrets-client",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "teloxide",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3240,6 +3284,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcp-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rmcp 0.8.5",
+ "schemars",
+ "secrets-client",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3521,32 +3581,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "onecli-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "http 1.4.0",
- "humantime",
- "humantime-serde",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "toml 0.8.23",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "wiremock",
-]
-
-[[package]]
 name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3636,6 +3670,25 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "paste-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "secrets-client",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "pbkdf2"
@@ -4914,6 +4967,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "secrets-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "humantime",
+ "humantime-serde",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4950,11 +5021,11 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
- "onecli-client",
  "rcgen",
  "regex",
  "reqwest 0.12.28",
  "rustls",
+ "secrets-client",
  "serde",
  "serde_json",
  "tempfile",
@@ -7213,85 +7284,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
-]
-
-[[package]]
-name = "zeroclawed"
-version = "0.1.0"
-dependencies = [
- "adversary-detector",
- "anyhow",
- "async-trait",
- "axum",
- "backon 0.4.4",
- "base64 0.22.1",
- "chrono",
- "clap",
- "console 0.15.11",
- "dialoguer",
- "futures-util",
- "hegeltest",
- "hex",
- "hmac",
- "home",
- "indicatif",
- "loom",
- "matrix-sdk",
- "mockito",
- "onecli-client",
- "proptest",
- "rand 0.9.2",
- "reqwest 0.12.28",
- "sacp",
- "sacp-tokio",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "teloxide",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "zeroclawed-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "onecli-client",
- "rmcp 0.8.5",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "zeroclawed-secret-paste"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "onecli-client",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

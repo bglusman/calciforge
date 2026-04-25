@@ -1,0 +1,29 @@
+[package]
+name = "secrets-client"
+version = "0.1.0"
+edition = "2024"
+description = "Secrets client for Calciforge — fnox subprocess wrapper, vaultwarden client, env→fnox→vault resolver"
+license = "MIT"
+
+[lib]
+name = "secrets_client"
+path = "src/lib.rs"
+
+[dependencies]
+# Workspace deps
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+
+# Crate-specific
+url = "2"
+humantime = "2"
+humantime-serde = "1"
+
+[dev-dependencies]
+tempfile = "3"
+toml = "0.8"

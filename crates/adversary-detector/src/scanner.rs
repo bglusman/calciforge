@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// Configuration for the adversary scanner and transparent proxy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScannerConfig {
-    /// Optional URL of the shared ZeroClawed adversary HTTP service.
+    /// Optional URL of the shared Calciforge adversary HTTP service.
     /// If `None` or unreachable, layers 1+2 run locally only.
     pub service_url: Option<String>,
     /// Ratio threshold: if discussion_signals / injection_signals > this,
@@ -21,7 +21,7 @@ pub struct ScannerConfig {
     #[serde(default = "ScannerConfig::default_min_signals")]
     pub min_signals_for_ratio: usize,
     /// Path to the persistent digest store JSON file.
-    /// Defaults to `~/.zeroclawed/digests.json` when `None`.
+    /// Defaults to `~/.calciforge/digests.json` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest_store_path: Option<PathBuf>,
     /// When `true`, `Review` verdicts from the proxy automatically pass through

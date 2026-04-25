@@ -1,4 +1,4 @@
-# ZeroClawed Host-Agent — SDD Specification (Round 2)
+# Calciforge Host-Agent — SDD Specification (Round 2)
 
 ## Document Control
 - **Version**: 0.2.0
@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-This SDD defines the security-hardened architecture for ZeroClawed Host-Agent integrating with NonZeroClaw (NZC) as the primary policy engine. All P0-P4 requirements from the Opus 4.6 security review are addressed.
+This SDD defines the security-hardened architecture for Calciforge Host-Agent integrating with NonZeroClaw (NZC) as the primary policy engine. All P0-P4 requirements from the Opus 4.6 security review are addressed.
 
 ---
 
@@ -389,7 +389,7 @@ pattern = "tank/temp/.*"  # temp datasets don't need approval
   command: "{{ item }}"
   loop:
     - "openssl genrsa -out ca.key 4096"
-    - "openssl req -new -x509 -key ca.key -sha256 -subj '/C=US/O=ZeroClawed/CN=ZeroClawed CA' -days 3650 -out ca.crt"
+    - "openssl req -new -x509 -key ca.key -sha256 -subj '/C=US/O=Calciforge/CN=Calciforge CA' -days 3650 -out ca.crt"
     # ... server and client certs
 
 - name: Install systemd unit
@@ -409,7 +409,7 @@ pattern = "tank/temp/.*"  # temp datasets don't need approval
 
 ```ini
 [Unit]
-Description=ZeroClawed Host-Agent mTLS RPC Server
+Description=Calciforge Host-Agent mTLS RPC Server
 After=network.target
 
 [Service]

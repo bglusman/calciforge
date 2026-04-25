@@ -1,4 +1,4 @@
-# ZeroClawed Backlog
+# Calciforge Backlog
 
 ## 🔥 HIGH PRIORITY — Active Work
 
@@ -6,20 +6,20 @@
 - [ ] Install claw-code on 210 via deploy script
 - [ ] Configure OneCLI proxy for claw-code credentials
 - [ ] Create wrapper script: `claw-wrapped` → routes through OneCLI + clash
-- [ ] Test end-to-end: Telegram → zeroclawed → claw-code → OneCLI → provider
+- [ ] Test end-to-end: Telegram → calciforge → claw-code → OneCLI → provider
 - [ ] Document claw-code integration in `docs/claw-code-setup.md`
 
 ### ZeroClaw (zeroclawlabs) Integration  
 - [ ] Install zeroclawlabs on 210 via deploy script (`--with-zeroclaw`)
 - [ ] Configure zeroclawlabs gateway URL to use OneCLI proxy
 - [ ] Create wrapper script: `nzc-wrapped` → routes through OneCLI + clash
-- [ ] Test: Telegram → zeroclawed → nzc → OneCLI → provider
+- [ ] Test: Telegram → calciforge → nzc → OneCLI → provider
 - [ ] Document zeroclaw integration
 
 ### OneCLI + Clash Adapter Layer
-- [ ] Build `onecli-client` credential proxy service
+- [ ] Build `secrets-client` credential proxy service
 - [ ] Configure clash policy for agent tool restrictions
-- [ ] Create unified wrapper generation in `zeroclawed install`
+- [ ] Create unified wrapper generation in `calciforge install`
 - [ ] Test policy enforcement: block dangerous tools, allow safe ones
 
 ### Deployment & Infrastructure
@@ -100,5 +100,5 @@
 
 **Integration architecture:**
 ```
-User DM → zeroclawed → [OneCLI proxy] → [clash policy] → claw-code/nzc → Provider
+User DM → calciforge → [OneCLI proxy] → [clash policy] → claw-code/nzc → Provider
 ```

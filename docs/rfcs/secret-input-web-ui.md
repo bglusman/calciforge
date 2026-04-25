@@ -120,7 +120,7 @@ RFC §12.8).
 
 ### Implementation cost
 
-- ~250 LoC Rust crate `crates/zeroclawed-secret-paste`:
+- ~250 LoC Rust crate `crates/paste-server`:
   - `axum` (already a workspace dep) HTTP server
   - 1 GET (form), 1 POST (submit), 1 GET (confirmation)
   - in-memory token store, single-listener-per-request lifecycle

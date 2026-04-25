@@ -1,6 +1,6 @@
 # adversary-detector
 
-Adversary external content scanning for ZeroClawed. Protects agents from prompt injection, hidden payloads, and malicious web content before it reaches the model context.
+Adversary external content scanning for Calciforge. Protects agents from prompt injection, hidden payloads, and malicious web content before it reaches the model context.
 
 ## How It Works
 

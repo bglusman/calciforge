@@ -319,7 +319,7 @@ impl SecurityProxy {
         }
 
         // Credential injection — on a cache miss, resolve via the shared
-        // onecli-client vault resolver (env → fnox → vaultwarden) so
+        // secrets-client vault resolver (env → fnox → vaultwarden) so
         // rotated keys are picked up per-request rather than only at
         // startup. See docs/rfcs/consolidation-findings.md finding #5.
         let mut injected_headers = vec![];
@@ -440,7 +440,7 @@ impl SecurityProxy {
     }
 
     /// Resolve any `{{secret:NAME}}` refs in `input` and return the
-    /// substituted form. Uses the shared `onecli_client::vault::get_secret`
+    /// substituted form. Uses the shared `secrets_client::vault::get_secret`
     /// resolver for each name. On any error (unresolvable, malformed,
     /// nested) returns the error so the caller can fail the outbound
     /// request.
@@ -486,7 +486,7 @@ impl SecurityProxy {
 
         let mut resolved = std::collections::HashMap::new();
         for name in names {
-            match onecli_client::vault::get_secret(&name).await {
+            match secrets_client::vault::get_secret(&name).await {
                 Ok(value) => {
                     resolved.insert(name, value);
                 }

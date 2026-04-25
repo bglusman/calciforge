@@ -2,14 +2,14 @@
 # setup-claude-hooks.sh — Wire clashd as a Claude Code PreToolUse policy engine.
 #
 # What this does:
-#   1. Builds clashd and zeroclawed (release profile)
+#   1. Builds clashd and calciforge (release profile)
 #   2. Installs binaries to ~/.local/bin/
 #   3. Creates ~/.clash/ with a Claude Code-specific policy
 #   4. Installs a launchd service so clashd starts at login (macOS)
 #   5. Updates ~/.claude/settings.json with the PreToolUse hook
 #
 # Usage:
-#   cd ~/projects/zeroclawed && bash scripts/setup-claude-hooks.sh
+#   cd ~/projects/calciforge && bash scripts/setup-claude-hooks.sh
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ CLASH_DIR="$HOME/.clash"
 CLAUDE_DIR="$HOME/.claude"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
-PLIST_LABEL="com.zeroclawed.clashd"
+PLIST_LABEL="com.calciforge.clashd"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
 # ── colours ──────────────────────────────────────────────────────────────────
@@ -30,29 +30,29 @@ die()  { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ZeroClawed × Claude Code — policy hook setup"
+echo "  Calciforge × Claude Code — policy hook setup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
 # ── 1. Build ──────────────────────────────────────────────────────────────────
-echo "Building clashd and zeroclawed (release)..."
+echo "Building clashd and calciforge (release)..."
 CARGO="${HOME}/.cargo/bin/cargo"
 [[ -x "$CARGO" ]] || die "cargo not found at $CARGO"
 
-if ! "$CARGO" build --release -p clashd -p zeroclawed > /tmp/zeroclawed-build.log 2>&1; then
-    grep "^error" /tmp/zeroclawed-build.log || true
-    die "cargo build failed — full log at /tmp/zeroclawed-build.log"
+if ! "$CARGO" build --release -p clashd -p calciforge > /tmp/calciforge-build.log 2>&1; then
+    grep "^error" /tmp/calciforge-build.log || true
+    die "cargo build failed — full log at /tmp/calciforge-build.log"
 fi
-grep -E "Compiling|Finished" /tmp/zeroclawed-build.log || true
+grep -E "Compiling|Finished" /tmp/calciforge-build.log || true
 ok "Build complete"
 
 # ── 2. Install binaries ───────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
 cp "$REPO_ROOT/target/release/clashd" "$BIN_DIR/clashd"
-cp "$REPO_ROOT/target/release/zeroclawed" "$BIN_DIR/zeroclawed"
-chmod +x "$BIN_DIR/clashd" "$BIN_DIR/zeroclawed"
+cp "$REPO_ROOT/target/release/calciforge" "$BIN_DIR/calciforge"
+chmod +x "$BIN_DIR/clashd" "$BIN_DIR/calciforge"
 ok "Installed clashd → $BIN_DIR/clashd"
-ok "Installed zeroclawed → $BIN_DIR/zeroclawed"
+ok "Installed calciforge → $BIN_DIR/calciforge"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     warn "$BIN_DIR is not in PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\""

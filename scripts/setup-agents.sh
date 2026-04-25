@@ -9,9 +9,9 @@
 #   --agents <list>    Comma-separated subset: opencode,openclaw,zeroclaw (default: all)
 #
 # Usage:
-#   cd ~/projects/zeroclawed && bash scripts/setup-agents.sh
-#   cd ~/projects/zeroclawed && bash scripts/setup-agents.sh --configure-only
-#   cd ~/projects/zeroclawed && bash scripts/setup-agents.sh --agents zeroclaw,openclaw
+#   cd ~/projects/calciforge && bash scripts/setup-agents.sh
+#   cd ~/projects/calciforge && bash scripts/setup-agents.sh --configure-only
+#   cd ~/projects/calciforge && bash scripts/setup-agents.sh --agents zeroclaw,openclaw
 
 set -euo pipefail
 
@@ -45,7 +45,7 @@ agent_enabled() { [[ ",$AGENTS," == *",$1,"* ]]; }
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ZeroClawed — Agent Install & Policy Setup"
+echo "  Calciforge — Agent Install & Policy Setup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Agents:   $AGENTS"
 echo "  Mode:     $([ "$CONFIGURE_ONLY" = true ] && echo configure-only || ([ "$INSTALL_ONLY" = true ] && echo install-only || echo install+configure))"
@@ -108,7 +108,7 @@ if agent_enabled opencode; then
             TARBALL=$(ls "$PLUGIN_PKG_DIR"/*.tgz 2>/dev/null | tail -1)
             if [[ -n "$TARBALL" ]]; then
                 npm install -g "$TARBALL"
-                opencode plugin zeroclawed-clashd-policy --global 2>/dev/null || \
+                opencode plugin calciforge-clashd-policy --global 2>/dev/null || \
                     warn "opencode plugin install returned non-zero (may already be registered)"
                 ok "opencode clashd policy plugin installed"
             else
@@ -218,8 +218,8 @@ if clashd_running; then
     echo "  Features: $HOOKS"
 else
     warn "clashd not responding on port ${CLASHD_PORT}"
-    warn "Run: cd ~/projects/zeroclawed && bash scripts/setup-claude-hooks.sh"
-    warn "Or:  launchctl load ~/Library/LaunchAgents/com.zeroclawed.clashd.plist"
+    warn "Run: cd ~/projects/calciforge && bash scripts/setup-claude-hooks.sh"
+    warn "Or:  launchctl load ~/Library/LaunchAgents/com.calciforge.clashd.plist"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────

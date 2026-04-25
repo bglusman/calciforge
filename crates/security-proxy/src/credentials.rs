@@ -26,7 +26,7 @@ impl CredentialInjector {
     /// cache at startup. Kept for back-compat; new code should rely on
     /// the on-demand resolver (`ensure_cached`) which looks up
     /// `<NAME>_API_KEY` (the convention used by most SDKs and by
-    /// `onecli-client::vault::get_secret`). See
+    /// `secrets-client::vault::get_secret`). See
     /// docs/rfcs/consolidation-findings.md finding #1.
     ///
     /// Deprecation path: this method emits a per-key warning when a
@@ -123,7 +123,7 @@ impl CredentialInjector {
     }
 
     /// Populate the cache for `provider` from the shared
-    /// `onecli_client::vault::get_secret` resolver if not already
+    /// `secrets_client::vault::get_secret` resolver if not already
     /// present. Returns `true` when the cache has a value for the
     /// provider after the call (either it was already there or the
     /// resolver just supplied one).
@@ -158,7 +158,7 @@ impl CredentialInjector {
         if self.credentials.contains_key(&key) {
             return true;
         }
-        match onecli_client::vault::get_secret(&key).await {
+        match secrets_client::vault::get_secret(&key).await {
             Ok(secret) => {
                 self.credentials.insert(key, secret);
                 true
@@ -352,8 +352,8 @@ mod tests {
         // specific variables we touch aren't read by concurrent tests
         // in this module.
         unsafe {
-            std::env::remove_var("ONECLI_VAULT_TOKEN");
-            std::env::remove_var("ONECLI_VAULT_URL");
+            std::env::remove_var("SECRETS_VAULT_TOKEN");
+            std::env::remove_var("SECRETS_VAULT_URL");
         }
         let provider_name = format!("nosuchprovider_pid_{}", std::process::id());
         let injector = CredentialInjector::new();
