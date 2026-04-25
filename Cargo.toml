@@ -2,6 +2,7 @@
 
 members = [
     "crates/zeroclawed",
+    "crates/zeroclawed-secret-paste",
     "crates/adversary-detector",
     "crates/security-proxy",
     "crates/host-agent",
