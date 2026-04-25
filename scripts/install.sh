@@ -222,13 +222,13 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
 
     # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
     # Build each crate separately so --features only applies to zeroclawed.
-    "$CARGO" build --release -p clashd -p security-proxy 2>&1 \
-        | grep -E "^error|Compiling (clashd|security.proxy)|Finished" || true
+    "$CARGO" build --release -p clashd -p security-proxy -p zeroclawed-mcp 2>&1 \
+        | grep -E "^error|Compiling (clashd|security.proxy|zeroclawed.mcp)|Finished" || true
     "$CARGO" build --release -p zeroclawed --features channel-matrix 2>&1 \
         | grep -E "^error|Compiling zeroclawed|Finished" || true
 
     mkdir -p "$BIN_DIR"
-    for bin in clashd zeroclawed security-proxy; do
+    for bin in clashd zeroclawed security-proxy zeroclawed-mcp; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
         # On Linux, overwriting a running binary fails with "Text file busy".
@@ -427,6 +427,31 @@ with open(path, "w") as f: json.dump(s, f, indent=2); f.write("\n")
 print("settings.json updated")
 PYEOF
             ok "Claude Code PreToolUse hook → clashd:${CLASHD_PORT}"
+
+            # Register zeroclawed-mcp as an MCP server. The server runs
+            # via stdio when claude spawns it as a subprocess. Idempotent:
+            # the python block replaces any existing entry with the same
+            # name, so re-running install.sh won't grow duplicates.
+            ZC_MCP_BIN="$BIN_DIR/zeroclawed-mcp"
+            if [[ -x "$ZC_MCP_BIN" ]]; then
+                python3 - "$SETTINGS" "$ZC_MCP_BIN" <<'PYEOF'
+import json, sys
+path, mcp_bin = sys.argv[1], sys.argv[2]
+with open(path) as f: s = json.load(f)
+servers = s.setdefault("mcpServers", {})
+servers["zeroclawed-secrets"] = {
+    "command": mcp_bin,
+    "args": [],
+    "env": {},
+}
+with open(path, "w") as f: json.dump(s, f, indent=2); f.write("\n")
+print(f"settings.json: registered MCP server zeroclawed-secrets → {mcp_bin}")
+PYEOF
+                ok "Claude Code MCP server zeroclawed-secrets → ${ZC_MCP_BIN}"
+            else
+                warn "zeroclawed-mcp binary not found at $ZC_MCP_BIN — skipping MCP registration"
+                warn "  Build it with: cargo build --release -p zeroclawed-mcp"
+            fi
         fi
     fi
 fi
