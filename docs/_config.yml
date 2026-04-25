@@ -1,0 +1,7 @@
+title: Calciforge
+description: Keep your castle secure and moving.
+theme: jekyll-theme-minimal
+exclude:
+  - architecture-review-2026-04-25.md
+  - rfcs/
+  - roadmap/
