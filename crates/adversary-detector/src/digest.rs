@@ -162,17 +162,10 @@ pub fn sha256_hex(content: &str) -> String {
 mod tests {
     use super::*;
     fn tmp_path() -> PathBuf {
-        // Use a unique path in the system temp dir
-        let dir = std::env::temp_dir();
-        let name = format!(
-            "digest-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        dir.join(name)
+        let dir = tempfile::tempdir()
+            .expect("create digest test temp dir")
+            .keep();
+        dir.join("digests.json")
     }
 
     #[tokio::test]

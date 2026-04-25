@@ -73,7 +73,7 @@ impl OneCliServiceConfig {
         }
 
         Ok(Self {
-            bind: std::env::var("ONECLI_BIND").unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
+            bind: std::env::var("ONECLI_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string()),
             vault: VaultConfig {
                 backend: std::env::var("ONECLI_VAULT_BACKEND")
                     .unwrap_or_else(|_| "env".to_string()),
