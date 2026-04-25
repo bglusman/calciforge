@@ -38,3 +38,4 @@ homeserver.log
 .claude/settings.local.json
 .claude/.last-reviewed-sha
 fnox.toml
+.claude/worktrees/
