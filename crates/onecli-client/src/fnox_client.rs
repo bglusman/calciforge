@@ -183,10 +183,14 @@ impl FnoxClient {
             .spawn()
             .map_err(FnoxError::NotInstalled)?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(value.as_bytes())
-                .await
-                .map_err(FnoxError::NotInstalled)?;
+            // BrokenPipe is benign: the child exited before reading
+            // stdin (real fnox reads it; some test fakes don't). Surface
+            // any other write failure as NotInstalled.
+            match stdin.write_all(value.as_bytes()).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => return Err(FnoxError::NotInstalled(e)),
+            }
             // Drop closes stdin so fnox sees EOF.
         }
         let output = child
