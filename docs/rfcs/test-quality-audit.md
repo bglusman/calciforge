@@ -124,7 +124,7 @@ A test is rejected if any of these apply:
 - KEEP · `proxy.rs:577 test_intercept_scan_outbound` · Good behavioral test.
 - KEEP · `proxy.rs:609 test_intercept_passes_safe_outbound` · Positive case.
 - KEEP · `proxy.rs:640 test_intercept_bypasses_configured_domains` · Confirms bypass short-circuits scanning.
-- REWRITE · `proxy.rs:666 test_check_bypassed` · The wildcard logic (`192.168.1.*`) is the interesting behavior; test covers one positive and one negative for it but misses: `192.168.2.1` (not matching), `192.168.1` without trailing char, URLs with `192.168.1.X` appearing in the *path* (substring-match bug — current implementation would match `https://evil.com/?redirect=192.168.1.1`). Also creates a fresh runtime inside a test that is already runnable sync — awkward.
+- REWRITE · `proxy.rs:666 test_check_bypassed` · The wildcard logic (`192.168.1.*`) is the interesting behavior; test covers one positive and one negative for it but misses: `192.168.2.<n>` (not matching), `192.168.1` without trailing char, URLs with `192.168.1.X` appearing in the *path* (substring-match bug — current implementation would match `https://evil.com/?redirect=192.168.1.1`). Also creates a fresh runtime inside a test that is already runnable sync — awkward.
   - should assert: (a) URL-path-embedded IPs do NOT bypass (this is likely a real bug given `url.contains(pattern)` semantics); (b) edge cases like `localhost.evil.com` — does it bypass? Should probably not.
 - Missing coverage:
   - Hop-by-hop header stripping (`connection`, `te`, `trailers`, `transfer-encoding`, `upgrade`, etc.) — the list in `intercept` is load-bearing for HTTP correctness. No test verifies those are stripped.
@@ -372,7 +372,7 @@ Summary: every property test in this file tests a test-local helper or the stdli
     - `test_error_no_file_path_leak` (21): tests that `spawn("nonexistent_bin_xyz")` error doesn't contain "/root" or "/etc". It's the kernel's ENOENT message — a property of libc, not zeroclawed.
     - `test_error_no_credential_leak` (39): runs `env NONEXISTENT_VAR` and asserts stderr doesn't contain "password"/"token". env's error message is "NONEXISTENT_VAR: No such file" — of course it doesn't contain "password". Tautology. Security claim is aspirational.
     - `test_injection_payloads_safe` (79): asserts `echo 'ignore previous instructions'` outputs "ignore previous instructions" literally. Tests `echo`, not zeroclawed's prompt handling. Name promises injection safety — test is trivial.
-    - `test_env_secret_not_leaked` (120): sets `SECRET_KEY=sk-secret-12345`, runs `echo hello`, asserts output doesn't contain the secret. `echo` does not read environment variables unless you pass `$SECRET_KEY`, which the test does not. Tautology — it can't leak what it doesn't reference.
+    - `test_env_secret_not_leaked` (120): sets `SECRET_KEY=sk-…REDACTED…`, runs `echo hello`, asserts output doesn't contain the secret. `echo` does not read environment variables unless you pass `$SECRET_KEY`, which the test does not. Tautology — it can't leak what it doesn't reference.
     - `test_empty_input_handling` (151): `echo ""` exits 0. Trivial.
     - `test_long_input_handling` (172): `let _ = output.status;` — result is discarded. Cannot fail.
     - `test_unicode_input_handling` (203): `Ok(_) => {}` arm — cannot fail on success path. Pure non-panic smoke.
@@ -569,4 +569,338 @@ Low priority (smaller surfaces):
 5. **Validator has NO tests (`config/validator.rs`).** A 290-line module that gates agent/identity/alloy/proxy/security config has a commented-out `mod tests` block. This is the single biggest coverage gap found in Round 2 — higher impact than any individual REWRITE above.
 6. **Security fixture contains apparent real Telegram IDs** (`auth.rs:99, 108`). Per CLAUDE.md this public repo must not ship real chat IDs. Verify and sanitize.
 7. **Rate-limiter tautology** (`proxy.rs:659 test_rate_limiter_cooldown_calculation`): impl echoes config verbatim; test verifies the echo. Either make cooldown dynamic or drop the test.
+
+
+## Round 3: host-agent + zeroclawed priority files
+
+Continues from Round 2. Same KEEP / REWRITE / DELETE format. `proxy/auth.rs` was already audited in Round 2 (line 424) and is NOT re-audited here. Host-agent has no `tests/` directory; only inline `#[cfg(test)]` modules.
+
+### crates/host-agent/src/error.rs
+
+- REWRITE · `error.rs:115 test_zfs_error_status_mapping` · Pure non-panic — body is `let _ = err.into_response()`. Doesn't assert the status code is 403, doesn't decode the body. The whole point of `IntoResponse` is the mapping; mapping is never checked. Comment ("Just verify it compiles") admits the test does nothing.
+  - should assert: extract the response, decode body to JSON, assert `status == 403` and `body["error"]` contains "Permission denied" and `body["success"] == false`. Repeat per variant for full enum coverage.
+- REWRITE · `error.rs:122 test_approval_error_status_mapping` · Same pattern; `let _ = err.into_response()` checks nothing. `Expired` should map to 410 GONE — exactly what could regress, and this test would not catch it.
+  - should assert: status == 410 GONE for `Expired`; status == 404 for `NotFound`; status == 409 for `AlreadyUsed`; status == 400 for `InvalidToken`.
+- Missing coverage: every other `AppError` variant (InvalidDataset → 400, ZfsError sub-variants → 403/404/409/500, InvalidToken → 401, PolicyDenied → 403, RateLimited → 429, Internal → 500) is unfenced. None of the status-code mappings have a regression guard.
+
+### crates/host-agent/src/audit.rs
+
+- KEEP · `audit.rs:243 test_rotated_path` · Pure-function, real assertion on the constructed PathBuf. Cheap, guards rotation filename pattern.
+- KEEP (with note) · `audit.rs:253 test_audit_event_serialization` · `.contains("\"audit_id\":\"test-123\"")` is brittle string-match, but it does fence the `#[serde(rename = "audit_id")]` attribute. Acceptable; consider switching to a structural roundtrip (`from_str::<AuditEvent>` and `assert_eq!`) for stronger coverage of all renamed fields.
+- KEEP · `audit.rs:273 test_rotation_strategy_from_str` · Five `matches!` cases including the unknown-→-Never default. Real branch coverage.
+- Missing coverage (important):
+  - `AuditLogger::new` + `log` end-to-end: no test writes an event, reads the file back, asserts the JSONL line is well-formed. The mutex+file-handle lifecycle is the load-bearing logic and has zero coverage.
+  - `check_rotation` swap behavior — date-comparison logic untested (would need an injectable clock or refactor).
+  - `cleanup_old_logs` — retention policy parses dates from filenames; zero tests, and a regression here silently retains logs forever or deletes today's log.
+  - `RotationStrategy::Hourly` is declared but `current_date_string()` only uses `%Y-%m-%d` — Hourly behaves identically to Daily. Either dead variant or unimplemented feature; no test pins this.
+
+### crates/host-agent/src/metrics.rs
+
+- KEEP · `metrics.rs:163 test_metrics_rendering` · Increments three different counters then asserts the rendered text contains each at value 1. Real behavioral roundtrip across the public API.
+- KEEP · `metrics.rs:177 test_zfs_operation_types` · Asserts both per-type counters AND the aggregate `zfs_operations_total == 3`. Catches the common "forgot to increment the aggregate" bug.
+- Missing coverage:
+  - Unknown op-type (`"foo"`) is silently ignored by `increment_zfs_operation` — a regression that maps it to `snapshot` would still pass. Add a negative test.
+  - `record_sudoers_risky` (gauge, not counter): no test verifies the second call OVERWRITES (not adds to) the first. Gauge-vs-counter semantics matter for Prometheus correctness.
+  - `auth_failures_total` has no `increment_auth_failures` method — coverage gap if a counter was supposed to be wired up but isn't.
+
+### crates/host-agent/src/rate_limit.rs
+
+- KEEP · `rate_limit.rs:154 test_allows_up_to_limit` · 3-allow-then-deny is the core invariant. Tight assertion.
+- KEEP · `rate_limit.rs:164 test_separate_cns_independent` · Per-CN isolation is the security property — exactly the kind of test you want.
+- DELETE (or REWRITE) · `rate_limit.rs:177 test_window_reset` · Uses `window_seconds: 0` plus a 5ms sleep. Tests an edge-case (zero-duration window) that doesn't exercise real behavior — `elapsed >= self.window` is trivially true after 0 ns. Also flaky-by-design: at extreme load the 5ms sleep may be insufficient. The actual interesting property (window of N seconds resets at exactly N seconds, not N±ε) is not tested.
+  - should assert: with `window_seconds: 1`, exhaust quota; verify rejected; sleep 1100ms; verify allowed again. Or inject a fake clock and avoid `sleep` entirely.
+- KEEP · `rate_limit.rs:186 test_disabled_limiter_always_allows` · 100-iter loop confirms the early-return short-circuit.
+- KEEP · `rate_limit.rs:200 test_applies_to` · Endpoint-membership check including a negative.
+- KEEP · `rate_limit.rs:208 test_retry_after_positive` · Asserts `retry_after > 0`; weak (a constant 1 would pass) but better than nothing.
+- Missing coverage (important):
+  - `evict_expired` has zero tests. The eviction window (`window * 2`) is the only mechanism preventing unbounded `DashMap` growth — a regression that retains forever is invisible.
+  - `applies_to` returning `false` when `enabled = false` (matching endpoint, but disabled) is untested.
+  - Concurrent `check` calls from multiple tasks — DashMap entry-API is the load-bearing concurrency primitive; no loom or threaded test verifies counter increments aren't lost under contention.
+
+### crates/host-agent/src/perm_warn.rs
+
+- KEEP · `perm_warn.rs:310 test_bare_zfs_flagged` · Three distinct sudoers patterns, all asserted positive.
+- KEEP · `perm_warn.rs:319 test_zfs_safe_subcmds_not_flagged` · Negative cases for the `list/get/snapshot` allowlist branch. Strong — catches over-flagging regressions.
+- KEEP · `perm_warn.rs:328 test_zfs_destroy_wrapper_not_flagged` · Negative for the wrapper-path bypass. Important.
+- KEEP · `perm_warn.rs:335 test_pct_create_flagged` · Positive for the targeted `pct create` rule.
+- KEEP · `perm_warn.rs:342 test_pct_create_wrapper_not_flagged` · Negative for wrapper bypass.
+- KEEP · `perm_warn.rs:349 test_bare_git_flagged` · Two positives.
+- KEEP · `perm_warn.rs:355 test_git_safe_wrapper_not_flagged` · Negative.
+- KEEP · `perm_warn.rs:362 test_nopasswd_all_flagged` · Two formatting variants (with/without space after colon). Good.
+- KEEP · `perm_warn.rs:368 test_comment_not_flagged` · End-to-end through `scan_file` with a temp file containing a commented-out match. Strong — guards the comment-skip filter.
+- KEEP · `perm_warn.rs:384 test_empty_line_not_flagged` · Edge case.
+- KEEP · `perm_warn.rs:390 test_reason_message_is_helpful` · Asserts the wrapper name is in the reason text — actionable error-message guard.
+- Missing coverage (important):
+  - `detect_all_all_all` (the `ALL=(ALL) ALL` pattern) has ZERO direct tests. The detector exists but no positive case proves it fires.
+  - `detect_bare_pct` blanket-pct path (`/usr/sbin/pct *` trailing wildcard branch) — untested.
+  - `scan_sudoers` end-to-end: the `glob("/etc/sudoers.d/*")` aggregation is untested. Tests would need to point at a temp directory; could be done with a refactor to accept a config-path arg.
+  - `probe_and_record` — the audit-log emit-on-finding integration is entirely untested.
+  - Non-UTF-8 sudoers content — `read_to_string` would fail; current behavior is silent skip. Worth pinning.
+
+### crates/host-agent/src/config.rs
+
+- KEEP · `config.rs:528 test_requires_approval` · Positive (zfs-destroy → true) AND negative (zfs-list → false) on default config. Real behavioral coverage of rule lookup.
+- KEEP · `config.rs:539 test_find_agent` · Three cases: exact, wildcard prefix, missing. Covers all three branches of the `cn_pattern` match. Note: the "exact" path (`librarian` vs `librarian*`) actually still hits the wildcard branch — the truly-exact branch (no `*`) is uncovered.
+- KEEP · `config.rs:557 test_autonomy_level_deserialize` · Three variant roundtrips through TOML. Catches `serde(rename_all = "snake_case")` drift — pins the wire format.
+- KEEP · `config.rs:577 test_full_autonomy_cannot_bypass_always_ask` · Strong security-critical: even with `allow_full_autonomy_bypass = true`, an `always_ask = true` rule still requires approval. Exactly the fail-closed invariant test you want.
+- KEEP · `config.rs:601 test_full_autonomy_bypass_when_explicitly_enabled` · Covers BOTH bypass-true (skip approval) AND bypass-false (still require). Strong matrix test.
+- KEEP · `config.rs:651 test_supervised_always_requires_approval` · Confirms `allow_full_autonomy_bypass = true` is a no-op for non-Full autonomy. Important — the bypass flag could leak across autonomy levels.
+- Missing coverage (important):
+  - `Config::load` from a real file — the TOML parsing surface (with all `#[serde(default)]` fallbacks) has no roundtrip test.
+  - Pattern-matched rule (`rule.pattern.is_some()`): the regex branch in `requires_approval_for_agent` is untested. A bug in the `re.is_match(target)` call would silently allow or deny against intent.
+  - `find_agent` exact-match (no `*` in cn_pattern) — never reached by the test.
+  - `ReloadableConfig::get` and the SIGHUP-reload semantics suggested by the doc comment ("P2-12") have zero tests.
+  - `ReadOnly` autonomy: never exercised — the `requires_approval_for_agent` impl doesn't even branch on it. A `ReadOnly` agent attempting a destructive op gets the same path as `Supervised`. Worth pinning current behavior or adding a test that proves `ReadOnly` denies destructive ops.
+
+### crates/host-agent/src/auth/adapter.rs
+
+- DELETE · `auth/adapter.rs:104 test_agent_type_from_str` · The `AgentType` enum is defined INSIDE the test module (`#[cfg(test)] enum AgentType`), not in production. Tests a test-local helper. Same anti-pattern as Round 2's `tests/e2e/property_tests.rs` — provides zero regression coverage for the `AgentRegistry` this module actually exports.
+- DELETE · `auth/adapter.rs:120 test_policy_requires_approval` · Same: `PolicyProfile` is defined inside the test module. The production `Config::requires_approval_for_agent` is what gates real behavior; this test proves a separate, parallel reimplementation works on its own terms. Moot.
+- DELETE · `auth/adapter.rs:130 test_full_autonomy_never_requires_approval` · Same. Note: this test also documents WRONG behavior — the test-local `PolicyProfile` says Full autonomy NEVER requires approval, but the production `Config` (`config.rs:447`) explicitly enforces `always_ask` even for Full. The test-local helper actively contradicts the real policy.
+- Missing coverage (critical): `AgentRegistry::resolve_cn_placeholder` has zero tests. Returns the first config's `cn_pattern` stripped of `*`. Edge cases unreached: empty registry → None; pattern without trailing `*` → returned unchanged; multiple patterns → which wins (currently first; undocumented).
+
+### crates/host-agent/src/auth/identity.rs
+
+- KEEP · `auth/identity.rs:140 test_root_mapping_rejected` · Security-critical fail-closed: `cn == "root"` returns `RootNotAllowed`. Exactly the kind of guard you want pinned.
+- KEEP · `auth/identity.rs:146 test_fingerprint_format` · Verifies length (64 hex) and charset. Pure-function fence; cheap and useful.
+- Missing coverage (important):
+  - `extract_cn` happy path: no test parses a real or synthetic certificate and extracts a CN. The OID `2.5.4.3` lookup is the load-bearing logic; entirely untested.
+  - `extract_cn` missing-CN branch: cert with no Common Name → `MissingCN`. Unreached.
+  - `extract_cn` parse-failure branch: garbage bytes → `ParseError`. Unreached.
+  - `resolve_unix_user` for an existing user (e.g., `nobody`): the lookup-success path (`Ok(Some(user))`) is unfenced.
+  - `resolve_unix_user` for non-existent user — `UserResolutionFailed`. Unreached.
+  - `is_cert_revoked` line-based CRL match: zero tests of the positive path (fingerprint IS in CRL), the negative path (CRL data but fingerprint absent), or the `None` path (no CRL). All three branches uncovered. Given this is the certificate revocation check (P1-9), this is a notable security gap.
+  - `build_identity` aggregation (CN + fingerprint + user resolution) — unreached except via the `root` rejection path.
+
+### crates/host-agent/src/adapters/exec.rs
+
+- DELETE · `adapters/exec.rs:187 test_exec_op_structure` · Tests that constructing a `HostOp` literal returns the values you constructed it with — `op.command()` returns `Some("run")` because args[0] is `"run"`. Pure tautology. Doesn't exercise `ExecAdapter::validate` or `execute`.
+- DELETE · `adapters/exec.rs:199 test_ansible_stub_detection` · `assert!("ansible://...".starts_with("ansible://"))` and `&str["ansible://".len()..]` — tests `str::starts_with` and slicing. Stdlib, not adapter logic. Same pattern as Round 2's `e2e/property_tests.rs`.
+- DELETE · `adapters/exec.rs:207 test_absolute_path_check` · `Path::is_absolute()` returning true for `/usr/bin/uptime` is a stdlib property. Doesn't test `ExecAdapter`.
+- Missing coverage (CRITICAL): the entire `ExecAdapter::validate` decision tree has ZERO tests. Branches uncovered:
+  - Disabled adapter → Deny (most important — this is the safe-by-default invariant).
+  - Wrong command (not `"run"`) → Deny.
+  - Missing resource → Internal error.
+  - Ansible URL with queue configured → RequiresApproval; without queue → Deny.
+  - Relative path → Deny.
+  - Path not in allowlist → Deny.
+  - Allowed path → Allow.
+  Given this is a privileged exec adapter, this is the largest single coverage gap in host-agent.
+
+### crates/host-agent/src/adapters/systemd.rs
+
+- KEEP · `adapters/systemd.rs:199 test_valid_service_names` · Nine positives across multiple suffixes. Strong regex fence.
+- KEEP · `adapters/systemd.rs:212 test_invalid_service_names` · Eight negatives covering shell injection (`;id`, `$(id)`, backticks), path traversal (`/etc/...`, `../`), missing suffix, hidden file, unknown suffix (`.conf`). Excellent — exactly the input-validation surface that has to hold for sudo safety.
+- DELETE (or merge) · `adapters/systemd.rs:233 test_command_extraction` · `op.command()` returns `Some(args[0])` — tautological access of a struct method. Could be merged into a real adapter test if one existed.
+- Missing coverage (important):
+  - `SystemdAdapter::validate` decision tree: command branch (status/start/stop/restart vs. unsupported), missing-resource branch, invalid-service-name branch, rule with `always_ask`, rule with pattern. None reached except indirectly through `is_valid_service_name`.
+  - `run_systemctl` status-vs-non-status error-handling branches (status returns combined output on non-zero; others return Err). Untested.
+
+### crates/host-agent/src/adapters/registry.rs
+
+- KEEP · `adapters/registry.rs:108 test_registry_dispatch_known` · Positive lookup for two registered adapters.
+- KEEP · `adapters/registry.rs:115 test_registry_dispatch_unknown` · Negative — unregistered kind returns None. Important fail-closed.
+- KEEP · `adapters/registry.rs:121 test_registry_kinds` · Confirms both kinds enumerable. Sort-then-assert is the right pattern (HashMap ordering is non-deterministic).
+- KEEP · `adapters/registry.rs:129 test_registry_duplicate_panics` · `#[should_panic]` with the exact panic message. Strong contract test for the builder's "no double-register" invariant.
+- Missing coverage:
+  - Concurrent dispatch from multiple tasks — `Arc<HashMap>` should be lock-free for reads, but no loom or threaded test verifies this in practice.
+
+### crates/host-agent/src/adapters/pct.rs
+
+- KEEP · `adapters/pct.rs:188 test_valid_vmids` · Boundary values: 100 (min), 999, 1000, 999999 (max). Good range coverage.
+- KEEP · `adapters/pct.rs:197 test_invalid_vmids` · Eight negatives: below-min (0, 99), above-max (1000000), non-numeric (`abc`, `10a`, `10.5`), shell injection (`101; rm -rf /`, `$(whoami)`), empty, negative. Excellent — exactly the validation fence that has to hold for `sudo pct <vmid>` safety.
+- DELETE · `adapters/pct.rs:217 test_supported_commands` · Loops over `["status", "start", "stop", "destroy"]` and asserts `op.command() == Some(*cmd)` — tautological (you set args[0] = cmd, accessor returns args[0]). Doesn't exercise `validate`/`execute`.
+- Missing coverage (important):
+  - `PctAdapter::validate` decision tree: unsupported command, missing resource, destroy → always RequiresApproval, default-no-rule branches for start/stop. None tested.
+  - `validate` for `destroy` returning `RequiresApproval` regardless of config: this is the security-critical "destructive ops always need approval" invariant — uncovered.
+
+### crates/host-agent/src/adapters/git.rs
+
+- KEEP · `adapters/git.rs:235 test_valid_branch_names` · Five positives.
+- KEEP · `adapters/git.rs:244 test_invalid_branch_names` · Twelve negatives covering path traversal (`../`, `..`), shell injection (`; rm`, `$(...)`, backticks), git flag injection (`-D`, `--force`), empty, trailing slash. Strong.
+- KEEP · `adapters/git.rs:264 test_repo_path_validation` · Negatives: nonexistent, relative, traversal (`/srv/../etc`), empty.
+- KEEP · `adapters/git.rs:276 test_repo_path_existing` · Positives: `/tmp`, `/etc`. Cross-platform caveat (POSIX-only); acceptable for a Proxmox-host-agent.
+- Missing coverage (important):
+  - `GitAdapter::validate` decision tree: unsupported command, repo not in allowlist, checkout with invalid/missing branch, rule with `approval_required`. Zero coverage.
+  - Allowlist `starts_with` semantics is a foot-gun: an allowlist entry `/srv` would match `/srvexploit/foo` because `"/srvexploit".starts_with("/srv")` is true. Add a negative test pinning the current (likely-wrong) behavior. Same class of bug as Round 1's `check_bypassed` substring-match issue.
+
+### crates/host-agent/src/adapters/zfs.rs
+
+- DELETE (group, duplicate of `zfs/mod.rs`) · `adapters/zfs.rs:227 test_valid_dataset_names`, `:235 test_invalid_dataset_names`, `:246 test_valid_snapshot_names`, `:253 test_invalid_snapshot_names` · All four test validators in `crate::zfs` (re-imported via `use`). They duplicate `zfs/mod.rs:303 test_valid_dataset_name`, `:311 test_invalid_dataset_name`, `:321 test_valid_snapshot_name`. Pure boundary-redrawing; pick one location and delete the other.
+- KEEP · `adapters/zfs.rs:261 test_dataset_or_snapshot` · Adds a case (`tank/media@daily-2024`) not in `zfs/mod.rs`; covers the combined `is_valid_dataset_or_snapshot` validator. The unique value here.
+- DELETE · `adapters/zfs.rs:269 test_command_from_host_op` · Tautological — see `pct.rs:217` and `exec.rs:187`.
+- DELETE · `adapters/zfs.rs:280 test_empty_args_command` · `op.command()` on empty args returns None. Tests `Vec::first()`/`Option::map`, not adapter.
+- Missing coverage (CRITICAL): `ZfsAdapter::validate` and `execute` decision trees have ZERO tests. The dispatch on `command` (list/snapshot/destroy/get/rollback), the `requires_approval_for_agent` integration, the `@`-bearing-name validation branch, the snapshot-name-required-for-snapshot branch — all uncovered. Given this adapter brokers destructive ZFS operations, the gap is significant.
+
+### crates/host-agent/src/zfs/mod.rs
+
+- KEEP · `zfs/mod.rs:303 test_valid_dataset_name` · Four positives.
+- KEEP · `zfs/mod.rs:311 test_invalid_dataset_name` · Six negatives (empty, leading `/`, trailing `/`, `..`, `@`, space).
+- KEEP · `zfs/mod.rs:321 test_valid_snapshot_name` · Mixes positives AND a critical negative (`snap@123` rejected because `@` is the dataset-snapshot separator). The inline comment + assertion is exactly the kind of "this is why" test that prevents subtle regressions.
+- KEEP · `zfs/mod.rs:336 test_parse_zfs_list` · Real parse roundtrip with two entries (filesystem + snapshot), assertions on names and kinds.
+- Missing coverage (important):
+  - `parse_zfs_list` with malformed input (fewer than 6 tab-separated fields) — implementation silently skips; a regression that panics or includes bad data would be caught by an explicit test.
+  - `parse_zfs_error` branch coverage: five branches (PermissionDenied, DatasetNotFound, InvalidOperation, DatasetBusy, fallback Execution). Zero tests; the substring-match logic is the entire mapping.
+  - `is_valid_dataset_or_snapshot` for a name with multiple `@` (e.g., `tank@a@b`) — `find('@')` returns the first, so `snap` becomes `a@b` and `is_valid_snapshot_name` rejects it. Correct behavior, worth pinning.
+  - `ZfsExecutor::list/execute/get_property` — none tested (they shell out to real `zfs`; would need mocking).
+
+### crates/host-agent/src/approval/signal.rs
+
+- KEEP · `approval/signal.rs:174 test_validate_callback_valid` · Real positive: valid approver + CONFIRM + recent timestamp → Ok with the right approver field.
+- KEEP · `approval/signal.rs:190 test_validate_callback_unauthorized_approver` · Security-critical negative: unknown Signal number → Err containing "Unauthorized". Strong.
+- KEEP · `approval/signal.rs:205 test_validate_callback_expired` · 10-minute-old timestamp → Err containing "expired". Important — guards the replay-window invariant.
+- KEEP · `approval/signal.rs:220 test_validate_callback_case_insensitive` · Loops over 7 case/synonym variants of CONFIRM/YES/APPROVE — broad behavioral coverage.
+- Missing coverage (important):
+  - Invalid confirmation code (e.g., "DENY" or "MAYBE") → Err. The negative branch of the case-insensitive match is uncovered.
+  - `notify_approval_request` HTTP path — no wiremock test verifies the JSON payload shape sent to the webhook (recipients list, message format, token hash prefix). Format drift (e.g., renaming `recipients` → `to`) would be invisible.
+  - Empty `webhook_url` → Ok (early return). Untested but trivial.
+  - `notify_approval_request` failure mapping (non-2xx, network error) → Err — untested.
+
+### crates/host-agent/src/approval/identity_plugin.rs
+
+- KEEP · `approval/identity_plugin.rs:175 test_parse_valid_allow` · Real assertion on parsed bool.
+- KEEP · `approval/identity_plugin.rs:182 test_parse_valid_deny` · Negative case.
+- KEEP · `approval/identity_plugin.rs:189 test_parse_invalid_json_fails_closed` · Security-critical fail-closed invariant: garbage stdout → false (deny). Strong.
+- KEEP · `approval/identity_plugin.rs:196 test_parse_missing_reason_ok` · Covers `#[serde(default)]` for the optional reason field.
+- DELETE · `approval/identity_plugin.rs:203 test_relative_path_rejected` · Test body is `assert!(!path.starts_with('/'))` — that tests `str::starts_with`, NOT the actual `invoke_command_plugin` guard at `:66`. The comment admits "We can't easily test async here inline" but ships the bogus test anyway. If the production code dropped the guard tomorrow, this test would still pass.
+  - should assert: invoke `validate_approver_identity("command:relative/path", &req).await` and assert it returns Err with a message about absolute paths. Requires a `#[tokio::test]`.
+- Missing coverage (critical):
+  - `validate_approver_identity` dispatch: command vs http vs unsupported scheme — only the unsupported-scheme branch produces an error, but it's untested.
+  - `invoke_command_plugin` end-to-end with a tempdir + a real script that returns `{"allowed": true}` — no test exercises the spawn/stdin-write/wait pipeline.
+  - 5-second timeout on a hung child — the `tokio::time::timeout` fail-closed semantics are untested.
+  - `invoke_command_plugin` non-zero exit → fail-closed deny — untested.
+  - `invoke_http_plugin` via wiremock — no test verifies the JSON body shape sent or the response parsing.
+
+### crates/host-agent/src/approval/token.rs
+
+- KEEP · `approval/token.rs:145 test_token_length` · Cheap fence on `TOKEN_LENGTH`.
+- KEEP (with note) · `approval/token.rs:151 test_token_charset` · Borderline tautology (generator picks from charset, test asserts output is in charset). Can't fail unless the generator is rewritten to bypass the charset. Cheap regression-fence; OK to keep.
+- KEEP · `approval/token.rs:163 test_token_entropy` · 10000-token uniqueness check. Real probabilistic guarantee — would catch a regression to a fixed-RNG or dramatically smaller charset.
+- KEEP · `approval/token.rs:174 test_token_hashing` · Hash length, charset, determinism, AND distinct-input distinctness. Multi-property test.
+- KEEP · `approval/token.rs:193 test_verify_token_hash` · Positive + negative roundtrip. Important — `verify_token_hash` is the constant-time comparator.
+- KEEP · `approval/token.rs:202 test_mask_token` · Three boundary cases (16-char, 5-char, 2-char, 4-char-exactly). Good edge coverage.
+- KEEP · `approval/token.rs:211 test_hmac_token` · Confirms two HMAC tokens with the same secret/context differ (nonce works) and both are correct length.
+- KEEP · `approval/token.rs:227 test_token_audit_info` · Real roundtrip across all three derived fields (masked, hash, hash_prefix).
+- Missing coverage: `verify_token_hash` constant-time property is `subtle::ConstantTimeEq`'s responsibility — no need to retest. `hash_token` collision is implicitly covered by `test_token_hashing`. This module is among the best-tested in host-agent.
+
+### crates/host-agent/src/approval/mod.rs
+
+- KEEP · `approval/mod.rs:340 test_create_approval` · Confirms `create_approval` returns a 16-char token. Weak (length only) but OK as smoke.
+- KEEP · `approval/mod.rs:357 test_validate_token_wrong_caller` · Security-critical negative: token bound to "librarian" cannot be redeemed by "attacker". Pinned fail-closed.
+- KEEP · `approval/mod.rs:379 test_list_pending_filters_by_caller` · Strong: two callers, two approvals, each only sees their own. Confirms the per-caller filter (P1-7).
+- Missing coverage (CRITICAL):
+  - `validate_and_consume_token` HAPPY PATH is entirely untested. The test file only covers the wrong-caller negative — the positive path requires `approved = true`, which only `handle_signal_confirmation` flips. Without a test that walks `create → handle_signal_confirmation → validate_and_consume`, the entire approval lifecycle has no end-to-end coverage.
+  - `validate_and_consume_token` token-replay rejection (`entry.used` branch) — untested. This is the replay-attack prevention.
+  - `validate_and_consume_token` expiration branch — untested.
+  - `validate_and_consume_token` target-mismatch branch — untested.
+  - `validate_and_consume_token` not-yet-approved branch — untested.
+  - `handle_signal_confirmation` happy path AND the AlreadyUsed/Expired/NotFound branches — all untested. The Signal validation is mocked-via-None in `test_manager`, so the `signal.is_none()` early-return is the only path reached.
+  - `cleanup_task` background expiry sweep — untested by design (60s interval).
+  - `list_all_pending` — untested.
+
+### crates/zeroclawed/src/config.rs
+
+- KEEP · `config.rs:847 test_parse_sample_config` · End-to-end TOML parse with 8+ field assertions across sections. Strong baseline for serde drift.
+- KEEP · `config.rs:865 test_identity_aliases` · Parses inline-table alias and asserts both fields.
+- KEEP · `config.rs:874 test_routing_allowed_agents` · Two cases: empty (default) AND populated. Covers both branches.
+- KEEP · `config.rs:883 test_expand_tilde` · Positive: `~/...` is expanded; AND negative: result no longer starts with `~`. Cross-platform OK (uses `dirs::home_dir`).
+- DELETE · `config.rs:890 test_version_field` · Asserts `cfg.zeroclawed.version == 2` — already asserted by `test_parse_sample_config:850`. Pure duplicate, no new coverage.
+- KEEP · `config.rs:896 test_optional_fields_absent` · Strong: minimal config with just version, asserts every Optional field defaults to empty/None. Catches `#[serde(default)]` drift.
+- KEEP · `config.rs:911 test_zeroclaw_agent_parses` · Asserts kind, endpoint, api_key, timeout, AND that command/env are None. Multi-field roundtrip.
+- KEEP · `config.rs:930 test_cli_agent_parses` · Asserts command, args, env (with two specific keys), AND that api_key is None. Strong.
+- KEEP · `config.rs:951 test_registry_metadata_parses` · The comment is gold — explains the inline-table-vs-dotted-table TOML quirk that causes silent data loss with array-of-tables. Comment alone is worth shipping.
+- KEEP · `config.rs:971 test_memory_config_parses` · Real assertion on both pre/post hook fields.
+- KEEP · `config.rs:979 test_context_config_defaults_when_omitted` · Tests `#[serde(default)]` behavior — catches the "removed default attr" drift.
+- KEEP · `config.rs:987 test_context_config_parses_explicit` · Tests explicit override of both fields.
+- KEEP · `config.rs:1002 test_context_config_partial_override` · Strong: only one field overridden; asserts the OTHER field still defaults. Exactly the test that catches "all-or-nothing" serde-default bugs.
+- KEEP · `config.rs:1023 test_agent_aliases_parse` · Parses `aliases = [...]` and verifies both elements.
+- KEEP · `config.rs:1034 test_agent_aliases_default_empty` · Negative complement: missing aliases → empty vec.
+- KEEP · `config.rs:1049 test_acp_agent_parses` · Multi-field assertion (kind, command, args, model, timeout, aliases, registry+specialties). Comprehensive.
+- KEEP · `config.rs:1068 test_openclaw_agent_api_key_field` · Tests precedence between `api_key` and `auth_token` — when only `api_key` is set, `auth_token` is None.
+- KEEP · `config.rs:1087 alloy_constituent_missing_context_window_fails_to_parse` · STRONG: tests that a REQUIRED field genuinely fails to parse when missing, AND asserts the error message names the field. Exactly the kind of test that prevents silent reintroduction of serde-default footguns. Test name doesn't follow `test_` prefix but is descriptive.
+- SECURITY FLAGS (non-test):
+  - `config.rs:786, 792` — SAMPLE_CONFIG hardcodes Telegram numeric IDs `8465871195` (same as flagged in Round 2 `auth.rs:99`) and `15555550002`. Per CLAUDE.md, real chat IDs must NOT ship in this public repo. Round 2 flagged the auth.rs occurrence; this is the parallel one in config.rs. Round 2 referenced commit `2b7116c0 security: sanitize real Telegram IDs` — verify this file was sanitized too.
+  - `config.rs:807, 923` — `api_key = "zc_4f5c220eec…2626a3dd86"`. This LOOKS like a real `zc_`-prefixed token (64 hex chars). Even if it's a test fixture, it matches gitleaks-class patterns. Verify and replace with `REPLACE_WITH_TEST_TOKEN` style placeholder per CLAUDE.md "/" `.gitleaks.toml` conventions.
+- Missing coverage:
+  - `Config::load_with_paths` (or whatever loader exists above this region) — full file-on-disk roundtrip with non-default values per field. Currently only TOML-string parsing is tested.
+  - Routing rule with an `allowed_agents` entry that doesn't exist in `agents[]` — should the loader reject? Currently appears to silently allow. Worth a negative test.
+  - `version != 2` (e.g., `version = 1` or `version = 3`) — backward/forward-compat behavior is undocumented and untested.
+
+### crates/zeroclawed/src/context.rs
+
+- KEEP · `context.rs:281 test_empty_context_no_preamble` · Cheap negative-baseline: empty buffer → no preamble.
+- KEEP · `context.rs:287 test_push_increments_len` · Two pushes, len goes 0 → 1 → 2. Real counter test.
+- KEEP · `context.rs:297 test_ring_buffer_caps_at_capacity` · Pushes 5 into capacity-3, asserts len == 3. Boundary test.
+- KEEP · `context.rs:312 test_agent_that_generated_response_sees_no_new_preamble` · Strong: the watermark-after-own-answer invariant. Critical for avoiding agent-talking-to-itself loops.
+- KEEP · `context.rs:324 test_new_agent_sees_all_prior_exchanges` · Multi-assertion: contains both prompts AND both responses. Real behavioral coverage.
+- KEEP · `context.rs:353 test_inject_depth_limits_preamble_length` · Pushes 10, asserts last 3 included AND msg 6 NOT included. Exactly the right boundary-test pattern.
+- KEEP · `context.rs:388 test_preamble_format` · Asserts header (`[Recent context:`), sender label, agent label, AND closing `]`. Pins the preamble wire format — change-detector-grade but justified for a string template.
+- KEEP · `context.rs:416 test_watermark_advances_after_answer` · Strong: librarian answers q1, custodian answers q2; librarian then sees q2 but NOT q1. Per-agent watermark semantics tested with a positive AND a negative.
+- KEEP · `context.rs:439 test_inject_depth_zero_returns_none` · Edge case: depth=0 should disable injection entirely.
+- KEEP · `context.rs:446 test_mark_seen_suppresses_preamble` · Tests the manual `mark_seen` API — real behavioral.
+- KEEP · `context.rs:459 test_store_augment_no_history` · Passthrough test for the `ContextStore` wrapper.
+- KEEP · `context.rs:466 test_store_augment_prepends_preamble` · Multi-assertion: preamble header AND prior-exchange content AND original message at the end. Strong.
+- KEEP · `context.rs:496 test_store_augment_same_agent_no_preamble` · Same-agent passthrough for the Store layer.
+- KEEP · `context.rs:515 test_store_push_increments_count` · Counter test on the Store's chat-keyed map.
+- KEEP · `context.rs:525 test_store_clear_removes_history` · Tests `clear()` with before/after assertion.
+- KEEP · `context.rs:534 test_store_independent_per_chat` · Strong: pushing to chat:1 doesn't leak into chat:2. Per-chat isolation is exactly the bug class you want fenced.
+- KEEP · `context.rs:544 test_store_inject_depth_respected` · Asserts depth=2 includes q3+q4 but NOT q2. Boundary-test.
+- KEEP · `context.rs:571 test_store_clone_shares_state` · Important: confirms `Clone` is Arc-shared, not deep-copy. A regression to deep-copy would make multi-task usage silently incoherent.
+- KEEP · `context.rs:580 test_preamble_separator_between_preamble_and_message` · Asserts the literal `]\n\nnew message` sequence. Pins the blank-line-separator format. Slightly brittle but justified — separators matter for downstream parsing.
+- Note: this is the strongest-tested module audited in Round 3. Behavioral, multi-assertion, edge-cases-covered, test names accurately describe behavior. Use it as a model for other modules.
+- Missing coverage (low priority):
+  - `ConversationContext::push` with empty strings — does the ring buffer accept empty exchanges? Currently appears to. Worth pinning.
+  - Concurrent `push` from multiple threads on the same `ContextStore` — the `Mutex<HashMap<...>>` is the load-bearing synchronization; no threaded test verifies serialization.
+  - Very large messages (>1MB prompt or response) — does the buffer truncate, or store the full thing? Memory-bounding semantics undocumented.
+
+## Round 3 scope-coverage summary
+
+### Fully audited in Round 3
+
+Host-agent (all inline `#[cfg(test)]` modules):
+- `crates/host-agent/src/error.rs`
+- `crates/host-agent/src/audit.rs`
+- `crates/host-agent/src/metrics.rs`
+- `crates/host-agent/src/rate_limit.rs`
+- `crates/host-agent/src/perm_warn.rs`
+- `crates/host-agent/src/config.rs`
+- `crates/host-agent/src/auth/adapter.rs`
+- `crates/host-agent/src/auth/identity.rs`
+- `crates/host-agent/src/adapters/exec.rs`
+- `crates/host-agent/src/adapters/systemd.rs`
+- `crates/host-agent/src/adapters/registry.rs`
+- `crates/host-agent/src/adapters/pct.rs`
+- `crates/host-agent/src/adapters/git.rs`
+- `crates/host-agent/src/adapters/zfs.rs`
+- `crates/host-agent/src/zfs/mod.rs`
+- `crates/host-agent/src/approval/signal.rs`
+- `crates/host-agent/src/approval/identity_plugin.rs`
+- `crates/host-agent/src/approval/token.rs`
+- `crates/host-agent/src/approval/mod.rs`
+
+Zeroclawed priority files (per Round 2 unaudited list):
+- `crates/zeroclawed/src/config.rs` (18 tests)
+- `crates/zeroclawed/src/context.rs` (19 tests)
+
+### Unaudited in Round 3 (in-scope but exceeded time cap)
+
+Remaining Round 2 high-priority list (largest test surfaces first):
+- `crates/zeroclawed/src/commands.rs` (44 tests, 2158 lines — by far the largest)
+- `crates/zeroclawed/src/install/ssh.rs` (23 tests, 775 lines)
+- `crates/zeroclawed/src/install/cli.rs` (23 tests, 727 lines)
+- `crates/zeroclawed/src/install/executor.rs` (17 tests)
+- `crates/zeroclawed/src/adapters/cli.rs` (17 tests)
+
+Note: `crates/zeroclawed/src/proxy/auth.rs` is already audited in Round 2 (line 424) and was correctly skipped.
+
+### Round 3 cross-cutting themes
+
+1. **"Tests its own helper, not the production code."** The same anti-pattern flagged in Round 2's `e2e/property_tests.rs` and `e2e/adapter_edge_cases.rs` recurs strongly in host-agent: `auth/adapter.rs:104,120,130` defines an `AgentType` enum and `PolicyProfile` struct INSIDE the test module and tests those, not the real `AgentRegistry`. Three tests, zero real coverage. Worse, the test-local helper's policy ("Full autonomy never requires approval") actively contradicts the production policy at `host-agent/config.rs:447` ("Full autonomy CANNOT bypass `always_ask`"). The test file documents wrong behavior.
+2. **`let _ = err.into_response()` non-panic tests.** `host-agent/error.rs:115,122` define two tests that compile and run without asserting anything. The status-code mapping is the entire point of `IntoResponse`; mapping is never checked. Same class as Round 1's `client.rs` `.is_ok()` non-panic tests.
+3. **Stdlib-tautology in adapter tests.** `host-agent/adapters/exec.rs:187,199,207` test `Path::is_absolute`, `str::starts_with`, and struct-field access. `host-agent/adapters/pct.rs:217`, `adapters/zfs.rs:269,280`, `adapters/systemd.rs:233` all test `op.command()` returning `args[0]` — tautological accessor checks. `host-agent/approval/identity_plugin.rs:203` famously tests `str::starts_with` while the comment admits the real guard isn't being exercised.
+4. **Validators have great input coverage; decision trees have ZERO coverage.** Across `adapters/{exec,systemd,git,pct,zfs}.rs` the `is_valid_*` validators are well-tested (lots of injection patterns, boundary values). But the `Adapter::validate` and `execute` methods that USE those validators — the entire policy-decision logic — have NO tests. This is the single biggest theme of Round 3: input validation is fenced, but the security-critical authorization logic that gates `sudo` is not.
+5. **Approval lifecycle has only the negative path tested.** `host-agent/approval/mod.rs` tests `validate_and_consume_token` ONLY for the wrong-caller negative case. The full happy-path (create → Signal-confirm → consume) is uncovered, as are token-replay, expiration, target-mismatch, and not-yet-approved branches. The entire P1-5/P1-6/P3-18 approval state machine has no end-to-end test.
+6. **Duplicate-test pattern between adapter and validator modules.** `host-agent/adapters/zfs.rs:227-260` re-tests the same validators as `zfs/mod.rs:303-333`. Pick one canonical location.
+7. **Likely real Telegram IDs and a real-looking API token still in the public repo.** `zeroclawed/config.rs:786, 792, 807, 923` ship `8465871195`, `15555550002`, and `zc_4f5c220eec86...`. Round 2 flagged the auth.rs Telegram IDs and Round 2's "Top priorities" listed sanitization (`commit 2b7116c0`); the `config.rs` SAMPLE_CONFIG appears to have been missed by that pass. Re-run the sanitization on this file.
+8. **`context.rs` is a positive example.** The 19 tests in `crates/zeroclawed/src/context.rs` are uniformly behavioral, multi-assertion, edge-case-aware, and have descriptive names. Use as a reference for what good test coverage looks like in this codebase.
 
