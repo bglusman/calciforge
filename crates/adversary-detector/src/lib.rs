@@ -1,4 +1,4 @@
-//! ZeroClawed — Adversary external content scanning module.
+//! Calciforge — Adversary external content scanning module.
 //!
 //! Provides injection-resistant scanning of external content before it reaches
 //! the model context. Three-layer defense: structural → semantic → HTTP service.

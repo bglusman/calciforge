@@ -10,8 +10,8 @@ The repository has six Rust crates:
 
 | Crate | Current role |
 |---|---|
-| `zeroclawed` | Main channel router, agent adapter runtime, model proxy, local model manager, installer, voice path |
-| `onecli-client` | Credential-injecting HTTP proxy and client library |
+| `calciforge` | Main channel router, agent adapter runtime, model proxy, local model manager, installer, voice path |
+| `secrets-client` | Credential-injecting HTTP proxy and client library |
 | `host-agent` | mTLS host RPC agent for ZFS/systemd/PCT/git/exec operations |
 | `adversary-detector` | Prompt/content scanner, digest cache, HTTP scanning service |
 | `security-proxy` | Outbound security gateway combining scanning and credential injection |
@@ -28,7 +28,7 @@ own overlapping versions of "policy", "proxy", "credential", and "gateway".
 
 **Evidence:**
 
-- `zeroclawed` has channel auth, routing rules, proxy access policy, and command
+- `calciforge` has channel auth, routing rules, proxy access policy, and command
   handling.
 - `clashd` evaluates Starlark tool policies.
 - `host-agent` has its own approval policy, autonomy rules, rate limiting, and
@@ -73,15 +73,15 @@ authorization, host-agent `/host/op`, clashd `/evaluate`, and adversary-detector
 scan results. The goal is not one giant policy engine; it is comparable
 decisions and audit logs across engines.
 
-### 2. `zeroclawed` is carrying too many runtime responsibilities
+### 2. `calciforge` is carrying too many runtime responsibilities
 
-**Evidence:** `crates/zeroclawed/src` contains channel integrations, agent
+**Evidence:** `crates/calciforge/src` contains channel integrations, agent
 adapters, command parsing, model proxy, provider/alloy routing, local model
 server lifecycle, installer code, voice forwarding, persistent context, and
 unified context.
 
 This is still manageable, but it is approaching the point where every feature
-appears to need a `zeroclawed` change. That increases merge conflicts and makes
+appears to need a `calciforge` change. That increases merge conflicts and makes
 security review harder because channel auth, model proxying, installer SSH, and
 local shell hooks live in the same crate.
 
@@ -106,9 +106,9 @@ separate lifecycle.
 
 **Evidence:**
 
-- `onecli-client` injects credentials and also exposes direct vault lookup.
+- `secrets-client` injects credentials and also exposes direct vault lookup.
 - `security-proxy` has credential injection concepts plus scanning.
-- `zeroclawed` model proxy accepts configured provider headers and backend API
+- `calciforge` model proxy accepts configured provider headers and backend API
   keys.
 
 The product goal is clear: agents should not directly hold API keys. The
@@ -184,7 +184,7 @@ gateway architecture.
 3. Update host-agent docs/config toward wrapper-first deployment.
 4. Implement the model gateway RFC in small vertical slices instead of adding
    more bespoke routing features.
-5. Add boundary docs for the three `zeroclawed` subdomains before extracting
+5. Add boundary docs for the three `calciforge` subdomains before extracting
    crates.
 
 ## Non-Goals

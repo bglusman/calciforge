@@ -26,7 +26,7 @@ Current outpost (outpost-lite at 127.0.0.1:9800) scans *tool result content* —
                     [Configurable actions: pass / annotate / redact / block]
 ```
 
-Config would live in ZeroClawed config.toml per-channel or per-identity:
+Config would live in Calciforge config.toml per-channel or per-identity:
 ```toml
 [[channels.intercept]]
 enabled = true
@@ -45,4 +45,4 @@ on_review = "annotate"
 - Leave as "outpost" with a `channel_mode` flag — consistent naming
 
 ### Priority
-Low — planning item. No implementation needed yet. Document and revisit when ZeroClawed channel layer is stable.
+Low — planning item. No implementation needed yet. Document and revisit when Calciforge channel layer is stable.

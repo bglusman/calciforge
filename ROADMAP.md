@@ -1,4 +1,4 @@
-# ZeroClawed Roadmap
+# Calciforge Roadmap
 
 ## Completed
 - [x] Policy enforcement via clashd sidecar and OpenClaw plugin

@@ -1,26 +1,26 @@
 [workspace]
 
 members = [
-    "crates/zeroclawed",
-    "crates/zeroclawed-mcp",
-    "crates/zeroclawed-secret-paste",
+    "crates/calciforge",
+    "crates/mcp-server",
+    "crates/paste-server",
     "crates/adversary-detector",
     "crates/security-proxy",
     "crates/host-agent",
-    "crates/onecli-client",
+    "crates/secrets-client",
     "crates/clashd",
     "crates/loom-tests",
 ]
 
 # loom-tests requires RUSTFLAGS='--cfg loom' — exclude from default cargo test
 default-members = [
-    "crates/zeroclawed",
-    "crates/zeroclawed-mcp",
-    "crates/zeroclawed-secret-paste",
+    "crates/calciforge",
+    "crates/mcp-server",
+    "crates/paste-server",
     "crates/adversary-detector",
     "crates/security-proxy",
     "crates/host-agent",
-    "crates/onecli-client",
+    "crates/secrets-client",
     "crates/clashd",
 ]
 

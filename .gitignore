@@ -37,3 +37,4 @@ homeserver.log
 .claude/pending-reviews/
 .claude/settings.local.json
 .claude/.last-reviewed-sha
+fnox.toml

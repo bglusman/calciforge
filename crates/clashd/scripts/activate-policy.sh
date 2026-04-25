@@ -1,6 +1,6 @@
 #!/bin/bash
 # Activate policy enforcement on OpenClaw agent
-# This sets up the zeroclawed-policy-plugin to call clashd
+# This sets up the calciforge-policy-plugin to call clashd
 
 set -e
 
@@ -31,7 +31,7 @@ mkdir -p "$PLUGIN_DIR/before_tool_call"
 
 # Get plugin path (relative to this script)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_SOURCE="$SCRIPT_DIR/../../zeroclawed-policy-plugin/before_tool_call"
+PLUGIN_SOURCE="$SCRIPT_DIR/../../calciforge-policy-plugin/before_tool_call"
 
 if [ ! -d "$PLUGIN_SOURCE" ]; then
     echo "Error: Plugin source not found at $PLUGIN_SOURCE"

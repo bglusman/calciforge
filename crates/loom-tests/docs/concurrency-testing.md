@@ -1,8 +1,8 @@
-# Concurrency Testing in ZeroClawed
+# Concurrency Testing in Calciforge
 
 ## Approach
 
-ZeroClawed uses **loom** for exhaustive concurrency model checking in this
+Calciforge uses **loom** for exhaustive concurrency model checking in this
 isolated crate. Loom explores all possible thread interleavings to prove
 absence of data races and deadlocks.
 

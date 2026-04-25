@@ -1,0 +1,33 @@
+[package]
+name = "paste-server"
+version = "0.1.0"
+edition = "2024"
+description = "Localhost-only HTTP server for one-shot secret paste-in. Implements the !secure request flow per docs/rfcs/secret-input-web-ui.md — input-only, new-by-default, single-use URL with random token, 5-min expiry."
+license = "MIT"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+axum = { version = "0.7", features = ["tokio", "http1", "http2"] }
+rand = "0.8"
+chrono = { workspace = true }
+
+secrets-client = { path = "../secrets-client" }
+
+[lib]
+name = "paste_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "paste-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { workspace = true }

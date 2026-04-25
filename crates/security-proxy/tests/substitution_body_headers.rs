@@ -96,8 +96,8 @@ async fn spawn_gateway() -> (String, MockServer) {
 #[tokio::test]
 async fn header_value_with_ref_is_substituted_before_forward() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TSB_H1_API_KEY", "hello");
 
     let (gateway, upstream) = spawn_gateway().await;
@@ -148,8 +148,8 @@ async fn json_body_with_ref_is_substituted_before_forward() {
     // Clear vault env to avoid a real network roundtrip when the
     // resolver's env check hits; the env var below is the one we
     // want to resolve.
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("TSB_B1_API_KEY", "somevalue");
 
     let (gateway, upstream) = spawn_gateway().await;
@@ -233,8 +233,8 @@ async fn ref_in_unsupported_content_type_body_is_blocked() {
 async fn unresolvable_ref_in_body_blocks_request() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     remove_env("TSB_MISSING_API_KEY");
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
 
     let (gateway, upstream) = spawn_gateway().await;
 

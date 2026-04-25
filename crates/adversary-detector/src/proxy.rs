@@ -19,7 +19,7 @@
 //! # No raw HTTP outside this module
 //!
 //! Outside this module (and `scanner.rs` layer-3 service call), no crate in
-//! zeroclawed should hold a `reqwest::Client` or perform raw HTTP requests
+//! calciforge should hold a `reqwest::Client` or perform raw HTTP requests
 //! for **external content**. Internal API calls (e.g. posting replies back to a
 //! messaging gateway) are not "external content" and are exempt.
 
@@ -215,7 +215,7 @@ impl AdversaryDetector {
     }
 
     /// Construct from a [`ScannerConfig`] and logger, opening the digest store
-    /// at the configured path (or the default `~/.zeroclawed/digests.json`).
+    /// at the configured path (or the default `~/.calciforge/digests.json`).
     pub async fn from_config(
         config: ScannerConfig,
         logger: AuditLogger,
@@ -224,7 +224,7 @@ impl AdversaryDetector {
         let override_on_review = config.override_on_review;
         let store_path = config.digest_store_path.clone().unwrap_or_else(|| {
             let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-            home.join(".zeroclawed/digests.json")
+            home.join(".calciforge/digests.json")
         });
         let store = DigestStore::open(store_path).await;
         let scanner = AdversaryScanner::new(config);

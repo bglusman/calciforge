@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push checks for zeroclawed. Run before every push.
+# Pre-push checks for calciforge. Run before every push.
 # Usage: bash scripts/pre-push.sh [--quick] [--loom-only]
 #
 # --quick      Skip loom and slow tests
@@ -11,10 +11,10 @@
 # 2. cargo clippy -D warnings — CI runs with -D warnings, so
 #    any clippy warning becomes a hard error.
 # 3. Loom MUST run in an isolated crate (loom-tests), NOT inside
-#    zeroclawed. `--cfg loom` globally disables tokio::net, which
+#    calciforge. `--cfg loom` globally disables tokio::net, which
 #    cascades to break hyper-util and the entire dependency graph.
 #    Always: `cargo test -p loom-tests` with RUSTFLAGS="--cfg loom".
-#    Never: `cargo test -p zeroclawed --cfg loom`.
+#    Never: `cargo test -p calciforge --cfg loom`.
 # 4. loom::Arc doesn't impl Copy — must clone before second use.
 # 5. loom has no yield_now() — use thread::yield_now() instead.
 # 6. Workspace integrity — removing a crate from Cargo.toml
@@ -79,10 +79,10 @@ if [ "$QUICK" = false ]; then
   echo "── Loom tests ─────────────────────────────────────────"
   # CRITICAL: `RUSTFLAGS="--cfg loom"` is a GLOBAL flag that affects every crate.
   # It disables tokio::net (Loom can't simulate TCP), which breaks hyper-util,
-  # which breaks the entire zeroclawed dependency graph. Solution: an isolated
+  # which breaks the entire calciforge dependency graph. Solution: an isolated
   # crate (loom-tests) with minimal deps — only `loom` itself.
   #
-  # NEVER run: cargo test -p zeroclawed --cfg loom  <-- BROKEN
+  # NEVER run: cargo test -p calciforge --cfg loom  <-- BROKEN
   # ALWAYS run: cargo test -p loom-tests with RUSTFLAGS="--cfg loom"
   if LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test -p loom-tests 2>&1; then
     pass "loom tests (6 tests)"
@@ -101,8 +101,8 @@ if [ "$LOOM_ONLY" = false ]; then
     fail "loom-tests missing from Cargo.toml [workspace] members"
   fi
   # Verify no cfg(loom) in main crate (breaks tokio::net)
-  if grep -rq '#\[cfg(loom)\]' crates/zeroclawed/src/ 2>/dev/null; then
-    warn "cfg(loom) found in zeroclawed/src — inert but ideally move to crates/loom-tests/"
+  if grep -rq '#\[cfg(loom)\]' crates/calciforge/src/ 2>/dev/null; then
+    warn "cfg(loom) found in calciforge/src — inert but ideally move to crates/loom-tests/"
   fi
 fi
 

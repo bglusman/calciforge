@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install.sh — ZeroClawed unified installer.
+# install.sh — Calciforge unified installer.
 #
-# Builds zeroclawed + clashd + security-proxy, installs all AI agents,
+# Builds calciforge + clashd + security-proxy, installs all AI agents,
 # wires clashd as the shared policy engine, and starts all services.
 # Supports multi-node SSH deployment for homelab / Proxmox clusters.
 #
@@ -14,10 +14,10 @@
 #   --nodes-only         Skip local install; only deploy to remote nodes
 #
 # Usage:
-#   cd ~/projects/zeroclawed && bash scripts/install.sh
-#   cd ~/projects/zeroclawed && bash scripts/install.sh --yes
-#   cd ~/projects/zeroclawed && bash scripts/install.sh --nodes-file deploy/nodes.json
-#   cd ~/projects/zeroclawed && bash scripts/install.sh --nodes-file deploy/nodes.json --nodes-only
+#   cd ~/projects/calciforge && bash scripts/install.sh
+#   cd ~/projects/calciforge && bash scripts/install.sh --yes
+#   cd ~/projects/calciforge && bash scripts/install.sh --nodes-file deploy/nodes.json
+#   cd ~/projects/calciforge && bash scripts/install.sh --nodes-file deploy/nodes.json --nodes-only
 
 set -euo pipefail
 
@@ -53,14 +53,14 @@ case "$PLATFORM" in
         if $IS_ROOT; then
             BIN_DIR="/usr/local/bin"
             PLIST_DIR="/etc/systemd/system"
-            LOG_DIR="/var/log/zeroclawed"
-            SEC_LOG_DIR="/var/log/zeroclawed"
+            LOG_DIR="/var/log/calciforge"
+            SEC_LOG_DIR="/var/log/calciforge"
             SYSTEMCTL="systemctl"
         else
             BIN_DIR="$HOME/.local/bin"
             PLIST_DIR="$HOME/.config/systemd/user"
-            LOG_DIR="$HOME/.local/state/zeroclawed/logs"
-            SEC_LOG_DIR="$HOME/.local/state/zeroclawed/logs"
+            LOG_DIR="$HOME/.local/state/calciforge/logs"
+            SEC_LOG_DIR="$HOME/.local/state/calciforge/logs"
             SYSTEMCTL="systemctl --user"
             # systemctl --user requires XDG_RUNTIME_DIR to locate the user bus.
             # Login shells set this via pam_systemd; sudo / su / SSH-in-some-configs
@@ -247,7 +247,7 @@ ensure_tool() {
 # ── banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ZeroClawed — Unified Installer"
+echo "  Calciforge — Unified Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Agents:  $AGENTS"
 echo "  Mode:    $([ "$CONFIGURE_ONLY" = true ] && echo configure-only || echo install+configure)"
@@ -255,22 +255,22 @@ echo "  Yes:     $YES"
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. Build + install zeroclawed, clashd, security-proxy
+# 1. Build + install calciforge, clashd, security-proxy
 # ══════════════════════════════════════════════════════════════════════════════
 if [[ "$CONFIGURE_ONLY" != true ]]; then
-    hdr "Building ZeroClawed binaries"
+    hdr "Building Calciforge binaries"
     CARGO="$HOME/.cargo/bin/cargo"
     [[ -x "$CARGO" ]] || die "cargo not found — install Rust from https://rustup.rs"
 
     # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
-    # Build each crate separately so --features only applies to zeroclawed.
-    "$CARGO" build --release -p clashd -p security-proxy -p zeroclawed-mcp 2>&1 \
-        | grep -E "^error|Compiling (clashd|security.proxy|zeroclawed.mcp)|Finished" || true
-    "$CARGO" build --release -p zeroclawed --features channel-matrix 2>&1 \
-        | grep -E "^error|Compiling zeroclawed|Finished" || true
+    # Build each crate separately so --features only applies to calciforge.
+    "$CARGO" build --release -p clashd -p security-proxy -p mcp-server 2>&1 \
+        | grep -E "^error|Compiling (clashd|security.proxy|calciforge.mcp)|Finished" || true
+    "$CARGO" build --release -p calciforge --features channel-matrix 2>&1 \
+        | grep -E "^error|Compiling calciforge|Finished" || true
 
     mkdir -p "$BIN_DIR"
-    for bin in clashd zeroclawed security-proxy zeroclawed-mcp; do
+    for bin in clashd calciforge security-proxy mcp-server; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
         # On Linux, overwriting a running binary fails with "Text file busy".
@@ -311,13 +311,13 @@ fi
       echo '{"agents":[]}' > "$AGENTS_JSON"; ok "Agent config → $AGENTS_JSON"; }
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-    CLASHD_PLIST="$PLIST_DIR/com.zeroclawed.clashd.plist"
+    CLASHD_PLIST="$PLIST_DIR/com.calciforge.clashd.plist"
     cat > "$CLASHD_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>Label</key><string>com.zeroclawed.clashd</string>
+    <key>Label</key><string>com.calciforge.clashd</string>
     <key>ProgramArguments</key><array><string>${BIN_DIR}/clashd</string></array>
     <key>EnvironmentVariables</key><dict>
         <key>CLASHD_PORT</key><string>${CLASHD_PORT}</string>
@@ -333,10 +333,10 @@ EOF
     launchctl unload "$CLASHD_PLIST" 2>/dev/null || true
     launchctl load "$CLASHD_PLIST"
 else
-    CLASHD_UNIT="$PLIST_DIR/zeroclawed-clashd.service"
+    CLASHD_UNIT="$PLIST_DIR/calciforge-clashd.service"
     cat > "$CLASHD_UNIT" <<EOF
 [Unit]
-Description=ZeroClawed clashd policy engine
+Description=Calciforge clashd policy engine
 After=network.target
 
 [Service]
@@ -354,7 +354,7 @@ StandardError=append:${LOG_DIR}/clashd.err
 WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable --now zeroclawed-clashd.service 2>&1 | tail -3 || \
+    $SYSTEMCTL enable --now calciforge-clashd.service 2>&1 | tail -3 || \
         warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
 fi
 
@@ -371,13 +371,13 @@ hdr "security-proxy"
 mkdir -p "$SEC_LOG_DIR"
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-    SEC_PLIST="$PLIST_DIR/com.zeroclawed.security-proxy.plist"
+    SEC_PLIST="$PLIST_DIR/com.calciforge.security-proxy.plist"
     cat > "$SEC_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>Label</key><string>com.zeroclawed.security-proxy</string>
+    <key>Label</key><string>com.calciforge.security-proxy</string>
     <key>ProgramArguments</key><array><string>${BIN_DIR}/security-proxy</string></array>
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
@@ -392,10 +392,10 @@ EOF
     launchctl unload "$SEC_PLIST" 2>/dev/null || true
     launchctl load "$SEC_PLIST"
 else
-    SEC_UNIT="$PLIST_DIR/zeroclawed-security-proxy.service"
+    SEC_UNIT="$PLIST_DIR/calciforge-security-proxy.service"
     cat > "$SEC_UNIT" <<EOF
 [Unit]
-Description=ZeroClawed security-proxy (MITM traffic inspection)
+Description=Calciforge security-proxy (MITM traffic inspection)
 After=network.target
 
 [Service]
@@ -412,7 +412,7 @@ StandardError=append:${SEC_LOG_DIR}/security-proxy.err
 WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable --now zeroclawed-security-proxy.service 2>&1 | tail -3 || \
+    $SYSTEMCTL enable --now calciforge-security-proxy.service 2>&1 | tail -3 || \
         warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
 fi
 
@@ -422,88 +422,88 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
     || warn "security-proxy not yet responding — check $SEC_LOG_DIR/security-proxy.err"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. zeroclawed — main agent gateway (channels + router + proxy)
+# 4. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
-# across reboots. Expects config at ~/.zeroclawed/config.toml; users must
+# across reboots. Expects config at ~/.calciforge/config.toml; users must
 # populate it before the service starts (or the service will fail health and
 # launchd/systemd will keep retrying).
-hdr "zeroclawed"
+hdr "calciforge"
 
-ZC_CONFIG="${ZEROCLAWED_CONFIG:-$HOME/.zeroclawed/config.toml}"
-ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.zeroclawed/logs}"
+ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
+ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
 mkdir -p "$ZC_LOG_DIR"
 
 if [[ ! -f "$ZC_CONFIG" ]]; then
-    warn "Config not found at $ZC_CONFIG — zeroclawed will fail to start until you create it"
+    warn "Config not found at $ZC_CONFIG — calciforge will fail to start until you create it"
     warn "See README for a minimal config.toml"
 fi
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-    ZC_PLIST="$PLIST_DIR/com.zeroclawed.zeroclawed.plist"
+    ZC_PLIST="$PLIST_DIR/com.calciforge.calciforge.plist"
     cat > "$ZC_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>Label</key><string>com.zeroclawed.zeroclawed</string>
+    <key>Label</key><string>com.calciforge.calciforge</string>
     <key>ProgramArguments</key><array>
-        <string>${BIN_DIR}/zeroclawed</string>
+        <string>${BIN_DIR}/calciforge</string>
         <string>--config</string>
         <string>${ZC_CONFIG}</string>
     </array>
     <key>EnvironmentVariables</key><dict>
-        <key>RUST_LOG</key><string>zeroclawed=info</string>
+        <key>RUST_LOG</key><string>calciforge=info</string>
         <key>PATH</key><string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>ThrottleInterval</key><integer>30</integer>
-    <key>StandardOutPath</key><string>${ZC_LOG_DIR}/zeroclawed.log</string>
-    <key>StandardErrorPath</key><string>${ZC_LOG_DIR}/zeroclawed.err</string>
+    <key>StandardOutPath</key><string>${ZC_LOG_DIR}/calciforge.log</string>
+    <key>StandardErrorPath</key><string>${ZC_LOG_DIR}/calciforge.err</string>
 </dict></plist>
 EOF
     launchctl unload "$ZC_PLIST" 2>/dev/null || true
     launchctl load "$ZC_PLIST" 2>&1 | tail -3
 else
-    ZC_UNIT="$PLIST_DIR/zeroclawed.service"
+    ZC_UNIT="$PLIST_DIR/calciforge.service"
     cat > "$ZC_UNIT" <<EOF
 [Unit]
-Description=ZeroClawed agent gateway (channels + router + proxy)
-After=network.target zeroclawed-clashd.service zeroclawed-security-proxy.service
-Wants=zeroclawed-clashd.service zeroclawed-security-proxy.service
+Description=Calciforge agent gateway (channels + router + proxy)
+After=network.target calciforge-clashd.service calciforge-security-proxy.service
+Wants=calciforge-clashd.service calciforge-security-proxy.service
 
 [Service]
 Type=simple
-ExecStart=${BIN_DIR}/zeroclawed --config ${ZC_CONFIG}
-Environment=RUST_LOG=zeroclawed=info
+ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
+Environment=RUST_LOG=calciforge=info
 Restart=always
 RestartSec=30
-StandardOutput=append:${ZC_LOG_DIR}/zeroclawed.log
-StandardError=append:${ZC_LOG_DIR}/zeroclawed.err
+StandardOutput=append:${ZC_LOG_DIR}/calciforge.log
+StandardError=append:${ZC_LOG_DIR}/calciforge.err
 
 [Install]
 WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable --now zeroclawed.service 2>&1 | tail -3 || \
+    $SYSTEMCTL enable --now calciforge.service 2>&1 | tail -3 || \
         warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
 fi
 
-# Give zeroclawed a moment to come up, then check if the process is alive.
-# zeroclawed only binds a health port when proxy is enabled in config, so we
+# Give calciforge a moment to come up, then check if the process is alive.
+# calciforge only binds a health port when proxy is enabled in config, so we
 # can't rely on /health — probe the process instead.
 sleep 2
-if pgrep -f "${BIN_DIR}/zeroclawed" > /dev/null; then
-    ok "zeroclawed running"
+if pgrep -f "${BIN_DIR}/calciforge" > /dev/null; then
+    ok "calciforge running"
 else
-    warn "zeroclawed did not start — check $ZC_LOG_DIR/zeroclawed.err"
+    warn "calciforge did not start — check $ZC_LOG_DIR/calciforge.err"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. fnox — encrypted secret resolver (fallback between env and vaultwarden)
 # ══════════════════════════════════════════════════════════════════════════════
-# onecli-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
+# secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
 # not hard-required (the resolver falls through if the binary is absent), but
 # installing it unlocks age/1Password/AWS SM/etc. secret backends without
 # extra config.
@@ -515,7 +515,7 @@ ensure_fnox || true
 # ══════════════════════════════════════════════════════════════════════════════
 # ── acpx — required for any agent with kind = "acpx" (claude, opencode, kilo, …)
 # Needs to be installed regardless of which specific agent is enabled, since
-# zeroclawed's ACPX adapter spawns `acpx` as a subprocess. Missing acpx means
+# calciforge's ACPX adapter spawns `acpx` as a subprocess. Missing acpx means
 # "Failed to spawn acpx: No such file or directory" at first message dispatch.
 if agent_enabled claude || agent_enabled opencode; then
     hdr "acpx (ACP agent runtime)"
@@ -559,29 +559,29 @@ print("settings.json updated")
 PYEOF
             ok "Claude Code PreToolUse hook → clashd:${CLASHD_PORT}"
 
-            # Register zeroclawed-mcp as an MCP server. The server runs
+            # Register mcp-server as an MCP server. The server runs
             # via stdio when claude spawns it as a subprocess. Idempotent:
             # the python block replaces any existing entry with the same
             # name, so re-running install.sh won't grow duplicates.
-            ZC_MCP_BIN="$BIN_DIR/zeroclawed-mcp"
+            ZC_MCP_BIN="$BIN_DIR/mcp-server"
             if [[ -x "$ZC_MCP_BIN" ]]; then
                 python3 - "$SETTINGS" "$ZC_MCP_BIN" <<'PYEOF'
 import json, sys
 path, mcp_bin = sys.argv[1], sys.argv[2]
 with open(path) as f: s = json.load(f)
 servers = s.setdefault("mcpServers", {})
-servers["zeroclawed-secrets"] = {
+servers["calciforge-secrets"] = {
     "command": mcp_bin,
     "args": [],
     "env": {},
 }
 with open(path, "w") as f: json.dump(s, f, indent=2); f.write("\n")
-print(f"settings.json: registered MCP server zeroclawed-secrets → {mcp_bin}")
+print(f"settings.json: registered MCP server calciforge-secrets → {mcp_bin}")
 PYEOF
-                ok "Claude Code MCP server zeroclawed-secrets → ${ZC_MCP_BIN}"
+                ok "Claude Code MCP server calciforge-secrets → ${ZC_MCP_BIN}"
             else
-                warn "zeroclawed-mcp binary not found at $ZC_MCP_BIN — skipping MCP registration"
-                warn "  Build it with: cargo build --release -p zeroclawed-mcp"
+                warn "mcp-server binary not found at $ZC_MCP_BIN — skipping MCP registration"
+                warn "  Build it with: cargo build --release -p mcp-server"
             fi
         fi
     fi
@@ -599,9 +599,9 @@ if agent_enabled opencode; then
     if [[ -d "$PLUGIN_DIR" ]]; then
         (cd "$PLUGIN_DIR" && npm pack --quiet 2>/dev/null)
         TARBALL=$(ls "$PLUGIN_DIR"/*.tgz 2>/dev/null | tail -1)
-        [[ -n "$TARBALL" ]] && opencode plugin zeroclawed-clashd-policy --global 2>/dev/null \
+        [[ -n "$TARBALL" ]] && opencode plugin calciforge-clashd-policy --global 2>/dev/null \
             && ok "opencode clashd plugin registered" \
-            || warn "opencode plugin not registered (run opencode plugin zeroclawed-clashd-policy manually)"
+            || warn "opencode plugin not registered (run opencode plugin calciforge-clashd-policy manually)"
     else
         warn "opencode clashd plugin not yet built (scripts/opencode-clashd-plugin/ pending)"
     fi
@@ -720,13 +720,13 @@ if [[ -n "$NODES_FILE" ]]; then
             env_lines+="Environment=\"${k}=${v}\"\n"
         done <<< "$env_pairs"
 
-        printf '[Unit]\nDescription=ZeroClawed %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=%s\n' \
+        printf '[Unit]\nDescription=Calciforge %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=%s\n' \
             "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")" "$WANTED_BY_TARGET"
     }
 
     # ── launchd plist generator ───────────────────────────────────────────────
     launchd_plist() {
-        local bin="$1" install_dir="$2" label="com.zeroclawed.${bin}" log_dir="$3"
+        local bin="$1" install_dir="$2" label="com.calciforge.${bin}" log_dir="$3"
         local env_block=""
         shift 3
         for pair in "$@"; do
@@ -764,8 +764,8 @@ command -v cargo &>/dev/null || {
 }
 TMP=$(mktemp -d)
 # Expect the source to be pre-rsynced or pull from git
-if [[ -d /opt/zeroclawed ]]; then
-    cd /opt/zeroclawed && cargo build --release -p "$BIN" 2>&1 | tail -3
+if [[ -d /opt/calciforge ]]; then
+    cd /opt/calciforge && cargo build --release -p "$BIN" 2>&1 | tail -3
     cp "target/release/$BIN" "$INSTALL_DIR/$BIN"
 fi
 REMOTE_BUILD
@@ -797,23 +797,23 @@ REMOTE_BUILD
         # ── install service ───────────────────────────────────────────────────
         local remote_log_dir
         if [[ "$os" == "linux" ]]; then
-            remote_log_dir="/var/log/zeroclawed"
+            remote_log_dir="/var/log/calciforge"
             local env_pairs unit_content
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
-                zeroclawed)     env_pairs="" ;;
+                calciforge)     env_pairs="" ;;
             esac
             unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")")
             ssh $ssh_opts "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${bin}.service" <<< "$unit_content"
             ssh $ssh_opts "$ssh_target" "systemctl daemon-reload && systemctl enable --now ${bin}" 2>&1 | tail -2
         else
-            remote_log_dir="\$HOME/Library/Logs/zeroclawed"
-            local plist_content label="com.zeroclawed.${bin}"
+            remote_log_dir="\$HOME/Library/Logs/calciforge"
+            local plist_content label="com.calciforge.${bin}"
             plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" \
                 "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
-            ssh $ssh_opts "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/zeroclawed"
+            ssh $ssh_opts "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
             ssh $ssh_opts "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
             ssh $ssh_opts "$ssh_target" "launchctl unload ${plist_path} 2>/dev/null; launchctl load ${plist_path}"
         fi
@@ -836,7 +836,7 @@ for n in data.get("nodes", []):
         n.get("os", "linux"),
         ",".join(n.get("services", ["clashd","security-proxy"])),
         n.get("install_dir", "/usr/local/bin"),
-        n.get("config_dir", "/etc/zeroclawed"),
+        n.get("config_dir", "/etc/calciforge"),
     ]))
 PYEOF
         echo ""

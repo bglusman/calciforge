@@ -40,7 +40,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Routes:
 ///   - `GET /health` — liveness probe (trivial JSON).
 ///   - `GET /vault/:secret` — resolve a secret via the shared
-///     `onecli_client::vault::get_secret` resolver. The backend chain
+///     `secrets_client::vault::get_secret` resolver. The backend chain
 ///     (env, fnox, vaultwarden) is an implementation detail of that
 ///     library and varies by branch/feature set; callers here don't
 ///     need to know which layer resolved the value.
@@ -104,7 +104,7 @@ pub async fn vault_handler(
         }
     }
 
-    match onecli_client::vault::get_secret(&secret_name).await {
+    match secrets_client::vault::get_secret(&secret_name).await {
         Ok(token) => Json(serde_json::json!({
             "status": "ok",
             "secret": secret_name,
@@ -113,7 +113,7 @@ pub async fn vault_handler(
         .into_response(),
         Err(_) => {
             // Name only; no error text. If you need to debug, enable
-            // `RUST_LOG=onecli_client=debug` to see the underlying
+            // `RUST_LOG=secrets_client=debug` to see the underlying
             // resolver's own debug output (which is scoped to that lib
             // and can be routed to a non-shared log destination in
             // production).

@@ -2,7 +2,7 @@
 
 Status: SPIKE — 30-minute investigation, not a build commitment.
 Filed because the user asked whether `browser-use/browser-harness`
-could be wired into us (Claude Code, openclaw, or zeroclawed) to give
+could be wired into us (Claude Code, openclaw, or calciforge) to give
 agents a usable browser primitive.
 
 ## TL;DR
@@ -62,10 +62,10 @@ Caveat: skill text gets injected into the session prompt — adds tokens
 to every Claude Code invocation. That's true for all Claude Code
 skills; mention it as a tradeoff, don't try to engineer around it.
 
-### (B) zeroclawed-MCP tool wrapper — SECOND STEP IF (A) CONFIRMS VALUE
+### (B) calciforge-MCP tool wrapper — SECOND STEP IF (A) CONFIRMS VALUE
 
 Cost: ~half a day. Adds a `browse(action, params)` tool to
-`crates/zeroclawed-mcp` (the MCP server we just scaffolded for secret
+`crates/mcp-server` (the MCP server we just scaffolded for secret
 discovery in PR #23). The tool would shell out to `browser-harness`
 exactly as the skill does, but agents would discover it via MCP
 instead of reading a skill prompt.
@@ -93,13 +93,13 @@ Cost: weeks. browser-harness is small (592 lines) but the value isn't
 in line count — it's in being a thin shim over CDP that lets the agent
 write helpers on the fly. Porting to Rust loses the "agent edits the
 helper file mid-task" property. If we want browser automation in the
-zeroclawed daemon itself (e.g., for autonomous channel-driven web
+calciforge daemon itself (e.g., for autonomous channel-driven web
 tasks), a Rust port would be appropriate. We're nowhere near that
 need.
 
-### (D) Run browser-harness inside zeroclawed-daemon as a subprocess pool
+### (D) Run browser-harness inside calciforge-daemon as a subprocess pool
 
-Cost: 1-2 days of glue. zeroclawed daemon spawns persistent
+Cost: 1-2 days of glue. calciforge daemon spawns persistent
 browser-harness processes per identity, exposes them as a channel
 adapter (e.g., `[[agents]] kind = "browser"`). Lets the agent send
 "please log in to X and do Y" via Telegram and have it execute

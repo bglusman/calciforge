@@ -4,7 +4,7 @@
 //! the digest matches, the previously computed verdict is reused without re-scanning.
 //! If the digest has changed the content is rescanned automatically.
 //!
-//! Persistence is via a simple JSON file; the default path is `~/.zeroclawed/digests.json`.
+//! Persistence is via a simple JSON file; the default path is `~/.calciforge/digests.json`.
 //! The file is loaded eagerly on construction and flushed after every mutation.
 
 use chrono::{DateTime, Utc};
@@ -53,10 +53,10 @@ impl DigestStore {
         Self { path, entries }
     }
 
-    /// Open the store at the default path: `~/.zeroclawed/digests.json`.
+    /// Open the store at the default path: `~/.calciforge/digests.json`.
     pub async fn open_default() -> Self {
         let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-        Self::open(home.join(".zeroclawed/digests.json")).await
+        Self::open(home.join(".calciforge/digests.json")).await
     }
 
     /// Look up a URL by exact match. Returns `None` if not found or expired.

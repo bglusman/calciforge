@@ -11,7 +11,7 @@ If the automated `install-security-stack.sh` fails, follow these steps manually 
 ## Step 1: Build (on build machine)
 
 ```bash
-cd /root/projects/zeroclawed
+cd /root/projects/calciforge
 cargo build --release -p adversary-detector -p security-gateway -p clashd
 ```
 
@@ -20,21 +20,21 @@ cargo build --release -p adversary-detector -p security-gateway -p clashd
 ```bash
 TARGET=192.168.1.210  # change per host
 
-ssh -i ~/.ssh/id_ed25519 root@$TARGET "mkdir -p /opt/zeroclawed/bin /etc/zeroclawed"
+ssh -i ~/.ssh/id_ed25519 root@$TARGET "mkdir -p /opt/calciforge/bin /etc/calciforge"
 
 for bin in adversary-detector security-gateway clashd; do
     scp -i ~/.ssh/id_ed25519 \
         target/release/$bin \
-        root@$TARGET:/opt/zeroclawed/bin/$bin
+        root@$TARGET:/opt/calciforge/bin/$bin
 done
 
 scp -i ~/.ssh/id_ed25519 \
     crates/clashd/config/agents.json \
-    root@$TARGET:/etc/zeroclawed/agents.json
+    root@$TARGET:/etc/calciforge/agents.json
 
 scp -i ~/.ssh/id_ed25519 \
     crates/clashd/config/default-policy.star \
-    root@$TARGET:/etc/zeroclawed/default-policy.star
+    root@$TARGET:/etc/calciforge/default-policy.star
 ```
 
 ## Step 3: Create systemd services
@@ -44,12 +44,12 @@ SSH into the target and create these three files:
 ### `/etc/systemd/system/adversary-detector.service`
 ```ini
 [Unit]
-Description=ZeroClawed Adversary Detector
+Description=Calciforge Adversary Detector
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/zeroclawed/bin/adversary-detector
+ExecStart=/opt/calciforge/bin/adversary-detector
 Environment=ADVERSARY_DETECTOR_PORT=9800
 Environment=RUST_LOG=adversary_detector=info
 Restart=always
@@ -62,13 +62,13 @@ WantedBy=multi-user.target
 ### `/etc/systemd/system/security-gateway.service`
 ```ini
 [Unit]
-Description=ZeroClawed Security Gateway
+Description=Calciforge Security Gateway
 After=network.target adversary-detector.service
 
 [Service]
 Type=simple
-ExecStart=/opt/zeroclawed/bin/security-gateway
-Environment=AGENT_CONFIG=/etc/zeroclawed/agents.json
+ExecStart=/opt/calciforge/bin/security-gateway
+Environment=AGENT_CONFIG=/etc/calciforge/agents.json
 Environment=ADVERSARY_DETECTOR_PORT=9800
 Environment=RUST_LOG=security_gateway=info
 Restart=always
@@ -81,13 +81,13 @@ WantedBy=multi-user.target
 ### `/etc/systemd/system/clashd.service`
 ```ini
 [Unit]
-Description=ZeroClawed Clashd Policy Engine
+Description=Calciforge Clashd Policy Engine
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/zeroclawed/bin/clashd
-Environment=CLASHD_CONFIG=/etc/zeroclawed/agents.json
+ExecStart=/opt/calciforge/bin/clashd
+Environment=CLASHD_CONFIG=/etc/calciforge/agents.json
 Environment=RUST_LOG=clashd=info
 Restart=always
 RestartSec=5
@@ -106,7 +106,7 @@ systemctl start adversary-detector security-gateway clashd
 
 ## Step 5: Set up proxy env vars
 
-Create `/etc/profile.d/zeroclawed-proxy.sh`:
+Create `/etc/profile.d/calciforge-proxy.sh`:
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8080
 export HTTPS_PROXY=http://127.0.0.1:8080
@@ -114,12 +114,12 @@ export NO_PROXY=localhost,127.0.0.1,192.168.1.*,10.*.*.*
 ```
 
 ```bash
-chmod +x /etc/profile.d/zeroclawed-proxy.sh
+chmod +x /etc/profile.d/calciforge-proxy.sh
 ```
 
 ## Step 6: Set API credentials
 
-Edit `/etc/zeroclawed/agents.json` or set env vars:
+Edit `/etc/calciforge/agents.json` or set env vars:
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...

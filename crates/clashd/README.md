@@ -164,13 +164,13 @@ POST /evaluate
 
 ## OpenClaw Integration
 
-The `zeroclawed-policy-plugin` connects OpenClaw to clashd:
+The `calciforge-policy-plugin` connects OpenClaw to clashd:
 
 1. Plugin installed in OpenClaw's plugin directory
 2. Plugin calls `POST /evaluate` before each tool execution
 3. Response determines if tool is blocked, allowed, or needs approval
 
-See `crates/zeroclawed-policy-plugin/` for the plugin implementation.
+See `crates/calciforge-policy-plugin/` for the plugin implementation.
 
 ## Threat Intelligence Sources
 

@@ -16,7 +16,7 @@ Status: **draft — decisions incorporated from first review round.** Implementa
 
 ## TL;DR
 
-Today zeroclawed has one model-blending primitive — **alloy** — and an implicit on-error fallback behavior. That's not enough:
+Today calciforge has one model-blending primitive — **alloy** — and an implicit on-error fallback behavior. That's not enough:
 
 - Alloys assume constituents are **interchangeable** (any can serve any request). That assumption breaks when constituents have different context windows — e.g., local Qwen 3.5 (32K) + Kimi K2.6 (262K).
 - Without size-awareness, a 100K-token request can be silently routed to a 32K model and truncated, losing data with no error.
@@ -460,7 +460,7 @@ A dispatcher picks at request time. By message 20, the cumulative context may ha
 - **(b) Re-evaluate per turn**: dispatcher runs every turn. Session continuity breaks when the tier changes (different model, different "memory"). Bad UX.
 - **(c) Always pick for session worst-case**: dispatcher uses an estimate of "this session's max context," picks a ceiling that covers it. Conservative, wastes smaller-model opportunities.
 
-**Decision**: default to **`per_turn`**. Chat APIs are stateless; re-picking per message mechanically works. For task-completion flows (zeroclawed's main use case) the cost of an occasional model swap is lower than the cost of a session that dies at a ceiling.
+**Decision**: default to **`per_turn`**. Chat APIs are stateless; re-picking per message mechanically works. For task-completion flows (calciforge's main use case) the cost of an occasional model swap is lower than the cost of a session that dies at a ceiling.
 
 ```toml
 [[dispatchers]]
@@ -511,7 +511,7 @@ A literal "262K" would parse as 262 * 1024 = 268288, not 262144 — use `"256K"`
 **Alloy constituents now REQUIRE `context_window`.** No back-compat for missing fields. Prototype phase, all installations owned in-house — fixing existing config files is a one-time edit; the upside (no silent truncation, ever) is worth breaking the schema. `min_context_window` on the alloy stays optional and auto-computes as `min(constituent.context_window)` when not specified.
 
 **Existing config files needing updates:**
-- `.210` `/etc/zeroclawed/config.toml`: `kimi-for-coding` alloy (Kimi + DeepSeek constituents)
+- `.210` `/etc/calciforge/config.toml`: `kimi-for-coding` alloy (Kimi + DeepSeek constituents)
 - Anywhere else currently using `[[alloys]]`
 
 Migration done in the same PR that introduces the required field.

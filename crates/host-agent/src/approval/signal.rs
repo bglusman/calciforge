@@ -61,7 +61,7 @@ impl SignalClient {
         }
 
         let message = format!(
-            "🔐 ZeroClawed Approval Request\n\n\
+            "🔐 Calciforge Approval Request\n\n\
             Agent: {}\n\
             Operation: {}\n\
             Target: {}\n\n\

@@ -34,12 +34,12 @@ run_tests() {
     log_progress "=== Iteration $iteration/$MAX_ITERATIONS ==="
     
     # Run cargo test
-    if cargo test -p zeroclawed --test e2e --no-fail-fast 2>&1 | tee /tmp/ralph-output-$iteration.log; then
+    if cargo test -p calciforge --test e2e --no-fail-fast 2>&1 | tee /tmp/ralph-output-$iteration.log; then
         log_progress "✅ ALL TESTS PASSED on iteration $iteration"
         
         # Also run property tests
         log_progress "Running property tests..."
-        if cargo test -p zeroclawed --test e2e property_tests --no-fail-fast 2>&1 | tee -a /tmp/ralph-output-$iteration.log; then
+        if cargo test -p calciforge --test e2e property_tests --no-fail-fast 2>&1 | tee -a /tmp/ralph-output-$iteration.log; then
             log_progress "✅ Property tests passed"
         else
             log_progress "⚠️ Some property tests failed (may be expected for edge cases)"
@@ -153,7 +153,7 @@ cat "$PROGRESS_LOG"
 echo ""
 echo "📋 Suggestions:"
 echo "1. Review failure logs: /tmp/ralph-output-*.log"
-echo "2. Check specific failures: cargo test -p zeroclawed --test e2e -- --nocapture"
+echo "2. Check specific failures: cargo test -p calciforge --test e2e -- --nocapture"
 echo "3. Consider: Are tests too strict? Are bugs fundamental?"
 echo "4. Run manual Docker test: ./scripts/manual-docker-test.sh"
 

@@ -10,7 +10,7 @@
 #![allow(clippy::await_holding_lock)]
 
 //! Behavioral tests for the `/vault/:secret` route migrated from
-//! onecli-client per #28.
+//! secrets-client per #28.
 //!
 //! Approach: spin up the real axum router (same one main.rs builds via
 //! `security_proxy::build_app`) in an in-process task and hit it via
@@ -126,8 +126,8 @@ async fn vault_route_returns_404_for_missing_secret_with_bland_message() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     remove_env("TVROUTE_MISSING_API_KEY");
-    remove_env("ONECLI_VAULT_TOKEN");
-    remove_env("ONECLI_VAULT_URL");
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
     set_env("SECURITY_PROXY_VAULT_TOKEN", VAULT_TOKEN);
 
     let base = spawn_server().await;

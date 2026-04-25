@@ -78,11 +78,11 @@ The Agent Access SDK **proxy** (`ap-proxy`) is a separate WebSocket rendezvous s
 
 ---
 
-## Recommended Architecture for ZeroClawed
+## Recommended Architecture for Calciforge
 
 **Option A (Simplest): Use `aac` CLI as subprocess**
 ```
-ZeroClawed → spawn `aac connect --domain <domain> --output json` → parse credential
+Calciforge → spawn `aac connect --domain <domain> --output json` → parse credential
 ```
 - Works with both Bitwarden and Vaultwarden (user runs `bw` pointing at Vaultwarden)
 - Approval is handled by user running `aac listen`
@@ -103,23 +103,23 @@ ZeroClawed → spawn `aac connect --domain <domain> --output json` → parse cre
 
 ## Blockers / Unknowns
 
-1. **`aac listen` approval UX is interactive/CLI**: the built-in approval flow requires a human sitting at a terminal running `aac listen`. This does not work for async/chat-based approval. ZeroClawed would need to either:
+1. **`aac listen` approval UX is interactive/CLI**: the built-in approval flow requires a human sitting at a terminal running `aac listen`. This does not work for async/chat-based approval. Calciforge would need to either:
    - Implement its own credential provider (implement the `ap-client` user-client protocol)
    - Or bypass the tunnel entirely for its approval relay and use a different mechanism
 
-2. **ap-proxy is required**: both sides need a reachable proxy. For self-hosted setups, this is one more service to run. For ZeroClawed, this could be bundled or pointed at Bitwarden's hosted proxy.
+2. **ap-proxy is required**: both sides need a reachable proxy. For self-hosted setups, this is one more service to run. For Calciforge, this could be bundled or pointed at Bitwarden's hosted proxy.
 
 3. **Early preview / API instability**: The SDK README explicitly says "early preview stage, APIs and protocols are subject to change." Budget for API churn.
 
-4. **Vaultwarden-specific SDK parity**: If ZeroClawed uses the separate Bitwarden Secrets Manager SDK (not Agent Access), Vaultwarden does NOT implement Secrets Manager APIs — only the personal vault APIs. This is a real gap if you want Vaultwarden + Secrets Manager pattern.
+4. **Vaultwarden-specific SDK parity**: If Calciforge uses the separate Bitwarden Secrets Manager SDK (not Agent Access), Vaultwarden does NOT implement Secrets Manager APIs — only the personal vault APIs. This is a real gap if you want Vaultwarden + Secrets Manager pattern.
 
 ---
 
-## Verdict for ZeroClawed
+## Verdict for Calciforge
 
 **Using Vaultwarden as the vault backend is viable** provided you use it via the `bw` CLI (which talks to Vaultwarden's standard vault API). The Agent Access SDK itself doesn't call vault APIs — it just encrypts a tunnel — so Vaultwarden parity for the tunnel is irrelevant.
 
-**The main gap**: The Agent Access SDK's approval flow is CLI-interactive. ZeroClawed needs its own approval relay that bypasses or replaces the `aac listen` interactive model. This is the core design work needed.
+**The main gap**: The Agent Access SDK's approval flow is CLI-interactive. Calciforge needs its own approval relay that bypasses or replaces the `aac listen` interactive model. This is the core design work needed.
 
 ---
 

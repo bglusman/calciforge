@@ -1,4 +1,4 @@
-# ACP Adapter for ZeroClawed - Implementation Guide
+# ACP Adapter for Calciforge - Implementation Guide
 
 **Date:** 2026-03-18  
 **Status:** Refactored to use existing ACP crates  
@@ -6,7 +6,7 @@
 
 ## Overview
 
-This implementation of the ACP adapter for ZeroClawed leverages the existing Rust crate ecosystem instead of reinventing the wheel:
+This implementation of the ACP adapter for Calciforge leverages the existing Rust crate ecosystem instead of reinventing the wheel:
 
 | Crate | Purpose | Used For |
 |-------|---------|----------|
@@ -22,13 +22,13 @@ This implementation of the ACP adapter for ZeroClawed leverages the existing Rus
 ### Without Middleware (Basic)
 
 ```
-ZeroClawed -> acpx -> ACP Agent (stdio)
+Calciforge -> acpx -> ACP Agent (stdio)
 ```
 
 ### With Middleware (Advanced)
 
 ```
-ZeroClawed -> sacp-proxy -> sacp-tee -> ACP Agent
+Calciforge -> sacp-proxy -> sacp-tee -> ACP Agent
                 ↓           ↓
            [routing]   [logging]
 ```
@@ -177,7 +177,7 @@ enable_middleware = true
 
 [[agents.middleware]]
 kind = "tee"
-log_file = "/var/log/zeroclawed/acp-tee.log"
+log_file = "/var/log/calciforge/acp-tee.log"
 
 [[agents.middleware]]
 kind = "auth"

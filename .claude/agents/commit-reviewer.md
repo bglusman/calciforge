@@ -120,10 +120,10 @@ that's a fine review.
 
 ## INCONSISTENCY
 - `crates/security-proxy/src/proxy.rs:130` vs
-  `crates/onecli-client/src/vault.rs:23` — credential lookup uses
+  `crates/secrets-client/src/vault.rs:23` — credential lookup uses
   the bare provider name here but `{NAME}_API_KEY` in the shared
   resolver.
-  - Effect: a user who sets `OPENAI_API_KEY` is findable by onecli
+  - Effect: a user who sets `OPENAI_API_KEY` is findable by secrets
     but invisible to security-proxy's direct-cache path.
 ```
 

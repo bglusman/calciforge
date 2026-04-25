@@ -1,4 +1,4 @@
-//! ZeroClawed Host-Agent
+//! Calciforge Host-Agent
 //!
 //! mTLS RPC server providing safe VM-to-host delegation for ZFS, systemd, and PCT.
 //!
@@ -54,10 +54,10 @@ use rate_limit::{rate_limit_response, RateLimiter};
 use tls::IdentityExtractingAcceptor;
 use zfs::{ZfsEntry, ZfsExecutor, ZfsOp};
 
-/// ZeroClawed Host-Agent CLI
+/// Calciforge Host-Agent CLI
 #[derive(Parser, Debug)]
 #[command(name = "clash-host-agent")]
-#[command(about = "ZeroClawed Host-Agent — mTLS RPC server for host delegation")]
+#[command(about = "Calciforge Host-Agent — mTLS RPC server for host delegation")]
 struct Cli {
     /// Path to configuration file
     #[arg(short, long, default_value = "/etc/clash/host-agent.toml")]
@@ -966,7 +966,7 @@ async fn main() -> Result<()> {
         .init();
 
     info!(
-        "Starting ZeroClawed Host-Agent v{}",
+        "Starting Calciforge Host-Agent v{}",
         env!("CARGO_PKG_VERSION")
     );
 

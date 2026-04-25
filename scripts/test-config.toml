@@ -12,7 +12,7 @@ pre_read_hook = "none"
 [[agents]]
 id = "test-openai"
 kind = "openclaw-http"
-endpoint = "http://onecli:8081"
+endpoint = "http://secrets:8081"
 api_key = "dummy-token"
 timeout_ms = 30000
 aliases = ["openai-test"]

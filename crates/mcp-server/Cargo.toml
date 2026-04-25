@@ -1,0 +1,36 @@
+[package]
+name = "mcp-server"
+version = "0.1.0"
+edition = "2024"
+description = "MCP server exposing calciforge's secret-discovery surface to agents — list secret names, return canonical {{secret:NAME}} reference tokens, kick off out-of-band secret-add flows. Deliberately does NOT expose get_secret."
+license = "MIT"
+
+[dependencies]
+# Workspace-shared
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Crate-specific
+# Official Rust MCP SDK. The "server" feature pulls in the
+# stdio transport and tool/resource registration macros.
+rmcp = { version = "0.8", features = ["server", "macros", "transport-io", "schemars"] }
+schemars = "1"
+
+# Local — the FnoxClient is the secret-store interface this server
+# proxies; never exposes underlying values, only names.
+secrets-client = { path = "../secrets-client" }
+
+[[bin]]
+name = "mcp-server"
+path = "src/main.rs"
+
+[lib]
+name = "mcp_server"
+path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile = "3"

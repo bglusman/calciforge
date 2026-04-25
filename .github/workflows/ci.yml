@@ -48,10 +48,10 @@ jobs:
     strategy:
       matrix:
         crate:
-          - zeroclawed
+          - calciforge
           - adversary-detector
           - host-agent
-          - onecli-client
+          - secrets-client
           - clashd
           - security-proxy
     steps:
@@ -134,11 +134,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binaries
-        run: cargo build --release -p zeroclawed -p onecli-client -p security-proxy -p adversary-detector
+        run: cargo build --release -p calciforge -p secrets-client -p security-proxy -p adversary-detector
 
       - name: Check binary sizes
         run: |
-          ls -lh target/release/zeroclawed || true
-          ls -lh target/release/onecli || true
+          ls -lh target/release/calciforge || true
+          ls -lh target/release/secrets || true
           ls -lh target/release/security-proxy || true
           ls -lh target/release/adversary-detector || true
