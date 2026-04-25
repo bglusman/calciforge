@@ -911,6 +911,7 @@ impl CommandHandler {
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
+            "  !secure <set|list|help> — manage fnox secret names/values (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -1218,9 +1219,8 @@ async fn secure_set(rest: &str, identity_id: &str) -> String {
     if name.is_empty() || value.is_empty() {
         return "⚠️ Usage: `!secure set NAME=value`".to_string();
     }
-    // Only allow names that are immediately usable in a `{{secret:NAME}}`
-    // reference. The accepted syntax here is ASCII alphanumeric plus `_`
-    // and `-`, matching the validation enforced below.
+    // Keep the accepted syntax narrow so names are safe as fnox keys and
+    // as future interpolation references.
     if !name
         .bytes()
         .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')

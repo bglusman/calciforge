@@ -5,7 +5,7 @@
 //!
 //! Three call-sites in this workspace shell out to `fnox`:
 //!
-//! - `vault.rs::get_secret_from_fnox` (read path, hot)
+//! - `vault.rs::get_secret` (read path, hot)
 //! - `commands.rs::secure_set` (write path, `!secure set`)
 //! - `commands.rs::secure_list` (enumerate names, `!secure list`)
 //!
@@ -206,7 +206,7 @@ impl FnoxClient {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(FnoxError::NotInstalled)?;
+            .map_err(map_spawn_error)?;
 
         let mut stdin = child.stdin.take().ok_or_else(|| {
             FnoxError::Io(std::io::Error::new(
@@ -285,7 +285,15 @@ impl FnoxClient {
             .map_err(|_| FnoxError::TimedOut {
                 seconds: self.timeout.as_secs(),
             })?
-            .map_err(FnoxError::NotInstalled)
+            .map_err(map_spawn_error)
+    }
+}
+
+fn map_spawn_error(error: std::io::Error) -> FnoxError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        FnoxError::NotInstalled(error)
+    } else {
+        FnoxError::Io(error)
     }
 }
 
@@ -391,6 +399,21 @@ mod tests {
             matches!(err, FnoxError::NotInstalled(_)),
             "expected NotInstalled, got {err:?}"
         );
+    }
+
+    /// Given a binary path that exists but cannot be executed,
+    /// when get is called,
+    /// then the wrapper reports an I/O error instead of implying fnox
+    /// is missing from PATH.
+    #[tokio::test]
+    async fn get_permission_denied_is_io_not_not_installed() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("fnox");
+        fs::write(&bin, "#!/bin/sh\necho nope\n").unwrap();
+        let client = FnoxClient::with_binary(bin);
+
+        let err = client.get("X").await.unwrap_err();
+        assert!(matches!(err, FnoxError::Io(_)), "expected Io, got {err:?}");
     }
 
     /// Given a fake fnox that succeeds silently for `set`,
