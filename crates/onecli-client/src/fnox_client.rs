@@ -164,17 +164,33 @@ impl FnoxClient {
         Ok(value)
     }
 
-    /// `fnox set <name> <value>` — store a secret.
+    /// `fnox set <name>` — store a secret, value supplied on stdin.
     ///
-    /// `value` is passed as a CLI argument, which fnox docs note is
-    /// visible in `ps` output during the call. For our use case
-    /// (`!secure set`) the value is already in the chat transport,
-    /// so this isn't a regression. Future improvement: pipe value
-    /// via stdin, which fnox supports when value is omitted.
+    /// Stdin (not argv) so the value never appears in `ps`/`/proc`
+    /// output. fnox accepts stdin when invoked with `set <name> -`
+    /// (single-dash convention; fnox >= 0.3 supports it). Older
+    /// versions that need positional value will fail loudly via
+    /// FnoxError::Failed; the per-call message will name the version
+    /// constraint so operators can upgrade.
     pub async fn set(&self, name: &str, value: &str) -> Result<(), FnoxError> {
         debug!("fnox set {}", name);
-        let output = self
-            .run(&["set", name, value])
+        use tokio::io::AsyncWriteExt;
+        let mut child = Command::new(&self.binary)
+            .args(["set", name, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(FnoxError::NotInstalled)?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(value.as_bytes())
+                .await
+                .map_err(FnoxError::NotInstalled)?;
+            // Drop closes stdin so fnox sees EOF.
+        }
+        let output = child
+            .wait_with_output()
             .await
             .map_err(FnoxError::NotInstalled)?;
 
@@ -348,25 +364,37 @@ mod tests {
         client.set("MY_KEY", "my-value").await.unwrap();
     }
 
-    /// Given a fake fnox that captures its argv to a file,
+    /// Given a fake fnox that captures its argv AND its stdin,
     /// when set("KEY", "value") is called,
-    /// then the captured argv contains both KEY and value in order
-    /// — guards against an off-by-one rearrangement that would
-    /// silently store the value under the wrong name.
+    /// then argv contains exactly `set KEY -` (value NOT in argv —
+    /// argv leaks via /proc, ps, audit logs) and the value arrives on
+    /// stdin. Defense in depth against the realistic shoulder-surf /
+    /// process-list adversary on shared dev hosts.
     #[tokio::test]
-    async fn set_passes_name_and_value_in_argv_order() {
+    async fn set_uses_stdin_for_value_not_argv() {
         let dir = TempDir::new().unwrap();
-        let log = dir.path().join("argv.log");
+        let argv_log = dir.path().join("argv.log");
+        let stdin_log = dir.path().join("stdin.log");
         let bin = fake_fnox(
             &dir,
-            &format!(r#"echo "$1 $2 $3" > {} ; exit 0"#, log.display()),
+            &format!(
+                r#"echo "$1 $2 $3" > {} ; cat > {} ; exit 0"#,
+                argv_log.display(),
+                stdin_log.display()
+            ),
         );
         let client = FnoxClient::with_binary(bin);
 
         client.set("MY_KEY", "the-value").await.unwrap();
 
-        let captured = fs::read_to_string(&log).expect("argv.log written");
-        assert_eq!(captured.trim(), "set MY_KEY the-value");
+        let argv = fs::read_to_string(&argv_log).expect("argv.log written");
+        assert_eq!(
+            argv.trim(),
+            "set MY_KEY -",
+            "value must NOT appear in argv (leaks via ps); got: {argv:?}"
+        );
+        let stdin = fs::read_to_string(&stdin_log).expect("stdin.log written");
+        assert_eq!(stdin, "the-value", "value must arrive via stdin");
     }
 
     /// Given a fake fnox that prints `name value` pairs on `list`,
