@@ -424,6 +424,7 @@ impl WhatsAppChannel {
             && !CommandHandler::is_default_command(&text)
             && !CommandHandler::is_sessions_command(&text)
             && !CommandHandler::is_model_command(&text)
+            && !CommandHandler::is_secure_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
@@ -550,6 +551,33 @@ impl WhatsAppChannel {
                     .await
                 {
                     warn!(from = %from_owned, error = %e, "WhatsApp: failed to send default reply");
+                }
+            });
+            return;
+        }
+
+        // !secure — store/list secrets without surfacing the value to
+        // any agent. Same redaction discipline as Telegram/Matrix:
+        // never log the body (which contains the value for `set`).
+        if CommandHandler::is_secure_command(&text) {
+            debug!(from = %from, "WhatsApp: handling !secure command");
+            let reply = self
+                .command_handler
+                .handle_secure(&text, &identity.id)
+                .await;
+            let channel = self.clone();
+            let from_owned = from.clone();
+            tokio::spawn(async move {
+                if let Err(e) = channel
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
+                    .await
+                {
+                    warn!(from = %from_owned, error = %e, "WhatsApp: failed to send !secure reply");
                 }
             });
             return;
