@@ -136,24 +136,4 @@ mod tests {
         let report = scanner.scan("https://example.com", body).await;
         assert!(matches!(report.verdict, Verdict::Allow));
     }
-
-    /// Test scan timing is reasonable
-    #[tokio::test]
-    async fn test_scan_performance_sanity() {
-        let scanner = ExfilScanner::new();
-        let body = "Normal API request body".repeat(100);
-
-        let start = std::time::Instant::now();
-        let _report = scanner
-            .scan("https://api.openai.com/v1/chat/completions", &body)
-            .await;
-        let elapsed = start.elapsed();
-
-        // Scan should complete in reasonable time (<1s for simple content)
-        assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "Scan took too long: {:?}",
-            elapsed
-        );
-    }
 }

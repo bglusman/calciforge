@@ -161,29 +161,22 @@ pub fn sha256_hex(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn tmp_path() -> PathBuf {
-        // Use a unique path in the system temp dir
-        let dir = std::env::temp_dir();
-        let name = format!(
-            "digest-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        dir.join(name)
+    fn tmp_path() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("create digest test temp dir");
+        let path = dir.path().join("digests.json");
+        (dir, path)
     }
 
     #[tokio::test]
     async fn test_empty_store_returns_none() {
-        let store = DigestStore::open(tmp_path()).await;
+        let (_dir, path) = tmp_path();
+        let store = DigestStore::open(path).await;
         assert!(store.get("https://example.com", None).is_none());
     }
 
     #[tokio::test]
     async fn test_set_and_get_roundtrip() {
-        let path = tmp_path();
+        let (_dir, path) = tmp_path();
         let mut store = DigestStore::open(path.clone()).await;
         let digest = sha256_hex("hello world");
         store
@@ -209,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mark_override_sets_flag() {
-        let path = tmp_path();
+        let (_dir, path) = tmp_path();
         let mut store = DigestStore::open(path.clone()).await;
         let digest = sha256_hex("some content");
         store
@@ -245,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mark_override_wrong_digest_noop() {
-        let path = tmp_path();
+        let (_dir, path) = tmp_path();
         let mut store = DigestStore::open(path).await;
         let digest = sha256_hex("content a");
         store
@@ -289,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ttl_expires_entry() {
-        let path = tmp_path();
+        let (_dir, path) = tmp_path();
         let mut store = DigestStore::open(path.clone()).await;
         let digest = sha256_hex("expires soon");
 
@@ -318,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ttl_zero_means_no_expiration() {
-        let path = tmp_path();
+        let (_dir, path) = tmp_path();
         let mut store = DigestStore::open(path.clone()).await;
         let digest = sha256_hex("never expires");
 

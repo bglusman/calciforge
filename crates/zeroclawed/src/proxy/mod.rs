@@ -141,7 +141,11 @@ pub async fn start_proxy_server(
         },
     };
 
-    info!(backend_type = ?backend_config.backend_type, headers = ?backend_config.headers, "Creating proxy backend");
+    info!(
+        backend_type = ?backend_config.backend_type,
+        header_count = backend_config.headers.as_ref().map(|h| h.len()).unwrap_or_default(),
+        "Creating proxy backend"
+    );
 
     let backend = backend::create_backend(&backend_config)
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;

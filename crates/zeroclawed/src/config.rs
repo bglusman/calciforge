@@ -789,7 +789,7 @@ role = "owner"
 [[identities]]
 id = "david"
 display_name = "David"
-aliases = [{ channel = "telegram", id = "15555550002" }]
+aliases = [{ channel = "telegram", id = "7000000002" }]
 role = "user"
 
 [[agents]]
@@ -804,7 +804,7 @@ aliases = ["lib", "main"]
 id = "zeroclaw"
 kind = "zeroclaw"
 endpoint = "http://127.0.0.1:18792"
-api_key = "zc_4f5c220eec86bedf6e7a9fb99e26b3831811f090fd225b6bbe3bbc2626a3dd86"
+api_key = "zc_test_placeholder_0000000000000000000000000000000000000000000"
 timeout_ms = 90000
 
 [[agents]]
@@ -920,7 +920,7 @@ version = 2
         assert_eq!(zc.endpoint, "http://127.0.0.1:18792");
         assert_eq!(
             zc.api_key.as_deref(),
-            Some("zc_4f5c220eec86bedf6e7a9fb99e26b3831811f090fd225b6bbe3bbc2626a3dd86")
+            Some("zc_test_placeholder_0000000000000000000000000000000000000000000")
         );
         assert_eq!(zc.timeout_ms, Some(90000));
         assert!(zc.command.is_none());

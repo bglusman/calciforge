@@ -155,6 +155,48 @@ ensure_npm() {
     fi
 }
 
+# fnox — secret resolver (brew on macOS, cargo fallback on Linux / no-brew).
+# Uses a dedicated helper because fnox isn't on npm; cargo is the
+# cross-platform fallback (install.sh already requires it for source builds).
+ensure_fnox() {
+    if command -v fnox &>/dev/null; then
+        ok "fnox $(fnox --version 2>/dev/null | head -1 || echo '(installed)')"
+        return 0
+    fi
+    if [[ "$CONFIGURE_ONLY" == true ]]; then
+        die "fnox not found — run without --configure-only to install"
+    fi
+    if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
+        if ask_install fnox "via brew install fnox"; then
+            echo "  Installing fnox..."
+            # Use PIPESTATUS to catch brew's real exit code — `| tail -3`
+            # would otherwise bury a failure behind a successful `tail`.
+            brew install fnox 2>&1 | tail -3
+            local brew_rc=${PIPESTATUS[0]}
+            if [[ $brew_rc -eq 0 ]]; then
+                ok "fnox installed"
+                return 0
+            fi
+            warn "brew install fnox failed (exit $brew_rc); falling back to cargo path"
+        fi
+    fi
+    local cargo_bin="$HOME/.cargo/bin/cargo"
+    if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
+        echo "  Installing fnox via cargo..."
+        # Same pattern as above — the grep|tail pipeline masks
+        # `cargo install`'s exit code otherwise.
+        "$cargo_bin" install fnox 2>&1 | grep -E "Installing|Installed|error" | tail -3
+        local cargo_rc=${PIPESTATUS[0]}
+        if [[ $cargo_rc -eq 0 ]]; then
+            ok "fnox installed"
+            return 0
+        fi
+        warn "cargo install fnox failed (exit $cargo_rc) — see output above"
+    fi
+    warn "fnox not installed — secret lookup will skip the fnox layer (env → vaultwarden still works)"
+    return 1
+}
+
 # Cross-platform package install: prefers brew on macOS, falls back to npm.
 # On Linux, goes straight to npm (which works on any node-enabled distro).
 # Args: <bin> [brew_pkg] [npm_pkg] — brew_pkg defaults to bin, npm_pkg to bin.
@@ -222,13 +264,13 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
 
     # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
     # Build each crate separately so --features only applies to zeroclawed.
-    "$CARGO" build --release -p clashd -p security-proxy 2>&1 \
-        | grep -E "^error|Compiling (clashd|security.proxy)|Finished" || true
+    "$CARGO" build --release -p clashd -p security-proxy -p zeroclawed-mcp 2>&1 \
+        | grep -E "^error|Compiling (clashd|security.proxy|zeroclawed.mcp)|Finished" || true
     "$CARGO" build --release -p zeroclawed --features channel-matrix 2>&1 \
         | grep -E "^error|Compiling zeroclawed|Finished" || true
 
     mkdir -p "$BIN_DIR"
-    for bin in clashd zeroclawed security-proxy; do
+    for bin in clashd zeroclawed security-proxy zeroclawed-mcp; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
         # On Linux, overwriting a running binary fails with "Text file busy".
@@ -380,7 +422,96 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
     || warn "security-proxy not yet responding — check $SEC_LOG_DIR/security-proxy.err"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. Claude Code hook
+# 4. zeroclawed — main agent gateway (channels + router + proxy)
+# ══════════════════════════════════════════════════════════════════════════════
+# Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
+# across reboots. Expects config at ~/.zeroclawed/config.toml; users must
+# populate it before the service starts (or the service will fail health and
+# launchd/systemd will keep retrying).
+hdr "zeroclawed"
+
+ZC_CONFIG="${ZEROCLAWED_CONFIG:-$HOME/.zeroclawed/config.toml}"
+ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.zeroclawed/logs}"
+mkdir -p "$ZC_LOG_DIR"
+
+if [[ ! -f "$ZC_CONFIG" ]]; then
+    warn "Config not found at $ZC_CONFIG — zeroclawed will fail to start until you create it"
+    warn "See README for a minimal config.toml"
+fi
+
+if [[ "$PLATFORM" == "Darwin" ]]; then
+    ZC_PLIST="$PLIST_DIR/com.zeroclawed.zeroclawed.plist"
+    cat > "$ZC_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>com.zeroclawed.zeroclawed</string>
+    <key>ProgramArguments</key><array>
+        <string>${BIN_DIR}/zeroclawed</string>
+        <string>--config</string>
+        <string>${ZC_CONFIG}</string>
+    </array>
+    <key>EnvironmentVariables</key><dict>
+        <key>RUST_LOG</key><string>zeroclawed=info</string>
+        <key>PATH</key><string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>StandardOutPath</key><string>${ZC_LOG_DIR}/zeroclawed.log</string>
+    <key>StandardErrorPath</key><string>${ZC_LOG_DIR}/zeroclawed.err</string>
+</dict></plist>
+EOF
+    launchctl unload "$ZC_PLIST" 2>/dev/null || true
+    launchctl load "$ZC_PLIST" 2>&1 | tail -3
+else
+    ZC_UNIT="$PLIST_DIR/zeroclawed.service"
+    cat > "$ZC_UNIT" <<EOF
+[Unit]
+Description=ZeroClawed agent gateway (channels + router + proxy)
+After=network.target zeroclawed-clashd.service zeroclawed-security-proxy.service
+Wants=zeroclawed-clashd.service zeroclawed-security-proxy.service
+
+[Service]
+Type=simple
+ExecStart=${BIN_DIR}/zeroclawed --config ${ZC_CONFIG}
+Environment=RUST_LOG=zeroclawed=info
+Restart=always
+RestartSec=30
+StandardOutput=append:${ZC_LOG_DIR}/zeroclawed.log
+StandardError=append:${ZC_LOG_DIR}/zeroclawed.err
+
+[Install]
+WantedBy=${WANTED_BY_TARGET}
+EOF
+    $SYSTEMCTL daemon-reload
+    $SYSTEMCTL enable --now zeroclawed.service 2>&1 | tail -3 || \
+        warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
+fi
+
+# Give zeroclawed a moment to come up, then check if the process is alive.
+# zeroclawed only binds a health port when proxy is enabled in config, so we
+# can't rely on /health — probe the process instead.
+sleep 2
+if pgrep -f "${BIN_DIR}/zeroclawed" > /dev/null; then
+    ok "zeroclawed running"
+else
+    warn "zeroclawed did not start — check $ZC_LOG_DIR/zeroclawed.err"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. fnox — encrypted secret resolver (fallback between env and vaultwarden)
+# ══════════════════════════════════════════════════════════════════════════════
+# onecli-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
+# not hard-required (the resolver falls through if the binary is absent), but
+# installing it unlocks age/1Password/AWS SM/etc. secret backends without
+# extra config.
+hdr "fnox (secret resolver)"
+ensure_fnox || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Claude Code hook
 # ══════════════════════════════════════════════════════════════════════════════
 # ── acpx — required for any agent with kind = "acpx" (claude, opencode, kilo, …)
 # Needs to be installed regardless of which specific agent is enabled, since
@@ -427,12 +558,37 @@ with open(path, "w") as f: json.dump(s, f, indent=2); f.write("\n")
 print("settings.json updated")
 PYEOF
             ok "Claude Code PreToolUse hook → clashd:${CLASHD_PORT}"
+
+            # Register zeroclawed-mcp as an MCP server. The server runs
+            # via stdio when claude spawns it as a subprocess. Idempotent:
+            # the python block replaces any existing entry with the same
+            # name, so re-running install.sh won't grow duplicates.
+            ZC_MCP_BIN="$BIN_DIR/zeroclawed-mcp"
+            if [[ -x "$ZC_MCP_BIN" ]]; then
+                python3 - "$SETTINGS" "$ZC_MCP_BIN" <<'PYEOF'
+import json, sys
+path, mcp_bin = sys.argv[1], sys.argv[2]
+with open(path) as f: s = json.load(f)
+servers = s.setdefault("mcpServers", {})
+servers["zeroclawed-secrets"] = {
+    "command": mcp_bin,
+    "args": [],
+    "env": {},
+}
+with open(path, "w") as f: json.dump(s, f, indent=2); f.write("\n")
+print(f"settings.json: registered MCP server zeroclawed-secrets → {mcp_bin}")
+PYEOF
+                ok "Claude Code MCP server zeroclawed-secrets → ${ZC_MCP_BIN}"
+            else
+                warn "zeroclawed-mcp binary not found at $ZC_MCP_BIN — skipping MCP registration"
+                warn "  Build it with: cargo build --release -p zeroclawed-mcp"
+            fi
         fi
     fi
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. opencode
+# 7. opencode
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled opencode; then
     hdr "opencode"
@@ -452,7 +608,7 @@ if agent_enabled opencode; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. openclaw
+# 8. openclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled openclaw; then
     hdr "openclaw"
@@ -472,7 +628,7 @@ PYEOF
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. zeroclaw
+# 9. zeroclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled zeroclaw; then
     hdr "zeroclaw"
@@ -511,7 +667,7 @@ if agent_enabled zeroclaw; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Multi-node SSH deployment
+# 10. Multi-node SSH deployment
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ -n "$NODES_FILE" ]]; then

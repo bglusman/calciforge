@@ -2,6 +2,8 @@
 
 members = [
     "crates/zeroclawed",
+    "crates/zeroclawed-mcp",
+    "crates/zeroclawed-secret-paste",
     "crates/adversary-detector",
     "crates/security-proxy",
     "crates/host-agent",
@@ -13,6 +15,8 @@ members = [
 # loom-tests requires RUSTFLAGS='--cfg loom' — exclude from default cargo test
 default-members = [
     "crates/zeroclawed",
+    "crates/zeroclawed-mcp",
+    "crates/zeroclawed-secret-paste",
     "crates/adversary-detector",
     "crates/security-proxy",
     "crates/host-agent",

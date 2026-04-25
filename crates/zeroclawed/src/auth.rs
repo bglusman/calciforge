@@ -105,7 +105,7 @@ mod tests {
                     display_name: Some("David".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "15555550002".to_string(),
+                        id: "7000000002".to_string(),
                     }],
                     role: Some("user".to_string()),
                 },
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_resolve_second_identity() {
         let cfg = make_config();
-        let identity = resolve_telegram_sender(15555550002, &cfg);
+        let identity = resolve_telegram_sender(7000000002, &cfg);
         assert!(identity.is_some());
         assert_eq!(identity.unwrap().id, "david");
     }
