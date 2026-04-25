@@ -161,16 +161,18 @@ pub fn sha256_hex(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TMP_PATH_ID: AtomicU64 = AtomicU64::new(0);
+
     fn tmp_path() -> PathBuf {
-        // Use a unique path in the system temp dir
+        // Tokio runs these tests concurrently; use a monotonic suffix so parallel
+        // tests cannot accidentally share a digest store.
         let dir = std::env::temp_dir();
         let name = format!(
             "digest-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT_TMP_PATH_ID.fetch_add(1, Ordering::Relaxed)
         );
         dir.join(name)
     }
