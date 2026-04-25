@@ -78,8 +78,12 @@ async fn spawn_server() -> String {
     panic!("spawn_server: health check did not become ready within 2s");
 }
 
-/// Given an env var `TVROUTE_T1_API_KEY=hello` set,
-/// when a client hits `GET /vault/tvroute_t1`,
+const VAULT_TOKEN: &str = "test-vault-token-please-ignore";
+
+/// Given an env var `TVROUTE_T1_API_KEY=hello` set + the vault bearer
+/// token in env,
+/// when a client hits `GET /vault/tvroute_t1` with a matching Bearer
+/// header,
 /// then the response is 200 with body `{"status":"ok","secret":"tvroute_t1","token":"hello"}`.
 ///
 /// Catches wiring regressions: route not registered, handler not
@@ -90,15 +94,20 @@ async fn vault_route_returns_resolved_secret() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     set_env("TVROUTE_T1_API_KEY", "hello");
+    set_env("SECURITY_PROXY_VAULT_TOKEN", VAULT_TOKEN);
 
     let base = spawn_server().await;
-    let resp = reqwest::get(format!("{base}/vault/tvroute_t1"))
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/vault/tvroute_t1"))
+        .header("Authorization", format!("Bearer {VAULT_TOKEN}"))
+        .send()
         .await
         .expect("request should succeed");
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.expect("body is JSON");
 
     remove_env("TVROUTE_T1_API_KEY");
+    remove_env("SECURITY_PROXY_VAULT_TOKEN");
 
     assert_eq!(status, 200, "expected 200, got {status}");
     assert_eq!(body["status"], "ok", "status should be ok, got {body}");
@@ -106,7 +115,8 @@ async fn vault_route_returns_resolved_secret() {
     assert_eq!(body["token"], "hello");
 }
 
-/// Given no env var, no fnox entry, no vault token for the name,
+/// Given no env var, no fnox entry, no vault token for the name, and
+/// the bearer token configured + presented,
 /// when a client hits `GET /vault/tvroute_missing`,
 /// then the response is 404 with a bland "Secret not found" message
 /// (and crucially, does NOT leak the underlying error text — which
@@ -118,13 +128,19 @@ async fn vault_route_returns_404_for_missing_secret_with_bland_message() {
     remove_env("TVROUTE_MISSING_API_KEY");
     remove_env("ONECLI_VAULT_TOKEN");
     remove_env("ONECLI_VAULT_URL");
+    set_env("SECURITY_PROXY_VAULT_TOKEN", VAULT_TOKEN);
 
     let base = spawn_server().await;
-    let resp = reqwest::get(format!("{base}/vault/tvroute_missing"))
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/vault/tvroute_missing"))
+        .header("Authorization", format!("Bearer {VAULT_TOKEN}"))
+        .send()
         .await
         .expect("request should succeed");
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.expect("body is JSON");
+
+    remove_env("SECURITY_PROXY_VAULT_TOKEN");
 
     assert_eq!(status, 404, "missing secret must be 404, got {status}");
     assert_eq!(body["status"], "error");
@@ -137,5 +153,67 @@ async fn vault_route_returns_404_for_missing_secret_with_bland_message() {
     assert!(
         body.get("token").is_none(),
         "error response must not include a token field"
+    );
+}
+
+/// Given the vault token env var is unset,
+/// when a client hits `GET /vault/anything`,
+/// then the response is 503 (route disabled / not an oracle) — even
+/// without an Authorization header. This guards the
+/// "operator forgot the token, route accidentally became open" path.
+#[tokio::test]
+async fn vault_route_503_when_token_env_unset() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    remove_env("SECURITY_PROXY_VAULT_TOKEN");
+
+    let base = spawn_server().await;
+    let resp = reqwest::get(format!("{base}/vault/anything"))
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(
+        resp.status(),
+        503,
+        "vault route must be disabled when token env unset"
+    );
+}
+
+/// Given the vault token env IS set but the request omits/wrongs the
+/// Bearer header,
+/// when a client hits `GET /vault/anything`,
+/// then the response is 401 — proves the auth check is real, not just
+/// "token presence" on the server side.
+#[tokio::test]
+async fn vault_route_401_when_bearer_missing_or_wrong() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    set_env("SECURITY_PROXY_VAULT_TOKEN", VAULT_TOKEN);
+
+    let base = spawn_server().await;
+    let resp_no_header = reqwest::get(format!("{base}/vault/anything"))
+        .await
+        .expect("request should succeed");
+    assert_eq!(
+        resp_no_header.status(),
+        401,
+        "missing bearer must be 401, got {}",
+        resp_no_header.status()
+    );
+
+    let resp_wrong = reqwest::Client::new()
+        .get(format!("{base}/vault/anything"))
+        .header("Authorization", "Bearer wrong-token")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    remove_env("SECURITY_PROXY_VAULT_TOKEN");
+
+    assert_eq!(
+        resp_wrong.status(),
+        401,
+        "wrong bearer must be 401, got {}",
+        resp_wrong.status()
     );
 }
