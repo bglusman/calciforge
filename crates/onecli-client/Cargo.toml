@@ -39,3 +39,4 @@ toml = "0.8"
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"
+tempfile = "3"

@@ -1221,82 +1221,54 @@ async fn secure_set(rest: &str) -> String {
         .bytes()
         .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
     {
-        return format!(
-            "⚠️ Invalid secret name `{}` — allowed: A-Z a-z 0-9 _ -",
-            name
-        );
+        return format!("⚠️ Invalid secret name `{name}` — allowed: A-Z a-z 0-9 _ -");
     }
 
-    use tokio::process::Command;
-    let output = match Command::new("fnox")
-        .args(["set", &name, &value])
-        .output()
-        .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            return format!(
-                "⚠️ fnox not available: {e}. Install it (brew install fnox) \
-                 and run `fnox init` to enable `!secure`."
-            );
+    // Migrated from a bespoke `Command::new("fnox")` block to the
+    // shared FnoxClient — same on-the-wire behavior, but the typed
+    // FnoxError lets us distinguish "fnox not installed" from "fnox
+    // failed for some other reason" without substring-matching stderr.
+    let client = onecli_client::FnoxClient::new();
+    match client.set(&name, &value).await {
+        Ok(()) => format!(
+            "✅ Stored secret `{name}`.\n\n\
+             ⚠️ The value you sent is retained by the chat transport. \
+             For high-value secrets, use host-local `fnox set` or the \
+             planned `!secure request` flow."
+        ),
+        Err(onecli_client::FnoxError::NotInstalled(e)) => format!(
+            "⚠️ fnox not available: {e}. Install it (brew install fnox) \
+             and run `fnox init` to enable `!secure`."
+        ),
+        Err(onecli_client::FnoxError::Failed { stderr, .. }) => {
+            // Stderr may name the backend or config file path — that's
+            // operational info the user can already read via
+            // `fnox doctor`; echoing it here is fine. Crucially does
+            // NOT contain the value (we never put it in stderr; fnox
+            // certainly doesn't).
+            format!("⚠️ fnox set {name} failed: {stderr}")
         }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // The stderr may name the backend or config file path — that's
-        // operational info the user running the bot can already read
-        // via `fnox doctor`; echoing it here is fine.
-        return format!("⚠️ fnox set {name} failed: {}", stderr.trim());
+        Err(other) => format!("⚠️ fnox set {name} failed: {other}"),
     }
-
-    // Intentionally name-only on the success path — the value must
-    // never appear in the reply, regardless of transport.
-    format!(
-        "✅ Stored secret `{name}`.\n\n\
-         ⚠️ The value you sent is retained by the chat transport. \
-         For high-value secrets, use host-local `fnox set` or the \
-         planned `!secure request` flow."
-    )
 }
 
 async fn secure_list() -> String {
-    use tokio::process::Command;
-    let output = match Command::new("fnox").arg("list").output().await {
-        Ok(o) => o,
-        Err(e) => {
-            return format!("⚠️ fnox not available: {e}");
+    // Migrated to FnoxClient — see secure_set for rationale. The
+    // wrapper does the defensive name-extraction parse internally,
+    // so we just present the result.
+    let client = onecli_client::FnoxClient::new();
+    match client.list().await {
+        Ok(names) if names.is_empty() => {
+            "📭 No secrets stored. Use `!secure set NAME=value` to add one.".to_string()
         }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return format!("⚠️ fnox list failed: {}", stderr.trim());
-    }
-
-    // fnox list stdout varies slightly by version — extract anything
-    // that looks like a secret name (non-whitespace leading token)
-    // and present a name-only summary. Don't attempt structured
-    // parsing; bail to a raw echo if the output isn't lines-of-tokens.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let names: Vec<&str> = stdout
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                None
-            } else {
-                trimmed.split_whitespace().next()
-            }
-        })
-        .collect();
-    if names.is_empty() {
-        "📭 No secrets stored. Use `!secure set NAME=value` to add one.".to_string()
-    } else {
-        format!(
+        Ok(names) => format!(
             "🔐 {} stored secret{}:\n  {}",
             names.len(),
             if names.len() == 1 { "" } else { "s" },
             names.join("\n  ")
-        )
+        ),
+        Err(onecli_client::FnoxError::NotInstalled(e)) => format!("⚠️ fnox not available: {e}"),
+        Err(e) => format!("⚠️ fnox list failed: {e}"),
     }
 }
 
