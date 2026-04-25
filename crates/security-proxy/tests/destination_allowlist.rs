@@ -338,3 +338,54 @@ async fn allowlist_wildcard_pattern_matches() {
 
     remove_env("TDA_GLOB_API_KEY");
 }
+
+/// Given an allowlist that ONLY allows `api.anthropic.com`,
+/// when the agent embeds the secret into the URL itself
+/// (`?key={{secret:NAME}}` against the wiremock upstream),
+/// then substitution is REFUSED — the URL-substitution path also
+/// honors the per-secret allowlist (closes a bypass where header/body
+/// substitution was gated but URL substitution wasn't).
+///
+/// Regression guard for the bug found by triage on PR #22:
+/// `substitute_url()` previously always passed `None` for dest_host,
+/// so any secret could be exfiltrated by URL-embedding it.
+#[tokio::test]
+async fn allowlist_blocks_url_embedded_secret_to_disallowed_host() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    remove_env("ONECLI_VAULT_TOKEN");
+    remove_env("ONECLI_VAULT_URL");
+    set_env("TDA_URL_API_KEY", "should-never-leave-the-process");
+
+    let mut allow = HashMap::new();
+    allow.insert("tda_url".into(), vec!["api.anthropic.com".into()]);
+    let (gateway, upstream) = spawn_gateway(allow).await;
+
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let proxy_client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(&gateway).unwrap())
+        .build()
+        .unwrap();
+    let resp = proxy_client
+        .get(format!("{}/x?key={{{{secret:tda_url}}}}", upstream.uri()))
+        .send()
+        .await
+        .expect("gateway responds");
+    assert_eq!(
+        resp.status(),
+        403,
+        "URL-embedded secret to disallowed host must be 403"
+    );
+
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        !body.contains("should-never-leave-the-process"),
+        "body must not echo the secret value"
+    );
+
+    remove_env("TDA_URL_API_KEY");
+}

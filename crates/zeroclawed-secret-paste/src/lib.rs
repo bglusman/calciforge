@@ -148,7 +148,12 @@ pub async fn spawn_request(
     let addr: SocketAddr = listener.local_addr()?;
     let url = format!("http://{addr}/paste/{token}");
 
-    info!(secret = %name, %url, "secret-paste server listening");
+    // Log only the bound address — the URL contains the one-shot bearer
+    // token and would land in shared logs / journalctl / shell history
+    // on any caller that captures stdout/stderr. Token detail at
+    // debug! only, opt-in via RUST_LOG.
+    info!(secret = %name, addr = %addr, "secret-paste server listening");
+    debug!(secret = %name, %url, "secret-paste full URL (debug-only)");
 
     let shutdown = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
