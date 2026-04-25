@@ -184,6 +184,7 @@ async fn run_pct(command: &str, vmid: &str) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_valid_vmids() {
@@ -225,6 +226,17 @@ mod tests {
                 metadata: Default::default(),
             };
             assert_eq!(op.command(), Some(*cmd));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_vmids_are_plain_decimal_and_in_proxmox_range(id in "[\\x00-\\x7f]{0,32}") {
+            if is_valid_vmid(&id) {
+                prop_assert!(id.chars().all(|c| c.is_ascii_digit()));
+                let parsed = id.parse::<u32>().expect("valid vmid parses as u32");
+                prop_assert!((100..=999999).contains(&parsed));
+            }
         }
     }
 }
