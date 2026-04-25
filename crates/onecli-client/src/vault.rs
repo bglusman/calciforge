@@ -26,9 +26,32 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
         return Ok(token);
     }
 
+    // Try fnox (encrypted local/remote secret store). Fallthrough on
+    // any failure is intentional — fnox is optional infrastructure —
+    // but we log at debug so real backend problems (auth, IO) are
+    // recoverable during incident investigation rather than silent.
+    match get_secret_from_fnox(name).await {
+        Ok(secret) => {
+            debug!("Found {} in fnox", name);
+            return Ok(secret);
+        }
+        Err(e) => {
+            debug!(
+                secret = %name,
+                error = %e,
+                "fnox lookup failed, falling through to vaultwarden"
+            );
+        }
+    }
+
     let config = VaultConfig::default();
     if config.token.is_empty() {
-        anyhow::bail!("No ONECLI_VAULT_TOKEN set and no env var for '{}'", name);
+        // Keep the env-specific wording so the error names the exact
+        // variable an operator can set to enable the vaultwarden leg.
+        anyhow::bail!(
+            "No ONECLI_VAULT_TOKEN set and env/fnox lookup for '{}' both failed",
+            name
+        );
     }
 
     debug!("Looking up {} in VaultWarden at {}", name, config.url);
@@ -140,4 +163,44 @@ struct Field {
 struct Login {
     username: Option<String>,
     password: Option<String>,
+}
+
+/// Retrieve a secret from fnox (encrypted local/remote secret store).
+///
+/// fnox supports age encryption, AWS Secrets Manager, Azure Key Vault,
+/// GCP Secret Manager, 1Password, Bitwarden, Infisical, HashiCorp Vault, etc.
+///
+/// Private: the only caller is `get_secret` above. Keeping this off the
+/// crate's public surface means callers depend on the aggregated
+/// resolver, not a specific backend (which would leak implementation
+/// choice and couple consumers to fnox).
+async fn get_secret_from_fnox(name: &str) -> anyhow::Result<String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    debug!("Looking up {} in fnox", name);
+
+    let output = Command::new("fnox")
+        .args(["get", name])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to execute fnox: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("fnox get {} failed: {}", name, stderr);
+    }
+
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|e| anyhow::anyhow!("fnox returned invalid UTF-8: {}", e))?
+        .trim()
+        .to_string();
+
+    if secret.is_empty() {
+        anyhow::bail!("fnox returned empty secret for {}", name);
+    }
+
+    Ok(secret)
 }
