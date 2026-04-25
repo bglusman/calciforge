@@ -87,6 +87,12 @@ paths = [
     '''package-lock\.json$''',
     '''yarn\.lock$''',
     '''bun\.lock$''',
+    # zeroclawed-secret-paste lib.rs: contains pure-function predicate
+    # tests for is_localhost_origin that, by construction, must use
+    # literal RFC 1918 / CGNAT IPs to test that the predicate accepts
+    # private and rejects CGNAT. Substituting RFC 5737 docs IPs would
+    # defeat the test.
+    '''crates/zeroclawed-secret-paste/src/lib\.rs$''',
 ]
 regexes = [
     # Loopback / unspecified — always safe

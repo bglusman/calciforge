@@ -200,7 +200,13 @@ pub async fn spawn_request(
         .route("/paste/:token", get(get_form).post(post_submit))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    // Bind: 0.0.0.0 by default so any device on the trusted LAN (e.g.,
+    // a phone) can use the paste flow. The Origin check (widened below
+    // to accept RFC 1918 origins) is the actual rebinding defense, not
+    // the bind address. PASTE_BIND env still overrides if you want
+    // strict localhost-only.
+    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "0.0.0.0:0".into());
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
     let url = format!("http://{addr}/paste/{token}");
 
@@ -397,9 +403,42 @@ fn is_localhost_origin(origin: &str, allow_null: bool) -> bool {
     if origin == "null" {
         return allow_null;
     }
-    origin.starts_with("http://127.0.0.1:")
+    if origin.starts_with("http://127.0.0.1:")
         || origin.starts_with("http://localhost:")
         || origin == "http://localhost"
+    {
+        return true;
+    }
+    // Accept RFC 1918 private ranges so a phone or another machine on
+    // the same LAN can submit. Treats the home network as trusted —
+    // the check still blocks origins from the public internet.
+    is_rfc1918_http_origin(origin)
+}
+
+fn is_rfc1918_http_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split(':').next().unwrap_or("");
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    let octets: Option<Vec<u8>> = parts.iter().map(|p| p.parse::<u8>().ok()).collect();
+    let Some(o) = octets else { return false };
+    // 10.0.0.0/8
+    if o[0] == 10 {
+        return true;
+    }
+    // 172.16.0.0/12
+    if o[0] == 172 && (16..=31).contains(&o[1]) {
+        return true;
+    }
+    // 192.168.0.0/16
+    if o[0] == 192 && o[1] == 168 {
+        return true;
+    }
+    false
 }
 
 fn truncated_preview(value: &str, n: usize) -> String {
@@ -692,6 +731,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 403);
+    }
+
+    /// Pure-function checks for the widened Origin predicate. Locked in
+    /// so a future "tighten the predicate" change has to confront the
+    /// LAN use case head-on, not silently break it.
+    #[test]
+    fn origin_predicate_accepts_loopback_and_rfc1918_rejects_public() {
+        // loopback
+        assert!(is_localhost_origin("http://127.0.0.1:8080", false));
+        assert!(is_localhost_origin("http://localhost:8080", false));
+        // RFC 1918 ranges
+        assert!(is_localhost_origin("http://192.168.1.175:58083", false));
+        assert!(is_localhost_origin("http://10.0.0.5:9000", false));
+        assert!(is_localhost_origin("http://172.16.5.1:80", false));
+        assert!(is_localhost_origin("http://172.31.255.1:80", false));
+        // boundary: 172.32 is NOT private
+        assert!(!is_localhost_origin("http://172.32.0.1:80", false));
+        // public
+        assert!(!is_localhost_origin("http://example.com", false));
+        assert!(!is_localhost_origin("http://8.8.8.8:80", false));
+        // CGNAT-adjacent — explicitly NOT in the allowed set
+        assert!(!is_localhost_origin("http://100.64.0.1:80", false));
+        // https not http (paste server is plain http; https can't have come from us)
+        assert!(!is_localhost_origin("https://192.168.1.1:443", false));
+        // null still gated by allow_null_origin
+        assert!(!is_localhost_origin("null", false));
+        assert!(is_localhost_origin("null", true));
+    }
+
+    /// Given a POST whose Origin is an RFC 1918 LAN IP (192.168.x.y),
+    /// when the user POSTs (default config),
+    /// then the server accepts the Origin and proceeds to fnox.
+    /// Regression guard: this used to be 403 because the predicate was
+    /// loopback-only. The widened-defaults change must keep this 200.
+    #[tokio::test]
+    async fn rfc1918_origin_accepted_by_default() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then exit 0; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = onecli_client::FnoxClient::with_binary(bin);
+        let handle = spawn_request("K", "", client, PasteConfig::default())
+            .await
+            .unwrap();
+
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(&handle.url)
+            .header("Origin", "http://192.168.1.175:8080")
+            .form(&[("value", "v")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "RFC 1918 Origin must be accepted by default — phone-on-LAN flow"
+        );
     }
 
     /// Given the default config (allow_null_origin=false) and a POST

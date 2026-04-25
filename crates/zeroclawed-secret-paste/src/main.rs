@@ -26,11 +26,19 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("usage: zeroclawed-secret-paste NAME [DESCRIPTION]"))?;
     let description = args.next().unwrap_or_default();
 
+    // Demo escape hatch: PASTE_INSECURE_NO_ORIGIN=1 disables the
+    // localhost-Origin check so a phone on the LAN can submit. NOT
+    // safe for any deployment with real secrets — this is for showing
+    // the UI from another device on a trusted network.
+    let insecure_no_origin = std::env::var("PASTE_INSECURE_NO_ORIGIN").as_deref() == Ok("1");
     let mut handle = spawn_request(
         name,
         description,
         onecli_client::FnoxClient::new(),
-        PasteConfig::default(),
+        PasteConfig {
+            require_localhost_origin: !insecure_no_origin,
+            ..PasteConfig::default()
+        },
     )
     .await?;
 
