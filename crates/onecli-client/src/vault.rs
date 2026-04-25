@@ -11,9 +11,16 @@ pub struct VaultConfig {
 
 impl Default for VaultConfig {
     fn default() -> Self {
+        // IMPORTANT: no hardcoded default URL or token. Either env var
+        // unset → empty string → the caller's `.is_empty()` guards fire
+        // and we bail with a clear message. Setting a "helpful" default
+        // URL here would silently route traffic to a deployment-specific
+        // host (see CLAUDE.md "Hard-coded fallback URLs") and disclose
+        // infrastructure to anyone reading the repo. The repo's git
+        // history has a prior iteration where exactly this mistake was
+        // made — don't re-add a "default" URL "for convenience".
         Self {
-            url: std::env::var("ONECLI_VAULT_URL")
-                .unwrap_or_else(|_| "https://vault.enjyn.com".to_string()),
+            url: std::env::var("ONECLI_VAULT_URL").unwrap_or_default(),
             token: std::env::var("ONECLI_VAULT_TOKEN").unwrap_or_default(),
         }
     }
@@ -45,12 +52,22 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
     }
 
     let config = VaultConfig::default();
-    if config.token.is_empty() {
-        // Keep the env-specific wording so the error names the exact
-        // variable an operator can set to enable the vaultwarden leg.
+    // Both URL and token are mandatory — no hardcoded default for either.
+    // If env+fnox both miss and vaultwarden isn't fully configured, we
+    // stop here with a message that names every variable the operator
+    // could set to advance, so debugging doesn't require reading source.
+    if config.url.is_empty() || config.token.is_empty() {
         anyhow::bail!(
-            "No ONECLI_VAULT_TOKEN set and env/fnox lookup for '{}' both failed",
-            name
+            "Secret '{}' not found in env or fnox; vaultwarden fallback unavailable \
+             (requires ONECLI_VAULT_URL and ONECLI_VAULT_TOKEN, currently {})",
+            name,
+            if config.url.is_empty() && config.token.is_empty() {
+                "both unset"
+            } else if config.url.is_empty() {
+                "URL unset"
+            } else {
+                "token unset"
+            }
         );
     }
 

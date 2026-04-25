@@ -1156,7 +1156,7 @@ mod tests {
                     display_name: Some("Brian".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "8465871195".to_string(),
+                        id: "7000000001".to_string(),
                     }],
                     role: Some("owner".to_string()),
                 },
@@ -1165,7 +1165,7 @@ mod tests {
                     display_name: Some("David".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "15555550002".to_string(),
+                        id: "7000000002".to_string(),
                     }],
                     role: Some("user".to_string()),
                 },

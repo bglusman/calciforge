@@ -783,13 +783,13 @@ version = 2
 
 [[identities]]
 id = "brian"
-aliases = [{ channel = "telegram", id = "8465871195" }]
+aliases = [{ channel = "telegram", id = "7000000001" }]
 role = "owner"
 
 [[identities]]
 id = "david"
 display_name = "David"
-aliases = [{ channel = "telegram", id = "15555550002" }]
+aliases = [{ channel = "telegram", id = "7000000002" }]
 role = "user"
 
 [[agents]]
@@ -868,7 +868,7 @@ post_write_hook = "none"
         let brian = &cfg.identities[0];
         assert_eq!(brian.aliases.len(), 1);
         assert_eq!(brian.aliases[0].channel, "telegram");
-        assert_eq!(brian.aliases[0].id, "8465871195");
+        assert_eq!(brian.aliases[0].id, "7000000001");
     }
 
     #[test]

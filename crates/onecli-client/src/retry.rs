@@ -120,4 +120,73 @@ mod tests {
             config.max_retries as usize + 1
         );
     }
+
+    /// Given an operation that fails twice then succeeds,
+    /// when execute_with_retry runs (with base_delay=1ms so the test
+    /// finishes quickly),
+    /// then the operation was called exactly three times and the
+    /// final result is the success value.
+    ///
+    /// Catches a regression where the retry loop short-circuits on
+    /// first success but fails to propagate the value, or re-attempts
+    /// after success.
+    #[tokio::test]
+    async fn retries_until_transient_resolves() {
+        let config = RetryConfig {
+            max_retries: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+        };
+        let counter = AtomicUsize::new(0);
+
+        let result = execute_with_retry(&config, DefaultRetryStrategy, || {
+            let attempt = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                if attempt < 3 {
+                    Err::<i32, OneCliError>(OneCliError::RateLimited { retry_after: 0 })
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await
+        .expect("should succeed on attempt 3");
+
+        assert_eq!(result, 42, "return value from the successful attempt");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            3,
+            "attempts 1 & 2 failed transient; attempt 3 succeeded"
+        );
+    }
+
+    /// Given an operation that fails with a non-retryable error,
+    /// when execute_with_retry runs,
+    /// then the operation is called exactly ONCE and the error
+    /// propagates — no retries, regardless of max_retries.
+    ///
+    /// Catches a regression where the retry loop ignores the
+    /// strategy's verdict and retries everything unconditionally.
+    #[tokio::test]
+    async fn non_retryable_error_aborts_immediately() {
+        let config = RetryConfig {
+            max_retries: 10,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+        };
+        let counter = AtomicUsize::new(0);
+
+        let result = execute_with_retry(&config, DefaultRetryStrategy, || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async move { Err::<i32, OneCliError>(OneCliError::PolicyDenied("no".to_string())) }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "non-retryable error must not retry, even when max_retries > 0"
+        );
+    }
 }

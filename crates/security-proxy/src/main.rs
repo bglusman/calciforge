@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use axum::routing::get;
-use axum::Router;
 use tracing::{error, info};
 
 use adversary_detector::{RateLimitConfig, ScannerConfig};
 use security_proxy::agent_config::AgentsConfig;
 use security_proxy::config::GatewayConfig;
-use security_proxy::proxy::{health_handler, proxy_handler, SecurityProxy};
+use security_proxy::proxy::SecurityProxy;
+use security_proxy::router::build_app;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -73,10 +72,10 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(proxy);
 
-    let app = Router::new()
-        .route("/health", get(health_handler))
-        .fallback(proxy_handler)
-        .with_state(state);
+    // The router is built by the library so tests can spin up the same
+    // routes in-process without spawning the binary. See
+    // `security_proxy::router::build_app`.
+    let app = build_app(state);
 
     let addr = format!("0.0.0.0:{}", port);
     info!("Security proxy listening on {}", addr);

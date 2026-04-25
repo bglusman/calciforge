@@ -977,7 +977,7 @@ mod tests {
                 aliases: vec![
                     ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "8465871195".to_string(),
+                        id: "7000000001".to_string(),
                     },
                     ChannelAlias {
                         channel: "whatsapp".to_string(),
