@@ -871,13 +871,30 @@ impl CommandHandler {
     /// For values where chat-transport exposure is unacceptable,
     /// a follow-up `!secure request NAME` flow (out-of-band) is
     /// planned — see `docs/rfcs/agent-secret-gateway.md` §5.
-    pub async fn handle_secure(&self, text: &str, _identity_id: &str) -> String {
+    pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        // `!secure ...` — split off the subcommand word.
-        let mut parts = trimmed.splitn(3, ' ');
+        // `!secure ...` — split off the subcommand word using
+        // split_whitespace so multiple spaces / tabs don't end up as
+        // empty middle tokens (the prior splitn(' ') treated
+        // "!secure  set NAME=v" as sub="" with the rest mis-shaped).
+        let mut parts = trimmed.split_whitespace();
         let _lead = parts.next(); // `!secure`
         let sub = parts.next().map(|s| s.to_lowercase()).unwrap_or_default();
-        let rest = parts.next().unwrap_or("").trim();
+        // Reconstruct the rest by joining remaining tokens with single
+        // spaces. For !secure set, the value goes through to fnox set
+        // (now via stdin) so internal whitespace shape is preserved by
+        // the caller that builds it as `NAME=value`.
+        let rest_owned: String = parts.collect::<Vec<_>>().join(" ");
+        let rest = rest_owned.trim();
+
+        // Audit-log who invoked which subcommand. NEVER log `rest` —
+        // that contains the secret value for `set`. Identity is the
+        // chat-side principal; correlatable to channel + auth.
+        tracing::info!(
+            identity = %identity_id,
+            subcommand = %sub,
+            "!secure invoked"
+        );
 
         match sub.as_str() {
             "set" => secure_set(rest).await,
