@@ -257,14 +257,16 @@ fn handle_message_nonblocking(
     }
 
     // !secure — store/list secrets without ever routing the value to an
-    // agent. Runs post-auth so we can audit who set what; doesn't yet
-    // gate by role (open for any authenticated identity). The handler
-    // is async because it shells out to `fnox`.
+    // agent. Runs post-auth so the authenticated identity is available
+    // to downstream handling; doesn't yet gate by role (open for any
+    // authenticated identity). The handler is async because it shells
+    // out to `fnox`.
     //
     // We deliberately do NOT log `text` here or in the handler — the
     // `!secure set NAME=value` form contains a secret value that must
-    // not appear in ops logs. debug! logs only that a !secure command
-    // was handled; the handler never logs `text` either.
+    // not appear in ops logs. This site logs only that a !secure
+    // command was handled; the handler emits structured operation logs
+    // with identity and secret name, never the value.
     if CommandHandler::is_secure_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
         let cmd_handler = command_handler.clone();
@@ -577,6 +579,8 @@ async fn handle_message(
     // !secure — store/list secrets without routing the value to an
     // agent. Logged debug-level with no text to keep the value out of
     // ops logs (`!secure set NAME=value` would otherwise be visible).
+    // The handler emits structured operation logs with identity and
+    // secret name, never the value.
     if CommandHandler::is_secure_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
         let reply = command_handler.handle_secure(&text, &identity.id).await;
