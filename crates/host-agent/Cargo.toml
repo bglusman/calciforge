@@ -97,3 +97,4 @@ x509-parser = "0.16"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
+proptest = { workspace = true }

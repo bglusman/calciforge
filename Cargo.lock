@@ -2249,6 +2249,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "nix",
+ "proptest",
  "rand 0.8.5",
  "rcgen",
  "regex",
