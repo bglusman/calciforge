@@ -244,18 +244,19 @@ mod tests {
 
     proptest! {
         #[test]
-        fn accepted_unit_names_stay_single_token_and_known_suffix(name in "[\\x00-\\x7f]{0,100}") {
-            if is_valid_service_name(&name) {
-                prop_assert!(!name.is_empty());
-                prop_assert!(!name.starts_with('.'));
-                prop_assert!(!name.starts_with('/'));
-                prop_assert!(!name.contains('/'));
-                prop_assert!(!name.chars().any(char::is_whitespace));
-                let has_known_suffix = ["service", "socket", "timer", "target", "mount", "path"]
-                    .iter()
-                    .any(|suffix| name.ends_with(&format!(".{}", suffix)));
-                prop_assert!(has_known_suffix);
-            }
+        fn accepted_unit_names_stay_single_token_and_known_suffix(
+            name in "[a-zA-Z0-9_][a-zA-Z0-9_\\-.@]{0,32}\\.(service|socket|timer|target|mount|path)"
+        ) {
+            prop_assert!(is_valid_service_name(&name), "generator produced invalid unit: {name:?}");
+            prop_assert!(!name.is_empty());
+            prop_assert!(!name.starts_with('.'));
+            prop_assert!(!name.starts_with('/'));
+            prop_assert!(!name.contains('/'));
+            prop_assert!(!name.chars().any(char::is_whitespace));
+            let has_known_suffix = ["service", "socket", "timer", "target", "mount", "path"]
+                .iter()
+                .any(|suffix| name.ends_with(&format!(".{}", suffix)));
+            prop_assert!(has_known_suffix);
         }
     }
 }

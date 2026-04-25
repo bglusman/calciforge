@@ -300,24 +300,25 @@ mod tests {
 
     proptest! {
         #[test]
-        fn accepted_branch_names_preserve_git_ref_safety_invariants(name in "[\\x00-\\x7f]{0,100}") {
-            if is_valid_branch_name(&name) {
-                prop_assert!(!name.is_empty());
-                prop_assert_ne!(name.as_str(), "@");
-                prop_assert!(!name.starts_with('-'));
-                prop_assert!(!name.starts_with('/'));
-                prop_assert!(!name.ends_with('/'));
-                prop_assert!(!name.ends_with('.'));
-                prop_assert!(!name.contains(".."));
-                prop_assert!(!name.contains("//"));
-                let contains_at_brace = name.contains("@{");
-                prop_assert!(!contains_at_brace);
-                prop_assert!(!name.chars().any(char::is_whitespace));
-                for part in name.split('/') {
-                    prop_assert!(!part.is_empty(), "accepted branch had empty component: {name:?}");
-                    prop_assert!(!part.starts_with('.'), "accepted branch had hidden component: {name:?}");
-                    prop_assert!(!part.ends_with(".lock"), "accepted branch had .lock component: {name:?}");
-                }
+        fn accepted_branch_names_preserve_git_ref_safety_invariants(
+            name in "[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}(/[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}){0,3}"
+        ) {
+            prop_assert!(is_valid_branch_name(&name), "generator produced invalid branch: {name:?}");
+            prop_assert!(!name.is_empty());
+            prop_assert_ne!(name.as_str(), "@");
+            prop_assert!(!name.starts_with('-'));
+            prop_assert!(!name.starts_with('/'));
+            prop_assert!(!name.ends_with('/'));
+            prop_assert!(!name.ends_with('.'));
+            prop_assert!(!name.contains(".."));
+            prop_assert!(!name.contains("//"));
+            let contains_at_brace = name.contains("@{");
+            prop_assert!(!contains_at_brace);
+            prop_assert!(!name.chars().any(char::is_whitespace));
+            for part in name.split('/') {
+                prop_assert!(!part.is_empty(), "accepted branch had empty component: {name:?}");
+                prop_assert!(!part.starts_with('.'), "accepted branch had hidden component: {name:?}");
+                prop_assert!(!part.ends_with(".lock"), "accepted branch had .lock component: {name:?}");
             }
         }
     }

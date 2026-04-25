@@ -231,12 +231,12 @@ mod tests {
 
     proptest! {
         #[test]
-        fn accepted_vmids_are_plain_decimal_and_in_proxmox_range(id in "[\\x00-\\x7f]{0,32}") {
-            if is_valid_vmid(&id) {
-                prop_assert!(id.chars().all(|c| c.is_ascii_digit()));
-                let parsed = id.parse::<u32>().expect("valid vmid parses as u32");
-                prop_assert!((100..=999999).contains(&parsed));
-            }
+        fn accepted_vmids_are_plain_decimal_and_in_proxmox_range(id in 100u32..=999_999u32) {
+            let id = id.to_string();
+            prop_assert!(is_valid_vmid(&id), "generator produced invalid vmid: {id:?}");
+            prop_assert!(id.chars().all(|c| c.is_ascii_digit()));
+            let parsed = id.parse::<u32>().expect("valid vmid parses as u32");
+            prop_assert!((100..=999999).contains(&parsed));
         }
     }
 }

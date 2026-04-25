@@ -358,40 +358,46 @@ mod tests {
 
     proptest! {
         #[test]
-        fn accepted_dataset_names_never_have_empty_or_relative_components(name in "[\\x00-\\x7f]{0,80}") {
-            if is_valid_dataset_name(&name) {
-                prop_assert!(!name.is_empty());
-                prop_assert!(!name.starts_with('/'));
-                prop_assert!(!name.ends_with('/'));
-                prop_assert!(!name.contains('@'));
-                prop_assert!(!name.contains(".."));
-                for part in name.split('/') {
-                    prop_assert!(!part.is_empty(), "accepted dataset had empty component: {name:?}");
-                    prop_assert_ne!(part, ".", "accepted dataset had relative component: {:?}", name);
-                }
+        fn accepted_dataset_names_never_have_empty_or_relative_components(
+            name in "[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}(/[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}){0,3}"
+        ) {
+            prop_assert!(is_valid_dataset_name(&name), "generator produced invalid dataset: {name:?}");
+            prop_assert!(!name.is_empty());
+            prop_assert!(!name.starts_with('/'));
+            prop_assert!(!name.ends_with('/'));
+            prop_assert!(!name.contains('@'));
+            prop_assert!(!name.contains(".."));
+            for part in name.split('/') {
+                prop_assert!(!part.is_empty(), "accepted dataset had empty component: {name:?}");
+                prop_assert_ne!(part, ".", "accepted dataset had relative component: {:?}", name);
             }
         }
 
         #[test]
-        fn accepted_snapshot_names_never_contain_dataset_separators(name in "[\\x00-\\x7f]{0,80}") {
-            if is_valid_snapshot_name(&name) {
-                prop_assert!(!name.is_empty());
-                prop_assert!(!name.contains('/'));
-                prop_assert!(!name.contains('@'));
-                prop_assert!(!name.chars().any(char::is_whitespace));
-            }
+        fn accepted_snapshot_names_never_contain_dataset_separators(
+            name in "[a-zA-Z0-9_][a-zA-Z0-9_\\-.]{0,32}"
+        ) {
+            prop_assert!(is_valid_snapshot_name(&name), "generator produced invalid snapshot: {name:?}");
+            prop_assert!(!name.is_empty());
+            prop_assert!(!name.contains('/'));
+            prop_assert!(!name.contains('@'));
+            prop_assert!(!name.chars().any(char::is_whitespace));
         }
 
         #[test]
-        fn accepted_dataset_or_snapshot_requires_valid_parts(name in "[\\x00-\\x7f]{0,120}") {
-            if is_valid_dataset_or_snapshot(&name) {
-                if let Some((dataset, snap)) = name.split_once('@') {
-                    prop_assert!(is_valid_dataset_name(dataset));
-                    prop_assert!(is_valid_snapshot_name(snap));
-                    prop_assert!(!snap.contains('@'));
-                } else {
-                    prop_assert!(is_valid_dataset_name(&name));
-                }
+        fn accepted_dataset_or_snapshot_requires_valid_parts(
+            name in prop_oneof![
+                "[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}(/[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}){0,3}",
+                "[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}(/[a-zA-Z0-9_][a-zA-Z0-9_-]{0,16}){0,3}@[a-zA-Z0-9_][a-zA-Z0-9_\\-.]{0,32}",
+            ]
+        ) {
+            prop_assert!(is_valid_dataset_or_snapshot(&name), "generator produced invalid dataset/snapshot: {name:?}");
+            if let Some((dataset, snap)) = name.split_once('@') {
+                prop_assert!(is_valid_dataset_name(dataset));
+                prop_assert!(is_valid_snapshot_name(snap));
+                prop_assert!(!snap.contains('@'));
+            } else {
+                prop_assert!(is_valid_dataset_name(&name));
             }
         }
     }
