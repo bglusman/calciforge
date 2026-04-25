@@ -636,6 +636,7 @@ async fn handle_message(
         && !CommandHandler::is_default_command(body)
         && !CommandHandler::is_sessions_command(body)
         && !CommandHandler::is_model_command(body)
+        && !CommandHandler::is_secure_command(body)
     {
         send(cmd_handler.unknown_command(body)).await;
         return;
@@ -665,6 +666,17 @@ async fn handle_message(
 
     if CommandHandler::is_default_command(body) {
         send(cmd_handler.handle_default(identity_id)).await;
+        return;
+    }
+
+    // !secure — set/list secrets without surfacing the value to any
+    // agent. Same dispatch shape as !sessions: post-auth, async, no
+    // logging of the message body (which contains the value for
+    // `!secure set NAME=value`).
+    if CommandHandler::is_secure_command(body) {
+        debug!(sender = %sender, "Matrix: handling !secure command");
+        let reply = cmd_handler.handle_secure(body, identity_id).await;
+        send(reply).await;
         return;
     }
 

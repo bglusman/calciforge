@@ -274,6 +274,21 @@ impl CommandHandler {
         text.trim().starts_with('!')
     }
 
+    /// Returns `true` if the text is a `!secure` command (case-insensitive).
+    ///
+    /// `!secure` is intercepted at the channel layer **before** any agent
+    /// sees the message, so the raw value passed to
+    /// `!secure set NAME=value` is never routed to an agent's context.
+    /// It is still seen by the chat transport (Telegram/Matrix/WhatsApp
+    /// logs), which is the retention-leak tradeoff the user has to
+    /// accept (or use an out-of-band path). Document this in any UX
+    /// that advertises `!secure`.
+    pub fn is_secure_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        cmd == "!secure"
+    }
+
     /// Respond to unknown commands with a helpful message.
     pub fn unknown_command(&self, text: &str) -> String {
         let cmd = text.trim().split(' ').next().unwrap_or("").to_string();
@@ -841,6 +856,57 @@ impl CommandHandler {
         format!("✅ Switched to default agent: {}", default_agent_id)
     }
 
+    /// Handle `!secure <subcommand>`. Dispatches to `fnox` as a
+    /// subprocess; nothing about the secret value transits an agent's
+    /// context. Never echoes back values — responses are name-only.
+    ///
+    /// Subcommands:
+    ///   - `!secure set NAME=value`  — store a secret
+    ///   - `!secure list`            — list stored secret names
+    ///   - `!secure help`            — usage string
+    ///
+    /// **Retention warning** (documented in first-time-use UX):
+    /// this command's text passes through the chat transport
+    /// (Telegram/Matrix/WhatsApp), which retains message history.
+    /// For values where chat-transport exposure is unacceptable,
+    /// a follow-up `!secure request NAME` flow (out-of-band) is
+    /// planned — see `docs/rfcs/agent-secret-gateway.md` §5.
+    pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
+        let trimmed = text.trim();
+        // `!secure ...` — split off the subcommand word using
+        // split_whitespace so multiple spaces / tabs don't end up as
+        // empty middle tokens (the prior splitn(' ') treated
+        // "!secure  set NAME=v" as sub="" with the rest mis-shaped).
+        let mut parts = trimmed.split_whitespace();
+        let _lead = parts.next(); // `!secure`
+        let sub = parts.next().map(|s| s.to_lowercase()).unwrap_or_default();
+        // Reconstruct the rest by joining remaining tokens with single
+        // spaces. For !secure set, the value goes through to fnox set
+        // (now via stdin) so internal whitespace shape is preserved by
+        // the caller that builds it as `NAME=value`.
+        let rest_owned: String = parts.collect::<Vec<_>>().join(" ");
+        let rest = rest_owned.trim();
+
+        // Audit-log who invoked which subcommand. NEVER log `rest` —
+        // that contains the secret value for `set`. Identity is the
+        // chat-side principal; correlatable to channel + auth.
+        tracing::info!(
+            identity = %identity_id,
+            subcommand = %sub,
+            "!secure invoked"
+        );
+
+        match sub.as_str() {
+            "set" => secure_set(rest).await,
+            "list" => secure_list().await,
+            "help" | "" => secure_help(),
+            _ => format!(
+                "⚠️ Unknown !secure subcommand: `{sub}`\n\n{}",
+                secure_help()
+            ),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Individual command handlers
     // -----------------------------------------------------------------------
@@ -857,6 +923,7 @@ impl CommandHandler {
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
+            "  !secure <set|list|help> — manage fnox secret names/values (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -1125,10 +1192,111 @@ impl CommandHandler {
 }
 
 // ---------------------------------------------------------------------------
+// !secure subcommand implementations (free functions so tests can drive
+// them without constructing a full CommandHandler).
+// ---------------------------------------------------------------------------
+
+fn secure_help() -> String {
+    [
+        "!secure subcommands:",
+        "  !secure set NAME=value    — store a secret by name (never echoed)",
+        "  !secure set NAME value    — same, for mobile keyboards",
+        "  !secure list              — list stored secret names (not values)",
+        "  !secure help              — show this help",
+        "",
+        "⚠️ `!secure set` passes through the chat transport, which retains",
+        "   history. For values that must never touch chat, use a host-local",
+        "   `fnox set NAME` directly. An out-of-band paste flow",
+        "   (`!secure request NAME`) is planned — see",
+        "   docs/rfcs/agent-secret-gateway.md §5.",
+    ]
+    .join("\n")
+}
+
+async fn secure_set(rest: &str) -> String {
+    // Accept either `NAME=value` or `NAME value`. The `=` form is
+    // natural for env-style keys; the space form is slightly easier
+    // on mobile keyboards.
+    let (name, value) = match rest.find('=') {
+        Some(idx) => {
+            let (n, v) = rest.split_at(idx);
+            (n.trim().to_string(), v[1..].to_string())
+        }
+        None => {
+            let mut parts = rest.splitn(2, ' ');
+            let n = parts.next().unwrap_or("").trim().to_string();
+            let v = parts.next().unwrap_or("").to_string();
+            (n, v)
+        }
+    };
+
+    if name.is_empty() || value.is_empty() {
+        return "⚠️ Usage: `!secure set NAME=value`".to_string();
+    }
+    // Keep the accepted syntax narrow so names are safe as fnox keys
+    // and as `{{secret:NAME}}` interpolation references in
+    // crates/security-proxy/src/substitution.rs.
+    if !name
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
+        return format!("⚠️ Invalid secret name `{name}` — allowed: A-Z a-z 0-9 _ -");
+    }
+
+    // Migrated from a bespoke `Command::new("fnox")` block to the
+    // shared FnoxClient — same on-the-wire behavior, but the typed
+    // FnoxError lets us distinguish "fnox not installed" from "fnox
+    // failed for some other reason" without substring-matching stderr.
+    let client = onecli_client::FnoxClient::new();
+    match client.set(&name, &value).await {
+        Ok(()) => format!(
+            "✅ Stored secret `{name}`.\n\n\
+             ⚠️ The value you sent is retained by the chat transport. \
+             For high-value secrets, use host-local `fnox set` or the \
+             planned `!secure request` flow."
+        ),
+        Err(onecli_client::FnoxError::NotInstalled(e)) => format!(
+            "⚠️ fnox not available: {e}. Install it (brew install fnox) \
+             and run `fnox init` to enable `!secure`."
+        ),
+        Err(onecli_client::FnoxError::Failed { stderr, .. }) => {
+            // Stderr may name the backend or config file path — that's
+            // operational info the user can already read via
+            // `fnox doctor`; echoing it here is fine. Crucially does
+            // NOT contain the value (we never put it in stderr; fnox
+            // certainly doesn't).
+            format!("⚠️ fnox set {name} failed: {stderr}")
+        }
+        Err(other) => format!("⚠️ fnox set {name} failed: {other}"),
+    }
+}
+
+async fn secure_list() -> String {
+    // Migrated to FnoxClient — see secure_set for rationale. The
+    // wrapper does the defensive name-extraction parse internally,
+    // so we just present the result.
+    let client = onecli_client::FnoxClient::new();
+    match client.list().await {
+        Ok(names) if names.is_empty() => {
+            "📭 No secrets stored. Use `!secure set NAME=value` to add one.".to_string()
+        }
+        Ok(names) => format!(
+            "🔐 {} stored secret{}:\n  {}",
+            names.len(),
+            if names.len() == 1 { "" } else { "s" },
+            names.join("\n  ")
+        ),
+        Err(onecli_client::FnoxError::NotInstalled(e)) => format!("⚠️ fnox not available: {e}"),
+        Err(e) => format!("⚠️ fnox list failed: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // SECURE_ENV_MUTEX is held across awaits in the !secure tests.
 mod tests {
     use super::*;
     use crate::config::{
@@ -1156,7 +1324,7 @@ mod tests {
                     display_name: Some("Brian".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "8465871195".to_string(),
+                        id: "7000000001".to_string(),
                     }],
                     role: Some("owner".to_string()),
                 },
@@ -1165,7 +1333,7 @@ mod tests {
                     display_name: Some("David".to_string()),
                     aliases: vec![ChannelAlias {
                         channel: "telegram".to_string(),
-                        id: "15555550002".to_string(),
+                        id: "7000000002".to_string(),
                     }],
                     role: Some("user".to_string()),
                 },
@@ -1784,5 +1952,198 @@ mod tests {
             "help should mention !default: {}",
             reply
         );
+    }
+
+    // ── !secure tests ────────────────────────────────────────────────
+    // These use the same fake-fnox-on-PATH trick as
+    // `onecli-client/tests/vault_fallthrough.rs`: a temp dir holding a
+    // shell script named `fnox` goes to the FRONT of PATH; that script
+    // acts like fnox for the test's purposes. Real fnox presence on
+    // the dev machine doesn't affect the result.
+
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static SECURE_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn install_fake_fnox(dir: &TempDir, body: &str) -> std::path::PathBuf {
+        let bin = dir.path().join("fnox");
+        fs::write(&bin, format!("#!/bin/sh\n{body}\n")).expect("write fake fnox");
+        let mut perms = fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin, perms).expect("chmod fake fnox");
+        dir.path().to_path_buf()
+    }
+
+    struct PathGuard {
+        original: Option<String>,
+    }
+    impl PathGuard {
+        fn prepend(dir: &std::path::Path) -> Self {
+            let original = std::env::var("PATH").ok();
+            let new_path = match &original {
+                Some(p) => format!("{}:{}", dir.display(), p),
+                None => dir.display().to_string(),
+            };
+            // Safety: tests holding SECURE_ENV_MUTEX serialize env
+            // mutation. `std::env::set_var` is marked unsafe in
+            // Rust 2024 for this exact reason.
+            unsafe {
+                std::env::set_var("PATH", new_path);
+            }
+            Self { original }
+        }
+    }
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.original {
+                    Some(p) => std::env::set_var("PATH", p),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+
+    /// Given a fake fnox that succeeds silently,
+    /// when `handle_secure("!secure set NAME=value", ...)` runs,
+    /// then the reply confirms storage using the NAME but NOT the value.
+    ///
+    /// Catches the core contract: a reply that accidentally echoed the
+    /// value would render the command useless (value is already in the
+    /// chat transport; echoing it makes it obvious to anyone reading
+    /// the bot's output logs too).
+    #[tokio::test]
+    async fn secure_set_reply_includes_name_but_not_value() {
+        let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        let fake_dir = install_fake_fnox(&dir, "exit 0");
+        let _path = PathGuard::prepend(&fake_dir);
+
+        let h = make_handler();
+        let reply = h
+            .handle_secure("!secure set MY_KEY=supersecretvalue", "brian")
+            .await;
+
+        assert!(
+            reply.contains("MY_KEY"),
+            "success reply should name the stored secret: {reply}"
+        );
+        assert!(
+            !reply.contains("supersecretvalue"),
+            "success reply must NOT echo the value: {reply}"
+        );
+    }
+
+    /// Given a fake fnox that returns an error,
+    /// when handle_secure runs,
+    /// then the reply contains the fnox error text so the user can
+    /// diagnose (config missing, provider broken, etc.), but still
+    /// doesn't include the raw value.
+    #[tokio::test]
+    async fn secure_set_surfaces_fnox_error_without_echoing_value() {
+        let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        let fake_dir = install_fake_fnox(&dir, r#"echo "No providers configured" >&2; exit 3"#);
+        let _path = PathGuard::prepend(&fake_dir);
+
+        let h = make_handler();
+        let reply = h
+            .handle_secure("!secure set ROT_KEY=rottenvalue", "brian")
+            .await;
+
+        assert!(reply.contains("failed") || reply.contains("⚠️"));
+        // Error messages are allowed to name the stored key (users need
+        // to know which set failed) but must still not echo the value.
+        assert!(
+            !reply.contains("rottenvalue"),
+            "error reply must NOT echo value: {reply}"
+        );
+    }
+
+    /// Given text that looks like `!secure` with a bad subcommand,
+    /// when handle_secure runs,
+    /// then the reply is the usage string, not a silent no-op, and
+    /// does not shell out to fnox.
+    #[tokio::test]
+    async fn secure_unknown_subcommand_returns_help() {
+        let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Fake fnox that would fail if invoked — lets us assert the
+        // handler never reaches it.
+        let dir = TempDir::new().unwrap();
+        let fake_dir = install_fake_fnox(&dir, "exit 42");
+        let _path = PathGuard::prepend(&fake_dir);
+
+        let h = make_handler();
+        let reply = h.handle_secure("!secure bogus", "brian").await;
+
+        assert!(reply.to_lowercase().contains("unknown"));
+        assert!(reply.contains("!secure set") || reply.contains("subcommand"));
+    }
+
+    /// Given a `!secure set` with a name containing invalid chars
+    /// (space, slash, dot),
+    /// when handle_secure runs,
+    /// then the reply rejects the name and doesn't shell out. Invalid
+    /// names would otherwise produce silent fnox failures or collide
+    /// with unexpected storage keys.
+    #[tokio::test]
+    async fn secure_set_rejects_invalid_name_chars() {
+        let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Fake fnox that returns success — if the handler wrongly
+        // allowed the bad name through, the test would pass silently
+        // instead of catching the rejection.
+        let dir = TempDir::new().unwrap();
+        let fake_dir = install_fake_fnox(&dir, "exit 0");
+        let _path = PathGuard::prepend(&fake_dir);
+
+        let h = make_handler();
+        for bad in ["FOO BAR", "FOO/BAR", "FOO.BAR"] {
+            let reply = h
+                .handle_secure(&format!("!secure set {bad}=value"), "brian")
+                .await;
+            assert!(
+                reply.contains("Invalid"),
+                "invalid name {bad:?} should be rejected, got: {reply}"
+            );
+        }
+    }
+
+    /// Given a fake fnox that emits one name per line on `list`,
+    /// when handle_secure("!secure list", …) runs,
+    /// then the reply lists the names and does NOT echo any value.
+    #[tokio::test]
+    async fn secure_list_returns_names_only() {
+        let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        // Fake fnox list output: three names with some extra columns
+        // that look like values — we must not surface those.
+        let fake_dir = install_fake_fnox(
+            &dir,
+            r#"cat <<OUT
+API_ONE  redacted-value-A
+API_TWO  redacted-value-B
+API_THREE redacted-value-C
+OUT"#,
+        );
+        let _path = PathGuard::prepend(&fake_dir);
+
+        let h = make_handler();
+        let reply = h.handle_secure("!secure list", "brian").await;
+
+        for name in ["API_ONE", "API_TWO", "API_THREE"] {
+            assert!(
+                reply.contains(name),
+                "list reply should contain name {name:?}: {reply}"
+            );
+        }
+        for leak in ["redacted-value-A", "redacted-value-B", "redacted-value-C"] {
+            assert!(
+                !reply.contains(leak),
+                "list reply must NOT echo {leak:?}: {reply}"
+            );
+        }
     }
 }

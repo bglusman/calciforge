@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use axum::routing::get;
-use axum::Router;
 use tracing::{error, info};
 
 use adversary_detector::{RateLimitConfig, ScannerConfig};
 use security_proxy::agent_config::AgentsConfig;
 use security_proxy::config::GatewayConfig;
-use security_proxy::proxy::{health_handler, proxy_handler, SecurityProxy};
+use security_proxy::proxy::SecurityProxy;
+use security_proxy::router::build_app;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -73,12 +72,20 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(proxy);
 
-    let app = Router::new()
-        .route("/health", get(health_handler))
-        .fallback(proxy_handler)
-        .with_state(state);
+    // The router is built by the library so tests can spin up the same
+    // routes in-process without spawning the binary. See
+    // `security_proxy::router::build_app`.
+    let app = build_app(state);
 
-    let addr = format!("0.0.0.0:{}", port);
+    // Default to loopback-only because the router exposes a
+    // `GET /vault/:secret` endpoint that resolves to a real token. Even
+    // with the bearer-token guard we added, having the binary bind
+    // 0.0.0.0 by default put the entire LAN one network hop from a
+    // secret-exfil attempt. Operators who need remote access set
+    // SECURITY_PROXY_BIND=0.0.0.0 explicitly (and should pair it with
+    // SECURITY_PROXY_VAULT_TOKEN, which gates the vault route).
+    let bind_host = std::env::var("SECURITY_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let addr = format!("{}:{}", bind_host, port);
     info!("Security proxy listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;

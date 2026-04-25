@@ -1,0 +1,16 @@
+{
+  "_comment": "Copy this file to .claude/settings.local.json to enable local-only hooks. Settings.local.json is gitignored per Claude Code convention.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/claude-post-commit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

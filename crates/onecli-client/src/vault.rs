@@ -11,9 +11,16 @@ pub struct VaultConfig {
 
 impl Default for VaultConfig {
     fn default() -> Self {
+        // IMPORTANT: no hardcoded default URL or token. Either env var
+        // unset → empty string → the caller's `.is_empty()` guards fire
+        // and we bail with a clear message. Setting a "helpful" default
+        // URL here would silently route traffic to a deployment-specific
+        // host (see CLAUDE.md "Hard-coded fallback URLs") and disclose
+        // infrastructure to anyone reading the repo. The repo's git
+        // history has a prior iteration where exactly this mistake was
+        // made — don't re-add a "default" URL "for convenience".
         Self {
-            url: std::env::var("ONECLI_VAULT_URL")
-                .unwrap_or_else(|_| "https://vault.enjyn.com".to_string()),
+            url: std::env::var("ONECLI_VAULT_URL").unwrap_or_default(),
             token: std::env::var("ONECLI_VAULT_TOKEN").unwrap_or_default(),
         }
     }
@@ -26,9 +33,42 @@ pub async fn get_secret(name: &str) -> anyhow::Result<String> {
         return Ok(token);
     }
 
+    // Try fnox (encrypted local/remote secret store). Fallthrough on
+    // any failure is intentional — fnox is optional infrastructure —
+    // but we log at debug so real backend problems (auth, IO) are
+    // recoverable during incident investigation rather than silent.
+    match get_secret_from_fnox(name).await {
+        Ok(secret) => {
+            debug!("Found {} in fnox", name);
+            return Ok(secret);
+        }
+        Err(e) => {
+            debug!(
+                secret = %name,
+                error = %e,
+                "fnox lookup failed, falling through to vaultwarden"
+            );
+        }
+    }
+
     let config = VaultConfig::default();
-    if config.token.is_empty() {
-        anyhow::bail!("No ONECLI_VAULT_TOKEN set and no env var for '{}'", name);
+    // Both URL and token are mandatory — no hardcoded default for either.
+    // If env+fnox both miss and vaultwarden isn't fully configured, we
+    // stop here with a message that names every variable the operator
+    // could set to advance, so debugging doesn't require reading source.
+    if config.url.is_empty() || config.token.is_empty() {
+        anyhow::bail!(
+            "Secret '{}' not found in env or fnox; vaultwarden fallback unavailable \
+             (requires ONECLI_VAULT_URL and ONECLI_VAULT_TOKEN, currently {})",
+            name,
+            if config.url.is_empty() && config.token.is_empty() {
+                "both unset"
+            } else if config.url.is_empty() {
+                "URL unset"
+            } else {
+                "token unset"
+            }
+        );
     }
 
     debug!("Looking up {} in VaultWarden at {}", name, config.url);
@@ -140,4 +180,44 @@ struct Field {
 struct Login {
     username: Option<String>,
     password: Option<String>,
+}
+
+/// Retrieve a secret from fnox (encrypted local/remote secret store).
+///
+/// fnox supports age encryption, AWS Secrets Manager, Azure Key Vault,
+/// GCP Secret Manager, 1Password, Bitwarden, Infisical, HashiCorp Vault, etc.
+///
+/// Private: the only caller is `get_secret` above. Keeping this off the
+/// crate's public surface means callers depend on the aggregated
+/// resolver, not a specific backend (which would leak implementation
+/// choice and couple consumers to fnox).
+async fn get_secret_from_fnox(name: &str) -> anyhow::Result<String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    debug!("Looking up {} in fnox", name);
+
+    let output = Command::new("fnox")
+        .args(["get", name])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to execute fnox: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("fnox get {} failed: {}", name, stderr);
+    }
+
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|e| anyhow::anyhow!("fnox returned invalid UTF-8: {}", e))?
+        .trim()
+        .to_string();
+
+    if secret.is_empty() {
+        anyhow::bail!("fnox returned empty secret for {}", name);
+    }
+
+    Ok(secret)
 }

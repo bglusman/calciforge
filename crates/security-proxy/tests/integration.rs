@@ -17,23 +17,17 @@ async fn test_gateway_blocks_adversarial_content() {
         .send()
         .await;
 
-    match res {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            println!("Status: {}, Body: {}", status, body);
-            // Should be blocked
-            assert!(
-                status == 403 || body.contains("unsafe") || body.contains("blocked"),
-                "Expected adversarial content to be blocked, got: {} {}",
-                status,
-                body
-            );
-        }
-        Err(e) => {
-            println!("Request failed (gateway may not be running): {}", e);
-        }
-    }
+    // Fail on network error rather than silently passing. Previously the
+    // Err arm just `println!`'d and fell through, so a down gateway or
+    // mis-config looked identical to a successful block. Test-quality
+    // audit 2026-04-24 flagged this as silent-green.
+    let resp = res.expect("gateway not reachable on 127.0.0.1:8080 — start security-proxy before running --ignored integration tests");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        status == 403 || body.contains("unsafe") || body.contains("blocked"),
+        "Expected adversarial content to be blocked, got: {status} {body}"
+    );
 }
 
 #[tokio::test]
@@ -47,22 +41,14 @@ async fn test_gateway_allows_clean_content() {
         .send()
         .await;
 
-    match res {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            println!("Status: {}, Body: {}", status, body);
-            assert!(
-                status == 200 || body.contains("clean"),
-                "Expected clean content to pass, got: {} {}",
-                status,
-                body
-            );
-        }
-        Err(e) => {
-            println!("Request failed (gateway may not be running): {}", e);
-        }
-    }
+    // Fail on network error — see comment on the sibling test.
+    let resp = res.expect("gateway not reachable on 127.0.0.1:8080 — start security-proxy before running --ignored integration tests");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        status == 200 || body.contains("clean"),
+        "Expected clean content to pass, got: {status} {body}"
+    );
 }
 
 /// Unit test — credential injection logic (no gateway needed)
