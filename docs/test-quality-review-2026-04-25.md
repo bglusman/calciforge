@@ -35,7 +35,8 @@ digest written by `test_ttl_zero_means_no_expiration`.
 state pollution that can hide real failures.
 
 **Recommendation:** use `tempfile` or an atomic monotonic suffix for test paths.
-PR #30 includes a minimal atomic-counter fix.
+This branch includes the same minimal atomic-counter fix that was first added
+while publishing the adversarial review.
 
 ### 2. Ignored security-proxy integration tests can pass without a gateway
 
@@ -134,7 +135,7 @@ through `ONECLI_URL`.
 
 ## Fix Order
 
-1. Land the digest temp-path race fix from PR #30.
+1. Land the digest temp-path race fix.
 2. Make ignored security-proxy gateway tests fail when prerequisites are absent,
    or convert them to self-contained spawned-service tests.
 3. Consolidate Loom tests into `crates/loom-tests` and remove stale `zeroclawed`
