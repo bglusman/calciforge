@@ -916,29 +916,26 @@ fn extract_timestamp(ts: &Option<serde_json::Value>) -> u64 {
 ///
 /// The header format is `sha256=<hex>`. Returns `true` if the signature matches.
 fn verify_hmac_sha256(secret: &str, body: &[u8], sig_header: &str) -> bool {
-    // Strip "sha256=" prefix
     let expected_hex = match sig_header.strip_prefix("sha256=") {
         Some(h) => h,
         None => return false,
     };
+    let sig_bytes = match hex::decode(expected_hex) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
 
-    // Compute HMAC-SHA256 using a constant-time implementation.
-    // We use a manual HMAC since we don't want to pull in an extra crypto crate.
-    // The ZeroClawed Cargo.toml already has reqwest (which pulls ring/rustls) but
-    // no direct HMAC crate. For a clean no-dep implementation we use the
-    // XOR-pad HMAC construction over SHA-256 via std's limited crypto.
-    // In practice, use hmac + sha2 crates if available; here we do a hex compare
-    // via a simple fallback that's safe enough for server-side webhook validation.
-    //
-    // TODO: add `hmac = "0.12"` and `sha2 = "0.10"` to Cargo.toml for proper HMAC.
-    //       For now this placeholder always returns `true` when the header is present,
-    //       allowing the webhook to work while the crate dependency is added separately.
-    let _ = (secret, body);
-    let _ = expected_hex;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
-    // Placeholder: if a secret is configured and the header is present, accept it.
-    // Replace with real HMAC once hmac/sha2 crates are in Cargo.toml.
-    !sig_header.is_empty()
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+        Ok(mac) => mac,
+        Err(_) => return false,
+    };
+
+    mac.update(body);
+    mac.verify_slice(&sig_bytes).is_ok()
 }
 
 /// Write a minimal HTTP/1.1 response to the stream.
@@ -1251,5 +1248,38 @@ mod tests {
             .as_secs();
         let ts = extract_timestamp(&None);
         assert!(ts >= now_before, "fallback timestamp should be recent");
+    }
+
+    #[test]
+    fn test_verify_hmac_sha256_valid() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        type HmacSha256 = Hmac<Sha256>;
+        let secret = "webhook-secret";
+        let body = br#"{"entry":[{"changes":[]}]}"#;
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+
+        assert!(verify_hmac_sha256(secret, body, &signature));
+    }
+
+    #[test]
+    fn test_verify_hmac_sha256_rejects_missing_prefix() {
+        assert!(!verify_hmac_sha256("secret", b"body", "abcd"));
+    }
+
+    #[test]
+    fn test_verify_hmac_sha256_rejects_tampered_body() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac = HmacSha256::new_from_slice(b"secret").unwrap();
+        mac.update(b"original");
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+
+        assert!(!verify_hmac_sha256("secret", b"tampered", &signature));
     }
 }
