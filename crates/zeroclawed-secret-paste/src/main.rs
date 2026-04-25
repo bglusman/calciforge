@@ -2,13 +2,15 @@
 //! server. Useful for one-off command-line use (e.g., `... | xargs`),
 //! and for testing the server flow without going through MCP.
 //!
-//! Reads `NAME` and optional `DESCRIPTION` from argv, prints the URL
-//! to stdout, and runs the server until the request completes or
-//! expires.
+//! Two modes:
+//!   - Single (default): `zeroclawed-secret-paste NAME [DESCRIPTION]`
+//!     — one secret, single-line input.
+//!   - Bulk: `zeroclawed-secret-paste --bulk LABEL [DESCRIPTION]`
+//!     — multi-line `.env` dump, per-key result page.
 
 use std::io::{Write, stdout};
 use tracing_subscriber::EnvFilter;
-use zeroclawed_secret_paste::{PasteConfig, spawn_request};
+use zeroclawed_secret_paste::{PasteConfig, spawn_bulk_request, spawn_request};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,27 +22,42 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let mut args = std::env::args().skip(1);
-    let name = args
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("usage: zeroclawed-secret-paste NAME [DESCRIPTION]"))?;
-    let description = args.next().unwrap_or_default();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let bulk = args.first().is_some_and(|a| a == "--bulk");
+    if bulk {
+        args.remove(0);
+    }
+    let name_or_label = args.first().cloned().ok_or_else(|| {
+        anyhow::anyhow!("usage: zeroclawed-secret-paste [--bulk] NAME [DESCRIPTION]")
+    })?;
+    let description = args.get(1).cloned().unwrap_or_default();
 
     // Demo escape hatch: PASTE_INSECURE_NO_ORIGIN=1 disables the
     // localhost-Origin check so a phone on the LAN can submit. NOT
     // safe for any deployment with real secrets — this is for showing
     // the UI from another device on a trusted network.
     let insecure_no_origin = std::env::var("PASTE_INSECURE_NO_ORIGIN").as_deref() == Ok("1");
-    let mut handle = spawn_request(
-        name,
-        description,
-        onecli_client::FnoxClient::new(),
-        PasteConfig {
-            require_localhost_origin: !insecure_no_origin,
-            ..PasteConfig::default()
-        },
-    )
-    .await?;
+    let cfg = PasteConfig {
+        require_localhost_origin: !insecure_no_origin,
+        ..PasteConfig::default()
+    };
+    let mut handle = if bulk {
+        spawn_bulk_request(
+            name_or_label,
+            description,
+            onecli_client::FnoxClient::new(),
+            cfg,
+        )
+        .await?
+    } else {
+        spawn_request(
+            name_or_label,
+            description,
+            onecli_client::FnoxClient::new(),
+            cfg,
+        )
+        .await?
+    };
 
     // URL goes to stdout so it can be piped/echoed cleanly.
     println!("{}", handle.url);

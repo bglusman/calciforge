@@ -83,6 +83,17 @@ struct PendingRequest {
     completed: bool,
 }
 
+/// In-flight bulk-paste request — same lifecycle as a single, but the
+/// "name" is an operator-supplied label and the value is a multi-line
+/// `KEY=VALUE` dump (`.env` shape).
+#[derive(Debug, Clone)]
+struct PendingBulkRequest {
+    label: String,
+    description: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    completed: bool,
+}
+
 #[derive(Clone)]
 struct ServerState {
     fnox: onecli_client::FnoxClient,
@@ -94,6 +105,14 @@ struct ServerState {
     /// immediately on submit instead of sleeping until expiry.
     /// Wrapped in a Mutex<Option<_>> because oneshot::Sender::send
     /// consumes self, and the handler holds &state.
+    submitted: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+}
+
+#[derive(Clone)]
+struct BulkServerState {
+    fnox: onecli_client::FnoxClient,
+    config: PasteConfig,
+    requests: Arc<Mutex<HashMap<String, PendingBulkRequest>>>,
     submitted: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
@@ -233,6 +252,304 @@ pub async fn spawn_request(
         shutdown_tx: Some(shutdown_tx),
         submitted_rx: Some(submitted_rx),
     })
+}
+
+/// Per-line outcome from parsing + storing a bulk paste.
+///
+/// Each non-blank, non-comment input line maps to exactly one
+/// [`BulkLineResult`] in the response — the user sees per-key
+/// rejection reasons rather than an opaque "some failed".
+#[derive(Debug, Clone)]
+pub enum BulkLineResult {
+    /// Successfully stored (key + optional preview if enabled).
+    Stored {
+        key: String,
+        preview: Option<String>,
+    },
+    /// Skipped because the secret already existed and `?update=1`
+    /// wasn't passed.
+    AlreadyExists { key: String },
+    /// Rejected: key contained illegal characters.
+    InvalidName { key: String },
+    /// Rejected: line wasn't `KEY=value` shape.
+    Malformed { line_number: usize, snippet: String },
+    /// Storage backend failure when calling fnox set.
+    StoreFailed { key: String, error: String },
+}
+
+/// Spawn a one-shot **bulk** paste server. Same lifecycle as
+/// [`spawn_request`] but the form accepts a multi-line `.env`-shaped
+/// dump, and the confirmation page lists per-line results so the
+/// user can see exactly which keys stored / which were rejected.
+///
+/// Use case: typical onboarding starts with a `.env` dump from another
+/// project; pasting one-by-one is tedious. With bulk mode a user
+/// pastes the whole thing once and sees a checklist back.
+///
+/// Routes registered on the same `/bulk/:token` namespace (separate
+/// from single-secret `/paste/:token`) so the two modes can coexist
+/// without a query-param mode switch.
+pub async fn spawn_bulk_request(
+    label: impl Into<String>,
+    description: impl Into<String>,
+    fnox: onecli_client::FnoxClient,
+    config: PasteConfig,
+) -> Result<PasteHandle, PasteError> {
+    let label = label.into();
+    let token = mint_token();
+    let expires_at = chrono::Utc::now()
+        + chrono::Duration::from_std(config.expiry).unwrap_or(chrono::Duration::minutes(5));
+
+    let mut state_requests = HashMap::new();
+    state_requests.insert(
+        token.clone(),
+        PendingBulkRequest {
+            label: label.clone(),
+            description: description.into(),
+            expires_at,
+            completed: false,
+        },
+    );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (submitted_tx, submitted_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let state = BulkServerState {
+        fnox,
+        config: config.clone(),
+        requests: Arc::new(Mutex::new(state_requests)),
+        submitted: Arc::new(Mutex::new(Some(submitted_tx))),
+    };
+
+    let app = Router::new()
+        .route("/bulk/:token", get(get_bulk_form).post(post_bulk_submit))
+        .with_state(state);
+
+    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "0.0.0.0:0".into());
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    let addr: SocketAddr = listener.local_addr()?;
+    let url = format!("http://{addr}/bulk/{token}");
+
+    info!(label = %label, addr = %addr, "secret-paste bulk server listening");
+    debug!(label = %label, %url, "secret-paste bulk full URL (debug-only)");
+
+    let server_task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    Ok(PasteHandle {
+        url,
+        token,
+        expires_at,
+        _server_task: server_task,
+        shutdown_tx: Some(shutdown_tx),
+        submitted_rx: Some(submitted_rx),
+    })
+}
+
+/// Parse a `.env`-shaped string into `(key, value)` pairs OR
+/// `Malformed` results. Skips blank lines and `#`-prefixed comments.
+/// Strips matching surrounding quotes (single or double) on values
+/// since `.env` files commonly quote.
+///
+/// Returns one `Result` per non-blank, non-comment line. Caller
+/// interprets `Ok` as "syntactically valid, attempt to store" and
+/// `Err` as "give the user a Malformed line result".
+fn parse_env_dump(input: &str) -> Vec<Result<(String, String), (usize, String)>> {
+    input
+        .lines()
+        .enumerate()
+        .filter_map(|(i, raw)| {
+            let line_number = i + 1;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            // Optional `export KEY=VALUE` prefix that some .env files use
+            let body = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            let Some(eq_idx) = body.find('=') else {
+                return Some(Err((line_number, body.to_string())));
+            };
+            let (key, value_with_eq) = body.split_at(eq_idx);
+            let value = &value_with_eq[1..]; // strip the '='
+            let key = key.trim();
+            let value = value.trim();
+            // Strip matching quotes — `.env` files often quote values
+            // that contain spaces or special chars
+            let value = strip_matching_quotes(value);
+            if key.is_empty() {
+                return Some(Err((line_number, body.to_string())));
+            }
+            Some(Ok((key.to_string(), value.to_string())))
+        })
+        .collect()
+}
+
+fn strip_matching_quotes(value: &str) -> &str {
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+async fn get_bulk_form(
+    State(state): State<BulkServerState>,
+    Path(token): Path<String>,
+) -> impl IntoResponse {
+    let req = {
+        let map = state.requests.lock().await;
+        map.get(&token).cloned()
+    };
+    let Some(req) = req else {
+        return (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML.to_string())).into_response();
+    };
+    if chrono::Utc::now() > req.expires_at {
+        return (StatusCode::GONE, Html(EXPIRED_HTML.to_string())).into_response();
+    }
+    if req.completed {
+        return (
+            StatusCode::CONFLICT,
+            Html("This bulk-paste link has already been used.".to_string()),
+        )
+            .into_response();
+    }
+    Html(render_bulk_form(&req.label, &req.description, &token)).into_response()
+}
+
+#[derive(Deserialize)]
+struct BulkSubmitForm {
+    dump: String,
+}
+
+async fn post_bulk_submit(
+    State(state): State<BulkServerState>,
+    Path(token): Path<String>,
+    Query(query): Query<UpdateQuery>,
+    headers: HeaderMap,
+    axum::Form(form): axum::Form<BulkSubmitForm>,
+) -> impl IntoResponse {
+    if state.config.require_localhost_origin {
+        let allow_null = state.config.allow_null_origin;
+        let ok = headers
+            .get(axum::http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|o| is_localhost_origin(o, allow_null));
+        if !ok {
+            warn!("rejecting bulk POST: missing/non-localhost Origin header");
+            return (
+                StatusCode::FORBIDDEN,
+                Html("Rejected: missing/invalid Origin header (anti-rebinding)".to_string()),
+            )
+                .into_response();
+        }
+    }
+
+    let req = {
+        let map = state.requests.lock().await;
+        map.get(&token).cloned()
+    };
+    let Some(req) = req else {
+        return (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML.to_string())).into_response();
+    };
+    if chrono::Utc::now() > req.expires_at {
+        return (StatusCode::GONE, Html(EXPIRED_HTML.to_string())).into_response();
+    }
+    if req.completed {
+        return (
+            StatusCode::CONFLICT,
+            Html("This bulk-paste link has already been used.".to_string()),
+        )
+            .into_response();
+    }
+    if form.dump.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("Empty dump rejected.".to_string()),
+        )
+            .into_response();
+    }
+
+    let allow_update = query.update.unwrap_or(0) != 0;
+    // Pre-fetch the existing key set ONCE rather than calling fnox list
+    // per-line. Failure to fetch is fatal — we'd rather refuse the whole
+    // bulk than silently overwrite.
+    let existing: std::collections::HashSet<String> = if allow_update {
+        std::collections::HashSet::new()
+    } else {
+        match state.fnox.list().await {
+            Ok(names) => names.into_iter().collect(),
+            Err(e) => {
+                warn!("fnox list failed during bulk new-only check: {e}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html("Failed to verify existing secret state — refusing bulk set.".to_string()),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    let parsed = parse_env_dump(&form.dump);
+    let mut results: Vec<BulkLineResult> = Vec::with_capacity(parsed.len());
+    let mut any_stored = false;
+    for entry in parsed {
+        match entry {
+            Err((line_number, snippet)) => results.push(BulkLineResult::Malformed {
+                line_number,
+                snippet,
+            }),
+            Ok((key, value)) => {
+                if !is_valid_name(&key) {
+                    results.push(BulkLineResult::InvalidName { key });
+                    continue;
+                }
+                if !allow_update && existing.contains(&key) {
+                    results.push(BulkLineResult::AlreadyExists { key });
+                    continue;
+                }
+                match state.fnox.set(&key, &value).await {
+                    Ok(()) => {
+                        let preview = state
+                            .config
+                            .preview_chars
+                            .map(|n| truncated_preview(&value, n));
+                        results.push(BulkLineResult::Stored { key, preview });
+                        any_stored = true;
+                    }
+                    Err(e) => {
+                        results.push(BulkLineResult::StoreFailed {
+                            key,
+                            error: e.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let mut map = state.requests.lock().await;
+        if let Some(r) = map.get_mut(&token) {
+            r.completed = true;
+        }
+    }
+    // Signal submitted only if at least one key actually landed —
+    // otherwise the operator probably wants the URL to stay live so
+    // they can fix the dump and retry. (Server still marks completed
+    // so the same token can't be reused; they'd request a new bulk URL.)
+    if any_stored && let Some(tx) = state.submitted.lock().await.take() {
+        let _ = tx.send(());
+    }
+
+    Html(render_bulk_results(&req.label, &results)).into_response()
 }
 
 fn is_valid_name(name: &str) -> bool {
@@ -502,6 +819,113 @@ fn render_confirmation(name: &str, preview: Option<String>) -> String {
 <p>You can close this tab.</p>
 </body></html>"#,
         name = html_escape(name),
+    )
+}
+
+fn render_bulk_form(label: &str, description: &str, token: &str) -> String {
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Bulk paste — {label}</title>
+<style>body {{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1rem;color:#1a1a1a}}
+h1 {{font-size:1.2rem}} textarea {{width:100%;min-height:280px;padding:.6rem;font-family:ui-monospace,Menlo,monospace;font-size:.95rem;border:1px solid #888;border-radius:4px}}
+button {{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-radius:4px;background:#0a6;color:#fff;cursor:pointer}}
+.warn {{background:#ffe;border:1px solid #cc8;padding:.6rem;border-radius:4px;font-size:.9rem;margin-top:1rem}}
+.help {{color:#555;font-size:.9rem;margin:.4rem 0 .8rem}}</style>
+</head><body>
+<h1>Bulk-set secrets — <code>{label}</code></h1>
+<p>{description}</p>
+<form method="POST" action="/bulk/{token}">
+<label>Paste a <code>.env</code>-style dump. One <code>KEY=VALUE</code> per line. Comments (<code>#</code>) and blank lines are ignored. <code>export KEY=…</code> prefixes are stripped. Surrounding quotes are stripped from values.</label>
+<p class="help">By default, existing secrets are NOT overwritten — they'll appear in the result page as <em>already exists</em>. To intentionally rotate, append <code>?update=1</code> to this URL.</p>
+<textarea name="dump" autofocus required placeholder="DATABASE_URL=postgres://localhost/app
+NPM_TOKEN=npm_aBcD1234
+# this line is a comment, ignored
+export STRIPE_KEY=&quot;sk_live_with spaces&quot;"></textarea>
+<button type="submit">Store all</button>
+</form>
+<div class="warn">⚠ This URL is single-use and expires shortly. The full dump is processed once and never displayed.</div>
+</body></html>"#,
+        label = html_escape(label),
+        description = html_escape(description),
+        token = html_escape(token),
+    )
+}
+
+fn render_bulk_results(label: &str, results: &[BulkLineResult]) -> String {
+    let mut stored = 0;
+    let mut existed = 0;
+    let mut invalid = 0;
+    let mut malformed = 0;
+    let mut failed = 0;
+    let mut rows = String::new();
+    for r in results {
+        match r {
+            BulkLineResult::Stored { key, preview } => {
+                stored += 1;
+                let preview_html = preview
+                    .as_ref()
+                    .map(|p| format!(" <span style=\"color:#666\">({})</span>", html_escape(p)))
+                    .unwrap_or_default();
+                rows.push_str(&format!(
+                    "<li class=\"ok\">✓ stored <code>{}</code>{}</li>",
+                    html_escape(key),
+                    preview_html
+                ));
+            }
+            BulkLineResult::AlreadyExists { key } => {
+                existed += 1;
+                rows.push_str(&format!(
+                    "<li class=\"skip\">⊘ <code>{}</code> already exists \
+                     <span style=\"color:#666\">(re-open with <code>?update=1</code> to overwrite)</span></li>",
+                    html_escape(key)
+                ));
+            }
+            BulkLineResult::InvalidName { key } => {
+                invalid += 1;
+                rows.push_str(&format!(
+                    "<li class=\"err\">✗ <code>{}</code> rejected — illegal characters in key (allowed: A-Z a-z 0-9 _ -)</li>",
+                    html_escape(key)
+                ));
+            }
+            BulkLineResult::Malformed {
+                line_number,
+                snippet,
+            } => {
+                malformed += 1;
+                rows.push_str(&format!(
+                    "<li class=\"err\">✗ line {} not <code>KEY=VALUE</code>: <code>{}</code></li>",
+                    line_number,
+                    html_escape(snippet)
+                ));
+            }
+            BulkLineResult::StoreFailed { key, error } => {
+                failed += 1;
+                rows.push_str(&format!(
+                    "<li class=\"err\">✗ <code>{}</code> backend error: {}</li>",
+                    html_escape(key),
+                    html_escape(error)
+                ));
+            }
+        }
+    }
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Bulk results — {label}</title>
+<style>body {{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1rem;color:#1a1a1a}}
+h1 {{font-size:1.2rem}} ul {{padding-left:1.2rem;line-height:1.7}}
+.ok {{color:#0a6}} .skip {{color:#a60}} .err {{color:#a00}}
+.summary {{background:#f4f4f4;padding:.6rem .8rem;border-radius:4px;font-size:.95rem;margin-bottom:1rem}}</style>
+</head><body>
+<h1>Bulk results — <code>{label}</code></h1>
+<div class="summary">
+  <strong>{stored}</strong> stored ·
+  <strong>{existed}</strong> already-exists ·
+  <strong>{invalid}</strong> invalid name ·
+  <strong>{malformed}</strong> malformed ·
+  <strong>{failed}</strong> backend failure
+</div>
+<ul>{rows}</ul>
+<p style="color:#666">You can close this tab. The bulk-paste URL is now spent.</p>
+</body></html>"#,
+        label = html_escape(label),
     )
 }
 
@@ -913,5 +1337,188 @@ mod tests {
         );
 
         handle.shutdown();
+    }
+
+    // ── Bulk-paste tests ──────────────────────────────────────────────
+
+    /// Pure-function test: the .env parser should skip blanks and
+    /// `#` comments, accept `export KEY=…` prefixes, and strip
+    /// surrounding quotes. Locks the contract so future "let's also
+    /// support inline comments" changes have to confront the existing
+    /// shape.
+    #[test]
+    fn parse_env_dump_handles_comments_blanks_export_quotes() {
+        let input = r#"
+# leading comment
+NPM_TOKEN=npm_abc123
+
+export DATABASE_URL="postgres://localhost/app"
+STRIPE='sk_with_quotes'
+# another comment
+INVALID_NO_EQUALS
+=NO_KEY
+"#;
+        let out = parse_env_dump(input);
+        // Expect 5 results (NPM_TOKEN ok, DATABASE_URL ok, STRIPE ok,
+        // INVALID_NO_EQUALS malformed, =NO_KEY malformed)
+        assert_eq!(out.len(), 5, "got: {out:?}");
+        assert!(
+            matches!(&out[0], Ok((k, v)) if k == "NPM_TOKEN" && v == "npm_abc123"),
+            "{out:?}"
+        );
+        assert!(
+            matches!(&out[1], Ok((k, v)) if k == "DATABASE_URL" && v == "postgres://localhost/app"),
+            "export prefix + double quotes; got {out:?}"
+        );
+        assert!(
+            matches!(&out[2], Ok((k, v)) if k == "STRIPE" && v == "sk_with_quotes"),
+            "single quotes; got {out:?}"
+        );
+        assert!(
+            matches!(out[3], Err((_, _))),
+            "no = should be Err; got {out:?}"
+        );
+        assert!(
+            matches!(out[4], Err((_, _))),
+            "empty key should be Err; got {out:?}"
+        );
+    }
+
+    /// Given a fresh bulk URL and a 3-line dump (one new, one
+    /// existing, one with illegal chars),
+    /// when the user POSTs,
+    /// then exactly one fnox set fires (the new key) AND the
+    /// confirmation page lists per-line outcomes:
+    ///   ✓ NEW_KEY stored
+    ///   ⊘ EXISTS_KEY already exists
+    ///   ✗ BAD KEY illegal characters
+    #[tokio::test]
+    async fn bulk_post_partitions_results_per_line() {
+        let dir = TempDir::new().unwrap();
+        // Fake fnox: list returns one existing key, set succeeds.
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then echo "EXISTS_KEY"; exit 0; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = onecli_client::FnoxClient::with_binary(bin);
+
+        let mut handle = spawn_bulk_request(
+            "onboarding-batch",
+            "test bulk",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let url = handle.url.clone();
+
+        let dump = "NEW_KEY=value1\nEXISTS_KEY=value2\nBAD KEY=value3\n";
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(&url)
+            .form(&[("dump", dump)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+
+        // Per-line results all visible
+        assert!(
+            body.contains("stored") && body.contains("NEW_KEY"),
+            "body: {body}"
+        );
+        assert!(
+            body.contains("already exists") && body.contains("EXISTS_KEY"),
+            "body: {body}"
+        );
+        assert!(
+            body.contains("illegal characters") && body.contains("BAD KEY"),
+            "body: {body}"
+        );
+        // Summary counts present
+        assert!(body.contains("1</strong> stored"), "body: {body}");
+        assert!(body.contains("1</strong> already-exists"), "body: {body}");
+
+        handle.shutdown();
+    }
+
+    /// Given a bulk URL with `?update=1`,
+    /// when the user POSTs a key that already exists,
+    /// then it stores anyway (no list call) and reports stored.
+    /// Locks the contract that update=1 explicitly opts into rotation.
+    #[tokio::test]
+    async fn bulk_update_query_rotates_existing_keys() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(
+            &dir,
+            // list would return EXISTS_KEY but update=1 should never call it
+            r#"if [ "$1" = "list" ]; then exit 1; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = onecli_client::FnoxClient::with_binary(bin);
+
+        let mut handle = spawn_bulk_request(
+            "rotation",
+            "",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        // Append ?update=1 to the URL the spawn produced
+        let url = format!("{}?update=1", handle.url);
+
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(&url)
+            .form(&[("dump", "EXISTS_KEY=new_value")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("stored") && body.contains("EXISTS_KEY"),
+            "update=1 must skip existence check; body: {body}"
+        );
+
+        handle.shutdown();
+    }
+
+    /// Given a bulk URL and an empty dump,
+    /// when the user POSTs,
+    /// then 400 — we don't burn the token on an empty submission.
+    #[tokio::test]
+    async fn bulk_empty_dump_is_400() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(&dir, "exit 0");
+        let client = onecli_client::FnoxClient::with_binary(bin);
+
+        let handle = spawn_bulk_request(
+            "empty-test",
+            "",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(&handle.url)
+            .form(&[("dump", "")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
     }
 }
