@@ -923,6 +923,7 @@ impl CommandHandler {
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
+            "  !secure <set|list|help> — manage fnox secret names/values (requires auth)",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -1232,9 +1233,9 @@ async fn secure_set(rest: &str) -> String {
     if name.is_empty() || value.is_empty() {
         return "⚠️ Usage: `!secure set NAME=value`".to_string();
     }
-    // Only allow the same name-shape substitution accepts, so callers
-    // can immediately use the stored name in a `{{secret:NAME}}` ref.
-    // See crates/security-proxy/src/substitution.rs.
+    // Keep the accepted syntax narrow so names are safe as fnox keys
+    // and as `{{secret:NAME}}` interpolation references in
+    // crates/security-proxy/src/substitution.rs.
     if !name
         .bytes()
         .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
