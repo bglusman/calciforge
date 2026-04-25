@@ -14,6 +14,15 @@ path = "src/main.rs"
 name = "onecli_client"
 path = "src/lib.rs"
 
+[features]
+# Default: subprocess-only path (cheap deps, fast build)
+default = []
+# Opt-in library mode: pull in the fnox crate and use it directly
+# instead of forking a `fnox` binary. Removes PATH dependency, reduces
+# per-call latency, eliminates argv-leak surface entirely.
+# Cost: ~30 transitive crates (AWS SDK, GCP SDK, keyring, age, etc.).
+fnox-library = ["dep:fnox"]
+
 [dependencies]
 # Workspace deps
 tokio = { workspace = true }
@@ -35,6 +44,10 @@ url = "2"
 humantime = "2"
 humantime-serde = "1"
 toml = "0.8"
+
+# Optional: fnox-library feature pulls in the fnox crate for direct
+# library access. Off by default — enable with --features fnox-library.
+fnox = { version = "1.21", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
