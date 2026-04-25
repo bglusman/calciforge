@@ -1186,9 +1186,10 @@ impl CommandHandler {
 fn secure_help() -> String {
     [
         "!secure subcommands:",
-        "  !secure set NAME=value  — store a secret by name (never echoed)",
-        "  !secure list            — list stored secret names (not values)",
-        "  !secure help            — show this help",
+        "  !secure set NAME=value    — store a secret by name (never echoed)",
+        "  !secure set NAME value    — same, for mobile keyboards",
+        "  !secure list              — list stored secret names (not values)",
+        "  !secure help              — show this help",
         "",
         "⚠️ `!secure set` passes through the chat transport, which retains",
         "   history. For values that must never touch chat, use a host-local",
