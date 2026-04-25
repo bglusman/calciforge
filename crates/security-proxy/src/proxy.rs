@@ -189,15 +189,24 @@ impl SecurityProxy {
             })
             .collect();
 
+        // Parse the (already-substituted) target URL once so the
+        // header- and body-substitution paths can pass the destination
+        // host into `resolve_and_substitute` for the per-secret
+        // allowlist gate (RFC §11.1).
+        let dest_host: Option<String> = reqwest::Url::parse(&target_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()));
+
         // Substitute {{secret:NAME}} refs in header VALUES (not names —
         // agents can't usefully parameterize header names, and
         // substituting into names would enable a class of bypass where
         // a secret ends up as a header key attackers can read server
-        // side). Fail-closed on unresolvable refs, same as the URL.
+        // side). Fail-closed on unresolvable refs OR on
+        // destination-allowlist denial.
         let mut substituted_headers: Vec<(String, String)> =
             Vec::with_capacity(original_headers.len());
         for (k, v) in &original_headers {
-            match self.resolve_and_substitute(v).await {
+            match self.resolve_and_substitute(v, dest_host.as_deref()).await {
                 Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
                 Err(e) => {
                     warn!("BLOCKED: header substitution failed: {}", e);
@@ -235,7 +244,10 @@ impl SecurityProxy {
             match body_mode {
                 BodyMode::FullSubstitute => {
                     let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
-                    match self.resolve_and_substitute(&body_str).await {
+                    match self
+                        .resolve_and_substitute(&body_str, dest_host.as_deref())
+                        .await
+                    {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
                         Err(e) => {
                             warn!("BLOCKED: body substitution failed: {}", e);
@@ -410,15 +422,45 @@ impl SecurityProxy {
     /// nested) returns the error so the caller can fail the outbound
     /// request.
     ///
+    /// `dest_host` is the host the substituted bytes will be sent to.
+    /// Used for the per-secret destination allowlist check (RFC §11.1):
+    /// if a secret's allowlist is configured and `dest_host` doesn't
+    /// match, substitution fails closed with a `DestinationDenied`
+    /// error before the resolver is consulted. Pass `None` for paths
+    /// where the destination isn't known yet (the URL itself is being
+    /// substituted) — substitution proceeds without the gate, and the
+    /// caller should re-check post-substitution if needed.
+    ///
     /// Zero-allocation fast path: if `find_refs` returns an empty set,
     /// we return without a resolver round-trip. The cost of substitution
     /// is thus proportional to the number of refs, not the size of the
     /// input string.
-    async fn resolve_and_substitute(&self, input: &str) -> Result<String, String> {
+    async fn resolve_and_substitute(
+        &self,
+        input: &str,
+        dest_host: Option<&str>,
+    ) -> Result<String, String> {
         let names = crate::substitution::find_refs(input).map_err(|e| e.to_string())?;
         if names.is_empty() {
             return Ok(input.to_string());
         }
+
+        // Allowlist gate — runs BEFORE the resolver so that:
+        // (a) we don't pay the resolver cost for a request we're
+        //     about to reject, and
+        // (b) the secret value is never even loaded into memory for
+        //     a destination we don't trust.
+        if let Some(host) = dest_host {
+            let host_lower = host.to_lowercase();
+            for name in &names {
+                if !self.is_destination_allowed(name, &host_lower) {
+                    return Err(format!(
+                        "secret {name:?} not allowed at destination {host:?}"
+                    ));
+                }
+            }
+        }
+
         let mut resolved = std::collections::HashMap::new();
         for name in names {
             match onecli_client::vault::get_secret(&name).await {
@@ -433,12 +475,40 @@ impl SecurityProxy {
             .map_err(|e| e.to_string())
     }
 
+    /// True if the given secret name may be substituted into a request
+    /// going to `host`. See `secret_destination_allowlist` field doc on
+    /// `GatewayConfig` for the three behaviors (absent = unrestricted,
+    /// empty list = deny all, non-empty list = host must match a
+    /// pattern). Host matching reuses [`Self::host_matches_pattern`]
+    /// so the bypass-list and allowlist share semantics.
+    fn is_destination_allowed(&self, secret_name: &str, host: &str) -> bool {
+        let Some(patterns) = self.config.secret_destination_allowlist.get(secret_name) else {
+            // No entry → no restriction. Preserves pre-feature behavior.
+            return true;
+        };
+        if patterns.is_empty() {
+            // Explicit lock-down: present-with-empty-list means
+            // "this secret is configured to never substitute into
+            // any outbound request". Use to disable a secret for
+            // substitution without removing the storage entry.
+            return false;
+        }
+        patterns
+            .iter()
+            .any(|pattern| Self::host_matches_pattern(host, pattern))
+    }
+
     /// Backwards-compatible alias so the URL-substitution call site
     /// doesn't need to change shape. `substitute_url` used to be the
     /// only consumer; now `resolve_and_substitute` handles headers and
     /// bodies too.
     async fn substitute_url(&self, url: &str) -> Result<String, String> {
-        self.resolve_and_substitute(url).await
+        // URL substitution can't gate on destination — the host might
+        // BE inside the substituted region, or the URL might not parse
+        // until after substitution. Caller is expected to gate
+        // substitution-in-headers/body on the parsed-host of the
+        // already-substituted URL.
+        self.resolve_and_substitute(url, None).await
     }
 
     /// Decide whether a request body of `content_type` is eligible for

