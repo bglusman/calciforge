@@ -4,6 +4,7 @@ use crate::auth::ClientIdentity;
 use crate::error::ZfsError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
@@ -272,14 +273,22 @@ fn parse_zfs_list(output: &str) -> Result<Vec<ZfsEntry>, ZfsError> {
 /// Validate a ZFS dataset name
 pub fn is_valid_dataset_name(name: &str) -> bool {
     // Basic validation: no spaces, no @ (that's for snapshots), limited special chars
-    let re = Regex::new(r"^[a-zA-Z0-9_][a-zA-Z0-9_\-/.]*$").unwrap();
-    re.is_match(name) && !name.contains("..") && !name.starts_with('/') && !name.ends_with('/')
+    static DATASET_RE: OnceLock<Regex> = OnceLock::new();
+    let re = DATASET_RE
+        .get_or_init(|| Regex::new(r"^[a-zA-Z0-9_][a-zA-Z0-9_\-/.]*$").expect("DATASET_RE valid"));
+    re.is_match(name)
+        && !name.contains("..")
+        && !name.starts_with('/')
+        && !name.ends_with('/')
+        && name.split('/').all(|part| !part.is_empty() && part != ".")
 }
 
 /// Validate a snapshot name
 pub fn is_valid_snapshot_name(name: &str) -> bool {
     // Similar to dataset but more restrictive
-    let re = Regex::new(r"^[a-zA-Z0-9_][a-zA-Z0-9_\-.]*$").unwrap();
+    static SNAPSHOT_RE: OnceLock<Regex> = OnceLock::new();
+    let re = SNAPSHOT_RE
+        .get_or_init(|| Regex::new(r"^[a-zA-Z0-9_][a-zA-Z0-9_\-.]*$").expect("SNAPSHOT_RE valid"));
     re.is_match(name) && !name.contains('@') && !name.contains('/')
 }
 
@@ -299,6 +308,7 @@ pub fn is_valid_dataset_or_snapshot(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_valid_dataset_name() {
@@ -316,6 +326,8 @@ mod tests {
         assert!(!is_valid_dataset_name("tank..media"));
         assert!(!is_valid_dataset_name("tank@media"));
         assert!(!is_valid_dataset_name("tank media"));
+        assert!(!is_valid_dataset_name("tank//media"));
+        assert!(!is_valid_dataset_name("tank/./media"));
     }
 
     #[test]
@@ -342,5 +354,45 @@ mod tests {
         assert_eq!(entries[0].kind, "filesystem");
         assert_eq!(entries[1].name, "tank@media@daily");
         assert_eq!(entries[1].kind, "snapshot");
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_dataset_names_never_have_empty_or_relative_components(name in "[\\x00-\\x7f]{0,80}") {
+            if is_valid_dataset_name(&name) {
+                prop_assert!(!name.is_empty());
+                prop_assert!(!name.starts_with('/'));
+                prop_assert!(!name.ends_with('/'));
+                prop_assert!(!name.contains('@'));
+                prop_assert!(!name.contains(".."));
+                for part in name.split('/') {
+                    prop_assert!(!part.is_empty(), "accepted dataset had empty component: {name:?}");
+                    prop_assert_ne!(part, ".", "accepted dataset had relative component: {:?}", name);
+                }
+            }
+        }
+
+        #[test]
+        fn accepted_snapshot_names_never_contain_dataset_separators(name in "[\\x00-\\x7f]{0,80}") {
+            if is_valid_snapshot_name(&name) {
+                prop_assert!(!name.is_empty());
+                prop_assert!(!name.contains('/'));
+                prop_assert!(!name.contains('@'));
+                prop_assert!(!name.chars().any(char::is_whitespace));
+            }
+        }
+
+        #[test]
+        fn accepted_dataset_or_snapshot_requires_valid_parts(name in "[\\x00-\\x7f]{0,120}") {
+            if is_valid_dataset_or_snapshot(&name) {
+                if let Some((dataset, snap)) = name.split_once('@') {
+                    prop_assert!(is_valid_dataset_name(dataset));
+                    prop_assert!(is_valid_snapshot_name(snap));
+                    prop_assert!(!snap.contains('@'));
+                } else {
+                    prop_assert!(is_valid_dataset_name(&name));
+                }
+            }
+        }
     }
 }
