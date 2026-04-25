@@ -48,10 +48,14 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 
 use thiserror::Error;
 use tokio::process::Command;
+use tokio::time::timeout;
 use tracing::debug;
+
+const DEFAULT_FNOX_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors from `FnoxClient` operations. Variants are intentionally
 /// narrow so callers can pattern-match instead of substring-matching
@@ -86,6 +90,18 @@ pub enum FnoxError {
     /// non-zero exit.
     #[error("fnox returned non-UTF-8 output")]
     InvalidUtf8,
+
+    /// The fnox process started, but stdin/stdout/stderr handling
+    /// failed while communicating with it. Distinct from NotInstalled
+    /// (subprocess never started).
+    #[error("fnox I/O failed: {0}")]
+    Io(std::io::Error),
+
+    /// fnox started but did not complete within the bounded command
+    /// window. Treat as retryable by the operator, not as
+    /// "not installed".
+    #[error("fnox timed out after {seconds}s")]
+    TimedOut { seconds: u64 },
 }
 
 /// Wrapper around the `fnox` CLI. Cheap to construct (just a path);
@@ -96,12 +112,14 @@ pub struct FnoxClient {
     /// tests override via [`FnoxClient::with_binary`] to point at a
     /// fake shell script.
     binary: PathBuf,
+    timeout: Duration,
 }
 
 impl Default for FnoxClient {
     fn default() -> Self {
         Self {
             binary: PathBuf::from("fnox"),
+            timeout: DEFAULT_FNOX_TIMEOUT,
         }
     }
 }
@@ -118,6 +136,16 @@ impl FnoxClient {
     pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
         Self {
             binary: binary.into(),
+            timeout: DEFAULT_FNOX_TIMEOUT,
+        }
+    }
+
+    /// Construct a client with a custom timeout. Production code uses
+    /// the default; tests use this to keep timeout assertions fast.
+    pub fn with_binary_and_timeout(binary: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self {
+            binary: binary.into(),
+            timeout,
         }
     }
 
@@ -126,13 +154,16 @@ impl FnoxClient {
     /// check — we want to give the user a clear "install fnox" message
     /// instead of a confusing failure on the first set.
     pub async fn is_available(&self) -> bool {
-        Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        command
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .output()
+            .kill_on_drop(true);
+
+        timeout(self.timeout, command.output())
             .await
-            .is_ok_and(|o| o.status.success())
+            .is_ok_and(|result| result.is_ok_and(|o| o.status.success()))
     }
 
     /// `fnox get <name>` — return the value, or an error.
@@ -141,10 +172,7 @@ impl FnoxClient {
     /// type doc for why.
     pub async fn get(&self, name: &str) -> Result<String, FnoxError> {
         debug!("fnox get {}", name);
-        let output = self
-            .run(&["get", name])
-            .await
-            .map_err(FnoxError::NotInstalled)?;
+        let output = self.run(&["get", name]).await?;
 
         if !output.status.success() {
             return Err(FnoxError::Failed {
@@ -180,23 +208,30 @@ impl FnoxClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(FnoxError::NotInstalled)?;
         if let Some(mut stdin) = child.stdin.take() {
             // BrokenPipe is benign: the child exited before reading
             // stdin (real fnox reads it; some test fakes don't). Surface
-            // any other write failure as NotInstalled.
+            // any other write failure as Io.
             match stdin.write_all(value.as_bytes()).await {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-                Err(e) => return Err(FnoxError::NotInstalled(e)),
+                Err(e) => return Err(FnoxError::Io(e)),
             }
-            // Drop closes stdin so fnox sees EOF.
+            // Explicit shutdown + drop closes the pipe so fnox sees EOF.
+            let _ = stdin.shutdown().await;
         }
-        let output = child
-            .wait_with_output()
+        // Bounded wait: fnox should respond within self.timeout. If it
+        // doesn't (hung backend, network call to a vault, etc.) surface
+        // TimedOut so callers can retry rather than block indefinitely.
+        let output = timeout(self.timeout, child.wait_with_output())
             .await
-            .map_err(FnoxError::NotInstalled)?;
+            .map_err(|_| FnoxError::TimedOut {
+                seconds: self.timeout.as_secs(),
+            })?
+            .map_err(FnoxError::Io)?;
 
         if !output.status.success() {
             return Err(FnoxError::Failed {
@@ -218,7 +253,7 @@ impl FnoxClient {
     /// use `fnox list --output json` directly once we wire that up.
     pub async fn list(&self) -> Result<Vec<String>, FnoxError> {
         debug!("fnox list");
-        let output = self.run(&["list"]).await.map_err(FnoxError::NotInstalled)?;
+        let output = self.run(&["list"]).await?;
 
         if !output.status.success() {
             return Err(FnoxError::Failed {
@@ -242,13 +277,20 @@ impl FnoxClient {
         Ok(names)
     }
 
-    async fn run(&self, args: &[&str]) -> Result<std::process::Output, std::io::Error> {
-        Command::new(&self.binary)
+    async fn run(&self, args: &[&str]) -> Result<std::process::Output, FnoxError> {
+        let mut command = Command::new(&self.binary);
+        command
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .kill_on_drop(true);
+
+        timeout(self.timeout, command.output())
             .await
+            .map_err(|_| FnoxError::TimedOut {
+                seconds: self.timeout.as_secs(),
+            })?
+            .map_err(FnoxError::NotInstalled)
     }
 }
 
@@ -399,6 +441,38 @@ mod tests {
         );
         let stdin = fs::read_to_string(&stdin_log).expect("stdin.log written");
         assert_eq!(stdin, "the-value", "value must arrive via stdin");
+    }
+
+    /// Given a fake fnox that hangs,
+    /// when get is called with a short timeout,
+    /// then the wrapper returns TimedOut instead of blocking forever.
+    #[tokio::test]
+    async fn get_times_out_when_fnox_hangs() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(&dir, "sleep 5");
+        let client = FnoxClient::with_binary_and_timeout(bin, Duration::from_millis(25));
+
+        let err = client.get("SLOW_KEY").await.unwrap_err();
+        assert!(
+            matches!(err, FnoxError::TimedOut { .. }),
+            "expected TimedOut, got {err:?}"
+        );
+    }
+
+    /// Given a fake fnox that hangs while reading a set request,
+    /// when set is called with a short timeout,
+    /// then the wrapper returns TimedOut instead of blocking forever.
+    #[tokio::test]
+    async fn set_times_out_when_fnox_hangs() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(&dir, "sleep 5");
+        let client = FnoxClient::with_binary_and_timeout(bin, Duration::from_millis(25));
+
+        let err = client.set("SLOW_KEY", "value").await.unwrap_err();
+        assert!(
+            matches!(err, FnoxError::TimedOut { .. }),
+            "expected TimedOut, got {err:?}"
+        );
     }
 
     /// Given a fake fnox that prints `name value` pairs on `list`,
