@@ -629,6 +629,12 @@ async fn handle_message(
         return;
     }
 
+    if CommandHandler::is_secure_command(body) {
+        let reply = cmd_handler.handle_secure(body, identity_id).await;
+        send(reply).await;
+        return;
+    }
+
     // Unknown !command
     if CommandHandler::is_command(body)
         && !CommandHandler::is_status_command(body)

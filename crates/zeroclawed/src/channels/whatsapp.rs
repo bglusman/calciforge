@@ -417,6 +417,31 @@ impl WhatsAppChannel {
             return;
         }
 
+        // !secure — post-auth secret command. This must stay before the unknown-command
+        // branch so secret material is never routed to an agent context.
+        if CommandHandler::is_secure_command(&text) {
+            let reply = self
+                .command_handler
+                .handle_secure(&text, &identity.id)
+                .await;
+            let channel = self.clone();
+            let from_owned = from.clone();
+            tokio::spawn(async move {
+                if let Err(e) = channel
+                    .send_reply(
+                        &nzc_endpoint,
+                        nzc_auth_token.as_deref(),
+                        &from_owned,
+                        &reply,
+                    )
+                    .await
+                {
+                    warn!(from = %from_owned, error = %e, "WhatsApp: failed to send secure-command reply");
+                }
+            });
+            return;
+        }
+
         // Unknown !command handling
         if CommandHandler::is_command(&text)
             && !CommandHandler::is_status_command(&text)
