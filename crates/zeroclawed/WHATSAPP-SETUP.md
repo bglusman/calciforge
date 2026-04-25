@@ -53,7 +53,7 @@ role         = "owner"
 
 [[identities.aliases]]
 channel = "telegram"
-id      = "8465871195"
+id      = "7000000001"
 
 [[identities.aliases]]
 channel = "whatsapp"
