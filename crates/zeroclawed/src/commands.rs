@@ -28,6 +28,15 @@ fn default_state_dir() -> PathBuf {
     PathBuf::from(home).join(".zeroclawed").join("state")
 }
 
+/// Split the first whitespace-delimited word while preserving the remaining text.
+fn leading_word_and_rest(input: &str) -> (&str, &str) {
+    let trimmed = input.trim();
+    let Some(word) = trimmed.split_whitespace().next() else {
+        return ("", "");
+    };
+    (word, trimmed[word.len()..].trim())
+}
+
 /// Path to the active-agent state file within `state_dir`.
 fn state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-agents.json")
@@ -284,14 +293,13 @@ impl CommandHandler {
     /// accept (or use an out-of-band path). Document this in any UX
     /// that advertises `!secure`.
     pub fn is_secure_command(text: &str) -> bool {
-        let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
-        cmd == "!secure"
+        let (cmd, _) = leading_word_and_rest(text);
+        cmd.eq_ignore_ascii_case("!secure")
     }
 
     /// Respond to unknown commands with a helpful message.
     pub fn unknown_command(&self, text: &str) -> String {
-        let cmd = text.trim().split(' ').next().unwrap_or("").to_string();
+        let (cmd, _) = leading_word_and_rest(text);
         format!(
             "⚠️ Unknown command: {}\n\nUse !help or !commands to see available commands.",
             cmd
@@ -871,17 +879,14 @@ impl CommandHandler {
     /// For values where chat-transport exposure is unacceptable,
     /// a follow-up `!secure request NAME` flow (out-of-band) is
     /// planned — see `docs/rfcs/agent-secret-gateway.md` §5.
-    pub async fn handle_secure(&self, text: &str, _identity_id: &str) -> String {
-        let trimmed = text.trim();
-        // `!secure ...` — split off the subcommand word.
-        let mut parts = trimmed.splitn(3, ' ');
-        let _lead = parts.next(); // `!secure`
-        let sub = parts.next().map(|s| s.to_lowercase()).unwrap_or_default();
-        let rest = parts.next().unwrap_or("").trim();
+    pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
+        let (_lead, after_lead) = leading_word_and_rest(text);
+        let (sub_raw, rest) = leading_word_and_rest(after_lead);
+        let sub = sub_raw.to_lowercase();
 
         match sub.as_str() {
-            "set" => secure_set(rest).await,
-            "list" => secure_list().await,
+            "set" => secure_set(rest, identity_id).await,
+            "list" => secure_list(identity_id).await,
             "help" | "" => secure_help(),
             _ => format!(
                 "⚠️ Unknown !secure subcommand: `{sub}`\n\n{}",
@@ -1194,7 +1199,7 @@ fn secure_help() -> String {
     .join("\n")
 }
 
-async fn secure_set(rest: &str) -> String {
+async fn secure_set(rest: &str, identity_id: &str) -> String {
     // Accept either `NAME=value` or `NAME value`. The `=` form is
     // natural for env-style keys; the space form is slightly easier
     // on mobile keyboards.
@@ -1204,19 +1209,17 @@ async fn secure_set(rest: &str) -> String {
             (n.trim().to_string(), v[1..].to_string())
         }
         None => {
-            let mut parts = rest.splitn(2, ' ');
-            let n = parts.next().unwrap_or("").trim().to_string();
-            let v = parts.next().unwrap_or("").to_string();
-            (n, v)
+            let (n, v) = leading_word_and_rest(rest);
+            (n.to_string(), v.to_string())
         }
     };
 
     if name.is_empty() || value.is_empty() {
         return "⚠️ Usage: `!secure set NAME=value`".to_string();
     }
-    // Only allow the same name-shape substitution accepts, so callers
-    // can immediately use the stored name in a `{{secret:NAME}}` ref.
-    // See crates/security-proxy/src/substitution.rs.
+    // Only allow names that are immediately usable in a `{{secret:NAME}}`
+    // reference. The accepted syntax here is ASCII alphanumeric plus `_`
+    // and `-`, matching the validation enforced below.
     if !name
         .bytes()
         .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
@@ -1227,26 +1230,28 @@ async fn secure_set(rest: &str) -> String {
         );
     }
 
-    use tokio::process::Command;
-    let output = match Command::new("fnox")
-        .args(["set", &name, &value])
-        .output()
-        .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            return format!(
+    tracing::info!(
+        identity = %identity_id,
+        secret = %name,
+        operation = "secure.set",
+        "!secure set requested"
+    );
+
+    let client = onecli_client::FnoxClient::new();
+    if let Err(e) = client.set(&name, &value).await {
+        return match e {
+            onecli_client::FnoxError::NotInstalled(e) => format!(
                 "⚠️ fnox not available: {e}. Install it (brew install fnox) \
                  and run `fnox init` to enable `!secure`."
-            );
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // The stderr may name the backend or config file path — that's
-        // operational info the user running the bot can already read
-        // via `fnox doctor`; echoing it here is fine.
-        return format!("⚠️ fnox set {name} failed: {}", stderr.trim());
+            ),
+            onecli_client::FnoxError::Failed { stderr, .. } => {
+                // The stderr may name the backend or config file path — that's
+                // operational info the user running the bot can already read
+                // via `fnox doctor`; echoing it here is fine.
+                format!("⚠️ fnox set {name} failed: {stderr}")
+            }
+            other => format!("⚠️ fnox set {name} failed: {other}"),
+        };
     }
 
     // Intentionally name-only on the success path — the value must
@@ -1259,44 +1264,26 @@ async fn secure_set(rest: &str) -> String {
     )
 }
 
-async fn secure_list() -> String {
-    use tokio::process::Command;
-    let output = match Command::new("fnox").arg("list").output().await {
-        Ok(o) => o,
-        Err(e) => {
-            return format!("⚠️ fnox not available: {e}");
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return format!("⚠️ fnox list failed: {}", stderr.trim());
-    }
+async fn secure_list(identity_id: &str) -> String {
+    tracing::info!(
+        identity = %identity_id,
+        operation = "secure.list",
+        "!secure list requested"
+    );
 
-    // fnox list stdout varies slightly by version — extract anything
-    // that looks like a secret name (non-whitespace leading token)
-    // and present a name-only summary. Don't attempt structured
-    // parsing; bail to a raw echo if the output isn't lines-of-tokens.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let names: Vec<&str> = stdout
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                None
-            } else {
-                trimmed.split_whitespace().next()
-            }
-        })
-        .collect();
-    if names.is_empty() {
-        "📭 No secrets stored. Use `!secure set NAME=value` to add one.".to_string()
-    } else {
-        format!(
+    let client = onecli_client::FnoxClient::new();
+    match client.list().await {
+        Ok(names) if names.is_empty() => {
+            "📭 No secrets stored. Use `!secure set NAME=value` to add one.".to_string()
+        }
+        Ok(names) => format!(
             "🔐 {} stored secret{}:\n  {}",
             names.len(),
             if names.len() == 1 { "" } else { "s" },
             names.join("\n  ")
-        )
+        ),
+        Err(onecli_client::FnoxError::NotInstalled(e)) => format!("⚠️ fnox not available: {e}"),
+        Err(e) => format!("⚠️ fnox list failed: {e}"),
     }
 }
 
@@ -2028,7 +2015,7 @@ mod tests {
     async fn secure_set_reply_includes_name_but_not_value() {
         let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().unwrap();
-        let fake_dir = install_fake_fnox(&dir, "exit 0");
+        let fake_dir = install_fake_fnox(&dir, "cat >/dev/null; exit 0");
         let _path = PathGuard::prepend(&fake_dir);
 
         let h = make_handler();
@@ -2055,7 +2042,10 @@ mod tests {
     async fn secure_set_surfaces_fnox_error_without_echoing_value() {
         let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().unwrap();
-        let fake_dir = install_fake_fnox(&dir, r#"echo "No providers configured" >&2; exit 3"#);
+        let fake_dir = install_fake_fnox(
+            &dir,
+            r#"cat >/dev/null; echo "No providers configured" >&2; exit 3"#,
+        );
         let _path = PathGuard::prepend(&fake_dir);
 
         let h = make_handler();
@@ -2118,6 +2108,46 @@ mod tests {
                 "invalid name {bad:?} should be rejected, got: {reply}"
             );
         }
+    }
+
+    /// Given a fake fnox that records argv and stdin,
+    /// when handle_secure receives tab-separated pasted input,
+    /// then parsing still succeeds and the value is delivered via stdin,
+    /// never as a process argument.
+    #[tokio::test]
+    async fn secure_set_accepts_whitespace_and_keeps_value_out_of_argv() {
+        let _lock = SECURE_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        let args_path = dir.path().join("args.txt");
+        let stdin_path = dir.path().join("stdin.txt");
+        let body = format!(
+            r#"printf '%s\n' "$@" > '{}'
+cat > '{}'
+exit 0"#,
+            args_path.display(),
+            stdin_path.display()
+        );
+        let fake_dir = install_fake_fnox(&dir, &body);
+        let _path = PathGuard::prepend(&fake_dir);
+
+        let h = make_handler();
+        let reply = h
+            .handle_secure("!secure\tset\tMY_KEY=supersecretvalue", "brian")
+            .await;
+
+        assert!(reply.contains("MY_KEY"), "set should succeed: {reply}");
+        let args = fs::read_to_string(args_path).expect("read fake fnox argv");
+        assert!(args.contains("set"), "argv should include set: {args:?}");
+        assert!(
+            args.contains("MY_KEY"),
+            "argv should include name: {args:?}"
+        );
+        assert!(
+            !args.contains("supersecretvalue"),
+            "argv must not contain the secret value: {args:?}"
+        );
+        let stdin = fs::read_to_string(stdin_path).expect("read fake fnox stdin");
+        assert_eq!(stdin, "supersecretvalue");
     }
 
     /// Given a fake fnox that emits one name per line on `list`,
