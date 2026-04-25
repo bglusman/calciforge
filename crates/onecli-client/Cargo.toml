@@ -47,7 +47,11 @@ toml = "0.8"
 
 # Optional: fnox-library feature pulls in the fnox crate for direct
 # library access. Off by default — enable with --features fnox-library.
-fnox = { version = "1.21", optional = true }
+#
+# Pinned to our fork branch until the upstream convenience-API PR
+# (https://github.com/jdx/fnox/pull/442) lands and ships in a release.
+# Once jdx tags 1.22+, this becomes `fnox = "1.22"` (one-line edit).
+fnox = { git = "https://github.com/bglusman/fnox", branch = "feat/library-convenience-api", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

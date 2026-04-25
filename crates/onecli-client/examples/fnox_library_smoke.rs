@@ -12,11 +12,12 @@ use onecli_client::FnoxLibrary;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let fnox = FnoxLibrary::discover(&cwd);
-    println!("config root walk started from: {}", cwd.display());
+    // FnoxLibrary::new() defers to upstream fnox::Fnox::discover()
+    // which walks up from CWD finding fnox.toml + merging local +
+    // parent + global configs.
+    let fnox = FnoxLibrary::new();
     let names = fnox.list().await?;
-    println!("declared secrets in default profile ({}):", names.len());
+    println!("declared secrets in active profile ({}):", names.len());
     for n in &names {
         println!("  {n}");
     }
