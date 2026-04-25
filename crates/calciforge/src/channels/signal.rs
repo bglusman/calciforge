@@ -998,9 +998,9 @@ mod tests {
     #[test]
     fn test_normalise_phone_preserves_formatting() {
         // Function strips dashes and internal spaces, ensuring E.164 format
-        assert_eq!(normalise_phone("+1-215-460-9585"), "+15555550100");
-        assert_eq!(normalise_phone("215-460-9585"), "+2154609585");
-        assert_eq!(normalise_phone("+1 215 460 9585"), "+15555550100");
+        assert_eq!(normalise_phone("+1-555-555-0100"), "+15555550100");
+        assert_eq!(normalise_phone("555-555-0100"), "+5555550100");
+        assert_eq!(normalise_phone("+1 555 555 0100"), "+15555550100");
     }
 
     #[test]

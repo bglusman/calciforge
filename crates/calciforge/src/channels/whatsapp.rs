@@ -1210,7 +1210,7 @@ mod tests {
 
     #[test]
     fn test_normalise_phone_strips_spaces() {
-        assert_eq!(normalise_phone("1 215 460 9585"), "+15555550100");
+        assert_eq!(normalise_phone("1 555 555 0100"), "+15555550100");
     }
 
     // --- Identity resolution tests ---
