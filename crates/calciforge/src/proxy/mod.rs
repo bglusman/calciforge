@@ -60,11 +60,21 @@ pub struct ProxyState {
     pub voice: Option<crate::voice::VoiceConfig>,
 }
 
-/// Read an API key from a file path, stripping trailing whitespace.
-fn read_key_file(path: &std::path::Path) -> anyhow::Result<String> {
+/// Normalize an optional API key. Empty strings never enable auth.
+fn normalize_api_key(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Read an API key from a file path, stripping surrounding whitespace.
+fn read_key_file(path: &std::path::Path) -> anyhow::Result<Option<String>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading API key file {}", path.display()))?;
-    Ok(raw.trim_end().to_string())
+    Ok(normalize_api_key(&raw))
 }
 
 /// Resolve a provider's effective API key: file takes precedence over inline.
@@ -73,12 +83,9 @@ fn resolve_api_key(
     api_key_file: Option<&std::path::Path>,
 ) -> anyhow::Result<Option<String>> {
     if let Some(file) = api_key_file {
-        let key = read_key_file(file)?;
-        if !key.is_empty() {
-            return Ok(Some(key));
-        }
+        return read_key_file(file);
     }
-    Ok(api_key.map(|s| s.to_string()))
+    Ok(api_key.and_then(normalize_api_key))
 }
 
 /// Start the model gateway HTTP server
@@ -221,4 +228,22 @@ pub async fn start_proxy_server(
         .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_api_key;
+
+    #[test]
+    fn resolve_api_key_ignores_empty_inline_key() {
+        assert_eq!(resolve_api_key(Some("  "), None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_api_key_trims_inline_key() {
+        assert_eq!(
+            resolve_api_key(Some(" test-key\n"), None).unwrap(),
+            Some("test-key".to_string())
+        );
+    }
 }

@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 
-DEFAULT_IMAGE = "matrixdotorg/synapse:latest"
+DEFAULT_IMAGE = "matrixdotorg/synapse:v1.117.0"
 DEFAULT_PORT = 18088
 SERVER_NAME = "localhost"
 BOT_USER = "calciforge"
@@ -314,7 +314,7 @@ def start_calciforge(config_path: Path, home_dir: Path) -> tuple[subprocess.Pope
 
 
 def send_message(base_url: str, alice_token: str, room_id: str, body: str) -> None:
-    txn_id = f"calciforge-e2e-{int(time.time() * 1000)}"
+    txn_id = f"calciforge-e2e-{uuid.uuid4().hex}"
     http_json(
         "PUT",
         f"{base_url}/_matrix/client/v3/rooms/{encoded(room_id)}/send/m.room.message/{txn_id}",

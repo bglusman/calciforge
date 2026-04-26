@@ -77,16 +77,12 @@ impl ExecGateway {
         let prompt = Self::render_prompt(req);
         let output_file = output_path.to_string_lossy();
         let mut saw_prompt_placeholder = false;
-        let mut saw_output_placeholder = false;
         let args = self
             .args
             .iter()
             .map(|arg| {
                 if arg.contains("{prompt}") || arg.contains("{message}") {
                     saw_prompt_placeholder = true;
-                }
-                if arg.contains("{output_file}") {
-                    saw_output_placeholder = true;
                 }
                 arg.replace("{prompt}", &prompt)
                     .replace("{message}", &prompt)
@@ -96,7 +92,6 @@ impl ExecGateway {
             .collect::<Vec<_>>();
 
         let should_write_stdin = !saw_prompt_placeholder || args.iter().any(|arg| arg == "-");
-        let _ = saw_output_placeholder;
         (args, should_write_stdin)
     }
 
@@ -108,7 +103,6 @@ impl ExecGateway {
                     output_path.display()
                 ))
             })?;
-            let _ = tokio::fs::remove_file(output_path).await;
             let trimmed = from_file.trim();
             if !trimmed.is_empty() {
                 return Ok(trimmed.to_string());
@@ -174,47 +168,62 @@ impl GatewayBackend for ExecGateway {
             .map_err(|e| BackendError::ExecutionFailed(format!("create output dir: {e}")))?;
 
         let output_path = self.output_path();
-        let (args, should_write_stdin) = self.build_args(&req, &output_path);
-        let prompt = Self::render_prompt(&req);
+        let result = async {
+            let (args, should_write_stdin) = self.build_args(&req, &output_path);
+            let prompt = Self::render_prompt(&req);
 
-        let mut cmd = Command::new(&self.command);
-        cmd.args(&args)
-            .envs(&self.env)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            let mut cmd = Command::new(&self.command);
+            cmd.args(&args)
+                .envs(&self.env)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
 
-        if should_write_stdin {
-            cmd.stdin(Stdio::piped());
+            if should_write_stdin {
+                cmd.stdin(Stdio::piped());
+            }
+
+            let mut child = cmd.spawn().map_err(|e| {
+                BackendError::NotAvailable(format!("failed to spawn {}: {e}", self.command))
+            })?;
+
+            if should_write_stdin {
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(prompt.as_bytes()).await.map_err(|e| {
+                        BackendError::ExecutionFailed(format!("failed writing exec stdin: {e}"))
+                    })?;
+                    let _ = stdin.shutdown().await;
+                }
+            }
+
+            let output = tokio::time::timeout(self.timeout, child.wait_with_output())
+                .await
+                .map_err(|_| BackendError::ExecutionFailed("exec provider timed out".to_string()))?
+                .map_err(|e| BackendError::ExecutionFailed(format!("exec provider failed: {e}")))?;
+
+            if !output.status.success() {
+                return Err(BackendError::ExecutionFailed(format!(
+                    "exec provider exited with code {:?}",
+                    output.status.code()
+                )));
+            }
+
+            let content = Self::read_response(&output_path, &output.stdout).await?;
+            Ok(Self::wrap_response(&req, content))
         }
+        .await;
 
-        let mut child = cmd.spawn().map_err(|e| {
-            BackendError::NotAvailable(format!("failed to spawn {}: {e}", self.command))
-        })?;
-
-        if should_write_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(prompt.as_bytes()).await.map_err(|e| {
-                    BackendError::ExecutionFailed(format!("failed writing exec stdin: {e}"))
-                })?;
-                let _ = stdin.shutdown().await;
+        let cleanup_result = tokio::fs::remove_file(&output_path).await;
+        if let Err(e) = cleanup_result {
+            if e.kind() != std::io::ErrorKind::NotFound && result.is_ok() {
+                return Err(BackendError::ExecutionFailed(format!(
+                    "failed to remove exec output file {}: {e}",
+                    output_path.display()
+                )));
             }
         }
 
-        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| BackendError::ExecutionFailed("exec provider timed out".to_string()))?
-            .map_err(|e| BackendError::ExecutionFailed(format!("exec provider failed: {e}")))?;
-
-        if !output.status.success() {
-            return Err(BackendError::ExecutionFailed(format!(
-                "exec provider exited with code {:?}",
-                output.status.code()
-            )));
-        }
-
-        let content = Self::read_response(&output_path, &output.stdout).await?;
-        Ok(Self::wrap_response(&req, content))
+        result
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {

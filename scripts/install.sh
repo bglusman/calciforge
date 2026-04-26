@@ -128,12 +128,19 @@ ensure_fnox_cargo_deps() {
 
     if $IS_ROOT && command -v apt-get &>/dev/null; then
         echo "  Installing fnox build prerequisites..."
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libudev-dev >/dev/null
+        if ! apt-get update -qq; then
+            warn "Failed to update apt package lists for fnox prerequisites"
+            return 1
+        fi
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libudev-dev >/dev/null; then
+            warn "Failed to install pkg-config/libudev-dev for fnox cargo fallback"
+            return 1
+        fi
         return 0
     fi
 
     warn "fnox cargo fallback needs pkg-config and libudev-dev on Linux"
+    return 1
 }
 
 ensure_brew() {
@@ -187,8 +194,10 @@ ensure_fnox() {
             echo "  Installing fnox..."
             # Use PIPESTATUS to catch brew's real exit code — `| tail -3`
             # would otherwise bury a failure behind a successful `tail`.
+            set +e
             brew install fnox 2>&1 | tail -3
             local brew_rc=${PIPESTATUS[0]}
+            set -e
             if [[ $brew_rc -eq 0 ]]; then
                 ok "fnox installed"
                 ensure_fnox_config
@@ -199,12 +208,17 @@ ensure_fnox() {
     fi
     local cargo_bin="$HOME/.cargo/bin/cargo"
     if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
-        ensure_fnox_cargo_deps
+        if ! ensure_fnox_cargo_deps; then
+            warn "Skipping cargo fnox fallback because prerequisites are unavailable"
+            return 1
+        fi
         echo "  Installing fnox via cargo..."
         # Same pattern as above — the grep|tail pipeline masks
         # `cargo install`'s exit code otherwise.
+        set +e
         "$cargo_bin" install fnox 2>&1 | grep -E "Installing|Installed|error" | tail -3
         local cargo_rc=${PIPESTATUS[0]}
+        set -e
         if [[ $cargo_rc -eq 0 ]]; then
             ok "fnox installed"
             ensure_fnox_config
@@ -834,8 +848,14 @@ REMOTE_FNOX
         [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
         local ssh_target="${user}@${host}"
         local remote_home remote_service_path
-        remote_home=$(ssh $ssh_opts "$ssh_target" 'printf "%s" "$HOME"' 2>/dev/null || echo '$HOME')
-        remote_service_path="${install_dir}:${remote_home}/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+        remote_home=$(ssh $ssh_opts "$ssh_target" 'printf "%s" "$HOME"' 2>/dev/null || true)
+        if [[ -z "$remote_home" && "$user" == "root" ]]; then
+            remote_home="/root"
+        fi
+        remote_service_path="${install_dir}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+        if [[ -n "$remote_home" && "$remote_home" = /* ]]; then
+            remote_service_path="${install_dir}:${remote_home}/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+        fi
 
         echo "  [$name] deploying $bin..."
 

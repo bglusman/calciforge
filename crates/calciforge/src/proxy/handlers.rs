@@ -206,21 +206,8 @@ pub async fn local_model_switch(
     headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    // Auth check — same key as the proxy API.
-    if let Some(ref expected_key) = state.config.api_key {
-        let provided = headers
-            .get("authorization")
-            .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if provided != expected_key.as_str() {
-            return api_error(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Invalid API key",
-                None,
-            );
-        }
+    if let Some(response) = require_api_key(&state.config, &headers) {
+        return response;
     }
 
     let model_id = match body.get("model").and_then(|v| v.as_str()) {
@@ -498,15 +485,27 @@ fn api_error(status: StatusCode, error_type: &str, message: &str, param: Option<
 }
 
 fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
-    let expected_key = config.api_key.as_ref()?;
+    let expected_key = config.api_key.as_deref()?.trim();
+    if expected_key.is_empty() {
+        return None;
+    }
 
     let provided = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .unwrap_or("");
+        .and_then(|s| {
+            let trimmed = s.trim();
+            let mut parts = trimmed.splitn(2, char::is_whitespace);
+            let scheme = parts.next()?;
+            let token = parts.next()?.trim_start();
+            if scheme.eq_ignore_ascii_case("Bearer") && !token.is_empty() {
+                Some(token)
+            } else {
+                None
+            }
+        });
 
-    if provided == expected_key.as_str() {
+    if provided == Some(expected_key) {
         None
     } else {
         Some(api_error(
@@ -515,5 +514,38 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
             "Invalid API key",
             None,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn config_with_key(key: Option<&str>) -> ProxyConfig {
+        ProxyConfig {
+            api_key: key.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn require_api_key_treats_empty_configured_key_as_disabled() {
+        let headers = HeaderMap::new();
+        assert!(require_api_key(&config_with_key(Some("  ")), &headers).is_none());
+    }
+
+    #[test]
+    fn require_api_key_accepts_case_insensitive_bearer_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("bearer test-key"));
+        assert!(require_api_key(&config_with_key(Some("test-key")), &headers).is_none());
+    }
+
+    #[test]
+    fn require_api_key_rejects_missing_bearer_token() {
+        let headers = HeaderMap::new();
+        let response = require_api_key(&config_with_key(Some("test-key")), &headers);
+        assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
     }
 }
