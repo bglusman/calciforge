@@ -5,6 +5,14 @@ edition = "2024"
 description = "Secrets client for Calciforge — fnox subprocess wrapper, vaultwarden client, env→fnox→vault resolver"
 license = "MIT"
 
+[features]
+# Default: subprocess-only (cheap deps, fast build)
+default = []
+# Opt-in library mode: pulls in the fnox crate and uses it directly
+# instead of forking a `fnox` binary. Removes PATH dependency.
+# Cost: ~30 transitive crates (AWS SDK, GCP SDK, keyring, age, etc.).
+fnox-library = ["dep:fnox"]
+
 [lib]
 name = "secrets_client"
 path = "src/lib.rs"
@@ -23,6 +31,12 @@ reqwest = { workspace = true }
 url = "2"
 humantime = "2"
 humantime-serde = "1"
+
+# Optional: fnox-library feature pulls in the fnox crate for direct
+# library access. Off by default — enable with --features fnox-library.
+# Pinned to our fork branch until upstream PR jdx/fnox#442 lands and
+# ships in 1.22+. One-line edit to `fnox = "1.22"` then.
+fnox = { git = "https://github.com/bglusman/fnox", branch = "feat/library-convenience-api", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
