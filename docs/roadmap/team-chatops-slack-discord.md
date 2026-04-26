@@ -2,7 +2,7 @@
 
 **Status:** sketch
 **Priority:** medium, after single-operator flows stay boringly reliable
-**Related:** `docs/rfcs/model-gateway-primitives.md`, `docs/architecture-review-2026-04-25.md`
+**Related:** `docs/rfcs/model-gateway-primitives.md`, `research/reviews/architecture-review-2026-04-25.md`
 
 Calciforge works today as a personal, cross-channel gateway: one operator, many chat surfaces, several agents, one security boundary. Team ChatOps adds shared rooms, shared agents, and more people near the door. That changes the risk model.
 

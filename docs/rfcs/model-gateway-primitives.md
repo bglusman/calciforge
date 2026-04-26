@@ -1,6 +1,10 @@
 # RFC: Model-gateway primitives (Alloy + Cascade + Dispatcher)
 
-Status: **draft — decisions incorporated from first review round.** Implementation PRs can start.
+Status: **implemented for the core runtime.** Alloy context-window
+safety, named `[[cascades]]`, named `[[dispatchers]]`, and the shared
+estimator trait are in code. Real tokenizer-backed estimators,
+`capacity_fraction`, and per-model/per-primitive estimator overrides
+remain future work.
 
 ## Decisions (from first review)
 
@@ -9,7 +13,7 @@ Status: **draft — decisions incorporated from first review round.** Implementa
 | 1 | Name for the size-routing primitive | **`dispatcher`** ("router" too generic) |
 | 2 | Cascade as a named primitive | **Yes** — own `[[cascades]]` table |
 | 3 | Safety margin default | **Two knobs** — estimator `safety_margin` (default 1.10) AND per-model `capacity_fraction` (default 1.0; users lower to e.g. 0.85 when a model degrades near its ceiling). Composition formula and rationale in the updated section below. |
-| 4 | Per-primitive tokenizer override + second tokenizer impl | **`TiktokenEstimator` ships in v1** behind a feature flag. **`SentencePieceEstimator` deferred** (C++ dep + per-model vocab files are too much plumbing for v1). Per-primitive override stays in v1 config schema. |
+| 4 | Per-primitive tokenizer override + second tokenizer impl | **Default implementation ships first.** `CharRatioEstimator` is wired into routing and `ByteRatioEstimator` exists for denser prompt families. `TiktokenEstimator`, `SentencePieceEstimator`, and per-primitive overrides are deferred behind future feature flags. |
 | 5 | Re-evaluation default for dispatchers | **`per_turn`** (re-evaluate each message — never dies from size). `sticky` as opt-in for flows where model-voice continuity matters. `sticky_escalate` as a middle-ground convenience (sticky, permit one auto-promotion on ceiling, then sticky at the new tier). `worst_case` advanced opt-in with required growth prior. |
 | 6 | Back-compat: allow missing `context_window` on alloy constituents | **No — required field.** Prototype phase, all installations owned in-house. Forcing size declaration at config load prevents silent truncation forever; trivial one-time config edit. |
 | 7 | Dispatcher rule semantics + capacity_fraction interaction | **Default: "first target whose effective ceiling fits the request."** No `max_input_tokens` thresholds needed for the common case. `capacity_fraction` lives on each model individually and feeds the effective-ceiling computation. Explicit `when.max_input_tokens` rules remain available for non-size routing (cost tier, agent-id, etc.). |
@@ -24,9 +28,9 @@ Today calciforge has one model-blending primitive — **alloy** — and an impli
 This RFC proposes:
 
 1. **Three clearly-scoped primitives**, each with a distinct purpose:
-   - `[[alloys]]` — blend between **equivalent** models (today, with safety additions)
-   - `[[cascades]]` — try in order, fall through on error (today, promoted to a named primitive)
-   - `[[dispatchers]]` — pick **by request shape** (new; size-first, extensible to other matchers)
+   - `[[alloys]]` — blend between **equivalent** models (implemented, with context-window safety)
+   - `[[cascades]]` — try in order, fall through on error (implemented as a named primitive)
+   - `[[dispatchers]]` — pick **by request shape** (implemented for size-first routing)
 2. **A shared `TokenEstimator` trait** used by all three primitives to reason about whether a request "fits" a model. Default: configurable chars-per-token heuristic. Pluggable: real tokenizers (`tiktoken`, `sentencepiece`).
 3. **`min_context_window` safety assertion** at alloy-build time, so silent-truncation footguns fail loudly.
 

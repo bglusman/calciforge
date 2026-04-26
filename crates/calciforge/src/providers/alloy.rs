@@ -13,7 +13,9 @@ use rand::distr::Distribution;
 use rand::rng;
 use serde::Serialize;
 
-use crate::config::{AlloyConfig, AlloyConstituentConfig};
+use crate::config::{
+    AlloyConfig, AlloyConstituentConfig, CascadeConfig, DispatcherConfig, SyntheticModelConfig,
+};
 
 /// Runtime strategy for constituent selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,166 @@ pub struct AlloyPlan {
     pub alloy_name: String,
     /// Ordered constituent models to try (first is primary selection).
     pub ordered_models: Vec<String>,
+}
+
+/// One validated target inside a named cascade or dispatcher.
+#[derive(Debug, Clone)]
+pub struct SyntheticModelTarget {
+    pub model: String,
+    pub context_window: u32,
+}
+
+/// Runtime definition for an explicit ordered fallback chain.
+#[derive(Debug, Clone)]
+pub struct CascadeDefinition {
+    pub id: String,
+    pub name: String,
+    pub models: Vec<SyntheticModelTarget>,
+}
+
+/// Runtime definition for a request-size-aware model selector.
+#[derive(Debug, Clone)]
+pub struct DispatcherDefinition {
+    pub id: String,
+    pub name: String,
+    pub models: Vec<SyntheticModelTarget>,
+}
+
+fn validate_synthetic_model(
+    owner_kind: &str,
+    owner_id: &str,
+    c: &SyntheticModelConfig,
+) -> Result<(), String> {
+    if c.model.trim().is_empty() {
+        return Err(format!(
+            "{owner_kind} '{owner_id}': model must not be empty"
+        ));
+    }
+    if c.context_window == 0 {
+        return Err(format!(
+            "{owner_kind} '{owner_id}': model '{}' context_window must be > 0",
+            c.model
+        ));
+    }
+    Ok(())
+}
+
+impl CascadeDefinition {
+    pub fn from_config(cfg: &CascadeConfig) -> Result<Self, String> {
+        if cfg.id.trim().is_empty() {
+            return Err("cascade id must not be empty".to_string());
+        }
+        if cfg.models.is_empty() {
+            return Err(format!(
+                "cascade '{}': must define at least 1 model",
+                cfg.id
+            ));
+        }
+        let mut models = Vec::with_capacity(cfg.models.len());
+        for c in &cfg.models {
+            validate_synthetic_model("cascade", &cfg.id, c)?;
+            models.push(SyntheticModelTarget {
+                model: c.model.clone(),
+                context_window: c.context_window,
+            });
+        }
+        Ok(Self {
+            id: cfg.id.clone(),
+            name: cfg.name.clone().unwrap_or_else(|| cfg.id.clone()),
+            models,
+        })
+    }
+
+    /// Return configured targets in order, skipping models too small for the
+    /// estimated request. That lets a cascade use local-first fallbacks without
+    /// knowingly sending an oversized request to a small context window.
+    pub fn select_plan(&self, estimated_tokens: u32) -> Result<AlloyPlan, String> {
+        let ordered_models: Vec<String> = self
+            .models
+            .iter()
+            .filter(|m| m.context_window >= estimated_tokens)
+            .map(|m| m.model.clone())
+            .collect();
+        if ordered_models.is_empty() {
+            let largest = self
+                .models
+                .iter()
+                .map(|m| m.context_window)
+                .max()
+                .unwrap_or_default();
+            return Err(format!(
+                "cascade '{}': estimated request size {} tokens exceeds largest configured context window {}",
+                self.id, estimated_tokens, largest
+            ));
+        }
+        Ok(AlloyPlan {
+            alloy_id: self.id.clone(),
+            alloy_name: self.name.clone(),
+            ordered_models,
+        })
+    }
+}
+
+impl DispatcherDefinition {
+    pub fn from_config(cfg: &DispatcherConfig) -> Result<Self, String> {
+        if cfg.id.trim().is_empty() {
+            return Err("dispatcher id must not be empty".to_string());
+        }
+        if cfg.models.is_empty() {
+            return Err(format!(
+                "dispatcher '{}': must define at least 1 model",
+                cfg.id
+            ));
+        }
+        let mut models = Vec::with_capacity(cfg.models.len());
+        for c in &cfg.models {
+            validate_synthetic_model("dispatcher", &cfg.id, c)?;
+            models.push(SyntheticModelTarget {
+                model: c.model.clone(),
+                context_window: c.context_window,
+            });
+        }
+        Ok(Self {
+            id: cfg.id.clone(),
+            name: cfg.name.clone().unwrap_or_else(|| cfg.id.clone()),
+            models,
+        })
+    }
+
+    /// Choose the smallest eligible context window first, with larger models as
+    /// fallbacks. This is intentionally different from alloys: dispatchers are
+    /// for "use local while it fits, then move up" behavior.
+    pub fn select_plan(&self, estimated_tokens: u32) -> Result<AlloyPlan, String> {
+        let mut eligible: Vec<&SyntheticModelTarget> = self
+            .models
+            .iter()
+            .filter(|m| m.context_window >= estimated_tokens)
+            .collect();
+        eligible.sort_by(|a, b| {
+            a.context_window
+                .cmp(&b.context_window)
+                .then_with(|| a.model.cmp(&b.model))
+        });
+
+        if eligible.is_empty() {
+            let largest = self
+                .models
+                .iter()
+                .map(|m| m.context_window)
+                .max()
+                .unwrap_or_default();
+            return Err(format!(
+                "dispatcher '{}': estimated request size {} tokens exceeds largest configured context window {}",
+                self.id, estimated_tokens, largest
+            ));
+        }
+
+        Ok(AlloyPlan {
+            alloy_id: self.id.clone(),
+            alloy_name: self.name.clone(),
+            ordered_models: eligible.into_iter().map(|m| m.model.clone()).collect(),
+        })
+    }
 }
 
 /// Runtime alloy provider object.
@@ -334,6 +496,8 @@ fn validate_constituent(alloy: &AlloyConfig, c: &AlloyConstituentConfig) -> Resu
 #[derive(Debug, Default)]
 pub struct AlloyManager {
     alloys: HashMap<String, AlloyProvider>,
+    cascades: HashMap<String, CascadeDefinition>,
+    dispatchers: HashMap<String, DispatcherDefinition>,
     active_by_identity: Mutex<HashMap<String, String>>,
 }
 
@@ -341,6 +505,8 @@ impl Clone for AlloyManager {
     fn clone(&self) -> Self {
         Self {
             alloys: self.alloys.clone(),
+            cascades: self.cascades.clone(),
+            dispatchers: self.dispatchers.clone(),
             active_by_identity: Mutex::new(
                 self.active_by_identity
                     .lock()
@@ -356,11 +522,21 @@ impl AlloyManager {
     pub fn empty() -> Self {
         Self {
             alloys: HashMap::new(),
+            cascades: HashMap::new(),
+            dispatchers: HashMap::new(),
             active_by_identity: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn from_configs(configs: &[AlloyConfig]) -> Result<Self, String> {
+        Self::from_gateway_configs(configs, &[], &[])
+    }
+
+    pub fn from_gateway_configs(
+        configs: &[AlloyConfig],
+        cascade_configs: &[CascadeConfig],
+        dispatcher_configs: &[DispatcherConfig],
+    ) -> Result<Self, String> {
         let mut alloys = HashMap::new();
         for cfg in configs {
             let provider = AlloyProvider::from_config(cfg)?;
@@ -368,14 +544,36 @@ impl AlloyManager {
                 return Err(format!("duplicate alloy id '{}'", cfg.id));
             }
         }
+
+        let mut cascades = HashMap::new();
+        for cfg in cascade_configs {
+            let cascade = CascadeDefinition::from_config(cfg)?;
+            if alloys.contains_key(&cfg.id) || cascades.insert(cfg.id.clone(), cascade).is_some() {
+                return Err(format!("duplicate synthetic model id '{}'", cfg.id));
+            }
+        }
+
+        let mut dispatchers = HashMap::new();
+        for cfg in dispatcher_configs {
+            let dispatcher = DispatcherDefinition::from_config(cfg)?;
+            if alloys.contains_key(&cfg.id)
+                || cascades.contains_key(&cfg.id)
+                || dispatchers.insert(cfg.id.clone(), dispatcher).is_some()
+            {
+                return Err(format!("duplicate synthetic model id '{}'", cfg.id));
+            }
+        }
+
         Ok(Self {
             alloys,
+            cascades,
+            dispatchers,
             active_by_identity: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.alloys.is_empty()
+        self.alloys.is_empty() && self.cascades.is_empty() && self.dispatchers.is_empty()
     }
 
     /// Get an alloy by ID.
@@ -383,9 +581,44 @@ impl AlloyManager {
         self.alloys.get(alloy_id)
     }
 
+    pub fn is_synthetic_model(&self, model_id: &str) -> bool {
+        self.alloys.contains_key(model_id)
+            || self.cascades.contains_key(model_id)
+            || self.dispatchers.contains_key(model_id)
+    }
+
+    pub fn select_plan_for_model(
+        &self,
+        model_id: &str,
+        estimated_tokens: u32,
+    ) -> Result<Option<AlloyPlan>, String> {
+        if let Some(alloy) = self.alloys.get(model_id) {
+            return Ok(Some(alloy.select_plan()));
+        }
+        if let Some(cascade) = self.cascades.get(model_id) {
+            return cascade.select_plan(estimated_tokens).map(Some);
+        }
+        if let Some(dispatcher) = self.dispatchers.get(model_id) {
+            return dispatcher.select_plan(estimated_tokens).map(Some);
+        }
+        Ok(None)
+    }
+
     /// List all configured alloy IDs.
     pub fn list_alloys(&self) -> Vec<&AlloyProvider> {
         self.alloys.values().collect()
+    }
+
+    pub fn list_cascades(&self) -> Vec<&CascadeDefinition> {
+        let mut v: Vec<&CascadeDefinition> = self.cascades.values().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    pub fn list_dispatchers(&self) -> Vec<&DispatcherDefinition> {
+        let mut v: Vec<&DispatcherDefinition> = self.dispatchers.values().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
     }
 
     pub fn set_active_for_identity(&self, identity_id: &str, alloy_id: &str) -> Result<(), String> {
@@ -440,6 +673,7 @@ impl AlloyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CascadeConfig, DispatcherConfig, SyntheticModelConfig};
 
     fn sample_alloy(strategy: &str) -> AlloyConfig {
         AlloyConfig {
@@ -567,6 +801,72 @@ mod tests {
         assert!(
             err.contains("min_context_window must be > 0"),
             "expected explanatory error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cascade_skips_models_too_small_for_request() {
+        let cascade = CascadeDefinition::from_config(&CascadeConfig {
+            id: "local-then-remote".to_string(),
+            name: None,
+            models: vec![
+                SyntheticModelConfig {
+                    model: "local/small".to_string(),
+                    context_window: 32_768,
+                },
+                SyntheticModelConfig {
+                    model: "remote/large".to_string(),
+                    context_window: 262_144,
+                },
+            ],
+        })
+        .unwrap();
+
+        let plan = cascade.select_plan(100_000).unwrap();
+        assert_eq!(plan.ordered_models, vec!["remote/large"]);
+    }
+
+    #[test]
+    fn dispatcher_chooses_smallest_model_that_fits_first() {
+        let dispatcher = DispatcherDefinition::from_config(&DispatcherConfig {
+            id: "smart-local".to_string(),
+            name: None,
+            models: vec![
+                SyntheticModelConfig {
+                    model: "remote/large".to_string(),
+                    context_window: 262_144,
+                },
+                SyntheticModelConfig {
+                    model: "local/small".to_string(),
+                    context_window: 32_768,
+                },
+                SyntheticModelConfig {
+                    model: "local/medium".to_string(),
+                    context_window: 65_536,
+                },
+            ],
+        })
+        .unwrap();
+
+        let plan = dispatcher.select_plan(40_000).unwrap();
+        assert_eq!(plan.ordered_models, vec!["local/medium", "remote/large"]);
+    }
+
+    #[test]
+    fn manager_rejects_duplicate_synthetic_ids() {
+        let alloy = sample_alloy("weighted");
+        let dispatcher = DispatcherConfig {
+            id: alloy.id.clone(),
+            name: None,
+            models: vec![SyntheticModelConfig {
+                model: "local/small".to_string(),
+                context_window: 32_768,
+            }],
+        };
+        let err = AlloyManager::from_gateway_configs(&[alloy], &[], &[dispatcher]).unwrap_err();
+        assert!(
+            err.contains("duplicate synthetic model id"),
+            "expected duplicate id error, got: {err}"
         );
     }
 }

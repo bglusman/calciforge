@@ -67,10 +67,7 @@ impl CalciforgeMcp {
     /// produced a token the substitution engine wouldn't accept, the
     /// agent's request would silently fail downstream.
     fn is_valid_name(name: &str) -> bool {
-        !name.is_empty()
-            && name
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        secrets_client::is_valid_secret_name(name)
     }
 }
 
@@ -158,7 +155,8 @@ impl CalciforgeMcp {
                 None,
             ));
         }
-        let token = format!("{{{{secret:{name}}}}}");
+        let token = secrets_client::secret_reference_token(&name)
+            .expect("validated above: valid secret name");
         let payload = serde_json::json!({
             "name": name,
             "reference": token,

@@ -180,13 +180,24 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
     let router = Arc::new(Router::new());
 
-    // Initialize AlloyManager if alloys are configured
-    let alloy_manager = if config.alloys.is_empty() {
+    // Initialize model-gateway synthetic routing if configured.
+    let has_synthetic_models =
+        !config.alloys.is_empty() || !config.cascades.is_empty() || !config.dispatchers.is_empty();
+    let alloy_manager = if !has_synthetic_models {
         None
     } else {
-        match AlloyManager::from_configs(&config.alloys) {
+        match AlloyManager::from_gateway_configs(
+            &config.alloys,
+            &config.cascades,
+            &config.dispatchers,
+        ) {
             Ok(manager) => {
-                info!(alloys = config.alloys.len(), "alloy manager initialized");
+                info!(
+                    alloys = config.alloys.len(),
+                    cascades = config.cascades.len(),
+                    dispatchers = config.dispatchers.len(),
+                    "model gateway synthetic routing initialized"
+                );
                 Some(manager)
             }
             Err(e) => {

@@ -27,7 +27,7 @@ impl CredentialInjector {
     /// the on-demand resolver (`ensure_cached`) which looks up
     /// `<NAME>_API_KEY` (the convention used by most SDKs and by
     /// `secrets-client::vault::get_secret`). See
-    /// docs/rfcs/consolidation-findings.md finding #1.
+    /// research/planning/consolidation-findings.md finding #1.
     ///
     /// Deprecation path: this method emits a per-key warning when a
     /// `ZEROGATE_KEY_*` var is found, so operators notice and can
@@ -149,7 +149,7 @@ impl CredentialInjector {
     /// rotation requires adding a TTL or explicit invalidation path.
     /// Neither exists yet; rotations take effect on the next restart.
     /// This addresses finding #5 in
-    /// `docs/rfcs/consolidation-findings.md` partially — the resolver
+    /// `research/planning/consolidation-findings.md` partially — the resolver
     /// is at least consulted for uncached providers per-request, which
     /// is better than the previous startup-only env scan; true
     /// rotation is follow-up work.

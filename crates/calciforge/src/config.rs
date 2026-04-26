@@ -53,6 +53,18 @@ pub struct PolyConfig {
     #[serde(default)]
     pub alloys: Vec<AlloyConfig>,
 
+    /// `[[cascades]]` — explicit ordered model fallback chains.
+    /// The proxy tries the first model whose declared context window can hold
+    /// the request, then falls through to later eligible models on failure.
+    #[serde(default)]
+    pub cascades: Vec<CascadeConfig>,
+
+    /// `[[dispatchers]]` — request-size aware model selectors.
+    /// The proxy picks the smallest configured model that can hold the request,
+    /// then uses larger eligible models as fallbacks.
+    #[serde(default)]
+    pub dispatchers: Vec<DispatcherConfig>,
+
     /// `[security]` — adversary detector profile and settings.
     /// Defaults to balanced if not specified in config.
     #[serde(default)]
@@ -120,6 +132,41 @@ pub struct AlloyConstituentConfig {
 
 fn default_alloy_weight() -> u32 {
     1
+}
+
+/// Cascade definition (`[[cascades]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CascadeConfig {
+    /// Synthetic model id requested by agents.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Ordered fallback targets.
+    #[serde(default)]
+    pub models: Vec<SyntheticModelConfig>,
+}
+
+/// Dispatcher definition (`[[dispatchers]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DispatcherConfig {
+    /// Synthetic model id requested by agents.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Candidate targets, usually small local models first and larger remote
+    /// models later. Runtime selection sorts by declared context size.
+    #[serde(default)]
+    pub models: Vec<SyntheticModelConfig>,
+}
+
+/// One target inside a cascade or dispatcher.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SyntheticModelConfig {
+    pub model: String,
+    /// Declared context window (tokens) for this target.
+    pub context_window: u32,
 }
 
 /// `[calciforge]` header section.

@@ -1072,6 +1072,8 @@ mod tests {
             context: Default::default(),
             model_shortcuts: vec![],
             alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
             security: None,
             proxy: None,
             local_models: None,

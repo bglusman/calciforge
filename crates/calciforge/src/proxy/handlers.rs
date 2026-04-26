@@ -17,7 +17,7 @@ use crate::proxy::{
         ApiError, ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, DeltaMessage,
         ErrorDetail, ModelInfo, ModelListResponse,
     },
-    routing, ChatCompletionRequest, ProxyState,
+    routing, token_estimator, ChatCompletionRequest, ProxyState,
 };
 
 /// List of valid/known models - in production this would come from config or backend
@@ -61,15 +61,17 @@ pub async fn chat_completions(
         );
     }
 
+    let estimated_tokens = token_estimator::default_request_estimate(&req);
+
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
     //  - Backend is http (upstream is authoritative).
-    //  - It's a configured alloy.
+    //  - It's a configured synthetic model (alloy, cascade, dispatcher).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_http_backend = state.config.backend_type == "http";
     let is_valid_model = provider_matches
         || is_http_backend
-        || state.alloy_manager.get_alloy(&req.model).is_some()
+        || state.alloy_manager.is_synthetic_model(&req.model)
         || KNOWN_MODELS.contains(&req.model.as_str());
 
     if !is_valid_model {
@@ -82,16 +84,32 @@ pub async fn chat_completions(
         );
     }
 
-    // Check if model is an alloy alias
-    let plan = if let Some(alloy) = state.alloy_manager.get_alloy(&req.model) {
-        info!(alloy_id = %req.model, "Using alloy for request");
-        alloy.select_plan()
-    } else {
-        // Direct model reference - create single-constituent "plan"
-        crate::providers::alloy::AlloyPlan {
+    let plan = match state
+        .alloy_manager
+        .select_plan_for_model(&req.model, estimated_tokens)
+    {
+        Ok(Some(plan)) => {
+            info!(
+                synthetic_model = %req.model,
+                estimated_tokens,
+                attempts = plan.ordered_models.len(),
+                "Using synthetic model plan for request"
+            );
+            plan
+        }
+        Ok(None) => crate::providers::alloy::AlloyPlan {
             alloy_id: req.model.clone(),
             alloy_name: req.model.clone(),
             ordered_models: vec![req.model.clone()],
+        },
+        Err(e) => {
+            warn!(model = %req.model, estimated_tokens, error = %e, "Synthetic model cannot fit request");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "context_window_exceeded",
+                &e,
+                Some("messages"),
+            );
         }
     };
 
@@ -293,6 +311,22 @@ pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
             object: "model".to_string(),
             created: now,
             owned_by: "calciforge".to_string(),
+        });
+    }
+    for cascade in state.alloy_manager.list_cascades() {
+        models.push(ModelInfo {
+            id: cascade.id.clone(),
+            object: "model".to_string(),
+            created: now,
+            owned_by: "calciforge/cascade".to_string(),
+        });
+    }
+    for dispatcher in state.alloy_manager.list_dispatchers() {
+        models.push(ModelInfo {
+            id: dispatcher.id.clone(),
+            object: "model".to_string(),
+            created: now,
+            owned_by: "calciforge/dispatcher".to_string(),
         });
     }
 

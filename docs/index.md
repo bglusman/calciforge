@@ -172,9 +172,9 @@ footer .name-origin {
 <p class="tagline">Keep your castle secure and moving.</p>
 
 <p class="lede">A self-hosted security gateway for AI agents. Every agent
-gets its own bound contract — its own secrets, its own allowed
-destinations, its own audit trail — without sharing API keys or
-trusting the agent's own restraint.</p>
+gets a bound contract — destination-scoped secret substitution,
+model routes, command permissions, and audit trails — without sharing
+raw API keys or trusting the agent's own restraint.</p>
 
 <div class="nav">
 <a href="https://github.com/bglusman/calciforge">GitHub</a>
@@ -278,8 +278,20 @@ def evaluate(ctx):
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests to named providers, explicit model routes, local models, and
-alloys. Chat users can also inspect and switch configured aliases with
-`!model`.
+synthetic models. Chat users can also inspect and switch configured
+aliases with `!model`.
+
+The synthetic-model vocabulary is:
+
+- **Alloy** — blend among interchangeable models by weighted or
+  round-robin selection. Implemented today with context-window
+  validation: every constituent declares a context window, and the
+  alloy can only advertise a ceiling every constituent can satisfy.
+- **Cascade** — ordered fallback on provider failure. The behavior
+  exists inside alloy execution and as named `[[cascades]]`.
+- **Dispatcher** — choose by request shape, such as "smallest
+  sufficient model." This is the size-routing primitive for mixing
+  small local models with larger remote models.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -346,19 +358,39 @@ port = 8888
 id = "qwen3-35b"
 hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
 display_name = "Qwen 35B local"
+
+[[dispatchers]]
+id = "smart-local"
+name = "Use local until the prompt outgrows it"
+
+[[dispatchers.models]]
+model = "local/qwen3-35b"
+context_window = 32768
+
+[[dispatchers.models]]
+model = "anthropic/claude-sonnet-4.6"
+context_window = 200000
 ```
 
-Planned gateway primitives such as named cascades, dispatcher routing,
-and stricter token-window fit checks are captured in
+The full gateway reference is
+[`docs/model-gateway.md`](https://github.com/bglusman/calciforge/blob/main/docs/model-gateway.md).
+Named cascades, dispatchers, and token-window fit checks are captured
+in
 [`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
 
-### Agent-facing tools (MCP)
+### Agent-facing tools (MCP and CLI)
 
-A built-in MCP server exposes secret *names* to agents but never
-returns values — the only way for an agent to use a secret is to
+A built-in MCP server and small CLI expose secret *names* to agents
+but never return values — the only way for an agent to use a secret is to
 emit `{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve
 on the way out. Designed so a compromised agent can enumerate names
 and fail to retrieve values.
+
+Today, discovery is process-scoped: it sees the fnox names available
+to the MCP server or CLI process. Calciforge enforces per-secret
+destination allowlists at substitution time, but does not yet enforce
+per-agent secret discovery/use ACLs. That policy layer is on the
+[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/agent-secret-access-policy.md).
 
 ```json
 // ~/.claude/mcp-config.json
@@ -370,6 +402,11 @@ and fail to retrieve values.
     }
   }
 }
+```
+
+```bash
+calciforge-secrets list
+calciforge-secrets ref BRAVE_API_KEY
 ```
 
 ### Multi-channel chat
@@ -393,8 +430,9 @@ session_dir = "~/.calciforge/whatsapp"
 allowed_numbers = ["+15555550100"]
 ```
 
-Per-identity routing: each user gets their own active agent, their
-own secret allowlist, their own audit trail.
+Per-identity routing: each user gets their own active agent and audit
+trail. Per-agent secret ACLs are planned; current secret enforcement
+is value hiding plus destination allowlists.
 
 ### Sensitive system operations
 
@@ -437,10 +475,9 @@ headless deployment).
 
 The list of what works today and what's still in flight lives in the
 [README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
-The strategic architecture review (5 findings, in-flight implementation)
-lives at
-[`docs/architecture-review-2026-04-25.md`](https://github.com/bglusman/calciforge/blob/main/docs/architecture-review-2026-04-25.md);
-speculative ideas being captured live in
+Internal reviews and planning notes live under
+[`research/`](https://github.com/bglusman/calciforge/tree/main/research);
+public roadmap ideas live in
 [`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
 
 <footer>

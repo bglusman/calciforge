@@ -123,6 +123,8 @@ mod tests {
             agents: vec![],
             routing: vec![],
             alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
             channels: vec![],
             permissions: None,
             memory: None,

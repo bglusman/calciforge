@@ -321,7 +321,7 @@ impl SecurityProxy {
         // Credential injection — on a cache miss, resolve via the shared
         // secrets-client vault resolver (env → fnox → vaultwarden) so
         // rotated keys are picked up per-request rather than only at
-        // startup. See docs/rfcs/consolidation-findings.md finding #5.
+        // startup. See research/planning/consolidation-findings.md finding #5.
         let mut injected_headers = vec![];
         if self.config.inject_credentials {
             if let Some(host) = reqwest::Url::parse(&target_url)

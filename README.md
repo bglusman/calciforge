@@ -4,8 +4,8 @@
 
 Calciforge is a self-hosted security gateway for AI agents. It sits
 between your agents and the rest of the world, so every agent gets its
-own secrets, allowed destinations, model routes, command permissions,
-and audit trail without holding your raw API keys.
+own model routes, command permissions, destination-scoped secret
+substitution, and audit trail without holding your raw API keys.
 
 The longer feature tour, configuration examples, and architecture notes
 live on the docs site: **[bglusman.github.io/calciforge](https://bglusman.github.io/calciforge/)**.
@@ -17,14 +17,14 @@ live on the docs site: **[bglusman.github.io/calciforge](https://bglusman.github
 | `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://bglusman.github.io/calciforge/#secret-management) |
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://bglusman.github.io/calciforge/#outbound-traffic-gating) |
 | Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://bglusman.github.io/calciforge/#secret-management) |
-| MCP server for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://bglusman.github.io/calciforge/#agent-facing-tools-mcp) |
+| MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://bglusman.github.io/calciforge/#agent-facing-tools-mcp) |
 | Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://bglusman.github.io/calciforge/#multi-channel-chat) |
-| OpenAI-compatible model gateway, provider routing, model aliases, alloys, and local model switching | Working | [Model gateway](https://bglusman.github.io/calciforge/#model-gateway) |
+| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://bglusman.github.io/calciforge/#outbound-traffic-gating) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
 | Slack/Discord team ChatOps and Castle-to-Castle federation | Roadmap | [Team ChatOps sketch](docs/roadmap/team-chatops-slack-discord.md) |
-| Named cascades and dispatcher routing for the model gateway | RFC | [Model gateway primitives](docs/rfcs/model-gateway-primitives.md) |
+| Per-agent secret ACLs beyond destination allowlists | Roadmap | [Secret access policy](docs/roadmap/agent-secret-access-policy.md) |
 
 ## Quick Start
 
@@ -42,6 +42,7 @@ After install, the default local pieces are:
 - `security-proxy` on `127.0.0.1:8888` — substitution, destination checks, scanning, credential injection
 - `clashd` on `127.0.0.1:9001` — small HTTP adapter around the `clash` policy engine
 - `secrets-client` — env → fnox → Vaultwarden secret resolver
+- `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
 - `paste-server` — short-lived local forms for adding secrets without putting values in chat history
 
 Channel-based secret input is intentionally being de-emphasized. It
@@ -129,12 +130,13 @@ bash scripts/install-git-hooks.sh
 ## Docs
 
 - [Feature tour and install notes](https://bglusman.github.io/calciforge/)
+- [Model gateway reference](docs/model-gateway.md)
 - [Model gateway RFC](docs/rfcs/model-gateway-primitives.md)
-- [Architecture review](docs/architecture-review-2026-04-25.md)
 - [Security proxy docs](docs/security-gateway.md)
 - [Host-agent docs](crates/host-agent/README.md)
 - [Roadmap](docs/roadmap/)
 - [Channel secret-input deprecation note](docs/roadmap/channel-secret-input-deprecation.md)
+- [Internal research and planning notes](research/)
 
 ## License
 

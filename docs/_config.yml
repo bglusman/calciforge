@@ -1,6 +1,5 @@
 title: Calciforge
 description: Keep your castle secure and moving.
 exclude:
-  - architecture-review-2026-04-25.md
   - rfcs/
   - roadmap/

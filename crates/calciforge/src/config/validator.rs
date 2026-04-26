@@ -60,6 +60,9 @@ pub fn validate_config(config: &PolyConfig) -> ValidationResult {
     // Validate alloys have valid constituents
     validate_alloys(config, &mut result);
 
+    // Validate cascades and dispatchers
+    validate_synthetic_model_groups(config, &mut result);
+
     // Validate proxy configuration if present
     if let Some(ref proxy) = config.proxy {
         validate_proxy_config(proxy, &mut result);
@@ -102,11 +105,21 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
         }
     }
 
-    // Check duplicate alloy IDs
-    let mut alloy_ids = HashSet::new();
+    // Check duplicate synthetic model IDs across alloys, cascades, dispatchers.
+    let mut synthetic_model_ids = HashSet::new();
     for alloy in &config.alloys {
-        if !alloy_ids.insert(&alloy.id) {
+        if !synthetic_model_ids.insert(&alloy.id) {
             result.add_error(format!("Duplicate alloy ID: '{}'", alloy.id));
+        }
+    }
+    for cascade in &config.cascades {
+        if !synthetic_model_ids.insert(&cascade.id) {
+            result.add_error(format!("Duplicate synthetic model ID: '{}'", cascade.id));
+        }
+    }
+    for dispatcher in &config.dispatchers {
+        if !synthetic_model_ids.insert(&dispatcher.id) {
+            result.add_error(format!("Duplicate synthetic model ID: '{}'", dispatcher.id));
         }
     }
 
@@ -194,6 +207,46 @@ fn validate_alloys(config: &PolyConfig, result: &mut ValidationResult) {
                 "Alloy '{}' has no constituents and will be unusable",
                 alloy.id
             ));
+        }
+    }
+}
+
+/// Validate named cascades and dispatchers.
+fn validate_synthetic_model_groups(config: &PolyConfig, result: &mut ValidationResult) {
+    for cascade in &config.cascades {
+        if cascade.models.is_empty() {
+            result.add_error(format!("Cascade '{}' has no models", cascade.id));
+        }
+        for model in &cascade.models {
+            if model.model.trim().is_empty() {
+                result.add_error(format!("Cascade '{}' has an empty model id", cascade.id));
+            }
+            if model.context_window == 0 {
+                result.add_error(format!(
+                    "Cascade '{}' model '{}' has context_window=0",
+                    cascade.id, model.model
+                ));
+            }
+        }
+    }
+
+    for dispatcher in &config.dispatchers {
+        if dispatcher.models.is_empty() {
+            result.add_error(format!("Dispatcher '{}' has no models", dispatcher.id));
+        }
+        for model in &dispatcher.models {
+            if model.model.trim().is_empty() {
+                result.add_error(format!(
+                    "Dispatcher '{}' has an empty model id",
+                    dispatcher.id
+                ));
+            }
+            if model.context_window == 0 {
+                result.add_error(format!(
+                    "Dispatcher '{}' model '{}' has context_window=0",
+                    dispatcher.id, model.model
+                ));
+            }
         }
     }
 }
