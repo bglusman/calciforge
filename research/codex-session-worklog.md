@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 18:54 EDT.
+Last updated: 2026-04-26 19:00 EDT.
 
 ## Automation handoff
 
@@ -116,6 +116,10 @@ Current status:
   correctly. The assertion failed because the test observer used `/sync` polling
   in a way that missed the reply event. The harness now verifies replies via the
   room history endpoint for the DM room.
+- After the basic DM E2E went green in GitHub Actions, the harness was expanded
+  to cover command happy paths in the same real DM: `!ping`, `!help`, `!agents`,
+  `!status`, `!metrics`, `!model`, `!sessions <non-acpx-agent>`, `!switch`,
+  `!default`, and default/active CLI dispatch through two mock agents.
 - Public registration on `matrix.enjyn.com` still requires
   `m.login.registration_token`. That only blocks manual testing against the
   production homeserver, not CI E2E coverage.

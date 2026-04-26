@@ -158,10 +158,10 @@ def wait_for_bot_join(
     raise TimeoutError(f"Calciforge bot did not join direct Matrix chat {room_id}")
 
 
-def write_agent(path: Path) -> None:
+def write_agent(path: Path, prefix: str) -> None:
     path.write_text(
         "#!/bin/sh\n"
-        "printf 'real-matrix-agent saw: %s\\n' \"$1\"\n",
+        f"printf '{prefix}: %s\\n' \"$1\"\n",
         encoding="utf-8",
     )
     path.chmod(0o755)
@@ -173,6 +173,7 @@ def write_config(
     bot_token_path: Path,
     alice_user_id: str,
     agent_path: Path,
+    backup_agent_path: Path,
 ) -> None:
     path.write_text(
         f"""
@@ -193,10 +194,17 @@ command = "{agent_path}"
 args = ["{{message}}"]
 timeout_ms = 5000
 
+[[agents]]
+id = "backup-agent"
+kind = "cli"
+command = "{backup_agent_path}"
+args = ["{{message}}"]
+timeout_ms = 5000
+
 [[routing]]
 identity = "alice"
 default_agent = "real-matrix-agent"
-allowed_agents = ["real-matrix-agent"]
+allowed_agents = ["real-matrix-agent", "backup-agent"]
 
 [context]
 buffer_size = 20
@@ -231,8 +239,9 @@ def stream_process_output(
             ready_queue.put(line)
 
 
-def start_calciforge(config_path: Path) -> tuple[subprocess.Popen, list[str]]:
+def start_calciforge(config_path: Path, home_dir: Path) -> tuple[subprocess.Popen, list[str]]:
     env = os.environ.copy()
+    env["HOME"] = str(home_dir)
     env.setdefault("RUST_LOG", "calciforge=info")
     cmd = [
         "cargo",
@@ -298,7 +307,7 @@ def wait_for_reply(
     alice_token: str,
     room_id: str,
     bot_user_id: str,
-    expected_reply: str,
+    expected_reply_fragment: str,
     deadline: float,
 ) -> None:
     room_messages_url = (
@@ -326,10 +335,32 @@ def wait_for_reply(
             if event.get("sender") != bot_user_id:
                 continue
             content = event.get("content", {})
-            if content.get("body") == expected_reply:
+            body = content.get("body", "")
+            if expected_reply_fragment in body:
                 return
         time.sleep(1)
-    raise TimeoutError(f"did not receive expected Matrix reply: {expected_reply!r}")
+    raise TimeoutError(
+        f"did not receive expected Matrix reply containing: {expected_reply_fragment!r}"
+    )
+
+
+def send_and_expect(
+    base_url: str,
+    alice_token: str,
+    room_id: str,
+    bot_user_id: str,
+    body: str,
+    expected_reply_fragment: str,
+) -> None:
+    send_message(base_url, alice_token, room_id, body)
+    wait_for_reply(
+        base_url,
+        alice_token,
+        room_id,
+        bot_user_id,
+        expected_reply_fragment,
+        time.monotonic() + 60,
+    )
 
 
 def stop_process(proc: subprocess.Popen | None) -> None:
@@ -419,7 +450,9 @@ def main() -> int:
         token_path = tmp / "matrix-bot-token"
         token_path.write_text(f"{bot_token}\n", encoding="utf-8")
         agent_path = tmp / "real-matrix-agent"
-        write_agent(agent_path)
+        write_agent(agent_path, "real-matrix-agent saw")
+        backup_agent_path = tmp / "backup-agent"
+        write_agent(backup_agent_path, "backup-matrix-agent saw")
         config_path = tmp / "calciforge.toml"
         write_config(
             config_path,
@@ -427,9 +460,10 @@ def main() -> int:
             token_path,
             alice_user_id,
             agent_path,
+            backup_agent_path,
         )
 
-        calciforge_proc, _logs = start_calciforge(config_path)
+        calciforge_proc, _logs = start_calciforge(config_path, tmp)
         room_id = create_room(base_url, alice_token, bot_user_id)
         wait_for_bot_join(
             base_url,
@@ -438,14 +472,57 @@ def main() -> int:
             bot_user_id,
             time.monotonic() + 30,
         )
-        send_message(base_url, alice_token, room_id, EXPECTED_PROMPT)
-        wait_for_reply(
+
+        command_cases = [
+            ("!ping", "pong"),
+            ("!help", "Calciforge"),
+            ("!agents", "backup-agent"),
+            ("!status", "active agent: real-matrix-agent"),
+            ("!metrics", "messages routed: 0"),
+            ("!model", "No model shortcuts or alloys configured."),
+            ("!sessions real-matrix-agent", "does not support session listing"),
+        ]
+        for body, expected in command_cases:
+            send_and_expect(
+                base_url,
+                alice_token,
+                room_id,
+                bot_user_id,
+                body,
+                expected,
+            )
+
+        send_and_expect(
             base_url,
             alice_token,
             room_id,
             bot_user_id,
+            "!switch backup-agent",
+            "Your messages will now route to backup-agent",
+        )
+        send_and_expect(
+            base_url,
+            alice_token,
+            room_id,
+            bot_user_id,
+            "after switch",
+            "backup-matrix-agent saw: after switch",
+        )
+        send_and_expect(
+            base_url,
+            alice_token,
+            room_id,
+            bot_user_id,
+            "!default",
+            "Switched to default agent: real-matrix-agent",
+        )
+        send_and_expect(
+            base_url,
+            alice_token,
+            room_id,
+            bot_user_id,
+            EXPECTED_PROMPT,
             EXPECTED_REPLY,
-            time.monotonic() + 60,
         )
         print("real Matrix E2E passed")
         return 0
