@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 18:47 EDT.
+Last updated: 2026-04-26 18:54 EDT.
 
 ## Automation handoff
 
@@ -111,6 +111,11 @@ Current status:
   Docker-owned files in the temp directory. The harness now reads stdout and
   stderr, allows a longer readiness window, tolerates cleanup permissions, and
   the workflow prebuilds Calciforge before running the Matrix script.
+- Second GitHub Actions run showed Calciforge itself handled the real DM path:
+  auto-join, message receive, CLI dispatch, and response generation all logged
+  correctly. The assertion failed because the test observer used `/sync` polling
+  in a way that missed the reply event. The harness now verifies replies via the
+  room history endpoint for the DM room.
 - Public registration on `matrix.enjyn.com` still requires
   `m.login.registration_token`. That only blocks manual testing against the
   production homeserver, not CI E2E coverage.

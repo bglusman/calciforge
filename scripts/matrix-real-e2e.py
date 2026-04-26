@@ -301,26 +301,27 @@ def wait_for_reply(
     expected_reply: str,
     deadline: float,
 ) -> None:
+    room_messages_url = (
+        f"{base_url}/_matrix/client/v3/rooms/{encoded(room_id)}/messages"
+        "?dir=b&limit=20"
+    )
     while time.monotonic() < deadline:
         try:
-            sync = http_json(
+            history = http_json(
                 "GET",
-                f"{base_url}/_matrix/client/v3/sync?timeout=1000",
+                room_messages_url,
                 token=alice_token,
                 timeout=5.0,
             )
         except urllib.error.HTTPError as exc:
-            print(f"Matrix sync failed while waiting for reply: {exc}", file=sys.stderr)
+            print(
+                f"Matrix room history failed while waiting for reply: {exc}",
+                file=sys.stderr,
+            )
             time.sleep(1)
             continue
 
-        events = (
-            sync.get("rooms", {})
-            .get("join", {})
-            .get(room_id, {})
-            .get("timeline", {})
-            .get("events", [])
-        )
+        events = history.get("chunk", [])
         for event in events:
             if event.get("sender") != bot_user_id:
                 continue
