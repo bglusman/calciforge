@@ -876,4 +876,234 @@ mod tests {
         assert!(!lookup.contains("event1"));
         assert!(lookup.contains("event2049"));
     }
+
+    #[tokio::test]
+    async fn matrix_loop_dispatches_allowed_message_and_sends_agent_reply() {
+        use crate::config::{
+            AgentConfig, ChannelAlias, ChannelConfig, ContextConfig, Identity, PolyConfig,
+            PolyHeader, RoutingRule,
+        };
+        use axum::{
+            extract::{Path, Query, State},
+            http::StatusCode,
+            routing::{get, post, put},
+            Json, Router as AxumRouter,
+        };
+        use serde_json::{json, Value};
+        use std::{
+            collections::HashMap,
+            io::Write,
+            net::SocketAddr,
+            os::unix::fs::OpenOptionsExt,
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                Mutex,
+            },
+        };
+        use tempfile::TempDir;
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        #[derive(Clone)]
+        struct MockMatrixState {
+            sync_count: Arc<AtomicUsize>,
+            sent_reply: Arc<Mutex<Option<oneshot::Sender<String>>>>,
+        }
+
+        async fn whoami() -> Json<Value> {
+            Json(json!({
+                "user_id": "@calciforge:example.test",
+                "device_id": "DEVICE"
+            }))
+        }
+
+        async fn joined_members() -> Json<Value> {
+            Json(json!({ "joined": {} }))
+        }
+
+        async fn encryption_state() -> StatusCode {
+            StatusCode::NOT_FOUND
+        }
+
+        async fn sync(
+            State(state): State<MockMatrixState>,
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<Value> {
+            let count = state.sync_count.fetch_add(1, Ordering::SeqCst);
+            if count == 0 && !params.contains_key("since") {
+                return Json(json!({
+                    "next_batch": "s0",
+                    "rooms": {}
+                }));
+            }
+
+            if params.get("since").map(String::as_str) == Some("s0") {
+                return Json(json!({
+                    "next_batch": "s1",
+                    "rooms": {
+                        "join": {
+                            "!room:example.test": {
+                                "timeline": {
+                                    "events": [{
+                                        "type": "m.room.message",
+                                        "event_id": "$event1",
+                                        "sender": "@alice:example.test",
+                                        "content": {
+                                            "msgtype": "m.text",
+                                            "body": "hello calciforge"
+                                        }
+                                    }]
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
+
+            Json(json!({
+                "next_batch": "s2",
+                "rooms": {}
+            }))
+        }
+
+        async fn send_message(
+            State(state): State<MockMatrixState>,
+            Path((_room_id, _txn_id)): Path<(String, String)>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            if let Some(sender) = state.sent_reply.lock().unwrap().take() {
+                let body = payload
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = sender.send(body);
+            }
+            Json(json!({ "event_id": "$reply1" }))
+        }
+
+        async fn join_room(Path(_room_id): Path<String>) -> Json<Value> {
+            Json(json!({ "room_id": "!room:example.test" }))
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let state = MockMatrixState {
+            sync_count: Arc::new(AtomicUsize::new(0)),
+            sent_reply: Arc::new(Mutex::new(Some(reply_tx))),
+        };
+        let app = AxumRouter::new()
+            .route("/_matrix/client/v3/account/whoami", get(whoami))
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/joined_members",
+                get(joined_members),
+            )
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/state/m.room.encryption",
+                get(encryption_state),
+            )
+            .route("/_matrix/client/v3/sync", get(sync))
+            .route("/_matrix/client/v3/join/:room_id", post(join_room))
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/send/m.room.message/:txn_id",
+                put(send_message),
+            )
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let temp = TempDir::new().unwrap();
+        let token_path = temp.path().join("matrix-token");
+        std::fs::write(&token_path, "test-token\n").unwrap();
+
+        let agent_path = temp.path().join("mock-agent");
+        let mut script = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&agent_path)
+            .unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+printf 'mock-agent saw: %s\n' "$1"
+"#
+        )
+        .unwrap();
+        script.sync_all().unwrap();
+        drop(script);
+
+        let config = Arc::new(PolyConfig {
+            calciforge: PolyHeader { version: 2 },
+            identities: vec![Identity {
+                id: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                aliases: vec![ChannelAlias {
+                    channel: "matrix".to_string(),
+                    id: "@alice:example.test".to_string(),
+                }],
+                role: None,
+            }],
+            agents: vec![AgentConfig {
+                id: "mock".to_string(),
+                kind: "cli".to_string(),
+                endpoint: String::new(),
+                timeout_ms: Some(5_000),
+                model: None,
+                auth_token: None,
+                api_key: None,
+                openclaw_agent_id: None,
+                reply_port: None,
+                reply_auth_token: None,
+                command: Some(agent_path.to_string_lossy().to_string()),
+                args: Some(vec!["{message}".to_string()]),
+                env: None,
+                registry: None,
+                aliases: vec![],
+            }],
+            routing: vec![RoutingRule {
+                identity: "alice".to_string(),
+                default_agent: "mock".to_string(),
+                allowed_agents: vec!["mock".to_string()],
+            }],
+            channels: vec![ChannelConfig {
+                kind: "matrix".to_string(),
+                enabled: true,
+                homeserver: Some(format!("http://{addr}")),
+                access_token_file: Some(token_path.to_string_lossy().to_string()),
+                room_id: Some("!room:example.test".to_string()),
+                allowed_users: vec!["@alice:example.test".to_string()],
+                ..Default::default()
+            }],
+            permissions: None,
+            memory: None,
+            context: ContextConfig::default(),
+            model_shortcuts: vec![],
+            alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
+            security: None,
+            proxy: None,
+            local_models: None,
+        });
+
+        let router = Arc::new(Router::new());
+        let command_handler = Arc::new(CommandHandler::with_state_dir(
+            config.clone(),
+            temp.path().join("state"),
+        ));
+        let context_store = ContextStore::new(20, 5);
+
+        let matrix_task = tokio::spawn(run(config, router, command_handler, context_store));
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx)
+            .await
+            .expect("Matrix mock should receive a reply")
+            .expect("reply sender should not be dropped");
+
+        matrix_task.abort();
+        assert_eq!(reply, "mock-agent saw: hello calciforge");
+    }
 }

@@ -854,6 +854,7 @@ fn patch_nzc_config_stub(content: &str, claw_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::cli::parse_install_target;
     use super::*;
     use std::path::PathBuf;
 
@@ -924,6 +925,73 @@ mod tests {
             result.steps
         );
         // No rollback needed
+        assert!(matches!(
+            result.rollback_status,
+            Some(RollbackStatus::NotApplicable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_interactive_ephemeral_openclaw_install_runs_full_pipeline() {
+        let args = InstallArgs {
+            calciforge_host: Some("calciforge@ephemeral-runner.invalid".into()),
+            calciforge_key: Some(PathBuf::from("/tmp/calciforge-ephemeral/id_ed25519")),
+            claw_specs: vec![concat!(
+                "name=matrix-e2e-openclaw,",
+                "adapter=openclaw,",
+                "host=openclaw@ephemeral-runner.invalid,",
+                "key=/tmp/calciforge-ephemeral/openclaw_id_ed25519,",
+                "endpoint=http://127.0.0.1:18080/hooks/calciforge"
+            )
+            .to_string()],
+            dry_run: false,
+            skip_backup: false,
+            _yes: true,
+        };
+        let target = parse_install_target(&args).expect("ephemeral install config should parse");
+        assert_eq!(
+            target.calciforge.host,
+            "calciforge@ephemeral-runner.invalid"
+        );
+        assert_eq!(target.claws.len(), 1);
+        assert_eq!(target.claws[0].name, "matrix-e2e-openclaw");
+        assert!(matches!(target.claws[0].adapter, ClawKind::OpenClawHttp));
+
+        let ssh = MockSshClient::new();
+        ssh.push_success("OK\n");
+        ssh.push_success("");
+        ssh.push_success("EXISTS\n");
+        ssh.push_success("2026.3.13\n");
+        ssh.push_success(r#"{"version": "2026.3.13"}"#);
+        ssh.push_success("");
+        ssh.push_success(
+            r#"{"version":"2026.3.13","hooks":{"enabled":true,"entries":{"matrix-e2e-openclaw":{"enabled":true,"url":"http://127.0.0.1:18080/hooks/calciforge","token":"tok"}}}}"#,
+        );
+
+        let health = MockHealthChecker::new();
+        health.push_ok();
+        health.push_ok();
+
+        let summary = run_install_with_deps(target, &args, ExecutorDeps::mock(ssh, health)).await;
+        assert_eq!(summary.succeeded_count(), 1, "{summary:?}");
+        assert_eq!(summary.failed_count(), 0, "{summary:?}");
+        assert!(!summary.any_failed(), "{summary:?}");
+
+        let result = &summary.claw_results[0];
+        assert_eq!(result.name, "matrix-e2e-openclaw");
+        assert_eq!(
+            result.steps.iter().map(|s| &s.step).collect::<Vec<_>>(),
+            vec![
+                &InstallStep::SshConnectivity,
+                &InstallStep::HealthCheckBaseline,
+                &InstallStep::Backup,
+                &InstallStep::VersionDetection,
+                &InstallStep::CompatibilityCheck,
+                &InstallStep::ProposedChanges,
+                &InstallStep::Apply,
+                &InstallStep::HealthCheckPostApply,
+            ]
+        );
         assert!(matches!(
             result.rollback_status,
             Some(RollbackStatus::NotApplicable)
