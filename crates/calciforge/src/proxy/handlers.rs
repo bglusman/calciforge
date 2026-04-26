@@ -2,7 +2,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Sse},
     Json,
 };
@@ -11,6 +11,7 @@ use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
+use crate::config::ProxyConfig;
 use crate::providers::alloy::AlloyPlan;
 use crate::proxy::{
     openai::{
@@ -36,10 +37,14 @@ const KNOWN_MODELS: &[&str] = &[
 /// Handler for POST /v1/chat/completions
 pub async fn chat_completions(
     State(state): State<ProxyState>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
     debug!(model = %req.model, stream = req.stream.unwrap_or(false), "Chat completion request");
+
+    if let Some(response) = require_api_key(&state.config, &headers) {
+        return response;
+    }
 
     // Extract agent ID from header
     let agent_id = headers
@@ -278,7 +283,11 @@ pub async fn local_model_switch(
 }
 
 /// Handler for GET /v1/models
-pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
+pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    if let Some(response) = require_api_key(&state.config, &headers) {
+        return response;
+    }
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -382,6 +391,7 @@ pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
         object: "list".to_string(),
         data: models,
     })
+    .into_response()
 }
 
 /// Handler for GET /health
@@ -485,4 +495,25 @@ fn api_error(status: StatusCode, error_type: &str, message: &str, param: Option<
     };
 
     (status, Json(error)).into_response()
+}
+
+fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
+    let expected_key = config.api_key.as_ref()?;
+
+    let provided = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    if provided == expected_key.as_str() {
+        None
+    } else {
+        Some(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid API key",
+            None,
+        ))
+    }
 }

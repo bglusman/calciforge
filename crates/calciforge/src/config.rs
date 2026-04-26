@@ -654,7 +654,14 @@ pub struct ProxyProviderConfig {
     /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
     pub id: String,
 
+    /// Provider backend kind. "http" forwards to an OpenAI-compatible API;
+    /// "exec" runs a local authenticated CLI and wraps its output as a
+    /// chat-completion response.
+    #[serde(default = "default_proxy_provider_backend")]
+    pub backend_type: String,
+
     /// Base URL for this provider's OpenAI-compatible API.
+    #[serde(default)]
     pub url: String,
 
     /// API key for this provider (inline). Prefer `api_key_file`.
@@ -685,6 +692,27 @@ pub struct ProxyProviderConfig {
     /// CALCIFORGE_PREV_MODEL_ID.
     #[serde(default)]
     pub on_switch: Option<String>,
+
+    /// Command for `backend_type = "exec"` providers.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Argument template for `backend_type = "exec"` providers.
+    ///
+    /// Placeholders:
+    /// - `{prompt}` / `{message}`: rendered chat transcript
+    /// - `{model}`: requested model after provider routing
+    /// - `{output_file}`: temp file path for CLIs such as `codex exec`
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Extra environment variables for `backend_type = "exec"` providers.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+fn default_proxy_provider_backend() -> String {
+    "http".to_string()
 }
 
 /// Explicit model-name → provider routing entry (`[[proxy.model_routes]]`).

@@ -13,6 +13,7 @@ use crate::config::ProxyConfig;
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
+use super::exec_gateway::ExecGateway;
 use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
 
 /// A resolved provider entry: a set of model-name patterns and a ready gateway.
@@ -72,6 +73,44 @@ pub fn build_provider_entries(
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
 
     for p in &config.providers {
+        if p.backend_type == "exec" {
+            let command = p
+                .command
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("exec provider '{}' requires command", p.id))?;
+            let timeout = p.timeout_seconds.unwrap_or(default_timeout);
+            let gw_cfg = GatewayConfig {
+                backend_type: GatewayType::Direct,
+                base_url: None,
+                api_key: None,
+                timeout_seconds: timeout,
+                extra_config: None,
+                headers: None,
+                retry_enabled: false,
+                max_retries: 0,
+                retry_base_delay_ms: 0,
+                retry_max_delay_ms: 0,
+            };
+            let gw = Arc::new(ExecGateway::new(
+                gw_cfg,
+                command,
+                p.args.clone(),
+                p.env.clone(),
+            ));
+            info!(id = %p.id, models = ?p.models, "Exec provider loaded");
+            provider_gateways.insert(p.id.clone(), gw);
+            provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+            continue;
+        }
+
+        if p.backend_type != "http" {
+            anyhow::bail!(
+                "provider '{}' has unsupported backend_type '{}'",
+                p.id,
+                p.backend_type
+            );
+        }
+
         // Resolve API key (file takes precedence).
         let api_key = if let Some(ref file) = p.api_key_file {
             let raw = std::fs::read_to_string(file)

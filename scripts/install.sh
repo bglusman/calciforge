@@ -98,6 +98,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.cargo/bin:$BIN_DIR:$PATH"
+SERVICE_PATH="$BIN_DIR:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
 
 # ── colours ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -120,6 +121,20 @@ ask_install() {
 # ── install helpers ───────────────────────────────────────────────────────────
 require_brew() { command -v brew &>/dev/null || die "Homebrew not found — install from https://brew.sh"; }
 require_npm()  { command -v npm  &>/dev/null || die "npm not found — brew install node"; }
+
+ensure_fnox_cargo_deps() {
+    [[ "$PLATFORM" == "Linux" ]] || return 0
+    command -v pkg-config &>/dev/null && pkg-config --exists libudev && return 0
+
+    if $IS_ROOT && command -v apt-get &>/dev/null; then
+        echo "  Installing fnox build prerequisites..."
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libudev-dev >/dev/null
+        return 0
+    fi
+
+    warn "fnox cargo fallback needs pkg-config and libudev-dev on Linux"
+}
 
 ensure_brew() {
     local pkg="$1" bin="${2:-$1}"
@@ -161,7 +176,8 @@ ensure_npm() {
 ensure_fnox() {
     if command -v fnox &>/dev/null; then
         ok "fnox $(fnox --version 2>/dev/null | head -1 || echo '(installed)')"
-        return 0
+        ensure_fnox_config
+        return $?
     fi
     if [[ "$CONFIGURE_ONLY" == true ]]; then
         die "fnox not found — run without --configure-only to install"
@@ -175,13 +191,15 @@ ensure_fnox() {
             local brew_rc=${PIPESTATUS[0]}
             if [[ $brew_rc -eq 0 ]]; then
                 ok "fnox installed"
-                return 0
+                ensure_fnox_config
+                return $?
             fi
             warn "brew install fnox failed (exit $brew_rc); falling back to cargo path"
         fi
     fi
     local cargo_bin="$HOME/.cargo/bin/cargo"
     if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
+        ensure_fnox_cargo_deps
         echo "  Installing fnox via cargo..."
         # Same pattern as above — the grep|tail pipeline masks
         # `cargo install`'s exit code otherwise.
@@ -189,11 +207,38 @@ ensure_fnox() {
         local cargo_rc=${PIPESTATUS[0]}
         if [[ $cargo_rc -eq 0 ]]; then
             ok "fnox installed"
-            return 0
+            ensure_fnox_config
+            return $?
         fi
         warn "cargo install fnox failed (exit $cargo_rc) — see output above"
     fi
     warn "fnox not installed — secret lookup will skip the fnox layer (env → vaultwarden still works)"
+    return 1
+}
+
+ensure_fnox_config() {
+    local err_file
+    err_file="$(mktemp)"
+    if fnox list >/dev/null 2>"$err_file"; then
+        rm -f "$err_file"
+        ok "fnox config usable"
+        return 0
+    fi
+
+    if grep -qi "No configuration file found" "$err_file"; then
+        echo "  Initializing fnox global config..."
+        if fnox init --global --skip-wizard >/dev/null 2>"$err_file"; then
+            if fnox list >/dev/null 2>"$err_file"; then
+                rm -f "$err_file"
+                ok "fnox global config initialized"
+                return 0
+            fi
+        fi
+    fi
+
+    warn "fnox is installed but not usable from this environment"
+    sed 's/^/  fnox: /' "$err_file" | tail -5
+    rm -f "$err_file"
     return 1
 }
 
@@ -323,6 +368,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>CLASHD_PORT</key><string>${CLASHD_PORT}</string>
         <key>CLASHD_POLICY</key><string>${CLASHD_POLICY}</string>
         <key>CLASHD_AGENTS</key><string>${AGENTS_JSON}</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -345,6 +391,7 @@ ExecStart=${BIN_DIR}/clashd
 Environment=CLASHD_PORT=${CLASHD_PORT}
 Environment=CLASHD_POLICY=${CLASHD_POLICY}
 Environment=CLASHD_AGENTS=${AGENTS_JSON}
+Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=5
 StandardOutput=append:${LOG_DIR}/clashd.log
@@ -382,6 +429,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -403,6 +451,7 @@ Type=simple
 ExecStart=${BIN_DIR}/security-proxy
 Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
 Environment=AGENT_CONFIG=${AGENTS_JSON}
+Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=5
 StandardOutput=append:${SEC_LOG_DIR}/security-proxy.log
@@ -422,7 +471,17 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
     || warn "security-proxy not yet responding — check $SEC_LOG_DIR/security-proxy.err"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. calciforge — main agent gateway (channels + router + proxy)
+# 4. fnox — encrypted secret resolver (fallback between env and vaultwarden)
+# ══════════════════════════════════════════════════════════════════════════════
+# secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
+# not hard-required by the Rust resolver, but real channel/gateway deployments
+# need it configured before services start so service PATH and HOME match the
+# operator's interactive shell.
+hdr "fnox (secret resolver)"
+ensure_fnox || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
 # across reboots. Expects config at ~/.calciforge/config.toml; users must
@@ -454,7 +513,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     </array>
     <key>EnvironmentVariables</key><dict>
         <key>RUST_LOG</key><string>calciforge=info</string>
-        <key>PATH</key><string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -477,6 +536,7 @@ Wants=calciforge-clashd.service calciforge-security-proxy.service
 Type=simple
 ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
 Environment=RUST_LOG=calciforge=info
+Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=30
 StandardOutput=append:${ZC_LOG_DIR}/calciforge.log
@@ -499,16 +559,6 @@ if pgrep -f "${BIN_DIR}/calciforge" > /dev/null; then
 else
     warn "calciforge did not start — check $ZC_LOG_DIR/calciforge.err"
 fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. fnox — encrypted secret resolver (fallback between env and vaultwarden)
-# ══════════════════════════════════════════════════════════════════════════════
-# secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
-# not hard-required (the resolver falls through if the binary is absent), but
-# installing it unlocks age/1Password/AWS SM/etc. secret backends without
-# extra config.
-hdr "fnox (secret resolver)"
-ensure_fnox || true
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Claude Code hook
@@ -715,8 +765,10 @@ if [[ -n "$NODES_FILE" ]]; then
     # ── systemd unit generator ────────────────────────────────────────────────
     systemd_unit() {
         local bin="$1" install_dir="$2" env_pairs="$3"
-        local env_lines=""
+        local service_path="${4:-$SERVICE_PATH}"
+        local env_lines="Environment=\"PATH=${service_path}\"\n"
         while IFS='=' read -r k v; do
+            [[ -z "$k" ]] && continue
             env_lines+="Environment=\"${k}=${v}\"\n"
         done <<< "$env_pairs"
 
@@ -739,6 +791,40 @@ if [[ -n "$NODES_FILE" ]]; then
             "$log_dir" "$bin" "$log_dir" "$bin"
     }
 
+    ensure_remote_fnox() {
+        local name="$1" ssh_target="$2" ssh_key="$3"
+        local ssh_opts="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+        [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
+
+        echo "  [$name] checking fnox..."
+        ssh $ssh_opts "$ssh_target" 'bash -s' <<'REMOTE_FNOX'
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+if ! command -v fnox >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
+        brew install fnox >/dev/null
+    elif command -v cargo >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1 && { ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists libudev; }; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libudev-dev >/dev/null
+        fi
+        cargo install fnox >/dev/null
+    else
+        echo "fnox missing and neither brew nor cargo is available" >&2
+        exit 2
+    fi
+fi
+if [[ -x "$HOME/.cargo/bin/fnox" && ! -e /usr/local/bin/fnox && -w /usr/local/bin ]]; then
+    ln -s "$HOME/.cargo/bin/fnox" /usr/local/bin/fnox 2>/dev/null || true
+fi
+if ! fnox list >/dev/null 2>&1; then
+    fnox init --global --skip-wizard >/dev/null
+fi
+fnox list >/dev/null
+REMOTE_FNOX
+        ok "  [$name] fnox ready"
+    }
+
     # ── deploy one service to one node ───────────────────────────────────────
     deploy_service() {
         local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" os="$6"
@@ -747,6 +833,9 @@ if [[ -n "$NODES_FILE" ]]; then
         local ssh_opts="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
         [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
         local ssh_target="${user}@${host}"
+        local remote_home remote_service_path
+        remote_home=$(ssh $ssh_opts "$ssh_target" 'printf "%s" "$HOME"' 2>/dev/null || echo '$HOME')
+        remote_service_path="${install_dir}:${remote_home}/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
 
         echo "  [$name] deploying $bin..."
 
@@ -804,14 +893,15 @@ REMOTE_BUILD
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="" ;;
             esac
-            unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")")
+            unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")" "$remote_service_path")
             ssh $ssh_opts "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${bin}.service" <<< "$unit_content"
             ssh $ssh_opts "$ssh_target" "systemctl daemon-reload && systemctl enable --now ${bin}" 2>&1 | tail -2
         else
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${bin}"
             plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" \
-                "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}")
+                "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" \
+                "PATH=${remote_service_path}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
             ssh $ssh_opts "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
             ssh $ssh_opts "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
@@ -841,6 +931,8 @@ for n in data.get("nodes", []):
 PYEOF
         echo ""
         echo "  Node: $name ($user@$host, $arch, $os)"
+        ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" || \
+            warn "  [$name] fnox not ready — secret resolution may fail on that node"
         IFS=',' read -ra svc_list <<< "$services"
         for svc in "${svc_list[@]}"; do
             deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \
