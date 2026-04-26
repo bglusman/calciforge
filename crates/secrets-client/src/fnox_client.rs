@@ -203,14 +203,7 @@ impl FnoxClient {
     pub async fn set(&self, name: &str, value: &str) -> Result<(), FnoxError> {
         debug!("fnox set {}", name);
         use tokio::io::AsyncWriteExt;
-        let mut child = Command::new(&self.binary)
-            .args(["set", name, "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(map_spawn_error)?;
+        let mut child = self.spawn_set_child(name).await?;
         if let Some(mut stdin) = child.stdin.take() {
             // BrokenPipe is benign: the child exited before reading
             // stdin (real fnox reads it; some test fakes don't). Surface
@@ -302,8 +295,7 @@ impl FnoxClient {
                 Err(e) if is_text_file_busy(&e) && attempt < 2 => {
                     // 5ms, 25ms backoff — covers most kernel
                     // bookkeeping windows without dragging tests.
-                    tokio::time::sleep(std::time::Duration::from_millis(5 * 5u64.pow(attempt)))
-                        .await;
+                    text_file_busy_backoff(attempt).await;
                     continue;
                 }
                 Err(e) => return Err(map_spawn_error(e)),
@@ -311,6 +303,32 @@ impl FnoxClient {
         }
         unreachable!("for loop above always returns")
     }
+
+    async fn spawn_set_child(&self, name: &str) -> Result<tokio::process::Child, FnoxError> {
+        for attempt in 0..3 {
+            let mut command = Command::new(&self.binary);
+            command
+                .args(["set", name, "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+
+            match command.spawn() {
+                Ok(child) => return Ok(child),
+                Err(e) if is_text_file_busy(&e) && attempt < 2 => {
+                    text_file_busy_backoff(attempt).await;
+                    continue;
+                }
+                Err(e) => return Err(map_spawn_error(e)),
+            }
+        }
+        unreachable!("for loop above always returns")
+    }
+}
+
+async fn text_file_busy_backoff(attempt: u32) {
+    tokio::time::sleep(Duration::from_millis(5 * 5u64.pow(attempt))).await;
 }
 
 /// Linux returns errno 26 (`ETXTBSY`) when a process tries to execve

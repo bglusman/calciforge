@@ -8,19 +8,19 @@ own model routes, command permissions, destination-scoped secret
 substitution, and audit trail without holding your raw API keys.
 
 The longer feature tour, configuration examples, and architecture notes
-live on the docs site: **[bglusman.github.io/calciforge](https://bglusman.github.io/calciforge/)**.
+live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 
 ## What Works Today
 
 | Area | Status | Where to read more |
 |---|---:|---|
-| `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://bglusman.github.io/calciforge/#secret-management) |
-| Per-secret destination allowlists | Working | [Outbound traffic gating](https://bglusman.github.io/calciforge/#outbound-traffic-gating) |
-| Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://bglusman.github.io/calciforge/#secret-management) |
-| MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://bglusman.github.io/calciforge/#agent-facing-tools-mcp) |
-| Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://bglusman.github.io/calciforge/#multi-channel-chat) |
+| `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
+| Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
+| MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
+| Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
-| Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://bglusman.github.io/calciforge/#outbound-traffic-gating) |
+| Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
 | Slack/Discord team ChatOps and Castle-to-Castle federation | Roadmap | [Team ChatOps sketch](docs/roadmap/team-chatops-slack-discord.md) |
@@ -133,7 +133,7 @@ bash scripts/install-git-hooks.sh
 
 ## Docs
 
-- [Feature tour and install notes](https://bglusman.github.io/calciforge/)
+- [Feature tour and install notes](https://calciforge.org/)
 - [Model gateway reference](docs/model-gateway.md)
 - [Model gateway RFC](docs/rfcs/model-gateway-primitives.md)
 - [Security proxy docs](docs/security-gateway.md)
