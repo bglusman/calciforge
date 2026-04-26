@@ -18,6 +18,7 @@ model choices.
 | Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
+| Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage is exposed as a Calciforge agent path, not as a generic OpenAI-compatible upstream. |
 
 ## Synthetic Model Classes
 
@@ -194,6 +195,11 @@ context_window = 200000
 
 ## Notes
 
+- Codex and Claude subscription-backed CLI routes are agent integrations,
+  not generic OpenAI-compatible model-gateway providers. See
+  [Codex/OpenClaw integration](codex-openclaw-integration.md) for direct
+  `codex-cli`, OpenClaw `openai-codex/*`, OpenClaw `codex/*`, and
+  Claude CLI setup choices.
 - The model gateway uses a shared `TokenEstimator` trait for fit
   checks. The default `auto` strategy uses `tiktoken-rs` for recognized
   OpenAI-compatible model names when Calciforge is built with

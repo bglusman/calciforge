@@ -51,21 +51,26 @@ specialties = ["coding", "refactoring", "architecture", "debugging", "testing"]
 access = ["filesystem", "git", "shell"]
 primary_channels = ["signal", "telegram"]
 
-# OpenAI Codex via ACP (stdio transport)
+# OpenAI Codex via official Codex CLI
 [[agents]]
 id = "codex"
-kind = "acp"
-transport = "stdio"
+kind = "codex-cli"
 command = "codex"
-args = ["serve", "--acp"]
-working_dir = "/home/user/projects"
-env = { "OPENAI_API_KEY" = "${OPENAI_API_KEY}" }
-timeout_secs = 120
+model = "gpt-5.5"
+args = [
+    "exec",
+    "--color", "never",
+    "--sandbox", "read-only",
+    "--ask-for-approval", "never",
+    "--skip-git-repo-check",
+    "-"
+]
+timeout_ms = 600000
 
 [agents.registry]
 display_name = "OpenAI Codex"
-description = "OpenAI Codex coding agent via ACP"
-specialties = ["coding", "typescript", "python", "javascript"]
+description = "OpenAI Codex coding agent via the official Codex CLI"
+specialties = ["coding", "rust", "typescript", "python", "javascript"]
 access = ["filesystem", "git"]
 primary_channels = ["telegram"]
 

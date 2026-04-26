@@ -73,7 +73,7 @@ proptest! {
         kind in "[a-z0-9-]+",
     ) {
         let valid_kinds = [
-            "cli", "acp", "acpx", "zeroclaw",
+            "cli", "codex-cli", "acp", "acpx", "zeroclaw",
             "openclaw-http", "openclaw-channel", "openclaw-native",
             "nzc-http", "nzc-native",
         ];
@@ -85,7 +85,7 @@ proptest! {
         // This is a property of the match statement in config parsing.
         let actually_valid = matches!(
             kind.as_str(),
-            "cli" | "acp" | "acpx" | "zeroclaw"
+            "cli" | "codex-cli" | "acp" | "acpx" | "zeroclaw"
                 | "openclaw-http" | "openclaw-channel" | "openclaw-native"
                 | "nzc-http" | "nzc-native"
         );

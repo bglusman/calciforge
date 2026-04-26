@@ -20,6 +20,7 @@ live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
 | Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
@@ -70,15 +71,15 @@ aliases = [{ channel = "telegram", id = "7000000001" }]
 role = "owner"
 
 [[agents]]
-id = "claude"
-kind = "cli"
-command = "/usr/local/bin/claude"
-timeout_ms = 120000
+id = "codex"
+kind = "codex-cli"
+model = "gpt-5.5"
+timeout_ms = 600000
 
 [[routing]]
 identity = "owner"
-default_agent = "claude"
-allowed_agents = ["claude"]
+default_agent = "codex"
+allowed_agents = ["codex"]
 
 [proxy]
 enabled = true
@@ -135,6 +136,7 @@ bash scripts/install-git-hooks.sh
 
 - [Feature tour and install notes](https://calciforge.org/)
 - [Model gateway reference](docs/model-gateway.md)
+- [Codex/OpenClaw integration](docs/codex-openclaw-integration.md)
 - [Model gateway RFC](docs/rfcs/model-gateway-primitives.md)
 - [Security proxy docs](docs/security-gateway.md)
 - [Host-agent docs](crates/host-agent/README.md)
