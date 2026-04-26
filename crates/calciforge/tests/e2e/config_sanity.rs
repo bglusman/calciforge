@@ -57,6 +57,7 @@ fn test_unknown_adapter_kind_fails() {
 
     let valid_kinds = vec![
         "cli",
+        "codex-cli",
         "acp",
         "acpx",
         "zeroclaw",
@@ -97,6 +98,7 @@ fn is_valid_adapter_kind(kind: &str) -> bool {
         kind,
         "cli"
             | "acp"
+            | "codex-cli"
             | "acpx"
             | "zeroclaw"
             | "openclaw-http"

@@ -23,6 +23,7 @@ use std::fmt;
 pub mod acp;
 pub mod acpx;
 pub mod cli;
+pub mod codex_cli;
 pub mod nzc_native;
 pub mod openclaw;
 pub mod openclaw_channel;
@@ -32,6 +33,7 @@ pub mod zeroclaw;
 pub use acp::AcpAdapter;
 pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
+pub use codex_cli::CodexCliAdapter;
 pub use nzc_native::NzcNativeAdapter;
 pub use openclaw::{NzcHttpAdapter, OpenClawHttpAdapter};
 pub use openclaw_channel::OpenClawChannelAdapter;
@@ -186,6 +188,7 @@ pub trait AgentAdapter: Send + Sync {
 /// | `nzc-native`       | `/webhook` + history | ✅ in-process ring buffer | ✅ |
 /// | `zeroclaw`         | `/webhook`          | per-NZC-config     | n/a |
 /// | `cli`              | subprocess stdin    | ❌ one-shot         | n/a |
+/// | `codex-cli`        | `codex exec`        | ❌ one-shot         | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
 /// | `acpx`             | acpx CLI            | ✅ acpx sessions    | n/a |
 pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, String> {
@@ -312,6 +315,13 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
+        "codex-cli" => Ok(Box::new(CodexCliAdapter::new(
+            agent.command.clone(),
+            agent.args.clone(),
+            agent.model.clone(),
+            agent.env.clone(),
+            agent.timeout_ms,
+        ))),
         "acp" => {
             let command = agent
                 .command
@@ -440,6 +450,29 @@ mod tests {
         let agent = cli_agent();
         let adapter = build_adapter(&agent).expect("should build cli adapter");
         assert_eq!(adapter.kind(), "cli");
+    }
+
+    #[test]
+    fn test_build_codex_cli_adapter() {
+        let agent = AgentConfig {
+            id: "codex".to_string(),
+            kind: "codex-cli".to_string(),
+            endpoint: String::new(),
+            timeout_ms: Some(600_000),
+            model: Some("gpt-5.5".to_string()),
+            auth_token: None,
+            api_key: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec!["gpt".to_string()],
+        };
+        let adapter = build_adapter(&agent).expect("should build codex-cli adapter");
+        assert_eq!(adapter.kind(), "codex-cli");
     }
 
     #[test]
