@@ -2,9 +2,10 @@
 
 Status: **implemented for the core runtime.** Alloy context-window
 safety, named `[[cascades]]`, named `[[dispatchers]]`, and the shared
-estimator trait are in code. Real tokenizer-backed estimators,
-`capacity_fraction`, and per-model/per-primitive estimator overrides
-remain future work.
+estimator trait are in code. `char_ratio`, `byte_ratio`, and optional
+`tiktoken-rs` estimators are implemented through `[proxy.token_estimator]`.
+`capacity_fraction` and per-model/per-primitive estimator overrides remain
+future work.
 
 ## Decisions (from first review)
 
@@ -13,7 +14,7 @@ remain future work.
 | 1 | Name for the size-routing primitive | **`dispatcher`** ("router" too generic) |
 | 2 | Cascade as a named primitive | **Yes** — own `[[cascades]]` table |
 | 3 | Safety margin default | **Two knobs** — estimator `safety_margin` (default 1.10) AND per-model `capacity_fraction` (default 1.0; users lower to e.g. 0.85 when a model degrades near its ceiling). Composition formula and rationale in the updated section below. |
-| 4 | Per-primitive tokenizer override + second tokenizer impl | **Default implementation ships first.** `CharRatioEstimator` is wired into routing and `ByteRatioEstimator` exists for denser prompt families. `TiktokenEstimator`, `SentencePieceEstimator`, and per-primitive overrides are deferred behind future feature flags. |
+| 4 | Per-primitive tokenizer override + second tokenizer impl | **Global estimator config ships first.** `CharRatioEstimator`, `ByteRatioEstimator`, and optional `TiktokenEstimator` are wired into routing. `SentencePieceEstimator` and per-model/per-primitive overrides are deferred. |
 | 5 | Re-evaluation default for dispatchers | **`per_turn`** (re-evaluate each message — never dies from size). `sticky` as opt-in for flows where model-voice continuity matters. `sticky_escalate` as a middle-ground convenience (sticky, permit one auto-promotion on ceiling, then sticky at the new tier). `worst_case` advanced opt-in with required growth prior. |
 | 6 | Back-compat: allow missing `context_window` on alloy constituents | **No — required field.** Prototype phase, all installations owned in-house. Forcing size declaration at config load prevents silent truncation forever; trivial one-time config edit. |
 | 7 | Dispatcher rule semantics + capacity_fraction interaction | **Default: "first target whose effective ceiling fits the request."** No `max_input_tokens` thresholds needed for the common case. `capacity_fraction` lives on each model individually and feeds the effective-ceiling computation. Explicit `when.max_input_tokens` rules remain available for non-size routing (cost tier, agent-id, etc.). |
@@ -313,8 +314,9 @@ Dispatcher rule language uses "effective ceiling" to mean
 **Config:**
 
 ```toml
-[tokenizer]
-kind = "char_ratio"
+[proxy.token_estimator]
+strategy = "auto"            # auto, char_ratio, byte_ratio, or tiktoken
+# tokenizer = "o200k_base"   # optional tiktoken base override
 chars_per_token = 3.5
 safety_margin = 1.10        # estimator knob
 
@@ -334,19 +336,22 @@ context_window = 32768
 capacity_fraction = 0.75     # user has observed noticeable drop past 24K
 ```
 
-### Pluggable implementations (future)
+### Pluggable implementations
 
 ```rust
-// Real tokenizer, exact count (via `tiktoken-rs` crate)
+// OpenAI-compatible BPE count via optional `tiktoken-rs` feature.
 pub struct TiktokenEstimator {
-    tokenizer: tiktoken_rs::CoreBPE,
+    bpe: &'static tiktoken_rs::CoreBPE,
 }
 
 // SentencePiece for Llama-family models
 pub struct SentencePieceEstimator { /* ... */ }
 ```
 
-Users opt in by configuring a non-default estimator. We ship `CharRatioEstimator` in the default build, others gated behind features (`features = ["tiktoken"]`) to keep build dependencies light.
+Users opt in by configuring a non-default estimator. We ship
+`CharRatioEstimator` and `ByteRatioEstimator` in the default build; the
+OpenAI-compatible tokenizer is gated behind
+`--features tiktoken-estimator` to keep default build dependencies light.
 
 ### Per-model overrides
 
@@ -524,7 +529,10 @@ Migration done in the same PR that introduces the required field.
 
 **Dispatchers are new.** Opt-in.
 
-**TokenEstimator is new.** Added as a global-defaults-with-overrides. If unconfigured, `CharRatioEstimator::default()` is used throughout.
+**TokenEstimator is implemented.** Added as a global config under
+`[proxy.token_estimator]`. If unconfigured, `strategy = "auto"` uses
+`tiktoken-rs` when compiled in and recognized, otherwise the char-ratio
+fallback.
 
 ## Scope boundaries of this RFC
 
@@ -536,8 +544,8 @@ Migration done in the same PR that introduces the required field.
 - Migration guarantees
 
 **Out of scope (follow-up work):**
-- Actual dispatcher implementation (this RFC approved → separate PR)
-- Cascade-as-a-named-primitive implementation (separate PR; today's implicit fallback still works)
+- Per-model/per-primitive estimator overrides
+- SentencePiece or provider-specific tokenizers beyond tiktoken
 - Plugging `tiktoken-rs` or other real tokenizers (separate PR; trait is there, default is enough for now)
 - Per-session routing memory (noted in edge case #1; follow-up if needed)
 - Docs: this will be captured in README + a dedicated `docs/model-gateway.md` when implementation lands

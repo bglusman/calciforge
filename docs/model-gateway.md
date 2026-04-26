@@ -17,6 +17,7 @@ model choices.
 | Fallback behavior | Working, implicit | Alloy execution produces an ordered attempt plan; later constituents are tried when earlier ones fail. |
 | Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
+| Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
 
 ## Synthetic Model Classes
 
@@ -140,6 +141,11 @@ backend_type = "http"
 backend_url = "https://api.openai.com/v1"
 backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
+[proxy.token_estimator]
+strategy = "auto"        # auto, char_ratio, byte_ratio, or tiktoken
+# tokenizer = "o200k_base" # optional tiktoken base override for non-OpenAI IDs
+safety_margin = 1.10
+
 [[proxy.providers]]
 id = "anthropic"
 url = "https://api.anthropic.com/v1"
@@ -189,9 +195,19 @@ context_window = 200000
 ## Notes
 
 - The model gateway uses a shared `TokenEstimator` trait for fit
-  checks. The default implementation is a conservative char-ratio
-  estimator; a byte-ratio estimator is also available in code for
-  denser token families. Real tokenizer backends remain future work.
+  checks. The default `auto` strategy uses `tiktoken-rs` for recognized
+  OpenAI-compatible model names when Calciforge is built with
+  `--features tiktoken-estimator`, then falls back to the conservative
+  char-ratio estimator.
+- For non-OpenAI models where an exact provider tokenizer is not
+  available, operators can still choose `strategy = "tiktoken"` with
+  `tokenizer = "o200k_base"` or `tokenizer = "cl100k_base"` to get a
+  real BPE tokenization pass instead of a pure ratio heuristic. Treat
+  that as routing-grade, not billing-grade, for Claude, Gemini, Kimi,
+  Qwen, or other tokenizer families.
+- `char_ratio` and `byte_ratio` remain useful when a deployment wants a
+  tiny dependency set or a deliberately conservative approximation for
+  code-heavy, mixed-language, or unknown local-model traffic.
 - Request-fit checks compare estimated input plus output budget
   against each target's declared context window.
 - Provider routes and local model switching are intentionally separate:

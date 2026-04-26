@@ -87,6 +87,9 @@ backend_type = "http"
 backend_url = "https://api.openai.com/v1"
 backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
+[proxy.token_estimator]
+strategy = "auto"
+
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
@@ -116,6 +119,7 @@ operation.
 ```bash
 cargo test
 cargo test -p calciforge
+cargo test -p calciforge --features tiktoken-estimator
 cargo test -p secrets-client
 cargo fmt --all -- --check
 cargo clippy --all-targets

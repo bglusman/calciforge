@@ -173,6 +173,7 @@ mod tests {
             backend_api_key_file: None,
             providers: vec![],
             model_routes: vec![],
+            token_estimator: Default::default(),
             agents: vec![],
             voice: None,
         };
@@ -204,6 +205,7 @@ mod tests {
             backend_api_key_file: None,
             providers: vec![],
             model_routes: vec![],
+            token_estimator: Default::default(),
             agents: vec![],
             voice: None,
         };
@@ -232,6 +234,7 @@ mod tests {
             backend_api_key_file: None,
             providers: vec![],
             model_routes: vec![],
+            token_estimator: Default::default(),
             agents: vec![ProxyAgentConfig {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),
@@ -283,6 +286,7 @@ mod tests {
             backend_api_key_file: None,
             providers: vec![],
             model_routes: vec![],
+            token_estimator: Default::default(),
             agents: vec![ProxyAgentConfig {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),

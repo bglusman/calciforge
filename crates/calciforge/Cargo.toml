@@ -16,6 +16,7 @@ hegel = ["dep:hegeltest"]
 persistent-context = ["dep:sqlx"]
 helicone = []
 traceloop = []
+tiktoken-estimator = ["dep:tiktoken-rs"]
 test = []
 
 [[test]]
@@ -99,6 +100,9 @@ uuid = { version = "1", features = ["v4"] }
 
 # Retry logic (Helicone-style)
 backon = "0.4"
+
+# Optional exact-ish OpenAI tokenizer for context-window routing.
+tiktoken-rs = { version = "0.11", optional = true }
 
 # Property-based testing (optional)
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }

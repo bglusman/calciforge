@@ -303,6 +303,11 @@ backend_type = "http"
 backend_url = "https://api.openai.com/v1"
 backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
+[proxy.token_estimator]
+strategy = "auto"
+# tokenizer = "o200k_base" # force a tiktoken base for non-OpenAI model IDs
+safety_margin = 1.10
+
 # Pattern-based provider routing — first match wins after model_routes.
 [[proxy.providers]]
 id = "anthropic"

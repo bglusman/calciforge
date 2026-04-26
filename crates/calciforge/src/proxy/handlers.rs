@@ -61,7 +61,7 @@ pub async fn chat_completions(
         );
     }
 
-    let estimated_tokens = token_estimator::default_request_estimate(&req);
+    let estimated_tokens = token_estimator::estimate_request(&req, &state.config.token_estimator);
 
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
