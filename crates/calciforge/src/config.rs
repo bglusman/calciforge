@@ -332,13 +332,22 @@ pub struct ChannelConfig {
     pub allow_chat_secret_set: bool,
 }
 
-/// Returns true when a channel explicitly opts into chat-transport secret
-/// values via `allow_chat_secret_set = true`.
+/// Returns true when exactly one enabled channel of this kind explicitly opts
+/// into chat-transport secret values via `allow_chat_secret_set = true`.
+///
+/// The option is stored per channel instance. If multiple enabled entries
+/// share the same kind, this helper fails closed because the current channel
+/// handlers only pass a kind string into the gate.
 pub fn channel_allows_chat_secret_set(config: &PolyConfig, kind: &str) -> bool {
-    config
+    let mut matches = config
         .channels
         .iter()
-        .any(|c| c.kind == kind && c.enabled && c.allow_chat_secret_set)
+        .filter(|c| c.kind == kind && c.enabled);
+
+    match (matches.next(), matches.next()) {
+        (Some(channel), None) => channel.allow_chat_secret_set,
+        _ => false,
+    }
 }
 
 /// `[permissions]` section.
@@ -1053,6 +1062,28 @@ allow_chat_secret_set = true
         assert!(!channel_allows_chat_secret_set(&cfg, "telegram"));
         assert!(channel_allows_chat_secret_set(&cfg, "matrix"));
         assert!(!channel_allows_chat_secret_set(&cfg, "whatsapp"));
+    }
+
+    #[test]
+    fn chat_secret_set_fails_closed_for_duplicate_channel_kind() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+allow_chat_secret_set = true
+
+[[channels]]
+kind = "telegram"
+enabled = true
+"#,
+        )
+        .expect("parse duplicate channel kind config");
+
+        assert!(!channel_allows_chat_secret_set(&cfg, "telegram"));
     }
 
     #[test]

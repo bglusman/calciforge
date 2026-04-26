@@ -421,17 +421,25 @@ on channels that support it.
 
 ```toml
 # /etc/calciforge/config.toml — channel configuration
-[[channels.telegram]]
-bot_token = "{% raw %}{{secret:TELEGRAM_BOT_TOKEN}}{% endraw %}"
-allowed_users = [7000000001, 7000000002]
+[[channels]]
+kind = "telegram"
+enabled = true
+bot_token_file = "/etc/calciforge/secrets/telegram-bot-token"
+allowed_users = ["7000000001", "7000000002"]
 
-[[channels.matrix]]
+[[channels]]
+kind = "matrix"
+enabled = true
 homeserver = "https://matrix.example.com"
-user_id = "@assistant:example.com"
-access_token = "{% raw %}{{secret:MATRIX_TOKEN}}{% endraw %}"
+access_token_file = "/etc/calciforge/secrets/matrix-access-token"
+room_id = "!roomid:example.com"
+allowed_users = ["@alice:example.com"]
 
-[[channels.whatsapp]]
-session_dir = "~/.calciforge/whatsapp"
+[[channels]]
+kind = "whatsapp"
+enabled = true
+nzc_endpoint = "http://127.0.0.1:18789"
+nzc_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
 allowed_numbers = ["+15555550100"]
 ```
 
@@ -494,8 +502,7 @@ magical front door — one door connecting to many places, with strict
 rules about who can pass and where. The metaphor felt apt; the tool
 itself doesn't require any familiarity with the book or its film
 adaptation, and nothing else from either is referenced or used.
-</main>
+</div>
 <p>MIT-licensed. Some bundled tools (e.g. fnox) carry their own licenses.</p>
 </footer>
-
-</div>
+</main>

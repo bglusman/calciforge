@@ -385,7 +385,7 @@ OUT"#,
     /// then the instructions prefer the local paste UI, keep host-local
     /// fnox available, and avoid recommending channel-based secret entry.
     #[tokio::test]
-    async fn add_secret_request_with_retention_ok_offers_chat_path() {
+    async fn add_secret_request_with_retention_ok_prefers_local_secret_input() {
         let server = CalciforgeMcp::default();
         let result = server
             .add_secret_request(Parameters(AddSecretRequestParams {

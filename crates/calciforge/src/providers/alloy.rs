@@ -593,6 +593,13 @@ impl AlloyManager {
         estimated_tokens: u32,
     ) -> Result<Option<AlloyPlan>, String> {
         if let Some(alloy) = self.alloys.get(model_id) {
+            let min_context_window = alloy.min_context_window();
+            if estimated_tokens > min_context_window {
+                return Err(format!(
+                    "alloy '{}': estimated request size {} tokens exceeds effective context window {}",
+                    model_id, estimated_tokens, min_context_window
+                ));
+            }
             return Ok(Some(alloy.select_plan()));
         }
         if let Some(cascade) = self.cascades.get(model_id) {
@@ -867,6 +874,18 @@ mod tests {
         assert!(
             err.contains("duplicate synthetic model id"),
             "expected duplicate id error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn manager_rejects_alloy_plan_that_exceeds_effective_context_window() {
+        let alloy = alloy_with_sizes(&[("small", 50, 32_768), ("large", 50, 262_144)], None);
+        let manager = AlloyManager::from_gateway_configs(&[alloy], &[], &[]).unwrap();
+
+        let err = manager.select_plan_for_model("sized", 40_000).unwrap_err();
+        assert!(
+            err.contains("sized") && err.contains("40000") && err.contains("32768"),
+            "expected context-window error naming the alloy and limits, got: {err}"
         );
     }
 }
