@@ -15,18 +15,28 @@ title: Calciforge
   --calci-code-bg: #f5f5f4;
   --calci-code-dark: #1c1917;
 }
+html { box-sizing: border-box; }
+*, *:before, *:after { box-sizing: inherit; }
 body {
-  background: var(--calci-paper);
+  background:
+    radial-gradient(ellipse 800px 600px at 80% -10%, rgba(245, 158, 11, 0.08), transparent 60%),
+    radial-gradient(ellipse 600px 400px at -10% 30%, rgba(120, 113, 108, 0.08), transparent 60%),
+    var(--calci-paper);
+  background-attachment: fixed;
   color: var(--calci-ink);
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   line-height: 1.6;
+  margin: 0;
+  min-height: 100vh;
 }
+.container { max-width: 760px; margin: 2.5rem auto; padding: 0 1.2rem 4rem; }
 .wordmark {
-  font-size: 3rem;
+  font-size: 3.2rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
   margin: 0;
   color: var(--calci-stone);
+  line-height: 1;
 }
 .wordmark .glow {
   background: linear-gradient(180deg, var(--calci-fire-bright), var(--calci-fire));
@@ -38,24 +48,21 @@ body {
   font-style: italic;
   font-size: 1.2rem;
   color: var(--calci-fire);
-  margin: 0.2rem 0 1.5rem;
+  margin: 0.3rem 0 1.5rem;
 }
 .lede {
   font-size: 1.05rem;
   color: var(--calci-ink);
   margin-bottom: 1.5rem;
 }
-h2 { font-size: 1.4rem; margin-top: 2.5rem; color: var(--calci-stone); }
-h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--calci-stone); }
-.aside {
-  background: rgba(217, 119, 6, 0.06);
-  border-left: 3px solid var(--calci-fire);
-  padding: 0.8rem 1.1rem;
-  margin: 1.5rem 0;
-  font-size: 0.95rem;
+h2 {
+  font-size: 1.4rem;
+  margin-top: 2.8rem;
   color: var(--calci-stone);
+  border-bottom: 1px solid var(--calci-line);
+  padding-bottom: 0.4rem;
 }
-.aside strong { color: var(--calci-stone); }
+h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--calci-stone); }
 a { color: var(--calci-fire); text-decoration: none; border-bottom: 1px solid transparent; }
 a:hover { border-bottom-color: var(--calci-fire); }
 .nav { margin: 1.2rem 0 2rem; padding: 0.6rem 0; border-top: 1px solid var(--calci-line); border-bottom: 1px solid var(--calci-line); font-size: 0.95rem; }
@@ -79,9 +86,25 @@ pre {
 }
 pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
 .muted { color: var(--calci-stone-soft); }
-small { color: var(--calci-stone-soft); }
 hr { border: 0; border-top: 1px solid var(--calci-line); margin: 2.5rem 0; }
+footer {
+  margin-top: 3.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--calci-line);
+  font-size: 0.88rem;
+  color: var(--calci-stone-soft);
+}
+footer p { margin: 0.5rem 0; }
+footer .name-origin {
+  background: rgba(217, 119, 6, 0.04);
+  padding: 0.8rem 1rem;
+  border-radius: 4px;
+  border-left: 2px solid rgba(217, 119, 6, 0.4);
+  margin: 1rem 0;
+}
 </style>
+
+<div class="container">
 
 <h1 class="wordmark">Calci<span class="glow">forge</span></h1>
 <p class="tagline">Keep your castle secure and moving.</p>
@@ -97,26 +120,16 @@ trusting the agent's own restraint.</p>
 <a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
 </div>
 
-<div class="aside">
-<strong>About the name.</strong> Calciforge is roughly "Calcifer's forge".
-Calcifer is the fire demon from Diana Wynne Jones's
-<em>Howl's Moving Castle</em> who's bound by contract to power the
-castle's magical front door — one door connecting to many places, with
-strict rules about who can pass and where. The metaphor felt apt for
-per-agent contracts that gate which secrets cross which thresholds.
-You don't need to know any of that to use the tool; it's just a name
-we liked that wouldn't collide with anything else in the space.
-</div>
-
 ## What it gives you
 
 Calciforge sits between your AI agents and the rest of the world. The
-gateway enforces five overlapping concerns; you can adopt any subset.
+gateway covers seven overlapping concerns; you can adopt any subset.
 
 ### Secret management
 
-Your agent never holds the actual API key. The gateway does the
-substitution at the request boundary.
+Your agent never holds the actual API key. The gateway resolves
+through [fnox](https://github.com/jdx/fnox) and substitutes at the
+request boundary.
 
 ```toml
 # fnox.toml — the secret store the gateway resolves through
@@ -178,6 +191,53 @@ def evaluate(ctx):
     return Verdict.allow()
 ```
 
+### Model gateway
+
+Pattern-based provider routing, blended responses (alloys), ordered
+fallback chains (cascades), and lifecycle management for local mlx_lm
+servers.
+
+```toml
+# /etc/calciforge/config.toml — model gateway
+
+# Pattern-based provider routing — first match wins
+[[providers]]
+match = "claude-*"
+backend = "anthropic"
+api_key = "{% raw %}{{secret:ANTHROPIC_API_KEY}}{% endraw %}"
+
+[[providers]]
+match = "gpt-4*"
+backend = "openai"
+api_key = "{% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}"
+
+[[providers]]
+match = "qwen-*"
+backend = "mlx_lm"            # local model
+mlx_command = "uv run mlx_lm.server"
+
+# Alloy: blend N equivalent models for ensemble responses
+[[alloys]]
+name = "research-blend"
+strategy = "concurrent"        # or "sequential", "weighted"
+context_window = 200000        # ceiling — requests above are rejected loudly
+constituents = [
+  { model = "claude-3.5-sonnet", weight = 1.0 },
+  { model = "gpt-4o",            weight = 1.0 },
+]
+
+# Cascade: ordered fallback on error (timeout, 5xx, 429)
+# Pre-checks each step's context_window before attempting; skips
+# unfit steps rather than letting the model error
+[[cascades]]
+name = "with-fallback"
+steps = ["claude-3.5-sonnet", "gpt-4o", "qwen-72b"]
+```
+
+The full design (token estimator trait, dispatcher routing,
+context-window safety) lives in
+[`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
+
 ### Agent-facing tools (MCP)
 
 A built-in MCP server exposes secret *names* to agents but never
@@ -198,9 +258,10 @@ and fail to retrieve values.
 }
 ```
 
-### Multi-channel chat in
+### Multi-channel chat
 
-Today: Telegram, Matrix, WhatsApp, Signal.
+Today: Telegram, Matrix, WhatsApp, Signal. Optional voice forwarding
+on channels that support it.
 
 ```toml
 # /etc/calciforge/config.toml — channel configuration
@@ -263,15 +324,22 @@ headless deployment).
 The list of what works today and what's still in flight lives in the
 [README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
 The strategic architecture review (5 findings, in-flight implementation)
-will land at
-[`docs/architecture-review-2026-04-25.md`](https://github.com/bglusman/calciforge/blob/main/docs/architecture-review-2026-04-25.md)
-once this docs PR merges; speculative ideas being captured live in
+lives at
+[`docs/architecture-review-2026-04-25.md`](https://github.com/bglusman/calciforge/blob/main/docs/architecture-review-2026-04-25.md);
+speculative ideas being captured live in
 [`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
 
----
+<footer>
+<div class="name-origin">
+<strong>About the name.</strong> Calciforge is roughly "Calcifer's forge".
+Calcifer is the fire demon from Diana Wynne Jones's
+<em>Howl's Moving Castle</em> who's bound by contract to power the castle's
+magical front door — one door connecting to many places, with strict
+rules about who can pass and where. The metaphor felt apt; the tool
+itself doesn't require any familiarity with the book or its film
+adaptation, and nothing else from either is referenced or used.
+</div>
+<p>MIT-licensed. Some bundled tools (e.g. fnox) carry their own licenses.</p>
+</footer>
 
-<small>
-MIT-licensed. Some bundled tools (e.g. fnox itself) carry their own
-licenses. The name's a nod to <em>Howl's Moving Castle</em>; nothing else
-from the book or its film adaptation is referenced or used.
-</small>
+</div>
