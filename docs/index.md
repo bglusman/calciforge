@@ -18,25 +18,39 @@ title: Calciforge
 html { box-sizing: border-box; }
 *, *:before, *:after { box-sizing: inherit; }
 body {
-  background:
-    radial-gradient(ellipse 800px 600px at 80% -10%, rgba(245, 158, 11, 0.08), transparent 60%),
-    radial-gradient(ellipse 600px 400px at -10% 30%, rgba(120, 113, 108, 0.08), transparent 60%),
-    var(--calci-paper);
-  background-attachment: fixed;
+  background: var(--calci-paper);
   color: var(--calci-ink);
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   line-height: 1.6;
   margin: 0;
+  max-width: none;
   min-height: 100vh;
+  padding: 0;
 }
 .container { max-width: 760px; margin: 2.5rem auto; padding: 0 1.2rem 4rem; }
+.hero {
+  min-height: min(720px, 78vh);
+  display: grid;
+  align-items: end;
+  background-image: url("assets/calciforge-hero.jpg");
+  background-size: cover;
+  background-position: center right;
+  color: #1c1917;
+  position: relative;
+}
+.hero-inner {
+  width: min(760px, calc(100% - 2.4rem));
+  margin: 0 auto;
+  padding: 5rem 0 4.5rem;
+}
 .wordmark {
-  font-size: 3.2rem;
+  font-size: clamp(3.2rem, 11vw, 7rem);
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   margin: 0;
-  color: var(--calci-stone);
+  color: #1c1917;
   line-height: 1;
+  text-shadow: 0 2px 20px rgba(250, 250, 249, 0.65);
 }
 .wordmark .glow {
   background: linear-gradient(180deg, var(--calci-fire-bright), var(--calci-fire));
@@ -46,14 +60,17 @@ body {
 }
 .tagline {
   font-style: italic;
-  font-size: 1.2rem;
-  color: var(--calci-fire);
+  font-size: clamp(1.15rem, 3vw, 1.7rem);
+  color: #7c2d12;
   margin: 0.3rem 0 1.5rem;
+  text-shadow: 0 1px 14px rgba(250, 250, 249, 0.75);
 }
 .lede {
   font-size: 1.05rem;
   color: var(--calci-ink);
   margin-bottom: 1.5rem;
+  max-width: 42rem;
+  text-shadow: 0 1px 14px rgba(250, 250, 249, 0.72);
 }
 h2 {
   font-size: 1.4rem;
@@ -67,6 +84,15 @@ a { color: var(--calci-fire); text-decoration: none; border-bottom: 1px solid tr
 a:hover { border-bottom-color: var(--calci-fire); }
 .nav { margin: 1.2rem 0 2rem; padding: 0.6rem 0; border-top: 1px solid var(--calci-line); border-bottom: 1px solid var(--calci-line); font-size: 0.95rem; }
 .nav a { margin-right: 1.4rem; font-weight: 500; }
+.hero .nav {
+  border-color: rgba(68, 64, 60, 0.32);
+  margin-bottom: 0;
+  max-width: 34rem;
+}
+.hero .nav a {
+  color: #7c2d12;
+  text-shadow: 0 1px 10px rgba(250, 250, 249, 0.7);
+}
 ul li { margin-bottom: 0.35rem; }
 code {
   background: var(--calci-code-bg);
@@ -104,7 +130,8 @@ footer .name-origin {
 }
 </style>
 
-<div class="container">
+<header class="hero" aria-label="A warm hand-painted fantasy castle workshop on a dawn hillside">
+<div class="hero-inner">
 
 <h1 class="wordmark">Calci<span class="glow">forge</span></h1>
 <p class="tagline">Keep your castle secure and moving.</p>
@@ -119,6 +146,11 @@ trusting the agent's own restraint.</p>
 <a href="https://github.com/bglusman/calciforge/blob/main/README.md">README</a>
 <a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
 </div>
+
+</div>
+</header>
+
+<main class="container" markdown="1">
 
 ## What it gives you
 
@@ -180,14 +212,21 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 during the channel-integration cut and is on the
 [roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
 
-### Inbound traffic gating
+### Inbound traffic gating and tool policy
 
 Every upstream response is scanned for prompt-injection payloads
 before being returned to the agent. Configurable verdicts (Block /
 Review / Allow) routed via the policy plane.
 
+For tool calls, Calciforge adapts the
+[clash](https://crates.io/crates/clash) policy engine through a small
+HTTP daemon shipped in this repo as
+[`clashd`](https://github.com/bglusman/calciforge/tree/main/crates/clashd).
+The daemon is not the product; it is the policy sidecar that lets
+agent runtimes ask "allow, deny, or review?" before a tool executes.
+
 ```python
-# clash-policy.star — Starlark policy evaluated by clashd
+# clash-policy.star — Starlark policy served by clashd
 def evaluate(ctx):
     if ctx.tool == "Bash" and "rm -rf" in ctx.args.get("command", ""):
         return Verdict.deny("destructive command requires manual approval")
@@ -198,49 +237,80 @@ def evaluate(ctx):
 
 ### Model gateway
 
-Pattern-based provider routing, blended responses (alloys), ordered
-fallback chains (cascades), and lifecycle management for local mlx_lm
-servers.
+Calciforge can expose an OpenAI-compatible local endpoint while routing
+requests to named providers, explicit model routes, local models, and
+alloys. Chat users can also inspect and switch configured aliases with
+`!model`.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
 
-# Pattern-based provider routing — first match wins
-[[providers]]
-match = "claude-*"
-backend = "anthropic"
-api_key = "{% raw %}{{secret:ANTHROPIC_API_KEY}}{% endraw %}"
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+backend_type = "http"
+backend_url = "https://api.openai.com/v1"
+backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
-[[providers]]
-match = "gpt-4*"
-backend = "openai"
-api_key = "{% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}"
+# Pattern-based provider routing — first match wins after model_routes.
+[[proxy.providers]]
+id = "anthropic"
+url = "https://api.anthropic.com/v1"
+api_key_file = "/etc/calciforge/secrets/anthropic-key"
+models = ["claude-*", "anthropic/*"]
+timeout_seconds = 120
 
-[[providers]]
-match = "qwen-*"
-backend = "mlx_lm"            # local model
-mlx_command = "uv run mlx_lm.server"
+[[proxy.providers]]
+id = "local-mlx"
+url = "http://127.0.0.1:8888/v1"
+models = ["local/*", "qwen/*", "mlx/*"]
 
-# Alloy: blend N equivalent models for ensemble responses
+# Explicit routes take precedence over provider pattern lists.
+[[proxy.model_routes]]
+pattern = "coding/default"
+provider = "anthropic"
+
+# Chat aliases shown by `!model`; `!model sonnet` prints the expansion.
+[[model_shortcuts]]
+alias = "sonnet"
+model = "anthropic/claude-sonnet-4.6"
+
+[[model_shortcuts]]
+alias = "local"
+model = "local/qwen3-35b"
+
+# Alloys pick among equivalent models by weighted or round-robin strategy.
 [[alloys]]
-name = "research-blend"
-strategy = "concurrent"        # or "sequential", "weighted"
-context_window = 200000        # ceiling — requests above are rejected loudly
-constituents = [
-  { model = "claude-3.5-sonnet", weight = 1.0 },
-  { model = "gpt-4o",            weight = 1.0 },
-]
+id = "balanced"
+name = "Balanced remote blend"
+strategy = "weighted"
 
-# Cascade: ordered fallback on error (timeout, 5xx, 429)
-# Pre-checks each step's context_window before attempting; skips
-# unfit steps rather than letting the model error
-[[cascades]]
-name = "with-fallback"
-steps = ["claude-3.5-sonnet", "gpt-4o", "qwen-72b"]
+[[alloys.constituents]]
+model = "anthropic/claude-sonnet-4.6"
+weight = 70
+context_window = 200000
+
+[[alloys.constituents]]
+model = "openrouter/google/gemini-flash-1.5"
+weight = 30
+context_window = 100000
+
+[local_models]
+enabled = true
+current = "qwen3-35b"
+
+[local_models.mlx_lm]
+host = "127.0.0.1"
+port = 8888
+
+[[local_models.models]]
+id = "qwen3-35b"
+hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
+display_name = "Qwen 35B local"
 ```
 
-The full design (token estimator trait, dispatcher routing,
-context-window safety) lives in
+Planned gateway primitives such as named cascades, dispatcher routing,
+and stricter token-window fit checks are captured in
 [`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
 
 ### Agent-facing tools (MCP)
@@ -307,7 +377,7 @@ bash scripts/install.sh
 ```
 
 Three services land as launchd agents:
-- `clashd` on `:9001` — Starlark policy engine
+- `clashd` on `:9001` — a `clash`-backed policy sidecar
 - `security-proxy` on `:8888` — substitution + scanning + injection
 - `calciforge` — channel router (needs onboarding for an LLM provider)
 
@@ -343,7 +413,7 @@ magical front door — one door connecting to many places, with strict
 rules about who can pass and where. The metaphor felt apt; the tool
 itself doesn't require any familiarity with the book or its film
 adaptation, and nothing else from either is referenced or used.
-</div>
+</main>
 <p>MIT-licensed. Some bundled tools (e.g. fnox) carry their own licenses.</p>
 </footer>
 
