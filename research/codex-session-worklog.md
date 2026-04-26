@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 19:00 EDT.
+Last updated: 2026-04-26 19:02 EDT.
 
 ## Automation handoff
 
@@ -120,6 +120,11 @@ Current status:
   to cover command happy paths in the same real DM: `!ping`, `!help`, `!agents`,
   `!status`, `!metrics`, `!model`, `!sessions <non-acpx-agent>`, `!switch`,
   `!default`, and default/active CLI dispatch through two mock agents.
+- That command-expanded run exposed another harness issue: the script isolated
+  Calciforge state by setting `HOME` to the temp directory, which also hid
+  rustup's default toolchain from `cargo run` in GitHub Actions. The harness now
+  prefers the prebuilt `target/debug/calciforge` binary, supports an explicit
+  `CALCIFORGE_BIN`, and preserves `RUSTUP_HOME` for local cargo fallback.
 - Public registration on `matrix.enjyn.com` still requires
   `m.login.registration_token`. That only blocks manual testing against the
   production homeserver, not CI E2E coverage.

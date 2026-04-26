@@ -42,6 +42,28 @@ EXPECTED_PROMPT = "hello real matrix"
 EXPECTED_REPLY = f"real-matrix-agent saw: {EXPECTED_PROMPT}"
 
 
+def calciforge_command(config_path: Path) -> list[str]:
+    configured_bin = os.environ.get("CALCIFORGE_BIN")
+    if configured_bin:
+        return [configured_bin, "--config", str(config_path)]
+
+    repo_bin = Path.cwd() / "target" / "debug" / "calciforge"
+    if repo_bin.exists():
+        return [str(repo_bin), "--config", str(config_path)]
+
+    return [
+        "cargo",
+        "run",
+        "-p",
+        "calciforge",
+        "--features",
+        "channel-matrix",
+        "--",
+        "--config",
+        str(config_path),
+    ]
+
+
 def run(cmd: list[str], *, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
     print("+", " ".join(cmd), flush=True)
     return subprocess.run(cmd, check=check, text=True, **kwargs)
@@ -241,19 +263,12 @@ def stream_process_output(
 
 def start_calciforge(config_path: Path, home_dir: Path) -> tuple[subprocess.Popen, list[str]]:
     env = os.environ.copy()
+    original_home = env.get("HOME")
+    if original_home:
+        env.setdefault("RUSTUP_HOME", str(Path(original_home) / ".rustup"))
     env["HOME"] = str(home_dir)
     env.setdefault("RUST_LOG", "calciforge=info")
-    cmd = [
-        "cargo",
-        "run",
-        "-p",
-        "calciforge",
-        "--features",
-        "channel-matrix",
-        "--",
-        "--config",
-        str(config_path),
-    ]
+    cmd = calciforge_command(config_path)
     print("+", " ".join(cmd), flush=True)
     proc = subprocess.Popen(
         cmd,
@@ -276,8 +291,8 @@ def start_calciforge(config_path: Path, home_dir: Path) -> tuple[subprocess.Pope
         daemon=True,
     ).start()
 
-    # `cargo run` may need to compile on a fresh CI runner before Calciforge can
-    # log readiness. Keep this deadline high enough to cover cold-ish builds.
+    # The workflow prebuilds Calciforge, but keep this deadline high enough for
+    # local cargo fallback runs when a developer has not built the binary yet.
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
         if proc.poll() is not None:
