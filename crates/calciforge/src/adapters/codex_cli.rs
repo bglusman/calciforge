@@ -29,6 +29,12 @@ pub struct CodexCliAdapter {
     output_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputCapture {
+    path: PathBuf,
+    cleanup: bool,
+}
+
 impl CodexCliAdapter {
     /// Create a new Codex CLI adapter.
     pub fn new(
@@ -57,6 +63,10 @@ impl CodexCliAdapter {
         args.iter().any(|arg| arg.contains(MESSAGE_PLACEHOLDER))
     }
 
+    fn has_stdin_marker(args: &[String]) -> bool {
+        args.iter().any(|arg| arg == "-")
+    }
+
     fn prompt_arg_index(args: &[String], has_placeholder: bool) -> Option<usize> {
         if has_placeholder {
             return args
@@ -81,13 +91,46 @@ impl CodexCliAdapter {
             .join(format!("codex-last-message-{nanos}.txt"))
     }
 
-    fn build_args(&self, message: &str, output_path: &Path) -> (Vec<String>, Option<String>) {
+    fn configured_output_path(args: &[String]) -> Result<Option<PathBuf>, AdapterError> {
+        for (index, arg) in args.iter().enumerate() {
+            if arg == "--output-last-message" || arg == "-o" {
+                let Some(path) = args.get(index + 1) else {
+                    return Err(AdapterError::Protocol(format!(
+                        "{arg} requires a file path argument"
+                    )));
+                };
+                return Ok(Some(PathBuf::from(path)));
+            }
+            if let Some(path) = arg.strip_prefix("--output-last-message=") {
+                if path.is_empty() {
+                    return Err(AdapterError::Protocol(
+                        "--output-last-message requires a non-empty file path".to_string(),
+                    ));
+                }
+                return Ok(Some(PathBuf::from(path)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn build_args(
+        &self,
+        message: &str,
+        output_path: &Path,
+    ) -> Result<(Vec<String>, Option<String>, OutputCapture), AdapterError> {
         let has_placeholder = Self::has_message_placeholder(&self.args);
+        if has_placeholder && Self::has_stdin_marker(&self.args) {
+            return Err(AdapterError::Protocol(
+                "codex-cli args cannot combine {message} and '-' stdin prompt modes".to_string(),
+            ));
+        }
+
         let mut args: Vec<String> = self
             .args
             .iter()
             .map(|arg| arg.replace(MESSAGE_PLACEHOLDER, message))
             .collect();
+        let configured_output_path = Self::configured_output_path(&args)?;
 
         let insert_at = Self::prompt_arg_index(&self.args, has_placeholder).unwrap_or(args.len());
         let mut generated = Vec::new();
@@ -99,7 +142,7 @@ impl CodexCliAdapter {
             }
         }
 
-        if !Self::has_arg(&args, "--output-last-message", "-o") {
+        if configured_output_path.is_none() {
             generated.push("--output-last-message".to_string());
             generated.push(output_path.to_string_lossy().to_string());
         }
@@ -115,7 +158,13 @@ impl CodexCliAdapter {
             Some(message.to_string())
         };
 
-        (args, stdin_message)
+        let cleanup = configured_output_path.is_none();
+        let capture = OutputCapture {
+            path: configured_output_path.unwrap_or_else(|| output_path.to_path_buf()),
+            cleanup,
+        };
+
+        Ok((args, stdin_message, capture))
     }
 }
 
@@ -142,7 +191,7 @@ impl AgentAdapter for CodexCliAdapter {
             })?;
 
         let output_path = self.output_path();
-        let (args, stdin_message) = self.build_args(msg, &output_path);
+        let (args, stdin_message, capture) = self.build_args(msg, &output_path)?;
 
         info!(command = %self.command, args = ?args, "codex-cli dispatch");
         debug!(msg = %msg, "codex-cli outbound message");
@@ -151,7 +200,8 @@ impl AgentAdapter for CodexCliAdapter {
         cmd.args(&args)
             .envs(&self.env)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         if stdin_message.is_some() {
             cmd.stdin(Stdio::piped());
@@ -168,6 +218,7 @@ impl AgentAdapter for CodexCliAdapter {
             stdin.write_all(input.as_bytes()).await.map_err(|e| {
                 AdapterError::Unavailable(format!("failed to write Codex prompt to stdin: {e}"))
             })?;
+            let _ = stdin.shutdown().await;
         }
 
         let output = tokio::time::timeout(self.timeout, child.wait_with_output())
@@ -188,16 +239,19 @@ impl AgentAdapter for CodexCliAdapter {
             )));
         }
 
-        let from_file = tokio::fs::read_to_string(&output_path)
+        let from_file = tokio::fs::read_to_string(&capture.path)
             .await
-            .unwrap_or_default();
-        let _ = tokio::fs::remove_file(&output_path).await;
+            .map_err(|e| {
+                AdapterError::Protocol(format!(
+                    "codex exec did not write final message file {}: {e}",
+                    capture.path.display()
+                ))
+            })?;
+        if capture.cleanup {
+            let _ = tokio::fs::remove_file(&capture.path).await;
+        }
 
-        let response = if from_file.trim().is_empty() {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        } else {
-            from_file.trim().to_string()
-        };
+        let response = from_file.trim().to_string();
 
         if response.is_empty() {
             return Err(AdapterError::Protocol(
@@ -223,7 +277,7 @@ mod tests {
             CodexCliAdapter::new(None, None, Some("gpt-5.5".to_string()), None, Some(1_000));
         let output_path = PathBuf::from("/tmp/out.txt");
 
-        let (args, stdin_message) = adapter.build_args("hello", &output_path);
+        let (args, stdin_message, capture) = adapter.build_args("hello", &output_path).unwrap();
 
         assert!(args.starts_with(&["exec".to_string()]));
         assert!(args.contains(&"--model".to_string()));
@@ -231,6 +285,8 @@ mod tests {
         assert!(args.contains(&"--output-last-message".to_string()));
         assert_eq!(args.last().map(String::as_str), Some("-"));
         assert_eq!(stdin_message.as_deref(), Some("hello"));
+        assert_eq!(capture.path, output_path);
+        assert!(capture.cleanup);
     }
 
     #[test]
@@ -248,7 +304,9 @@ mod tests {
             None,
         );
 
-        let (args, stdin_message) = adapter.build_args("hello", &PathBuf::from("/tmp/out.txt"));
+        let (args, stdin_message, _) = adapter
+            .build_args("hello", &PathBuf::from("/tmp/out.txt"))
+            .unwrap();
 
         assert_eq!(args[0], "exec");
         assert_eq!(args.last().map(String::as_str), Some("hello"));
@@ -268,7 +326,9 @@ mod tests {
             None,
         );
 
-        let (args, stdin_message) = adapter.build_args("hello", &PathBuf::from("/tmp/out.txt"));
+        let (args, stdin_message, _) = adapter
+            .build_args("hello", &PathBuf::from("/tmp/out.txt"))
+            .unwrap();
 
         let stdin_pos = args.iter().position(|arg| arg == "-").unwrap();
         let output_pos = args
@@ -280,6 +340,49 @@ mod tests {
         assert!(output_pos < stdin_pos);
         assert_eq!(args.iter().filter(|arg| arg.as_str() == "-").count(), 1);
         assert_eq!(stdin_message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn placeholder_and_stdin_marker_are_rejected() {
+        let adapter = CodexCliAdapter::new(
+            None,
+            Some(vec![
+                "exec".to_string(),
+                MESSAGE_PLACEHOLDER.to_string(),
+                "-".to_string(),
+            ]),
+            None,
+            None,
+            None,
+        );
+
+        let err = adapter
+            .build_args("hello", &PathBuf::from("/tmp/out.txt"))
+            .unwrap_err();
+        assert!(matches!(err, AdapterError::Protocol(msg) if msg.contains("cannot combine")));
+    }
+
+    #[test]
+    fn configured_output_path_is_used_without_cleanup() {
+        let adapter = CodexCliAdapter::new(
+            None,
+            Some(vec![
+                "exec".to_string(),
+                "--output-last-message=/tmp/custom.txt".to_string(),
+                "-".to_string(),
+            ]),
+            None,
+            None,
+            None,
+        );
+
+        let (args, _, capture) = adapter
+            .build_args("hello", &PathBuf::from("/tmp/generated.txt"))
+            .unwrap();
+
+        assert!(!args.contains(&"--output-last-message".to_string()));
+        assert_eq!(capture.path, PathBuf::from("/tmp/custom.txt"));
+        assert!(!capture.cleanup);
     }
 
     #[tokio::test]
@@ -332,5 +435,40 @@ printf 'event noise\n'
 
         let response = adapter.dispatch("hello").await.unwrap();
         assert_eq!(response, "final:hello");
+    }
+
+    #[tokio::test]
+    async fn dispatch_errors_when_final_message_file_is_missing() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("fake-codex-no-output");
+        let mut script = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script_path)
+            .unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+printf 'stdout fallback should not be used\n'
+"#
+        )
+        .unwrap();
+        script.sync_all().unwrap();
+        drop(script);
+
+        let adapter = CodexCliAdapter::new(
+            Some(script_path.to_string_lossy().to_string()),
+            Some(vec!["exec".to_string(), "-".to_string()]),
+            None,
+            None,
+            Some(5_000),
+        );
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(matches!(err, AdapterError::Protocol(msg) if msg.contains("did not write")));
     }
 }
