@@ -44,6 +44,20 @@ The important difference from one-to-one channels is that room and thread identi
 - Public room: default to observe-only or command-only until configured.
 - Shared agent: require per-agent allowed identities and per-room allowed commands.
 - Secret substitution: require both identity and destination checks.
+- Shared room secrets: per-identity by default; allow explicit channel-scoped
+  secret names only for intentionally shared credentials such as staging deploy
+  keys.
+
+## Room UX Notes
+
+Slack and Discord both have native mention syntax, but agent names should not
+silently collide with real users. A reasonable first cut is to support a
+channel default agent plus explicit `/agent-name ...` routing, then consider
+`@agent-name ...` once adapter-specific mention parsing is reliable.
+
+Commands that mutate shared room state should make scope visible in the command
+or response: changing a direct-message default agent is different from changing
+the default agent for `#deploy`.
 
 ## Federation Sketch
 

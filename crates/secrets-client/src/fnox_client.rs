@@ -102,6 +102,12 @@ pub enum FnoxError {
     /// "not installed".
     #[error("fnox timed out after {seconds}s")]
     TimedOut { seconds: u64 },
+
+    /// A caller requested an optional fnox integration that was not
+    /// compiled into this build. This is distinct from `NotInstalled`:
+    /// installing the binary will not fix a disabled Cargo feature.
+    #[error("fnox optional feature not enabled: {feature}")]
+    FeatureDisabled { feature: &'static str },
 }
 
 /// Wrapper around the `fnox` CLI. Cheap to construct (just a path);
@@ -154,16 +160,9 @@ impl FnoxClient {
     /// check — we want to give the user a clear "install fnox" message
     /// instead of a confusing failure on the first set.
     pub async fn is_available(&self) -> bool {
-        let mut command = Command::new(&self.binary);
-        command
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-
-        timeout(self.timeout, command.output())
+        self.run(&["--version"])
             .await
-            .is_ok_and(|result| result.is_ok_and(|o| o.status.success()))
+            .is_ok_and(|output| output.status.success())
     }
 
     /// `fnox get <name>` — return the value, or an error.
