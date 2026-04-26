@@ -38,10 +38,27 @@ body {
   color: #1c1917;
   position: relative;
 }
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(250, 250, 249, 0.94) 0%,
+    rgba(250, 250, 249, 0.86) 31%,
+    rgba(250, 250, 249, 0.36) 54%,
+    rgba(250, 250, 249, 0.02) 76%
+  );
+}
 .hero-inner {
-  width: min(760px, calc(100% - 2.4rem));
+  width: min(1160px, calc(100% - 2.4rem));
   margin: 0 auto;
   padding: 5rem 0 4.5rem;
+  position: relative;
+  z-index: 1;
+}
+.hero-copy {
+  max-width: 40rem;
 }
 .wordmark {
   font-size: clamp(3.2rem, 11vw, 7rem);
@@ -128,10 +145,28 @@ footer .name-origin {
   border-left: 2px solid rgba(217, 119, 6, 0.4);
   margin: 1rem 0;
 }
+@media (max-width: 760px) {
+  .hero {
+    min-height: 680px;
+    background-position: 62% center;
+  }
+  .hero::before {
+    background: linear-gradient(
+      180deg,
+      rgba(250, 250, 249, 0.88) 0%,
+      rgba(250, 250, 249, 0.76) 42%,
+      rgba(250, 250, 249, 0.92) 100%
+    );
+  }
+  .hero-inner {
+    padding: 3.5rem 0 3rem;
+  }
+}
 </style>
 
 <header class="hero" aria-label="A warm hand-painted fantasy castle workshop on a dawn hillside">
 <div class="hero-inner">
+<div class="hero-copy">
 
 <h1 class="wordmark">Calci<span class="glow">forge</span></h1>
 <p class="tagline">Keep your castle secure and moving.</p>
@@ -147,6 +182,7 @@ trusting the agent's own restraint.</p>
 <a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
 </div>
 
+</div>
 </div>
 </header>
 
