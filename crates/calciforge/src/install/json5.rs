@@ -14,7 +14,7 @@
 //! # TODO (follow-on)
 //!
 //! Extract both this and NZC's copy to a shared `claw-types` crate so there
-//! is exactly one implementation.  See `docs/opus-review.md` D1 for context.
+//! is exactly one implementation.  See `research/reviews/opus-review.md` D1 for context.
 //!
 //! # Bug fixed vs old executor.rs copy
 //!

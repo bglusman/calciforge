@@ -9,7 +9,7 @@
 //!   outbound requests (`secret_reference(name) → "{{secret:NAME}}"`)
 //! - **kick off the user-facing add flow** for secrets they need but
 //!   that aren't configured yet (`add_secret_request`, currently
-//!   stubbed with a clear "not yet implemented" hint)
+//!   returns safe operator instructions while daemon integration lands)
 //!
 //! Critically, this server does **NOT** expose `get_secret`. Doing so
 //! would defeat the threat model — any agent that connects to MCP
@@ -67,10 +67,7 @@ impl CalciforgeMcp {
     /// produced a token the substitution engine wouldn't accept, the
     /// agent's request would silently fail downstream.
     fn is_valid_name(name: &str) -> bool {
-        !name.is_empty()
-            && name
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        secrets_client::is_valid_secret_name(name)
     }
 }
 
@@ -158,7 +155,8 @@ impl CalciforgeMcp {
                 None,
             ));
         }
-        let token = format!("{{{{secret:{name}}}}}");
+        let token = secrets_client::secret_reference_token(&name)
+            .expect("validated above: valid secret name");
         let payload = serde_json::json!({
             "name": name,
             "reference": token,
@@ -169,14 +167,13 @@ impl CalciforgeMcp {
         )]))
     }
 
-    /// Initiate the out-of-band secret-add flow. Currently stubbed —
-    /// returns instructions telling the user to run `fnox set NAME` on
-    /// the host (or use `!secure set` from a chat channel where the
-    /// transport-retention tradeoff is acceptable).
+    /// Initiate the out-of-band secret-add flow. Currently returns
+    /// instructions telling the user to run the local paste UI or
+    /// `fnox set NAME` on the host. Chat-channel value entry is not
+    /// recommended from agent guidance.
     ///
     /// Future implementation will return a short-lived localhost URL
-    /// the user visits to paste the secret value out-of-band, per
-    /// RFC §5 (`!secure request` flow).
+    /// the user visits to paste the secret value out-of-band.
     #[tool(
         description = "Initiate the user-facing flow for adding a secret. Currently returns instructions; future implementation returns a short-lived URL for out-of-band paste."
     )]
@@ -200,18 +197,18 @@ impl CalciforgeMcp {
         let suggestion = if retention_ok {
             format!(
                 "Tell the user to run one of:\n\
+                 • preferred local paste UI: `paste-server {name}`\n\
                  • host-local: `fnox set {name}` (interactive prompt)\n\
-                 • chat channel: `!secure set {name}=<value>` (note: \
-                   value is retained by the chat transport)"
+                 Avoid channel-based secret entry unless the operator \
+                 has explicitly opted into that retention tradeoff."
             )
         } else {
             format!(
                 "The user requires an out-of-band paste flow for this \
-                 secret. Tell them to run `fnox set {name}` directly on \
-                 the host where the gateway is deployed. The chat-channel \
-                 path (!secure set) is NOT acceptable for this secret. \
-                 The localhost-paste flow (`!secure request {name}`) is \
-                 not yet implemented; track in docs/rfcs/agent-secret-gateway.md §5."
+                 secret. Tell them to run `paste-server {name}` or \
+                 `fnox set {name}` directly on the host where the gateway \
+                 is deployed. The chat-channel path (`!secure set`) is \
+                 NOT acceptable for this secret."
             )
         };
         let payload = serde_json::json!({
@@ -385,10 +382,10 @@ OUT"#,
 
     /// Given add_secret_request with retention_ok=true,
     /// when called,
-    /// then the instructions mention BOTH host-local fnox and
-    /// !secure set (chat-channel) options.
+    /// then the instructions prefer the local paste UI, keep host-local
+    /// fnox available, and avoid recommending channel-based secret entry.
     #[tokio::test]
-    async fn add_secret_request_with_retention_ok_offers_chat_path() {
+    async fn add_secret_request_with_retention_ok_prefers_local_secret_input() {
         let server = CalciforgeMcp::default();
         let result = server
             .add_secret_request(Parameters(AddSecretRequestParams {
@@ -401,14 +398,16 @@ OUT"#,
         let body = result.content[0].raw.as_text().unwrap().text.clone();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let inst = parsed["instructions"].as_str().unwrap();
+        assert!(inst.contains("paste-server"));
         assert!(inst.contains("fnox set"));
-        assert!(inst.contains("!secure set"));
+        assert!(!inst.contains("!secure set"));
+        assert!(inst.contains("retention tradeoff"));
     }
 
     /// Given add_secret_request with retention_ok=false,
     /// when called,
     /// then the instructions explicitly REJECT the !secure set chat
-    /// path and direct the user to the host-local route. This is the
+    /// path and direct the user to local routes. This is the
     /// safety contract — high-value secrets must not slip through to
     /// chat just because the agent forgot to set the flag.
     #[tokio::test]

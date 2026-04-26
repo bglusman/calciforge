@@ -1,454 +1,148 @@
-# 🐾 Calciforge
+# Calciforge
 
-> *The Claw without the scratch.*
-> 
-> A secure, channel-agnostic agent gateway — declawed for safety, but still sharp where it counts.
+> **Keep your castle secure and moving.**
 
----
+Calciforge is a self-hosted security gateway for AI agents. It sits
+between your agents and the rest of the world, so every agent gets its
+own model routes, command permissions, destination-scoped secret
+substitution, and audit trail without holding your raw API keys.
 
-## 🤔 What is this?
+The longer feature tour, configuration examples, and architecture notes
+live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 
-**Calciforge** is an agent gateway that lets you chat with AI from **any** channel (Telegram, WhatsApp, Signal, Matrix) while keeping your credentials locked away and your tools sandboxed.
+## What Works Today
 
-Think of it as a universal remote for AI agents — but one that won't accidentally delete your hard drive because it routes everything through a policy engine first.
+| Area | Status | Where to read more |
+|---|---:|---|
+| `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
+| Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
+| MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
+| Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
+| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
+| [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
+| mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
+| Slack/Discord team ChatOps and Castle-to-Castle federation | Roadmap | [Team ChatOps sketch](docs/roadmap/team-chatops-slack-discord.md) |
+| Per-agent secret ACLs beyond destination allowlists | Roadmap | [Secret access policy](docs/roadmap/agent-secret-access-policy.md) |
 
-### Why "Calciforge"?
-
-Because it wraps [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) with safety features.
-
-- ✅ Wraps the ZeroClaw agent for safety
-- ✅ Adds multi-channel support (Telegram, WhatsApp, Signal, Matrix)
-- ✅ Routes through credential proxy + policy enforcement
-- ❌ Won't run `rm -rf /` because you typo'd "please"
-
----
-
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
-# Clone it
 git clone https://github.com/bglusman/calciforge
 cd calciforge
-
-# Build the router
-cargo build --release -p calciforge
-
-# Build the credential proxy (optional but recommended)
-cargo build --release -p secrets-client
-
-# Deploy to your server
-./infra/deploy-210.sh --with-zeroclaw --with-claw-code
+brew install fnox
+fnox init
+bash scripts/install.sh
 ```
 
----
+After install, the default local pieces are:
 
-## 🏗️ Architecture
+- `calciforge` — channel router, commands, identity, model gateway
+- `security-proxy` on `127.0.0.1:8888` — substitution, destination checks, scanning, credential injection
+- `clashd` on `127.0.0.1:9001` — small HTTP adapter around the `clash` policy engine
+- `secrets-client` — env → fnox → Vaultwarden secret resolver
+- `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
+- `paste-server` — short-lived local forms for adding secrets without putting values in chat history
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Calciforge Router                      │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────────┐  │
-│  │Telegram │ │WhatsApp │ │ Signal  │ │ Matrix          │  │
-│  └────┬────┘ └────┬────┘ └────┬────┘ └────────┬────────┘  │
-│       └─────────────┴───────────┴────────────────┘          │
-│                         │                                   │
-│              ┌──────────▼──────────┐                        │
-│              │   Message Router    │                        │
-│              └──────────┬──────────┘                        │
-│                         │                                   │
-│       ┌─────────────────┼─────────────────┐                 │
-│       │                 │                 │                 │
-│  ┌────▼────┐      ┌─────▼─────┐    ┌────▼────┐             │
-│  │claw-code│      │zeroclawlabs│   │ Any CLI │             │
-│  │(Claude) │      │(Kimi/Gemini)│   │  agent  │             │
-│  └────┬────┘      └─────┬─────┘    └────┬────┘             │
-│       │                 │                 │                 │
-│       └──────────┬──────┴─────────────────┘                 │
-│                  │                                          │
-│         ┌────────▼────────┐                                 │
-│         │   OneCLI Proxy  │  ← Credentials live here       │
-│         └────────┬────────┘                                 │
-│                  │                                          │
-│         ┌────────▼────────┐     ┌──────────────────────┐   │
-│         │ Policy Plugin   │────▶│       clashd         │   │
-│         │ (before_tool_)  │     │  Starlark + Domain   │   │
-│         └─────────────────┘     │  Filtering + Threat  │   │
-│                                 │  Intel Feeds         │   │
-│                                 └──────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+Channel-based secret input is intentionally being de-emphasized. It
+may remain as a per-channel opt-in fallback for travel, low-stakes
+keys, or values you plan to rotate soon, but direct `fnox` input and
+the local web UI are the preferred paths. The risk varies by channel:
+self-hosted encrypted Matrix is the least bad, Signal is still a
+chat-history tradeoff, and Telegram is a poor place for raw secrets.
+
+Route Claude Code or another HTTP-speaking agent through the gateway:
+
+```bash
+export HTTPS_PROXY=http://localhost:8888
 ```
 
----
-
-## 🔐 Security First
-
-| Feature | What it does |
-|---------|--------------|
-| **OneCLI** | Keeps API keys in VaultWarden, not in agent configs |
-| **clashd** | Centralized Starlark policy engine with domain filtering |
-| **Domain Filtering** | Regex patterns, threat intel feeds, per-agent allow/deny lists |
-| **Dynamic Threat Intel** | Auto-updates from URLHaus, StevenBlack, custom feeds |
-| **Adversary Detector** | Three-layer content scanning: structural → semantic → remote service |
-| **Digest Caching** | SHA-256 of response bodies — same content = cache hit, changed = rescan |
-| **Skip Protection** | Trusted domains bypass scanning entirely (exact match + `*.domain.com` wildcard) |
-| **Security Profiles** | Named presets: open / balanced / hardened / paranoid |
-| **Identity-aware** | Different agents get different policies |
-| **Unified identity** | Same conversation context across Telegram/WhatsApp/Signal/Matrix |
-| **No secrets in repo** | Deploy scripts live in `infra/` (gitignored) |
-
----
-
-## 🎛️ Configuration
+## Tiny Config Sketch
 
 ```toml
-# /etc/calciforge/config.toml
+[calciforge]
+version = 2
 
 [[identities]]
-id = "brian"
-aliases = [
-  { channel = "telegram", id = "123456789" },
-  { channel = "whatsapp", id = "+12155551234" },
-]
+id = "owner"
+aliases = [{ channel = "telegram", id = "7000000001" }]
 role = "owner"
 
 [[agents]]
-id = "claw-code"
+id = "claude"
 kind = "cli"
-command = "/usr/local/bin/claw-wrapped"
+command = "/usr/local/bin/claude"
 timeout_ms = 120000
 
-[[agents]]
-id = "zeroclawlabs"
-kind = "cli"  
-command = "/usr/local/bin/zeroclaw-wrapped"
-timeout_ms = 90000
-
 [[routing]]
-identity = "brian"
-default_agent = "claw-code"
-allowed_agents = ["claw-code", "zeroclawlabs", "librarian"]
+identity = "owner"
+default_agent = "claude"
+allowed_agents = ["claude"]
 
-[[channels]]
-kind = "telegram"
-bot_token_file = "/etc/calciforge/secrets/telegram-token"
-enabled = true
-```
-
----
-
-## 🔌 AI Model Proxy
-
-Calciforge includes an **OpenAI-compatible HTTP proxy** (`[proxy]`) that routes model requests to one or more backends, with named provider routing, local model management, streaming support, and tool-call forwarding.
-
-### Multi-Provider Routing
-
-Route different model names to different providers — each with its own URL, API key, and timeout:
-
-```toml
 [proxy]
 enabled = true
 bind = "127.0.0.1:8080"
 backend_type = "http"
-backend_url = "https://api.openai.com/v1"     # default fallback
+backend_url = "https://api.openai.com/v1"
 backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
-# Named providers — matched in order against incoming model name
-# Pattern syntax: exact match, "*" (any), or "prefix/*" (prefix glob)
-[[proxy.providers]]
-id = "local"
-models = ["local/*", "llama/*", "qwen/*", "gemma/*"]
-url = "http://localhost:8888/v1"
+[proxy.token_estimator]
+strategy = "auto"
 
-[[proxy.providers]]
-id = "fast-provider"
-models = ["fast/*"]
-url = "https://api.fast-provider.example.com/v1"
-api_key_file = "/etc/calciforge/secrets/fast-key"
-timeout_seconds = 30
+[[model_shortcuts]]
+alias = "sonnet"
+model = "anthropic/claude-sonnet-4.6"
 ```
 
-### Model Alloys (Blended Routing)
+## Architecture
 
-**Alloy** — inspired by [Alloy: A Model for Blended LLM Outputs](https://arxiv.org/abs/2410.10630) — routes requests across multiple backends for cost efficiency, quality blending, and graceful degradation:
-
-```toml
-[[alloys]]
-id = "balanced"
-strategy = "weighted"
-
-[[alloys.constituents]]
-model = "openrouter/google/gemini-flash-1.5"
-weight = 80
-
-[[alloys.constituents]]
-model = "openrouter/anthropic/claude-3-haiku"
-weight = 20
+```text
+chat channels ─▶ calciforge ─▶ agent
+                    │            │
+                    │            ▼
+                    │      security-proxy ─▶ upstream APIs / web
+                    │            │
+                    │            ├─ secrets-client / fnox
+                    │            ├─ adversary-detector
+                    │            └─ clashd policy sidecar
+                    │
+                    └─ host-agent for narrow system operations
 ```
 
-Users switch alloys via chat:
-```
-!model                 # List available models/alloys
-!model balanced        # Activate an alloy
-```
+The key rule: agents ask for capabilities by name; Calciforge decides
+whether the current identity, destination, and policy context allow the
+operation.
 
-Strategies: `weighted` (random by weight) · `round_robin` (deterministic cycling)
-
-### Local Model Management
-
-Run models locally via [mlx_lm](https://github.com/ml-explore/mlx-lm) (Apple Silicon) or [llama.cpp](https://github.com/ggerganov/llama.cpp) and switch between them at runtime:
-
-```toml
-[local_models]
-enabled = true
-current = "qwen3-35b"
-
-# mlx_lm.server settings (shared across all models)
-[local_models.mlx_lm]
-port = 8888
-host = "127.0.0.1"
-
-[[local_models.models]]
-id = "qwen3-35b"
-hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
-# provider_type = "mlx_lm"  # default
-display_name = "Qwen 3.5 35B"
-
-[[local_models.models]]
-id = "gemma4-26b"
-hf_id = "mlx-community/gemma-4-26b-it-8bit"
-display_name = "Gemma 4 26B"
-```
-
-Switch via API:
-```bash
-curl -X POST http://localhost:8080/control/local/switch \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gemma4-26b"}'
-```
-
----
-
-## 🎙️ Voice Pipeline
-
-Calciforge provides minimal, **non-opinionated** passthrough endpoints for speech-to-text and text-to-speech. It forwards audio/text to whatever STT/TTS servers you configure — no opinions about VAD, wakeword detection, or pipeline topology.
-
-```toml
-[proxy.voice.stt]
-url = "http://localhost:9000"          # any OpenAI-compatible STT server
-timeout_seconds = 60
-
-[proxy.voice.tts]
-url = "http://localhost:9001"          # any OpenAI-compatible TTS server
-timeout_seconds = 60
-
-[proxy.voice.hooks]
-on_audio_in = "/etc/calciforge/hooks/preprocess-audio.sh"   # optional
-on_text_out = "/etc/calciforge/hooks/postprocess-text.sh"   # optional
-```
-
-**Endpoints** (always registered; return `501` when not configured):
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /v1/audio/transcriptions` | Forward audio to STT, return transcript |
-| `POST /v1/audio/speech` | Forward text to TTS, return audio |
-| `GET  /v1/tools/manifest` | OpenAI-compatible tool definitions for what's configured |
-
-**Hooks** receive the request body on stdin and write the (optionally transformed) body to stdout. On failure, the original body passes through unchanged — the pipeline degrades gracefully rather than erroring.
-
-The `GET /v1/tools/manifest` endpoint returns tool definitions a model can inject directly into its `tools` parameter: `calciforge_switch_model`, `calciforge_current_model`, `calciforge_transcribe`, `calciforge_speak` — only for features actually configured.
-
----
-
-## 🛡️ Policy Enforcement (clashd)
-
-clashd is a sidecar service that evaluates every tool call through a Starlark policy before execution.
-
-### Features
-
-- **Starlark Policies**: Turing-complete policy language for complex rules
-- **Domain Filtering**: Exact match, regex patterns, subdomain matching
-- **Threat Intelligence**: Dynamic feeds from URLHaus, StevenBlack, custom sources
-- **Per-Agent Policies**: Different rules for different agents
-- **Custodian Approval**: Require human review for sensitive operations
-
-### Quick Start
+## Development
 
 ```bash
-# Build and run clashd
-cargo build --release -p clashd
-CLASHD_POLICY=crates/clashd/config/default-policy.star ./target/release/clashd
-
-# In another terminal, test it
-curl -X POST http://localhost:9001/evaluate \
-  -H "Content-Type: application/json" \
-  -d '{"tool": "exec", "args": {"command": "ls"}, "context": {"agent_id": "test"}}'
-```
-
-### Policy Example (`policy.star`)
-
-```python
-def evaluate(tool, args, context):
-    # Block known-bad domains
-    if context.get("domain_lists"):
-        return {"verdict": "deny", "reason": "Domain in threat feed"}
-
-    # Require approval for config changes
-    if tool == "gateway":
-        return {"verdict": "review", "reason": "Config change needs approval"}
-
-    # Block destructive commands
-    if tool == "exec" and "rm -rf /" in args.get("command", ""):
-        return {"verdict": "deny", "reason": "Destructive command blocked"}
-
-    return "allow"
-```
-
-See [crates/clashd/README.md](crates/clashd/README.md) for full documentation.
-
----
-
-## 🔍 Content Scanning (adversary-detector)
-
-All external content fetched by agents passes through `adversary-detector` — a three-layer scanner with SHA-256 digest caching and skip protection.
-
-### How It Works
-
-1. **Fetch** — proxy fetches the URL over HTTPS
-2. **Digest check** — SHA-256 of response body compared to cached entry
-   - Same URL + same digest → cached verdict, no rescan (fast path)
-   - New or changed digest → full scan pipeline runs
-3. **Three-layer scan:**
-   - Layer 1 (structural): zero-width chars, unicode tag hiding, base64 blobs
-   - Layer 2 (semantic): injection phrases, PII harvesting signals, exfiltration patterns
-   - Layer 3 (remote): optional deeper analysis via shared HTTP service
-4. **Verdict:** Clean / Review / Unsafe → returned to caller
-
-### Skip Protection (Trusted Domains)
-
-Domains in `skip_protection_domains` bypass scanning entirely:
-
-```toml
-# In scanner config
-skip_protection_domains = [
-    "api.internal.example.com",    # exact match
-    "*.trusted-cdn.com",           # wildcard — all subdomains
-]
-```
-
-Skip protection is distinct from digest caching: digest caching scans first then caches; skip protection never scans at all. Use for domains you fully control.
-
-### Security Profiles
-
-Four named presets control scanning depth, rate limits, and logging:
-
-| Profile | Scans | Discussion Ratio | Review | Rate |
-|---------|-------|-----------------|--------|------|
-| **Open** | web_fetch only | 0.5 | auto-pass | 120/min |
-| **Balanced** | web + search | 0.3 | needs approval | 60/min |
-| **Hardened** | all tools | 0.15 | blocked | 30/min |
-| **Paranoid** | all + exec | 0.0 | blocked | 15/min |
-
-See [crates/adversary-detector/README.md](crates/adversary-detector/README.md) for full documentation.
-
----
-
-## 🧪 Development
-
-```bash
-# Run tests
 cargo test
-
-# Run specific crate tests
 cargo test -p calciforge
+cargo test -p calciforge --features tiktoken-estimator
 cargo test -p secrets-client
-
-# Check formatting
 cargo fmt --all -- --check
-
-# Run clippy
 cargo clippy --all-targets
 ```
 
----
-
-## 📦 Components
-
-| Crate | Purpose |
-|-------|---------|
-| `calciforge` | The main router/gateway binary |
-| `secrets-client` | Credential proxy service |
-| `host-agent` | System management agent (ZFS, systemd, Proxmox) |
-| `adversary-detector` | Content scanning, digest caching, skip protection |
-| `clashd` | Starlark policy engine with domain filtering and threat intel |
-
----
-
-## 🤝 Related Projects
-
-- **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** — The upstream agent framework
-- **[claw-code](https://github.com/instructkr/claw-code)** — Claude Code integration
-- **[clash](https://crates.io/crates/clash)** — Policy enforcement engine
-
----
-
-## 📝 License
-
-MIT — See [LICENSE](LICENSE)
-
----
-
-## 🙏 Acknowledgments
-
-Built with:
-- ☕ Too much coffee
-- 🦀 Rust's borrow checker (our enemy and our friend)
-- 🤖 A healthy fear of un-sandboxed AI agents
-
-> *"The best code is code that doesn't accidentally delete your home directory."*
-> — Ancient Proverb
-
----
-
-## 📋 Roadmap & Architecture
-
-### Components
-
-| Crate | Binary | Purpose |
-|-------|--------|---------|
-| `calciforge` | `calciforge` | **Router** — channel-agnostic gateway. Owns all inbound channels (Telegram, Matrix, Signal, WhatsApp), enforces auth/allow-lists, and routes messages to downstream agents. Includes OpenAI-compatible model proxy with multi-provider routing, local model management, and voice pipeline passthrough. |
-| `secrets-client` | `secrets` | **Credential Proxy** — VaultWarden integration, injects API keys without exposing them to agents |
-| `host-agent` | `host-agent` | **System Agent** — ZFS, systemd, Proxmox operations with approval gates |
-| `adversary-detector` | *(library)* | **Content Scanner** — three-layer detection, digest caching, skip protection, security profiles — [README](crates/adversary-detector/README.md) |
-| `clashd` | `clashd` | **Policy Engine** — Starlark policies, domain filtering, threat intel feeds, per-agent configs — [README](crates/clashd/README.md) |
-
-### Message Flow
-
-```
-[Telegram] ──┐
-[Matrix]   ──┤──▶ [Calciforge] ──▶ [Auth] ──▶ [Router] ──▶ [Agent]
-[Signal]   ──┘        │                                    │
-[WhatsApp] ──┘   [adversary-detector]               [OneCLI proxy]
-                                                           │
-                                                    [VaultWarden]
-```
-
-### OneCLI: Universal Secret Proxy
-
-OneCLI can proxy **any** HTTP request with credential injection:
+Install hooks once:
 
 ```bash
-# LLM APIs (auto-injected)
-/proxy/anthropic → api.anthropic.com + Authorization header
-/proxy/openai    → api.openai.com + Authorization header
-
-# Any secret (explicit lookup)
-/vault/Brave%20Search%20API → returns {token: "..."}
-/vault/Any%20Service         → returns {token: "..."}
+bash scripts/install-git-hooks.sh
 ```
 
-Agents use OneCLI transparently — the wrapper scripts set the proxy URL, agents make normal requests.
+## Docs
 
----
+- [Feature tour and install notes](https://calciforge.org/)
+- [Model gateway reference](docs/model-gateway.md)
+- [Model gateway RFC](docs/rfcs/model-gateway-primitives.md)
+- [Security proxy docs](docs/security-gateway.md)
+- [Host-agent docs](crates/host-agent/README.md)
+- [Roadmap](docs/roadmap/)
+- [Channel secret-input deprecation note](docs/roadmap/channel-secret-input-deprecation.md)
+- [Internal research and planning notes](research/)
 
-**Calciforge** — *Chat safely. Route wisely. Keep your claws retracted.* 🐾
+## License
+
+MIT. Some bundled tools, including fnox, carry their own licenses; see
+the relevant crate manifests and upstream projects.

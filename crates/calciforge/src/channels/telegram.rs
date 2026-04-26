@@ -267,6 +267,18 @@ fn handle_message_nonblocking(
     // was handled; the handler never logs `text` either.
     if CommandHandler::is_secure_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        if CommandHandler::is_secure_set_command(&text)
+            && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
+        {
+            let reply = CommandHandler::secure_set_disabled_reply("Telegram");
+            let bot2 = bot.clone();
+            tokio::spawn(async move {
+                if let Err(e) = bot2.send_message(chat_id, &reply).await {
+                    warn!(chat_id = %chat_id, error = %e, "failed to send !secure disabled reply");
+                }
+            });
+            return;
+        }
         let cmd_handler = command_handler.clone();
         let identity_id = identity.id.clone();
         let bot2 = bot.clone();
@@ -579,6 +591,15 @@ async fn handle_message(
     // ops logs (`!secure set NAME=value` would otherwise be visible).
     if CommandHandler::is_secure_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        if CommandHandler::is_secure_set_command(&text)
+            && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
+        {
+            let reply = CommandHandler::secure_set_disabled_reply("Telegram");
+            if let Err(e) = bot.send_message(chat_id, &reply).await {
+                warn!(chat_id = %chat_id, error = %e, "failed to send !secure disabled reply");
+            }
+            return;
+        }
         let reply = command_handler.handle_secure(&text, &identity.id).await;
         if let Err(e) = bot.send_message(chat_id, &reply).await {
             warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
@@ -740,6 +761,8 @@ mod tests {
             context: Default::default(),
             model_shortcuts: vec![],
             alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
             security: None,
             proxy: None,
             local_models: None,

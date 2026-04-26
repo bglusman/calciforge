@@ -16,7 +16,9 @@
 
 pub mod config;
 pub mod fnox_client;
+pub mod secret_refs;
 pub mod vault;
 
 pub use config::RetryConfig;
 pub use fnox_client::{FnoxClient, FnoxError};
+pub use secret_refs::{is_valid_secret_name, secret_reference_token};

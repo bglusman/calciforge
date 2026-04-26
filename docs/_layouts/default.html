@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ page.title | default: site.title }}</title>
+<meta name="description" content="{{ site.description }}">
+<style>
+  html { box-sizing: border-box; }
+  *, *:before, *:after { box-sizing: inherit; }
+  body { max-width: 760px; margin: 2.5rem auto; padding: 0 1.2rem 4rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+  th, td { padding: 0.45rem 0.7rem; border-bottom: 1px solid #e7e5e4; text-align: left; vertical-align: top; }
+  th { background: #f5f5f4; font-weight: 600; }
+  hr { border: 0; border-top: 1px solid #e7e5e4; margin: 2rem 0; }
+</style>
+</head>
+<body>
+{{ content }}
+</body>
+</html>

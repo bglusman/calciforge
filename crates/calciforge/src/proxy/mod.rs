@@ -27,6 +27,7 @@ mod handlers;
 mod openai;
 pub(crate) mod routing;
 mod streaming;
+mod token_estimator;
 mod voice_handlers;
 
 // Helicone AI Gateway router (HTTP-based)

@@ -17,7 +17,7 @@
 //!
 //! Extract these types (and the JSON5 parser) to a shared `claw-types` crate.
 //! Both `nonzeroclaw` and `calciforge` should depend on it.  This eliminates the
-//! duplication.  See `docs/opus-review.md` D1 for the full context.
+//! duplication.  See `research/reviews/opus-review.md` D1 for the full context.
 //!
 //! Until then: if you change either copy, update the other too.
 

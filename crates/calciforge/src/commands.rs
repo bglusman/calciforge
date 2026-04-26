@@ -289,6 +289,27 @@ impl CommandHandler {
         cmd == "!secure"
     }
 
+    /// Returns `true` only for the chat-value entry form
+    /// `!secure set ...`. This is the risky subcommand that channel
+    /// handlers gate behind `allow_chat_secret_set`.
+    pub fn is_secure_set_command(text: &str) -> bool {
+        let mut parts = text.split_whitespace();
+        let cmd = parts.next().unwrap_or("").to_lowercase();
+        let sub = parts.next().unwrap_or("").to_lowercase();
+        cmd == "!secure" && sub == "set"
+    }
+
+    /// Reply used when a channel has not opted into chat-transport
+    /// secret values. Keep this value-free and channel-generic.
+    pub fn secure_set_disabled_reply(channel_kind: &str) -> String {
+        format!(
+            "⚠️ `!secure set` is disabled for {channel_kind} by default because \
+             it sends the secret through chat history. Use `paste-server NAME` \
+             on the host, or set `allow_chat_secret_set = true` on this channel \
+             only if you accept that retention tradeoff."
+        )
+    }
+
     /// Respond to unknown commands with a helpful message.
     pub fn unknown_command(&self, text: &str) -> String {
         let cmd = text.trim().split(' ').next().unwrap_or("").to_string();
@@ -861,16 +882,17 @@ impl CommandHandler {
     /// context. Never echoes back values — responses are name-only.
     ///
     /// Subcommands:
-    ///   - `!secure set NAME=value`  — store a secret
+    ///   - `!secure set NAME=value`  — store a secret via chat (legacy/caution)
     ///   - `!secure list`            — list stored secret names
     ///   - `!secure help`            — usage string
     ///
     /// **Retention warning** (documented in first-time-use UX):
     /// this command's text passes through the chat transport
     /// (Telegram/Matrix/WhatsApp), which retains message history.
-    /// For values where chat-transport exposure is unacceptable,
-    /// a follow-up `!secure request NAME` flow (out-of-band) is
-    /// planned — see `docs/rfcs/agent-secret-gateway.md` §5.
+    /// For values where chat-transport exposure is unacceptable, use
+    /// `paste-server NAME` locally. A follow-up `!secure input NAME`
+    /// flow can wrap that server from chat without sending the value
+    /// through chat.
     pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // `!secure ...` — split off the subcommand word using
@@ -923,7 +945,7 @@ impl CommandHandler {
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
-            "  !secure <set|list|help> — manage fnox secret names/values (requires auth)",
+            "  !secure <list|help> — list fnox secret names; `set` is chat-retained legacy fallback",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -1199,16 +1221,20 @@ impl CommandHandler {
 fn secure_help() -> String {
     [
         "!secure subcommands:",
-        "  !secure set NAME=value    — store a secret by name (never echoed)",
-        "  !secure set NAME value    — same, for mobile keyboards",
         "  !secure list              — list stored secret names (not values)",
         "  !secure help              — show this help",
         "",
+        "Preferred input path:",
+        "  paste-server NAME \"description\"",
+        "  paste-server --bulk env-import \"bulk .env import\"",
+        "",
+        "Legacy chat fallback:",
+        "  !secure set NAME=value    — store a low-stakes secret by name",
+        "  !secure set NAME value    — same, for mobile keyboards",
+        "",
         "⚠️ `!secure set` passes through the chat transport, which retains",
-        "   history. For values that must never touch chat, use a host-local",
-        "   `fnox set NAME` directly. An out-of-band paste flow",
-        "   (`!secure request NAME`) is planned — see",
-        "   docs/rfcs/agent-secret-gateway.md §5.",
+        "   history and may not be end-to-end encrypted. For values that",
+        "   must never touch chat, use the local paste UI or `fnox set NAME`.",
     ]
     .join("\n")
 }
@@ -1252,8 +1278,8 @@ async fn secure_set(rest: &str) -> String {
         Ok(()) => format!(
             "✅ Stored secret `{name}`.\n\n\
              ⚠️ The value you sent is retained by the chat transport. \
-             For high-value secrets, use host-local `fnox set` or the \
-             planned `!secure request` flow."
+             For high-value secrets, use the local paste UI \
+             (`paste-server {name}`) or host-local `fnox set {name}`."
         ),
         Err(secrets_client::FnoxError::NotInstalled(e)) => format!(
             "⚠️ fnox not available: {e}. Install it (brew install fnox) \
@@ -1278,7 +1304,8 @@ async fn secure_list() -> String {
     let client = secrets_client::FnoxClient::new();
     match client.list().await {
         Ok(names) if names.is_empty() => {
-            "📭 No secrets stored. Use `!secure set NAME=value` to add one.".to_string()
+            "📭 No secrets stored. Use `paste-server NAME` to add one without chat history."
+                .to_string()
         }
         Ok(names) => format!(
             "🔐 {} stored secret{}:\n  {}",
@@ -1400,6 +1427,8 @@ mod tests {
             context: Default::default(),
             model_shortcuts: vec![],
             alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
             security: None,
             proxy: None,
             local_models: None,
@@ -1595,6 +1624,8 @@ mod tests {
             context: Default::default(),
             model_shortcuts: vec![],
             alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
             security: None,
             proxy: None,
             local_models: None,
@@ -1967,6 +1998,20 @@ mod tests {
     use tempfile::TempDir;
 
     static SECURE_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn secure_set_command_detection_only_matches_value_entry() {
+        assert!(CommandHandler::is_secure_set_command(
+            "  !secure   set NAME=value"
+        ));
+        assert!(CommandHandler::is_secure_set_command(
+            "!SECURE SET NAME value"
+        ));
+        assert!(!CommandHandler::is_secure_set_command("!secure"));
+        assert!(!CommandHandler::is_secure_set_command("!secure list"));
+        assert!(!CommandHandler::is_secure_set_command("!secure help"));
+        assert!(!CommandHandler::is_secure_set_command("!status"));
+    }
 
     fn install_fake_fnox(dir: &TempDir, body: &str) -> std::path::PathBuf {
         let bin = dir.path().join("fnox");

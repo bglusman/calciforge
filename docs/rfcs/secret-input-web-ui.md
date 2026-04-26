@@ -1,16 +1,15 @@
 # Local secret-input web UI — RFC
 
-Status: DRAFT — refines RFC `agent-secret-gateway.md` §5
-("`!secure request NAME`") with the user-suggested narrowing toward
-**input-only, new-by-default**. Not committing to build yet; this doc
-is the design + assessment.
+Status: PARTIALLY IMPLEMENTED — `crates/paste-server` provides the
+input-only, new-by-default local form. MCP integration is still a
+follow-up; for now the CLI prints the single-use URL.
 
 ## Origin
 
 User asked: does fnox have a UI for the secret-input case? And —
 should we build a small input-only web UI as a complement to
-`!secure`, with a "new only / no update" default to make compromise
-less catastrophic?
+chat-based secret input, with a "new only / no update" default to
+make compromise less catastrophic?
 
 ## fnox UI status
 
@@ -23,14 +22,15 @@ So if we want input-only, we build it.
 
 ## Design
 
-A tiny HTTP server bound to `127.0.0.1:<random>`, spawned on demand
-by agents calling the MCP `add_secret_request` tool (or by a chat
-command `!secure request NAME`). Returns a one-shot URL plus a token
-the user must confirm out-of-band.
+A tiny HTTP server bound to `127.0.0.1:<random>`, spawned today by
+the `paste-server` CLI and eventually by agents calling the MCP
+`add_secret_request` tool. It returns a one-shot URL plus a token the
+user must open out-of-band.
 
 ### URL flow
 
-1. Agent (or `!secure request NAME`) calls the MCP, which:
+1. Operator runs `paste-server NAME [DESCRIPTION]`, or a future agent
+   flow calls the MCP, which:
    - allocates a random port (or uses a configured one)
    - generates a 32-byte random token
    - records `(token, NAME, expires_at, status: pending)` in an
@@ -91,9 +91,9 @@ Truncation length defaults to 4 chars each end, configurable up to
 - For low-entropy or short tokens, deployments can disable the
   preview entirely.
 
-### Threat model deltas vs `!secure set`
+### Threat model deltas vs channel value entry
 
-| Property | `!secure set` (chat) | This UI |
+| Property | Chat-channel value entry | This UI |
 |---|---|---|
 | Value transits chat transport | YES (Telegram/Matrix logs forever) | NO |
 | Value visible in client history | YES | NO (only in browser tab during paste) |
@@ -126,8 +126,7 @@ RFC §12.8).
   - in-memory token store, single-listener-per-request lifecycle
   - `FnoxClient` (PR #21) for the actual set
 - ~50 LoC integration: MCP `add_secret_request` returns a URL
-  instead of a stub message; chat command `!secure request NAME`
-  spawns the server.
+  instead of a stub message.
 - Frontend: 1 minimal HTML form (~40 lines, no framework). Don't
   ship JS; submit is a plain HTML form POST.
 - Tests: 4-5 given/when/then around token validation, expiry,
@@ -156,13 +155,14 @@ test coverage.
 2. Make the verification preview opt-in per deployment (so
    conservative users disable it entirely).
 3. Treat this as the canonical path for any secret where chat-
-   transport retention is unacceptable. Document `!secure set` as
-   "convenience for low-stakes secrets only" and `!secure request`
-   as "use when chat retention isn't OK".
+   transport retention is unacceptable.
 4. The MCP `add_secret_request` tool already exists (PR #23,
    currently stubbed) — wire it to spawn this server so the agent
    can offer the URL to the user automatically when it discovers a
    missing secret.
+5. Keep channel-based value entry out of primary user docs while
+   deprecation/opt-in policy settles. See
+   `docs/roadmap/channel-secret-input-deprecation.md`.
 
 ## Out of scope here (parking)
 

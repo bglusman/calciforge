@@ -53,6 +53,18 @@ pub struct PolyConfig {
     #[serde(default)]
     pub alloys: Vec<AlloyConfig>,
 
+    /// `[[cascades]]` — explicit ordered model fallback chains.
+    /// The proxy tries the first model whose declared context window can hold
+    /// the request, then falls through to later eligible models on failure.
+    #[serde(default)]
+    pub cascades: Vec<CascadeConfig>,
+
+    /// `[[dispatchers]]` — request-size aware model selectors.
+    /// The proxy picks the smallest configured model that can hold the request,
+    /// then uses larger eligible models as fallbacks.
+    #[serde(default)]
+    pub dispatchers: Vec<DispatcherConfig>,
+
     /// `[security]` — adversary detector profile and settings.
     /// Defaults to balanced if not specified in config.
     #[serde(default)]
@@ -120,6 +132,41 @@ pub struct AlloyConstituentConfig {
 
 fn default_alloy_weight() -> u32 {
     1
+}
+
+/// Cascade definition (`[[cascades]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CascadeConfig {
+    /// Synthetic model id requested by agents.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Ordered fallback targets.
+    #[serde(default)]
+    pub models: Vec<SyntheticModelConfig>,
+}
+
+/// Dispatcher definition (`[[dispatchers]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DispatcherConfig {
+    /// Synthetic model id requested by agents.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Candidate targets, usually small local models first and larger remote
+    /// models later. Runtime selection sorts by declared context size.
+    #[serde(default)]
+    pub models: Vec<SyntheticModelConfig>,
+}
+
+/// One target inside a cascade or dispatcher.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SyntheticModelConfig {
+    pub model: String,
+    /// Declared context window (tokens) for this target.
+    pub context_window: u32,
 }
 
 /// `[calciforge]` header section.
@@ -277,6 +324,30 @@ pub struct ChannelConfig {
     /// Default: false (opt-in). The HTTP proxy is always-on regardless of this flag.
     #[serde(default)]
     pub scan_messages: bool,
+
+    /// Allow `!secure set NAME=value` to accept secret values through this
+    /// chat transport. Default: false; prefer the local paste UI so secret
+    /// values do not land in chat/provider history.
+    #[serde(default)]
+    pub allow_chat_secret_set: bool,
+}
+
+/// Returns true when exactly one enabled channel of this kind explicitly opts
+/// into chat-transport secret values via `allow_chat_secret_set = true`.
+///
+/// The option is stored per channel instance. If multiple enabled entries
+/// share the same kind, this helper fails closed because the current channel
+/// handlers only pass a kind string into the gate.
+pub fn channel_allows_chat_secret_set(config: &PolyConfig, kind: &str) -> bool {
+    let mut matches = config
+        .channels
+        .iter()
+        .filter(|c| c.kind == kind && c.enabled);
+
+    match (matches.next(), matches.next()) {
+        (Some(channel), None) => channel.allow_chat_secret_set,
+        _ => false,
+    }
 }
 
 /// `[permissions]` section.
@@ -408,9 +479,60 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub model_routes: Vec<ProxyModelRoute>,
 
+    /// Token estimator used by cascades and dispatchers for context-window routing.
+    #[serde(default)]
+    pub token_estimator: TokenEstimatorConfig,
+
     /// Optional voice pipeline passthrough (`[proxy.voice]`).
     #[serde(default)]
     pub voice: Option<crate::voice::VoiceConfig>,
+}
+
+/// Token estimation strategy for context-window routing.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenEstimatorConfig {
+    /// Strategy used to estimate request size.
+    #[serde(default)]
+    pub strategy: TokenEstimatorStrategy,
+    /// Optional tiktoken base override, such as `o200k_base` or `cl100k_base`.
+    #[serde(default)]
+    pub tokenizer: Option<String>,
+    /// Characters per token for the `char_ratio` fallback.
+    #[serde(default = "default_token_estimator_chars_per_token")]
+    pub chars_per_token: f32,
+    /// Bytes per token for the `byte_ratio` fallback.
+    #[serde(default = "default_token_estimator_bytes_per_token")]
+    pub bytes_per_token: f32,
+    /// Multiplier applied after estimating tokens.
+    #[serde(default = "default_token_estimator_safety_margin")]
+    pub safety_margin: f32,
+}
+
+/// Available token estimation strategies.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenEstimatorStrategy {
+    /// Use tiktoken when compiled in and the model/tokenizer is known; otherwise char ratio.
+    #[default]
+    Auto,
+    /// Use configurable characters-per-token ratio.
+    CharRatio,
+    /// Use configurable bytes-per-token ratio.
+    ByteRatio,
+    /// Prefer tiktoken and fall back to char ratio if unavailable.
+    Tiktoken,
+}
+
+impl Default for TokenEstimatorConfig {
+    fn default() -> Self {
+        Self {
+            strategy: TokenEstimatorStrategy::default(),
+            tokenizer: None,
+            chars_per_token: default_token_estimator_chars_per_token(),
+            bytes_per_token: default_token_estimator_bytes_per_token(),
+            safety_margin: default_token_estimator_safety_margin(),
+        }
+    }
 }
 
 /// Agent-specific configuration for proxy access.
@@ -476,6 +598,7 @@ impl Default for ProxyConfig {
             backend_api_key_file: None,
             providers: Vec::new(),
             model_routes: Vec::new(),
+            token_estimator: TokenEstimatorConfig::default(),
             voice: None,
         }
     }
@@ -495,6 +618,18 @@ fn default_proxy_timeout() -> u64 {
 
 fn default_proxy_max_body_mb() -> usize {
     50
+}
+
+fn default_token_estimator_chars_per_token() -> f32 {
+    3.5
+}
+
+fn default_token_estimator_bytes_per_token() -> f32 {
+    3.0
+}
+
+fn default_token_estimator_safety_margin() -> f32 {
+    1.10
 }
 
 fn default_proxy_default_policy() -> ProxyAccessPolicy {
@@ -860,6 +995,95 @@ post_write_hook = "none"
         assert_eq!(cfg.channels.len(), 1);
         assert_eq!(cfg.channels[0].kind, "telegram");
         assert!(cfg.channels[0].enabled);
+        assert!(!cfg.channels[0].allow_chat_secret_set);
+    }
+
+    #[test]
+    fn proxy_token_estimator_defaults_to_auto() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[proxy]
+enabled = true
+"#,
+        )
+        .expect("parse proxy token estimator defaults");
+
+        let proxy = cfg.proxy.expect("proxy section");
+        assert_eq!(proxy.token_estimator.strategy, TokenEstimatorStrategy::Auto);
+        assert!(proxy.token_estimator.tokenizer.is_none());
+    }
+
+    #[test]
+    fn proxy_token_estimator_parses_explicit_strategy() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[proxy]
+enabled = true
+
+[proxy.token_estimator]
+strategy = "tiktoken"
+tokenizer = "o200k_base"
+safety_margin = 1.02
+"#,
+        )
+        .expect("parse explicit token estimator config");
+
+        let estimator = cfg.proxy.expect("proxy section").token_estimator;
+        assert_eq!(estimator.strategy, TokenEstimatorStrategy::Tiktoken);
+        assert_eq!(estimator.tokenizer.as_deref(), Some("o200k_base"));
+        assert_eq!(estimator.safety_margin, 1.02);
+    }
+
+    #[test]
+    fn chat_secret_set_is_per_channel_opt_in() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+
+[[channels]]
+kind = "matrix"
+enabled = true
+allow_chat_secret_set = true
+"#,
+        )
+        .expect("parse channel opt-in config");
+
+        assert!(!channel_allows_chat_secret_set(&cfg, "telegram"));
+        assert!(channel_allows_chat_secret_set(&cfg, "matrix"));
+        assert!(!channel_allows_chat_secret_set(&cfg, "whatsapp"));
+    }
+
+    #[test]
+    fn chat_secret_set_fails_closed_for_duplicate_channel_kind() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+allow_chat_secret_set = true
+
+[[channels]]
+kind = "telegram"
+enabled = true
+"#,
+        )
+        .expect("parse duplicate channel kind config");
+
+        assert!(!channel_allows_chat_secret_set(&cfg, "telegram"));
     }
 
     #[test]
