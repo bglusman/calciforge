@@ -39,7 +39,7 @@ allowed_agents = ["codex"]
 By default the adapter runs:
 
 ```bash
-codex exec --color never --sandbox read-only --ask-for-approval never --skip-git-repo-check -
+codex exec --color never --sandbox read-only --ephemeral --skip-git-repo-check -
 ```
 
 The prompt is sent on stdin and Calciforge captures Codex's
@@ -59,7 +59,7 @@ args = [
   "exec",
   "--color", "never",
   "--sandbox", "workspace-write",
-  "--ask-for-approval", "never",
+  "--ephemeral",
   "--skip-git-repo-check",
   "-",
 ]

@@ -731,9 +731,16 @@ async fn handle_message(
 
     let augmented = ctx_store.augment_message(chat_key, &agent_id, body);
     let dispatch_start = std::time::Instant::now();
+    let model_override = cmd_handler.active_model_for_identity(identity_id);
 
     match router
-        .dispatch_with_sender(&augmented, &agent, config, Some(identity_id))
+        .dispatch_with_sender_and_model(
+            &augmented,
+            &agent,
+            config,
+            Some(identity_id),
+            model_override.as_deref(),
+        )
         .await
     {
         Ok(response) => {

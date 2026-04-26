@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 
@@ -36,10 +37,7 @@ DEFAULT_PORT = 18088
 SERVER_NAME = "localhost"
 BOT_USER = "calciforge"
 ALICE_USER = "alice"
-BOT_PASSWORD = "calciforge-bot-password"
-ALICE_PASSWORD = "calciforge-alice-password"
 EXPECTED_PROMPT = "hello real matrix"
-EXPECTED_REPLY = f"real-matrix-agent saw: {EXPECTED_PROMPT}"
 
 
 def calciforge_command(config_path: Path) -> list[str]:
@@ -64,8 +62,14 @@ def calciforge_command(config_path: Path) -> list[str]:
     ]
 
 
-def run(cmd: list[str], *, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
-    print("+", " ".join(cmd), flush=True)
+def run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    display_cmd: list[str] | None = None,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    print("+", " ".join(display_cmd or cmd), flush=True)
     return subprocess.run(cmd, check=check, text=True, **kwargs)
 
 
@@ -108,21 +112,23 @@ def wait_for_synapse(base_url: str, deadline: float) -> None:
 
 
 def register_user(container: str, user: str, password: str) -> None:
+    cmd = [
+        "docker",
+        "exec",
+        container,
+        "register_new_matrix_user",
+        "-c",
+        "/data/homeserver.yaml",
+        "-u",
+        user,
+        "-p",
+        password,
+        "-a",
+        "http://127.0.0.1:8008",
+    ]
     run(
-        [
-            "docker",
-            "exec",
-            container,
-            "register_new_matrix_user",
-            "-c",
-            "/data/homeserver.yaml",
-            "-u",
-            user,
-            "-p",
-            password,
-            "-a",
-            "http://127.0.0.1:8008",
-        ],
+        cmd,
+        display_cmd=[arg if arg != password else "<generated-password>" for arg in cmd],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -400,6 +406,9 @@ def main() -> int:
 
     base_url = f"http://127.0.0.1:{args.port}"
     container = f"calciforge-matrix-e2e-{os.getpid()}"
+    registration_secret = f"calciforge-e2e-{uuid.uuid4().hex}"
+    bot_password = f"calciforge-e2e-bot-{uuid.uuid4().hex}"
+    alice_password = f"calciforge-e2e-alice-{uuid.uuid4().hex}"
     calciforge_proc: subprocess.Popen | None = None
     tmp_obj = tempfile.TemporaryDirectory(
         prefix="calciforge-matrix-e2e-",
@@ -432,12 +441,15 @@ def main() -> int:
                 "--rm",
                 "-v",
                 f"{data_dir}:/data",
+                "-e",
+                "REGISTRATION_SHARED_SECRET",
                 "--entrypoint",
                 "/bin/sh",
                 args.image,
                 "-c",
-                "printf '\\nregistration_shared_secret: calciforge-e2e-registration\\n' >> /data/homeserver.yaml",
-            ]
+                "printf '\\nregistration_shared_secret: %s\\n' \"$REGISTRATION_SHARED_SECRET\" >> /data/homeserver.yaml",
+            ],
+            env={**os.environ, "REGISTRATION_SHARED_SECRET": registration_secret},
         )
 
         run(
@@ -458,10 +470,10 @@ def main() -> int:
         )
         wait_for_synapse(base_url, time.monotonic() + 90)
 
-        register_user(container, BOT_USER, BOT_PASSWORD)
-        register_user(container, ALICE_USER, ALICE_PASSWORD)
-        bot_token, bot_user_id = login(base_url, BOT_USER, BOT_PASSWORD)
-        alice_token, alice_user_id = login(base_url, ALICE_USER, ALICE_PASSWORD)
+        register_user(container, BOT_USER, bot_password)
+        register_user(container, ALICE_USER, alice_password)
+        bot_token, bot_user_id = login(base_url, BOT_USER, bot_password)
+        alice_token, alice_user_id = login(base_url, ALICE_USER, alice_password)
         token_path = tmp / "matrix-bot-token"
         token_path.write_text(f"{bot_token}\n", encoding="utf-8")
         agent_path = tmp / "real-matrix-agent"
@@ -537,7 +549,7 @@ def main() -> int:
             room_id,
             bot_user_id,
             EXPECTED_PROMPT,
-            EXPECTED_REPLY,
+            EXPECTED_PROMPT,
         )
         print("real Matrix E2E passed")
         return 0

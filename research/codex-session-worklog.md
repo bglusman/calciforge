@@ -140,3 +140,27 @@ intentionally ignores its own Matrix events.
   channel is not the desired notification channel.
 - Needs a channel-send abstraction shared by Telegram, Matrix, WhatsApp rather
   than direct same-channel `send_reply` calls embedded in each adapter.
+
+## 2026-04-26 live routing / .229 reachability update
+
+- Mac live Calciforge currently has `brian -> custodian` in active-agent state.
+  Recent Telegram failures route through that `custodian` agent, not through the
+  default `codex` agent.
+- The Mac `custodian` agent endpoint is configured to target `.229` port
+  `18789` with the `openclaw-native` adapter. `.229` has no listener on that
+  port.
+- `.229` is reachable over SSH and its nonzeroclaw service is healthy locally,
+  but the gateway listens only on `127.0.0.1:18793`. From the Mac, both
+  the stale `18789` endpoint and direct `.229:18793` refuse TCP connections.
+- `.229` also has `[hooks] enabled = false`, so simply exposing `18793` would
+  not automatically make the current `openclaw-native` `/hooks/agent` call path
+  valid. Fix requires either a compatible adapter/endpoint or enabling and
+  verifying hooks.
+- Source fix in progress: `!model` now lists and activates all synthetic model
+  classes, and channel adapters pass the active synthetic model override into
+  agent dispatch. This makes `!model` selections affect future chat messages for
+  gateway-backed adapters such as `openclaw-http`/`nzc-http`.
+- Source fix in progress: the Codex CLI adapter default arguments were updated
+  to remove obsolete `--ask-for-approval never` and use `--ephemeral` instead.
+- Added synthetic model gateway E2E coverage for alloy, cascade, dispatcher, and
+  oversized-context rejection using a deterministic mock backend.

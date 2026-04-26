@@ -127,3 +127,29 @@ jobs:
 
       - name: Run real Matrix homeserver E2E
         run: python3 scripts/matrix-real-e2e.py
+
+  model-gateway-synthetic-e2e:
+    name: Model Gateway Synthetic E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-synthetic-gateway-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Calciforge
+        run: cargo build -p calciforge
+
+      - name: Run synthetic model gateway E2E
+        run: python3 scripts/model-gateway-synthetic-e2e.py

@@ -134,9 +134,16 @@ impl CommandHandler {
         self
     }
 
-    /// Get a reference to the alloy manager, if configured.
+    /// Get a reference to the synthetic model manager, if configured.
     pub fn alloy_manager(&self) -> Option<&AlloyManager> {
         self.alloy_manager.as_ref()
+    }
+
+    /// Return the active synthetic model override for an identity, if one was selected.
+    pub fn active_model_for_identity(&self, identity_id: &str) -> Option<String> {
+        self.alloy_manager
+            .as_ref()
+            .and_then(|manager| manager.active_for_identity(identity_id))
     }
 
     /// Record that a message was routed to an agent.
@@ -968,7 +975,7 @@ impl CommandHandler {
                 }
             }
 
-            // Alloys section
+            // Synthetic models section
             if let Some(ref manager) = self.alloy_manager {
                 if !manager.is_empty() {
                     if !lines.is_empty() {
@@ -989,21 +996,60 @@ impl CommandHandler {
                             constituents.join(", ")
                         ));
                     }
+                    let cascades = manager.list_cascades();
+                    if !cascades.is_empty() {
+                        lines.push(String::new());
+                        lines.push("Configured cascades:".to_string());
+                        for cascade in cascades {
+                            let models: Vec<String> = cascade
+                                .models
+                                .iter()
+                                .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
+                                .collect();
+                            lines.push(format!(
+                                "  {} — {}: {}",
+                                cascade.id,
+                                cascade.name,
+                                models.join(" → ")
+                            ));
+                        }
+                    }
+                    let dispatchers = manager.list_dispatchers();
+                    if !dispatchers.is_empty() {
+                        lines.push(String::new());
+                        lines.push("Configured dispatchers:".to_string());
+                        for dispatcher in dispatchers {
+                            let models: Vec<String> = dispatcher
+                                .models
+                                .iter()
+                                .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
+                                .collect();
+                            lines.push(format!(
+                                "  {} — {}: {}",
+                                dispatcher.id,
+                                dispatcher.name,
+                                models.join(", ")
+                            ));
+                        }
+                    }
                 }
             }
 
             if lines.is_empty() {
-                return Some("No model shortcuts or alloys configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
+                return Some("No model shortcuts or synthetic models configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
             }
 
             lines.push("\nUsage:".to_string());
             lines.push("  !model <alias> — show model for alias".to_string());
             if self.alloy_manager.is_some() {
-                lines.push("  !model <alloy-id> — activate alloy for your identity".to_string());
+                lines.push(
+                    "  !model <synthetic-id> — activate alloy/cascade/dispatcher for your identity"
+                        .to_string(),
+                );
             }
             Some(lines.join("\n"))
         } else {
-            // Argument provided — check if it's a model shortcut or alloy selection
+            // Argument provided — check if it's a model shortcut or synthetic selection
             let arg = args[1].trim();
 
             // First check if it's a model shortcut (show-only)
@@ -1019,7 +1065,7 @@ impl CommandHandler {
                 ));
             }
 
-            // Return None to trigger post-auth handling for alloy selection
+            // Return None to trigger post-auth handling for synthetic selection
             None
         }
     }
@@ -1027,7 +1073,7 @@ impl CommandHandler {
     /// Handle a `!model <id>` command for an authenticated identity.
     ///
     /// Dispatch order:
-    /// 1. If the ID matches a configured alloy → activate it (existing behavior).
+    /// 1. If the ID matches a configured synthetic model → activate it.
     /// 2. If the ID matches a local model in `[local_models]` → trigger a switch
     ///    (async background task, returns immediately with status message).
     /// 3. If a `[[proxy.providers]]` entry has an `on_switch` hook for this model
@@ -1048,23 +1094,29 @@ impl CommandHandler {
 
         let model_id = args[0];
 
-        // 1. Alloy switch.
+        // 1. Synthetic model switch.
         if let Some(ref manager) = self.alloy_manager {
-            if let Some(alloy) = manager.get(model_id) {
+            if manager.is_synthetic_model(model_id) {
                 if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
-                    return format!("⚠️ Failed to activate alloy: {}", e);
+                    return format!("⚠️ Failed to activate model: {}", e);
                 }
-                let constituents: Vec<String> = alloy
-                    .definition()
-                    .constituents
-                    .iter()
-                    .map(|c| format!("{} (weight {})", c.model, c.weight))
-                    .collect();
+                if let Some(alloy) = manager.get(model_id) {
+                    let constituents: Vec<String> = alloy
+                        .definition()
+                        .constituents
+                        .iter()
+                        .map(|c| format!("{} (weight {})", c.model, c.weight))
+                        .collect();
+                    return format!(
+                        "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
+                        model_id,
+                        alloy.definition().strategy,
+                        constituents.join(", ")
+                    );
+                }
                 return format!(
-                    "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
-                    model_id,
-                    alloy.definition().strategy,
-                    constituents.join(", ")
+                    "✅ Activated synthetic model '{}' for your identity.",
+                    model_id
                 );
             }
         }
@@ -1327,9 +1379,11 @@ async fn secure_list() -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentRegistry, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader,
-        RoutingRule,
+        AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CascadeConfig,
+        ChannelAlias, ChannelConfig, DispatcherConfig, Identity, PolyConfig, PolyHeader,
+        RoutingRule, SyntheticModelConfig,
     };
+    use crate::providers::alloy::AlloyManager;
 
     fn make_handler() -> CommandHandler {
         let config = Arc::new(make_config());
@@ -1340,6 +1394,53 @@ mod tests {
         // the leftover switch state.
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+    }
+
+    fn synthetic_manager() -> AlloyManager {
+        AlloyManager::from_gateway_configs(
+            &[AlloyConfig {
+                id: "alloy-test".to_string(),
+                name: "Test Alloy".to_string(),
+                strategy: "round_robin".to_string(),
+                constituents: vec![
+                    AlloyConstituentConfig {
+                        model: "gpt-4".to_string(),
+                        weight: 1,
+                        context_window: 128_000,
+                    },
+                    AlloyConstituentConfig {
+                        model: "claude-3-5-sonnet".to_string(),
+                        weight: 1,
+                        context_window: 128_000,
+                    },
+                ],
+                min_context_window: None,
+            }],
+            &[CascadeConfig {
+                id: "cascade-test".to_string(),
+                name: Some("Test Cascade".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "gpt-4".to_string(),
+                    context_window: 128_000,
+                }],
+            }],
+            &[DispatcherConfig {
+                id: "dispatcher-test".to_string(),
+                name: Some("Test Dispatcher".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "gpt-4".to_string(),
+                    context_window: 128_000,
+                }],
+            }],
+        )
+        .expect("synthetic manager")
+    }
+
+    fn make_handler_with_synthetics() -> CommandHandler {
+        let config = Arc::new(make_config());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager())
     }
 
     fn make_config() -> PolyConfig {
@@ -1591,6 +1692,29 @@ mod tests {
             reply.contains("model: claude-sonnet-4-6"),
             "should show configured model: {}",
             reply
+        );
+    }
+
+    #[test]
+    fn test_model_command_lists_all_synthetic_model_classes() {
+        let h = make_handler_with_synthetics();
+        let reply = h.handle("!model").unwrap();
+        assert!(reply.contains("Configured alloys:"), "{reply}");
+        assert!(reply.contains("alloy-test"), "{reply}");
+        assert!(reply.contains("Configured cascades:"), "{reply}");
+        assert!(reply.contains("cascade-test"), "{reply}");
+        assert!(reply.contains("Configured dispatchers:"), "{reply}");
+        assert!(reply.contains("dispatcher-test"), "{reply}");
+    }
+
+    #[test]
+    fn test_model_command_activation_becomes_dispatch_override() {
+        let h = make_handler_with_synthetics();
+        let reply = h.handle_model("!model dispatcher-test", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
         );
     }
 

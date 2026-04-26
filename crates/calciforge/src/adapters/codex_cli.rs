@@ -175,8 +175,7 @@ fn default_codex_args() -> Vec<String> {
         "never".to_string(),
         "--sandbox".to_string(),
         "read-only".to_string(),
-        "--ask-for-approval".to_string(),
-        "never".to_string(),
+        "--ephemeral".to_string(),
         "--skip-git-repo-check".to_string(),
     ]
 }
@@ -280,6 +279,8 @@ mod tests {
         let (args, stdin_message, capture) = adapter.build_args("hello", &output_path).unwrap();
 
         assert!(args.starts_with(&["exec".to_string()]));
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.5".to_string()));
         assert!(args.contains(&"--output-last-message".to_string()));

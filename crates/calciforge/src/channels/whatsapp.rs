@@ -668,6 +668,7 @@ impl WhatsAppChannel {
             .to_string();
 
         let identity_id = identity.id.clone();
+        let model_override = self.command_handler.active_model_for_identity(&identity_id);
 
         // Spawn agent dispatch — handler returns immediately
         tokio::spawn(async move {
@@ -678,7 +679,13 @@ impl WhatsAppChannel {
             let dispatch_start = std::time::Instant::now();
             match self
                 .router
-                .dispatch_with_sender(&augmented, &agent, &self.config, Some(&identity_id))
+                .dispatch_with_sender_and_model(
+                    &augmented,
+                    &agent,
+                    &self.config,
+                    Some(&identity_id),
+                    model_override.as_deref(),
+                )
                 .await
             {
                 Ok(response) => {

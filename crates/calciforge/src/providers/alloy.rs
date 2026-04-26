@@ -628,14 +628,14 @@ impl AlloyManager {
         v
     }
 
-    pub fn set_active_for_identity(&self, identity_id: &str, alloy_id: &str) -> Result<(), String> {
-        if !self.alloys.contains_key(alloy_id) {
-            return Err(format!("unknown alloy '{}'", alloy_id));
+    pub fn set_active_for_identity(&self, identity_id: &str, model_id: &str) -> Result<(), String> {
+        if !self.is_synthetic_model(model_id) {
+            return Err(format!("unknown synthetic model '{}'", model_id));
         }
         self.active_by_identity
             .lock()
             .expect("alloy manager mutex poisoned")
-            .insert(identity_id.to_string(), alloy_id.to_string());
+            .insert(identity_id.to_string(), model_id.to_string());
         Ok(())
     }
 

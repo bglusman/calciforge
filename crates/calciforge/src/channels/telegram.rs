@@ -367,6 +367,7 @@ fn handle_message_nonblocking(
         .and_then(|i| i.display_name.as_deref())
         .unwrap_or(&identity.id)
         .to_string();
+    let model_override = command_handler.active_model_for_identity(&identity.id);
 
     // Spawn the agent dispatch — handler returns immediately.
     // All slow I/O (context augment, HTTP, reply send) happens in the task.
@@ -387,7 +388,13 @@ fn handle_message_nonblocking(
 
         let dispatch_start = std::time::Instant::now();
         match router
-            .dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id))
+            .dispatch_with_sender_and_model(
+                &augmented_text,
+                &agent,
+                &config,
+                Some(&identity.id),
+                model_override.as_deref(),
+            )
             .await
         {
             Ok(response) => {
@@ -646,6 +653,7 @@ async fn handle_message(
         .and_then(|i| i.display_name.as_deref())
         .unwrap_or(&identity.id)
         .to_string();
+    let model_override = command_handler.active_model_for_identity(&identity.id);
 
     // Augment message with conversation context (unseen exchanges for this agent).
     let augmented_text = context_store.augment_message(&chat_key, &agent_id, &text);
@@ -664,7 +672,13 @@ async fn handle_message(
     // Dispatch to agent
     let dispatch_start = std::time::Instant::now();
     match router
-        .dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id))
+        .dispatch_with_sender_and_model(
+            &augmented_text,
+            &agent,
+            &config,
+            Some(&identity.id),
+            model_override.as_deref(),
+        )
         .await
     {
         Ok(response) => {
