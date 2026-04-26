@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 13:23 EDT.
+Last updated: 2026-04-26 18:35 EDT.
 
 ## Automation handoff
 
@@ -34,9 +34,12 @@ Current immediate resume order:
    gateway via a file-backed provider key without printing that key. The Mac
    LAN address is `192.168.1.175`, and its gateway is healthy at
    `http://192.168.1.175:18083`.
-4. Continue Matrix manual/E2E testing. Real `matrix.enjyn.com` account creation
-   is blocked unless a registration token or existing non-bot account token is
-   found/provided. Ephemeral homeserver testing remains viable for CI.
+4. Continue Matrix manual/E2E testing. Do not block on `matrix.enjyn.com`
+   account creation for CI: use the disposable Synapse E2E harness added in
+   `scripts/matrix-real-e2e.py`. It starts a real homeserver, registers a
+   Calciforge bot user plus a separate allowed sender, opens a direct Matrix
+   chat from the sender, and verifies Calciforge replies through the real
+   Matrix Client-Server API.
 5. Implement cross-channel one-off reply only after the gateway/deployment path
    is stable, because it needs a shared channel-send abstraction.
 
@@ -88,21 +91,24 @@ Current immediate resume order:
 
 ## Matrix manual testing
 
-Goal: create/configure a Matrix identity controlled by Codex so it can send
-messages to the real Calciforge Matrix channel as an external user.
+Goal: verify both deterministic Matrix logic and real homeserver behavior.
 
 Current status:
 
-- Public registration on `matrix.enjyn.com` requires `m.login.registration_token`.
-- No Synapse/Conduit/Dendrite admin service or homeserver config was found on
-  `.210` or `.229`.
-- Existing `.210` Calciforge Matrix bot is `@lucien:matrix.enjyn.com` and
-  currently allows `@bglusman:beeper.com`.
-- Next viable paths:
-  1. obtain/create a Matrix registration token for `matrix.enjyn.com`;
-  2. use an existing non-bot Matrix account token if one is available;
-  3. stand up an ephemeral local Matrix homeserver for CI-style E2E, while
-     keeping real-server manual testing blocked on account creation.
+- The in-process Matrix API test remains useful for fast, deterministic
+  coverage inside `cargo test`.
+- Added `scripts/matrix-real-e2e.py` for the missing real-server layer. It
+  starts Synapse in Docker, registers `@calciforge:localhost` and
+  `@alice:localhost`, starts Calciforge with no configured `room_id`, has Alice
+  open a direct chat/invite Calciforge, waits for the bot to auto-join, sends a
+  real Matrix message, and waits for the real Matrix reply.
+- Added a `matrix-real-e2e` GitHub Actions job in
+  `.github/workflows/integration-tests.yml`.
+- Local Mac cannot run this script until Docker is installed; validation here
+  was limited to Python bytecode compilation and the existing Matrix mock test.
+- Public registration on `matrix.enjyn.com` still requires
+  `m.login.registration_token`. That only blocks manual testing against the
+  production homeserver, not CI E2E coverage.
 
 Do not use the bot's own token as the sender for inbound testing; Calciforge
 intentionally ignores its own Matrix events.

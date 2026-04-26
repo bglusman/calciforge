@@ -101,3 +101,26 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  matrix-real-e2e:
+    name: Real Matrix E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-matrix-real-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run real Matrix homeserver E2E
+        run: python3 scripts/matrix-real-e2e.py
