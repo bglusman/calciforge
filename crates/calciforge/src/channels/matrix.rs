@@ -895,13 +895,13 @@ mod tests {
             io::Write,
             net::SocketAddr,
             os::unix::fs::OpenOptionsExt,
-            sync::{
-                atomic::{AtomicUsize, Ordering},
-                Mutex,
-            },
+            sync::atomic::{AtomicUsize, Ordering},
         };
         use tempfile::TempDir;
-        use tokio::{net::TcpListener, sync::oneshot};
+        use tokio::{
+            net::TcpListener,
+            sync::{oneshot, Mutex},
+        };
 
         #[derive(Clone)]
         struct MockMatrixState {
@@ -970,7 +970,7 @@ mod tests {
             Path((_room_id, _txn_id)): Path<(String, String)>,
             Json(payload): Json<Value>,
         ) -> Json<Value> {
-            if let Some(sender) = state.sent_reply.lock().unwrap().take() {
+            if let Some(sender) = state.sent_reply.lock().await.take() {
                 let body = payload
                     .get("body")
                     .and_then(|v| v.as_str())
@@ -1008,11 +1008,37 @@ mod tests {
             )
             .with_state(state);
 
+        struct MockServerGuard {
+            shutdown_tx: Option<oneshot::Sender<()>>,
+            server_handle: Option<tokio::task::JoinHandle<()>>,
+        }
+
+        impl Drop for MockServerGuard {
+            fn drop(&mut self) {
+                if let Some(shutdown_tx) = self.shutdown_tx.take() {
+                    let _ = shutdown_tx.send(());
+                }
+                if let Some(server_handle) = self.server_handle.take() {
+                    server_handle.abort();
+                }
+            }
+        }
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
         });
+        let _mock_server = MockServerGuard {
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+        };
 
         let temp = TempDir::new().unwrap();
         let token_path = temp.path().join("matrix-token");
