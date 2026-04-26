@@ -164,3 +164,21 @@ intentionally ignores its own Matrix events.
   to remove obsolete `--ask-for-approval never` and use `--ephemeral` instead.
 - Added synthetic model gateway E2E coverage for alloy, cascade, dispatcher, and
   oversized-context rejection using a deterministic mock backend.
+
+## 2026-04-26 PR #54 / Mac deploy update
+
+- Pushed PR #54 updates through `7bcc263a`.
+- Review feedback was addressed and all open review threads were resolved.
+- Local push gate passed: fmt, clippy, gitleaks, workspace unit tests, and loom.
+- Additional local checks passed: `cargo test -p calciforge --bins`, proxy-focused tests,
+  Python bytecode checks, `bash -n scripts/install.sh`, and synthetic model gateway E2E.
+- Mac deployment updated `/Users/admin/.local/bin/calciforge` from the release build
+  with a timestamped binary backup, then restarted `com.calciforge.calciforge`.
+- Mac service health is OK on port `18083`.
+- Direct Codex CLI smoke test with `gpt-5.5` and the new `--ephemeral` args succeeded.
+- Live active agent for `brian` was reset from the broken `.229` `custodian` endpoint
+  to `codex`; the previous active-agent state file was backed up.
+- `.229` remains intentionally unmodified: its nonzeroclaw gateway is loopback-only
+  on `18793`, the Mac config had been targeting stale port `18789`, and hooks are
+  disabled there, so exposing a port alone would not fix the `openclaw-native`
+  `/hooks/agent` path.
