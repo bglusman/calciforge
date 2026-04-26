@@ -207,18 +207,21 @@ ANTHROPIC_API_KEY = { provider = "1password", key = "claude" }
 NPM_TOKEN = { default = "value-from-env-or-prompt" }
 ```
 
-Setting a new secret without it touching chat history (Telegram /
-Matrix / WhatsApp):
+For new values, prefer the local paste UI. It gives you a short-lived
+browser form and keeps the value out of Telegram, Matrix, WhatsApp,
+and other chat history:
 
-```
-You: !secure
-Bot: Single-secret URL: http://192.168.1.X:PORT/paste/<token>
-     Bulk-import URL:  http://192.168.1.X:PORT/bulk/<token>
-     Both expire in 5 minutes, single-use.
+```bash
+paste-server OPENAI_API_KEY "OpenAI API key"
+# prints http://127.0.0.1:PORT/paste/<token>
+
+paste-server --bulk env-import "bulk .env import"
+# prints http://127.0.0.1:PORT/bulk/<token>
 ```
 
-The bulk URL accepts a whole `.env`-shaped paste and returns per-key
-results (stored / already-exists / illegal-name / malformed).
+The URLs expire after five minutes and are single-use. The bulk URL
+accepts a whole `.env`-shaped paste and returns per-key results
+(stored / already-exists / illegal-name / malformed).
 
 ### Outbound traffic gating
 

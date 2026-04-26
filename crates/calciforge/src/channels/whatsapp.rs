@@ -561,6 +561,29 @@ impl WhatsAppChannel {
         // never log the body (which contains the value for `set`).
         if CommandHandler::is_secure_command(&text) {
             debug!(from = %from, "WhatsApp: handling !secure command");
+            if CommandHandler::is_secure_set_command(&text)
+                && !crate::config::channel_allows_chat_secret_set(&self.config, "whatsapp")
+            {
+                let reply = CommandHandler::secure_set_disabled_reply("WhatsApp");
+                let channel = self.clone();
+                let from_owned = from.clone();
+                let nzc_endpoint_owned = nzc_endpoint.clone();
+                let nzc_auth_token_owned = nzc_auth_token.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = channel
+                        .send_reply(
+                            &nzc_endpoint_owned,
+                            nzc_auth_token_owned.as_deref(),
+                            &from_owned,
+                            &reply,
+                        )
+                        .await
+                    {
+                        warn!(from = %from_owned, error = %e, "WhatsApp: failed to send !secure disabled reply");
+                    }
+                });
+                return;
+            }
             let reply = self
                 .command_handler
                 .handle_secure(&text, &identity.id)

@@ -675,6 +675,12 @@ async fn handle_message(
     // `!secure set NAME=value`).
     if CommandHandler::is_secure_command(body) {
         debug!(sender = %sender, "Matrix: handling !secure command");
+        if CommandHandler::is_secure_set_command(body)
+            && !crate::config::channel_allows_chat_secret_set(config, "matrix")
+        {
+            send(CommandHandler::secure_set_disabled_reply("Matrix")).await;
+            return;
+        }
         let reply = cmd_handler.handle_secure(body, identity_id).await;
         send(reply).await;
         return;

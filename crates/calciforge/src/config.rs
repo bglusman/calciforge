@@ -277,6 +277,21 @@ pub struct ChannelConfig {
     /// Default: false (opt-in). The HTTP proxy is always-on regardless of this flag.
     #[serde(default)]
     pub scan_messages: bool,
+
+    /// Allow `!secure set NAME=value` to accept secret values through this
+    /// chat transport. Default: false; prefer the local paste UI so secret
+    /// values do not land in chat/provider history.
+    #[serde(default)]
+    pub allow_chat_secret_set: bool,
+}
+
+/// Returns true when a channel explicitly opts into chat-transport secret
+/// values via `allow_chat_secret_set = true`.
+pub fn channel_allows_chat_secret_set(config: &PolyConfig, kind: &str) -> bool {
+    config
+        .channels
+        .iter()
+        .any(|c| c.kind == kind && c.enabled && c.allow_chat_secret_set)
 }
 
 /// `[permissions]` section.
@@ -860,6 +875,31 @@ post_write_hook = "none"
         assert_eq!(cfg.channels.len(), 1);
         assert_eq!(cfg.channels[0].kind, "telegram");
         assert!(cfg.channels[0].enabled);
+        assert!(!cfg.channels[0].allow_chat_secret_set);
+    }
+
+    #[test]
+    fn chat_secret_set_is_per_channel_opt_in() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+
+[[channels]]
+kind = "matrix"
+enabled = true
+allow_chat_secret_set = true
+"#,
+        )
+        .expect("parse channel opt-in config");
+
+        assert!(!channel_allows_chat_secret_set(&cfg, "telegram"));
+        assert!(channel_allows_chat_secret_set(&cfg, "matrix"));
+        assert!(!channel_allows_chat_secret_set(&cfg, "whatsapp"));
     }
 
     #[test]
