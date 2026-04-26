@@ -1104,6 +1104,12 @@ printf 'mock-agent saw: %s\n' "$1"
             .expect("reply sender should not be dropped");
 
         matrix_task.abort();
+        match matrix_task.await {
+            Err(err) if err.is_cancelled() => {}
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => panic!("matrix task returned an error after abort: {err}"),
+            Err(err) => panic!("matrix task join failed after abort: {err}"),
+        }
         assert_eq!(reply, "mock-agent saw: hello calciforge");
     }
 }

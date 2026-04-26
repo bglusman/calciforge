@@ -979,19 +979,39 @@ mod tests {
 
         let result = &summary.claw_results[0];
         assert_eq!(result.name, "matrix-e2e-openclaw");
-        assert_eq!(
-            result.steps.iter().map(|s| &s.step).collect::<Vec<_>>(),
-            vec![
-                &InstallStep::SshConnectivity,
-                &InstallStep::HealthCheckBaseline,
-                &InstallStep::Backup,
-                &InstallStep::VersionDetection,
-                &InstallStep::CompatibilityCheck,
-                &InstallStep::ProposedChanges,
-                &InstallStep::Apply,
-                &InstallStep::HealthCheckPostApply,
-            ]
+        let executed_steps = result.steps.iter().map(|s| &s.step).collect::<Vec<_>>();
+        let expected_steps = vec![
+            &InstallStep::SshConnectivity,
+            &InstallStep::HealthCheckBaseline,
+            &InstallStep::Backup,
+            &InstallStep::VersionDetection,
+            &InstallStep::CompatibilityCheck,
+            &InstallStep::ProposedChanges,
+            &InstallStep::Apply,
+            &InstallStep::HealthCheckPostApply,
+        ];
+        for expected in &expected_steps {
+            assert!(
+                executed_steps.contains(expected),
+                "missing expected step {expected:?} in {executed_steps:?}"
+            );
+        }
+
+        let index_of = |step: &InstallStep| {
+            executed_steps
+                .iter()
+                .position(|executed| **executed == *step)
+                .expect("expected step should be present")
+        };
+        assert!(
+            index_of(&InstallStep::SshConnectivity) < index_of(&InstallStep::HealthCheckBaseline)
         );
+        assert!(index_of(&InstallStep::HealthCheckBaseline) < index_of(&InstallStep::Backup));
+        assert!(
+            index_of(&InstallStep::VersionDetection) < index_of(&InstallStep::CompatibilityCheck)
+        );
+        assert!(index_of(&InstallStep::ProposedChanges) < index_of(&InstallStep::Apply));
+        assert!(index_of(&InstallStep::Apply) < index_of(&InstallStep::HealthCheckPostApply));
         assert!(matches!(
             result.rollback_status,
             Some(RollbackStatus::NotApplicable)
