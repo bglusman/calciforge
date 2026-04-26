@@ -4,7 +4,7 @@
 
 ## What this repo is
 
-Self-hosted security gateway between AI agents and the rest of the world. Multi-crate Rust workspace. Substitutes secrets at the request boundary, gates outbound destinations per-secret, runs a Starlark policy sidecar (`clashd` → wraps the upstream `clash` crate), separate mTLS daemon (`host-agent`) for sensitive system operations. Path-scoped Rust review specifics live in [`.github/instructions/rust.instructions.md`](instructions/rust.instructions.md).
+Self-hosted security gateway between AI agents and the rest of the world. Multi-crate Rust workspace. Substitutes secrets at the request boundary, gates outbound destinations per-secret, runs a Starlark policy sidecar (`clashd` → wraps the upstream `clash` crate), separate mTLS daemon (`host-agent`) for sensitive system operations. Path-scoped Rust review specifics live in [`.github/instructions/rust.instructions.md`](instructions/rust.instructions.md). Repo-wide rules also in [`AGENTS.md`](../AGENTS.md) and [`CLAUDE.md`](../CLAUDE.md) — the latter's "never commit these" list is exactly the kind of leakage Copilot should flag.
 
 ## Priority order
 
