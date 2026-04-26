@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 10:23 EDT.
+Last updated: 2026-04-26 13:23 EDT.
 
 ## Automation handoff
 
@@ -21,13 +21,19 @@ Current immediate resume order:
    returned `service_unavailable`. Status: fixed locally by removing the stale
    `--ask-for-approval` CLI arg from local config and using `--ephemeral`.
    Verified authenticated gateway response from `codex/gpt-5.5`.
-2. Finish `.210` repair. Status: remote Rust build and fnox install SSH
-   sessions were reset; `.210` answers ping and HTTP `/health`, but SSH times
-   out during banner exchange. Do not start more remote jobs until sshd recovers
-   or is restarted externally. Keep the duplicate proxy-only systemd unit
-   disabled unless the port topology changes.
-3. After local gateway works, configure `.210` to consume the Mac subscription
-   gateway via a file-backed provider key without printing that key.
+2. Finish `.210` repair. Status: remote Rust build completed after freeing
+   disk and using `CARGO_BUILD_JOBS=1` with no release LTO. The resulting Linux
+   binary was installed to `/usr/local/bin/calciforge`, `zeroclawed.service`
+   restarted cleanly, and HTTP `/health` responds. The duplicate proxy-only
+   systemd unit remains disabled. A subsequent `cargo install fnox --locked`
+   again starved SSH banner exchange; the local SSH client was killed, but
+   `.210` still accepts TCP/22 without completing SSH banner exchange while
+   HTTP `/health` remains available. Do not start more remote build jobs until
+   SSH recovers or is restarted externally.
+3. After `.210` SSH recovers, configure it to consume the Mac subscription
+   gateway via a file-backed provider key without printing that key. The Mac
+   LAN address is `192.168.1.175`, and its gateway is healthy at
+   `http://192.168.1.175:18083`.
 4. Continue Matrix manual/E2E testing. Real `matrix.enjyn.com` account creation
    is blocked unless a registration token or existing non-bot account token is
    found/provided. Ephemeral homeserver testing remains viable for CI.
@@ -45,6 +51,13 @@ Current immediate resume order:
   before `cargo install fnox`.
 - Installer now validates `fnox list`, initializes global fnox config when
   missing, and sets service PATHs to include `$HOME/.cargo/bin`.
+- `.210` root disk was 99% full due stale build artifacts. Removed
+  `/root/calciforge-codex-deploy/target` and npm cache to restore about 2.9 GB
+  free before rebuilding.
+- `cargo install fnox --locked` is not currently a safe unattended repair path
+  on `.210`; it compiles a large dependency graph including OpenSSL and can
+  starve SSH on the small VM. Prefer a prebuilt/package install path or compile
+  off-box and copy the binary.
 
 ## Model gateway / subscription-backed work
 
@@ -65,6 +78,13 @@ Current immediate resume order:
   - authenticated `/v1/models` returns the configured synthetic models;
   - authenticated `codex/gpt-5.5` chat completion returned
     `codex-gateway-ok-2`.
+- PR #54 review feedback was addressed and pushed:
+  - installer test now asserts required steps and semantic ordering instead of
+    exact full-vector equality;
+  - Matrix mock test now uses `tokio::sync::Mutex`, owns mock server shutdown,
+    and awaits aborted Matrix task cleanup.
+  All four Copilot review threads were replied to and resolved. GitHub CI was
+  green on `666ed225` when checked.
 
 ## Matrix manual testing
 
