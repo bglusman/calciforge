@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 18:35 EDT.
+Last updated: 2026-04-26 18:47 EDT.
 
 ## Automation handoff
 
@@ -106,6 +106,11 @@ Current status:
   `.github/workflows/integration-tests.yml`.
 - Local Mac cannot run this script until Docker is installed; validation here
   was limited to Python bytecode compilation and the existing Matrix mock test.
+- First GitHub Actions run exposed harness issues rather than Calciforge logic:
+  the readiness deadline included cold-ish Rust compile time, and Synapse left
+  Docker-owned files in the temp directory. The harness now reads stdout and
+  stderr, allows a longer readiness window, tolerates cleanup permissions, and
+  the workflow prebuilds Calciforge before running the Matrix script.
 - Public registration on `matrix.enjyn.com` still requires
   `m.login.registration_token`. That only blocks manual testing against the
   production homeserver, not CI E2E coverage.

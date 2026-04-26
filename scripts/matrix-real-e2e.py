@@ -217,11 +217,16 @@ def stream_process_output(
     proc: subprocess.Popen,
     ready_queue: "queue.Queue[str]",
     collected: list[str],
+    stream_name: str,
 ) -> None:
-    assert proc.stderr is not None
-    for line in proc.stderr:
+    stream = proc.stderr if stream_name == "stderr" else proc.stdout
+    assert stream is not None
+    for line in stream:
         collected.append(line)
-        sys.stderr.write(line)
+        if stream_name == "stderr":
+            sys.stderr.write(line)
+        else:
+            sys.stdout.write(line)
         if "Matrix channel listening" in line or "initial sync complete" in line:
             ready_queue.put(line)
 
@@ -253,11 +258,18 @@ def start_calciforge(config_path: Path) -> tuple[subprocess.Popen, list[str]]:
     ready_queue: "queue.Queue[str]" = queue.Queue()
     threading.Thread(
         target=stream_process_output,
-        args=(proc, ready_queue, collected),
+        args=(proc, ready_queue, collected, "stderr"),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=stream_process_output,
+        args=(proc, ready_queue, collected, "stdout"),
         daemon=True,
     ).start()
 
-    deadline = time.monotonic() + 90
+    # `cargo run` may need to compile on a fresh CI runner before Calciforge can
+    # log readiness. Keep this deadline high enough to cover cold-ish builds.
+    deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(
@@ -342,7 +354,10 @@ def main() -> int:
     base_url = f"http://127.0.0.1:{args.port}"
     container = f"calciforge-matrix-e2e-{os.getpid()}"
     calciforge_proc: subprocess.Popen | None = None
-    tmp_obj = tempfile.TemporaryDirectory(prefix="calciforge-matrix-e2e-")
+    tmp_obj = tempfile.TemporaryDirectory(
+        prefix="calciforge-matrix-e2e-",
+        ignore_cleanup_errors=True,
+    )
     tmp = Path(tmp_obj.name)
     data_dir = tmp / "synapse"
     data_dir.mkdir()
@@ -437,6 +452,23 @@ def main() -> int:
         stop_process(calciforge_proc)
         if not args.keep:
             run(["docker", "rm", "-f", container], check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{data_dir}:/data",
+                    "--entrypoint",
+                    "/bin/sh",
+                    args.image,
+                    "-c",
+                    "rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
             tmp_obj.cleanup()
         else:
             print(f"kept temp dir: {tmp}")
