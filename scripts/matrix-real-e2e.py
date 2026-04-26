@@ -506,7 +506,7 @@ def main() -> int:
             ("!agents", "backup-agent"),
             ("!status", "active agent: real-matrix-agent"),
             ("!metrics", "messages routed: 0"),
-            ("!model", "No model shortcuts or alloys configured."),
+            ("!model", "No model shortcuts or synthetic models configured."),
             ("!sessions real-matrix-agent", "does not support session listing"),
         ]
         for body, expected in command_cases:
