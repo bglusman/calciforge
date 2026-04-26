@@ -34,9 +34,9 @@ humantime-serde = "1"
 
 # Optional: fnox-library feature pulls in the fnox crate for direct
 # library access. Off by default — enable with --features fnox-library.
-# Pinned to our fork branch until upstream PR jdx/fnox#442 lands and
-# ships in 1.22+. One-line edit to `fnox = "1.22"` then.
-fnox = { git = "https://github.com/bglusman/fnox", branch = "feat/library-convenience-api", optional = true }
+# crates.io 1.22.0 ships our convenience-API PR (jdx/fnox#442). The
+# previous fork-branch pin is now retired.
+fnox = { version = "1.22", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
