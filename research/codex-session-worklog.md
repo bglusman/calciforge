@@ -305,10 +305,20 @@ intentionally ignores its own Matrix events.
 
 Remaining deployment follow-ups:
 
-1. `.210` still has at least one provider credential stored inline in a systemd
-   drop-in; move it to an `EnvironmentFile` or root-only secret file.
-2. The old Mac `com.zeroclawed.*` launchd services are still present/running.
+1. The old Mac `com.zeroclawed.*` launchd services are still present/running.
    Disable them once the user confirms no legacy path is still needed.
-3. `claude-cli` as a channel-facing `kind = "cli"` agent still uses argv-based
+2. `claude-cli` as a channel-facing `kind = "cli"` agent still uses argv-based
    message passing if explicitly enabled. It is no longer in Brian's allowed
    agent list; prefer the exec-model/gateway path for Claude subscription use.
+
+## 2026-04-27 .210 credential cleanup / user notification
+
+- Sent one low-detail Telegram status message through the configured bot after
+  generating the message via the local `local-kimi-gpt55` gateway route. The
+  message intentionally contained no secrets or private config values.
+- Moved `.210` `nonzeroclaw.service`'s inline `OPENAI_API_KEY` out of the
+  systemd drop-in and into `/etc/calciforge/nonzeroclaw.env` with mode `0600`.
+  The drop-in now uses `EnvironmentFile=/etc/calciforge/nonzeroclaw.env` and
+  keeps only non-secret provider/model environment names inline.
+- Restarted `nonzeroclaw.service`; it is active and its local health endpoint
+  reports `status=ok`.
