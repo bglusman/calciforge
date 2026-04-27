@@ -245,5 +245,20 @@ intentionally ignores its own Matrix events.
   threads. Expect many unresolved threads to be stale/outdated; only current
   non-outdated feedback should drive more code changes.
 - Homebrew reports `docker 29.4.1` and `docker-compose 5.1.3` installed. Next
-  step is to verify the Docker daemon/runtime and run
+  step was to verify the Docker daemon/runtime and run
   `python3 scripts/matrix-real-e2e.py` locally.
+
+## 2026-04-26 local Docker / Matrix E2E update
+
+- Docker client was installed but no daemon was running. Installed Colima via
+  Homebrew and started it with Docker runtime.
+- Local Docker now reports server `29.2.1` on Ubuntu inside Colima.
+- First local Matrix E2E run exposed Python 3.9 incompatibility:
+  `TemporaryDirectory(ignore_cleanup_errors=...)` is unavailable. Added a
+  compatibility helper that uses `ignore_cleanup_errors` on newer Python and
+  falls back cleanly on Python 3.9.
+- `python3 scripts/matrix-real-e2e.py` now passes locally against a real Synapse
+  container on this Mac. It verified real registration/login, direct Matrix DM
+  invite/join, command happy paths, `!switch`, `!default`, and CLI dispatch.
+- Next deployment-readiness priority: audit actual Mac and `.210` configs and
+  services for daily-driver correctness without printing secrets.

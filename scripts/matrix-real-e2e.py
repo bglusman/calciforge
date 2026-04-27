@@ -78,6 +78,18 @@ def require_command(name: str) -> None:
         raise RuntimeError(f"required command not found: {name}")
 
 
+def temporary_directory(prefix: str) -> tempfile.TemporaryDirectory:
+    try:
+        return tempfile.TemporaryDirectory(
+            prefix=prefix,
+            ignore_cleanup_errors=True,
+        )
+    except TypeError:
+        # Python < 3.10 lacks ignore_cleanup_errors. The harness clears
+        # Docker-owned Synapse files before cleanup, so the fallback is fine.
+        return tempfile.TemporaryDirectory(prefix=prefix)
+
+
 def http_json(
     method: str,
     url: str,
@@ -413,10 +425,7 @@ def main() -> int:
     bot_password = f"calciforge-e2e-bot-{uuid.uuid4().hex}"
     alice_password = f"calciforge-e2e-alice-{uuid.uuid4().hex}"
     calciforge_proc: subprocess.Popen | None = None
-    tmp_obj = tempfile.TemporaryDirectory(
-        prefix="calciforge-matrix-e2e-",
-        ignore_cleanup_errors=True,
-    )
+    tmp_obj = temporary_directory(prefix="calciforge-matrix-e2e-")
     tmp = Path(tmp_obj.name)
     data_dir = tmp / "synapse"
     data_dir.mkdir()
