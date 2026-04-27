@@ -69,6 +69,9 @@ impl Router {
         info!(
             agent_id = %agent.id,
             kind = %agent.kind,
+            endpoint = %agent.endpoint,
+            configured_model = ?agent.model,
+            model_override = ?model_override,
             sender = ?sender,
             "routing message via {} adapter",
             adapter.kind()

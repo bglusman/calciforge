@@ -291,10 +291,11 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 .command
                 .clone()
                 .ok_or_else(|| format!("agent '{}': kind='cli' requires command", agent.id))?;
-            Ok(Box::new(CliAdapter::new(
+            Ok(Box::new(CliAdapter::with_model(
                 command,
                 agent.args.clone(),
                 agent.env.clone().unwrap_or_default(),
+                agent.model.clone(),
                 agent.timeout_ms,
             )))
         }

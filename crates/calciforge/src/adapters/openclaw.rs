@@ -160,11 +160,9 @@ impl AgentAdapter for OpenClawHttpAdapter {
             self.endpoint.trim_end_matches('/')
         );
 
+        let requested_model = ctx.model_override.unwrap_or(self.model.as_str());
         let body = ChatRequest {
-            model: ctx
-                .model_override
-                .unwrap_or(self.model.as_str())
-                .to_string(),
+            model: requested_model.to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: msg.to_string(),
@@ -173,7 +171,12 @@ impl AgentAdapter for OpenClawHttpAdapter {
             temperature: Some(1.0), // GPT-5 requires temperature=1.0
         };
 
-        info!(endpoint = %url, model = %self.model, "openclaw-http dispatch (streaming)");
+        info!(
+            endpoint = %url,
+            configured_model = %self.model,
+            requested_model = %requested_model,
+            "openclaw-http dispatch (streaming)"
+        );
         debug!(msg = %msg, "outbound message");
 
         // Build a stable session key so OpenClaw maintains per-sender conversation

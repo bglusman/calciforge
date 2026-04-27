@@ -499,6 +499,18 @@ Three services land as launchd agents:
 - `security-proxy` on `:8888` — substitution + scanning + injection
 - `calciforge` — channel router (needs onboarding for an LLM provider)
 
+After editing config or moving an agent, run:
+
+```bash
+calciforge doctor
+```
+
+`doctor` validates the config, checks referenced secret files without
+printing values, catches stale active-agent/model state, warns when an
+agent appears to point back into the local model gateway by accident,
+and can probe configured endpoints. Use `calciforge doctor --no-network`
+when you want a local-only check.
+
 Route Claude Code through the gateway:
 
 ```bash

@@ -35,10 +35,25 @@ fn state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-agents.json")
 }
 
+/// Path to the active-model override state file within `state_dir`.
+fn active_model_state_file_path_for(state_dir: &Path) -> PathBuf {
+    state_dir.join("active-models.json")
+}
+
 /// Load persisted active-agent selections from a given state directory.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
 fn load_active_agents_from(state_dir: &Path) -> HashMap<String, String> {
     let path = state_file_path_for(state_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Load persisted active synthetic model selections from a given state directory.
+/// Returns an empty map if the file doesn't exist or can't be parsed.
+fn load_active_models_from(state_dir: &Path) -> HashMap<String, String> {
+    let path = active_model_state_file_path_for(state_dir);
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => HashMap::new(),
@@ -56,6 +71,17 @@ fn save_active_agents_to(state_dir: &Path, map: &HashMap<String, String>) {
     }
 }
 
+/// Persist the active synthetic model map to a given state directory.
+fn save_active_models_to(state_dir: &Path, map: &HashMap<String, String>) {
+    let path = active_model_state_file_path_for(state_dir);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
 /// In-memory command handler with simple counters and per-identity active-agent state.
 pub struct CommandHandler {
     start_time: Instant,
@@ -65,6 +91,10 @@ pub struct CommandHandler {
     /// Per-identity active agent: identity_id → agent_id.
     /// Persisted to `state_dir/active-agents.json` and loaded on startup.
     active_agents: Mutex<HashMap<String, String>>,
+    /// Per-identity active synthetic model: identity_id → synthetic model id.
+    /// Persisted to `state_dir/active-models.json` and restored into the
+    /// [`AlloyManager`] once it is attached.
+    active_models: Mutex<HashMap<String, String>>,
     /// Directory for persisted state files.
     /// Defaults to `~/.calciforge/state/`; overridable for tests via
     /// [`CommandHandler::with_state_dir`].
@@ -103,6 +133,13 @@ impl CommandHandler {
                 "loaded persisted active-agent selections"
             );
         }
+        let active_models = load_active_models_from(&state_dir);
+        if !active_models.is_empty() {
+            tracing::info!(
+                models = ?active_models,
+                "loaded persisted active-model selections"
+            );
+        }
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()
@@ -113,6 +150,7 @@ impl CommandHandler {
             messages_routed: AtomicU64::new(0),
             total_latency_ms: AtomicU64::new(0),
             active_agents: Mutex::new(active_agents),
+            active_models: Mutex::new(active_models),
             state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
@@ -123,6 +161,31 @@ impl CommandHandler {
 
     /// Set the alloy manager for this command handler.
     pub fn with_alloy_manager(mut self, manager: AlloyManager) -> Self {
+        let mut active_models = self.active_models.lock().unwrap();
+        active_models.retain(|identity_id, model_id| {
+            if manager.is_synthetic_model(model_id) {
+                if let Err(err) = manager.set_active_for_identity(identity_id, model_id) {
+                    tracing::warn!(
+                        identity = %identity_id,
+                        model = %model_id,
+                        error = %err,
+                        "failed to restore persisted active-model selection"
+                    );
+                    false
+                } else {
+                    true
+                }
+            } else {
+                tracing::warn!(
+                    identity = %identity_id,
+                    model = %model_id,
+                    "dropping persisted active-model selection for unknown synthetic model"
+                );
+                false
+            }
+        });
+        save_active_models_to(&self.state_dir, &active_models);
+        drop(active_models);
         self.alloy_manager = Some(manager);
         self
     }
@@ -547,6 +610,11 @@ impl CommandHandler {
         let active_agent = self
             .active_agent_for(identity_id)
             .unwrap_or_else(|| "none".to_string());
+        let active_model = self.active_model_for_identity(identity_id);
+        let active_model_info = active_model
+            .as_deref()
+            .map(|model| format!("\n  active model override: {model}"))
+            .unwrap_or_else(|| "\n  active model override: none".to_string());
 
         // Try to get runtime status from the adapter (for ZeroClaw and others that support it)
         let runtime_info =
@@ -610,7 +678,7 @@ impl CommandHandler {
         };
 
         format!(
-            "Calciforge status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
+            "Calciforge status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{active_model_info}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -1114,6 +1182,11 @@ impl CommandHandler {
             if manager.is_synthetic_model(model_id) {
                 if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
                     return format!("⚠️ Failed to activate model: {}", e);
+                }
+                {
+                    let mut active_models = self.active_models.lock().unwrap();
+                    active_models.insert(identity_id.to_string(), model_id.to_string());
+                    save_active_models_to(&self.state_dir, &active_models);
                 }
                 if let Some(alloy) = manager.get(model_id) {
                     let constituents: Vec<String> = alloy
@@ -1838,6 +1911,37 @@ mod tests {
         assert_eq!(
             h.active_model_for_identity("brian").as_deref(),
             Some("dispatcher-test")
+        );
+    }
+
+    #[test]
+    fn test_model_command_activation_persists_across_handlers() {
+        let config = Arc::new(make_config());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let state_dir = tmp.path().to_path_buf();
+
+        let h = CommandHandler::with_state_dir(config.clone(), state_dir.clone())
+            .with_alloy_manager(synthetic_manager());
+        let reply = h.handle_model("!model dispatcher-test", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+
+        let restored = CommandHandler::with_state_dir(config, state_dir)
+            .with_alloy_manager(synthetic_manager());
+        assert_eq!(
+            restored.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_status_shows_active_model_override() {
+        let h = make_handler_with_synthetics();
+        h.handle_model("!model dispatcher-test", "brian");
+        let reply = h.cmd_status_for_identity("brian").await;
+        assert!(
+            reply.contains("active model override: dispatcher-test"),
+            "status should show active model override: {}",
+            reply
         );
     }
 

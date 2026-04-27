@@ -26,6 +26,7 @@ being treated as daily-driver infrastructure.
 | Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
+| `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
@@ -38,6 +39,7 @@ being treated as daily-driver infrastructure.
 git clone https://github.com/bglusman/calciforge
 cd calciforge
 bash scripts/install.sh
+calciforge doctor
 ```
 
 After install, the default local pieces are:
@@ -54,6 +56,12 @@ Calciforge and the `fnox` CLI can share the same `fnox.toml` and
 profile, so using `fnox set/list/tui` manually is a valid way to manage
 the same store Calciforge resolves through. The paste UI currently
 stores through that configured local backend.
+
+Run `calciforge doctor` after editing config or moving services. It
+validates config, checks referenced secret files without printing
+values, flags stale active-agent/model state, detects suspicious
+self-routing into the local model gateway, and can probe configured
+agent endpoints. Use `--no-network` for a purely local check.
 
 Channel-based secret input is intentionally being de-emphasized. It
 may remain as a per-channel opt-in fallback for travel, low-stakes
