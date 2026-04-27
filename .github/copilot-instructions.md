@@ -18,7 +18,7 @@ Self-hosted security gateway between AI agents and the rest of the world. Multi-
 
 - `cargo fmt --all -- --check` — formatting (pre-commit blocks commit)
 - `cargo clippy --all-targets -- -D warnings` — lints (pre-commit + CI)
-- `gitleaks protect --staged` — secret scanning (pre-commit). Test fixtures with deliberately-fake secrets like `+15555550100`, `7000000001`, `eyJ0eXAi...` are allowlisted in `.gitleaks.toml`; do NOT flag.
+- `gitleaks protect --staged` — secret scanning (pre-commit) + the same scan in CI. `.gitleaks.toml` allowlists by **path** (`tests/**/fixtures/`, `docs/rfcs/*.md`, lockfiles, `crates/paste-server/src/lib.rs`, `*.example.*`) and by **regex** (loopback IPs, RFC 5737 doc-ranges, a few specific inherited-from-main values). If a finding is inside an allowlisted path or matches an allowlisted regex, do NOT re-flag it — it's intentional. Findings outside the allowlist are real.
 
 ## Project context — NOT bugs despite looking like them
 
