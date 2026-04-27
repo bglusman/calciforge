@@ -160,7 +160,7 @@ impl CredentialInjector {
         }
         match secrets_client::vault::get_secret(&key).await {
             Ok(secret) => {
-                tracing::info!(
+                tracing::debug!(
                     provider = %provider,
                     "credential resolved for provider injection"
                 );

@@ -41,7 +41,13 @@ impl Router {
     /// `sender` is the resolved Calciforge identity name (e.g. "brian").
     /// Forwarded to adapters that support per-sender context (`zeroclaw-http`).
     /// Other adapters ignore it.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kept for callers that need sender context without model override"
+        )
+    )]
     pub async fn dispatch_with_sender(
         &self,
         text: &str,

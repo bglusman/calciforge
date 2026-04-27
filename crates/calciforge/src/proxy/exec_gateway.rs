@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::proxy::backend::{BackendError, ModelInfo};
 use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
@@ -111,6 +111,46 @@ impl ExecGateway {
         Ok(stdout)
     }
 
+    fn stderr_preview(stderr: &[u8]) -> String {
+        const MAX_PREVIEW_BYTES: usize = 512;
+
+        let raw = String::from_utf8_lossy(stderr);
+        let mut preview = raw.chars().take(MAX_PREVIEW_BYTES).collect::<String>();
+        if raw.chars().count() > MAX_PREVIEW_BYTES {
+            preview.push_str("...");
+        }
+
+        let sanitized = preview
+            .chars()
+            .map(|c| {
+                if c.is_control() && c != '\n' && c != '\t' {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect::<String>();
+
+        sanitized
+            .split_whitespace()
+            .map(|word| {
+                let lower = word.to_ascii_lowercase();
+                if lower.contains("token")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                    || lower.contains("apikey")
+                    || lower.contains("api_key")
+                    || lower.contains("authorization")
+                {
+                    "[redacted]"
+                } else {
+                    word
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn wrap_response(req: &ChatCompletionRequest, content: String) -> ChatCompletionResponse {
         let prompt_tokens = Self::render_prompt(req).len() as u32 / 4;
         let completion_tokens = content.len() as u32 / 4;
@@ -192,13 +232,33 @@ impl GatewayBackend for ExecGateway {
                 .map_err(|e| BackendError::ExecutionFailed(format!("exec provider failed: {e}")))?;
 
             if !output.status.success() {
+                warn!(
+                    command = %self.command,
+                    code = ?output.status.code(),
+                    stdout_bytes = output.stdout.len(),
+                    stderr_bytes = output.stderr.len(),
+                    stderr_preview = %Self::stderr_preview(&output.stderr),
+                    "exec provider exited unsuccessfully"
+                );
                 return Err(BackendError::ExecutionFailed(format!(
                     "exec provider exited with code {:?}",
                     output.status.code()
                 )));
             }
 
-            let content = Self::read_response(&output_path, &output.stdout).await?;
+            let content = match Self::read_response(&output_path, &output.stdout).await {
+                Ok(content) => content,
+                Err(e) => {
+                    debug!(
+                        command = %self.command,
+                        stdout_bytes = output.stdout.len(),
+                        stderr_bytes = output.stderr.len(),
+                        stderr_preview = %Self::stderr_preview(&output.stderr),
+                        "exec provider produced invalid response"
+                    );
+                    return Err(e);
+                }
+            };
             Ok(Self::wrap_response(&req, content))
         }
         .await;

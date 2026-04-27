@@ -48,7 +48,7 @@ use crate::{
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    /// Path to config file (default: ~/.calciforge/config.toml)
+    /// Path to config file (default: ~/.calciforge/config.toml, then /etc/calciforge/config.toml)
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 

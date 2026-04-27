@@ -493,7 +493,7 @@ impl SecurityProxy {
         for name in names {
             match secrets_client::vault::get_secret(&name).await {
                 Ok(value) => {
-                    tracing::info!(
+                    tracing::debug!(
                         secret = %name,
                         destination_host = dest_host.unwrap_or("<unknown>"),
                         "secret resolved for outbound substitution"

@@ -1,7 +1,8 @@
 //! CalciforgeConfig — TOML configuration loading and schema types.
 //!
-//! Reads from `~/.calciforge/config.toml`. Supports the full config schema
-//! as defined in the spec (Section 3).
+//! Reads from `~/.calciforge/config.toml` or, for service installs, falls back
+//! to `/etc/calciforge/config.toml`. Supports the full config schema as defined
+//! in the spec (Section 3).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -958,10 +959,23 @@ pub fn load_config_from(path: &PathBuf) -> Result<CalciforgeConfig> {
     Ok(config)
 }
 
-/// Returns the canonical config file path: `~/.calciforge/config.toml`.
+/// Returns the preferred config file path.
+///
+/// Prefer the user config for local/dev runs, but fall back to the system path
+/// used by service installs so diagnostic commands work after installation.
 pub fn config_path() -> Result<PathBuf> {
     let home = home::home_dir().context("could not determine home directory")?;
-    Ok(home.join(".calciforge").join("config.toml"))
+    let user_config = home.join(".calciforge").join("config.toml");
+    if user_config.exists() {
+        return Ok(user_config);
+    }
+
+    let system_config = PathBuf::from("/etc/calciforge/config.toml");
+    if system_config.exists() {
+        return Ok(system_config);
+    }
+
+    Ok(user_config)
 }
 
 /// Expand a `~`-prefixed path using the home directory.

@@ -1,8 +1,9 @@
 //! Multi-provider model routing for the proxy.
 //!
-//! Builds a priority-ordered `Vec<ProviderEntry>` from `[[proxy.providers]]` and
-//! `[[proxy.model_routes]]` config. The handler iterates entries in order and
-//! uses the first match, falling back to the default gateway.
+//! Builds a priority-ordered `Vec<ProviderEntry>` from explicit
+//! `[[proxy.model_routes]]`, first-class `[[exec_models]]`, and
+//! `[[proxy.providers]]` config. The handler iterates entries in order and uses
+//! the first match, falling back to the default gateway.
 
 use std::collections::HashMap;
 
@@ -63,7 +64,8 @@ pub fn find_provider<'a>(providers: &'a [ProviderEntry], model: &str) -> Option<
 ///
 /// Priority order:
 /// 1. `[[proxy.model_routes]]` entries (explicit overrides, in declaration order)
-/// 2. `[[proxy.providers]]` models patterns (in provider × pattern order)
+/// 2. first-class `[[exec_models]]` entries (exact model IDs)
+/// 3. `[[proxy.providers]]` models patterns (in provider × pattern order)
 pub fn build_provider_entries(
     config: &ProxyConfig,
     exec_models: &[ExecModelConfig],
