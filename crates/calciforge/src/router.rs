@@ -126,6 +126,7 @@ mod tests {
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             channels: vec![],
             permissions: None,
             memory: None,

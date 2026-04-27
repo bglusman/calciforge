@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use anyhow::Context as _;
 use tracing::info;
 
-use crate::config::ProxyConfig;
+use crate::config::{ExecModelConfig, ProxyConfig};
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
@@ -66,6 +66,7 @@ pub fn find_provider<'a>(providers: &'a [ProviderEntry], model: &str) -> Option<
 /// 2. `[[proxy.providers]]` models patterns (in provider × pattern order)
 pub fn build_provider_entries(
     config: &ProxyConfig,
+    exec_models: &[ExecModelConfig],
     default_timeout: u64,
 ) -> anyhow::Result<Vec<ProviderEntry>> {
     // Build a map of provider_id → resolved gateway for efficient lookup.
@@ -196,7 +197,37 @@ pub fn build_provider_entries(
         }
     }
 
-    // 2. Provider model patterns (in declaration order).
+    // 2. First-class exec models. These are exact synthetic model IDs.
+    for model in exec_models {
+        let timeout = model.timeout_seconds.unwrap_or(default_timeout);
+        let gw_cfg = GatewayConfig {
+            backend_type: GatewayType::Direct,
+            base_url: None,
+            api_key: None,
+            timeout_seconds: timeout,
+            extra_config: None,
+            headers: None,
+            retry_enabled: false,
+            max_retries: 0,
+            retry_base_delay_ms: 0,
+            retry_max_delay_ms: 0,
+        };
+        let gw = Arc::new(ExecGateway::new(
+            gw_cfg,
+            model.command.clone(),
+            model.args.clone(),
+            model.env.clone(),
+        ));
+        info!(id = %model.id, "Exec synthetic model loaded");
+        entries.push(ProviderEntry {
+            id: format!("exec:{}", model.id),
+            patterns: vec![model.id.clone()],
+            gateway: gw,
+            on_switch: None,
+        });
+    }
+
+    // 3. Provider model patterns (in declaration order).
     for p in &config.providers {
         if p.models.is_empty() {
             continue;
@@ -247,7 +278,7 @@ mod tests {
             ..Default::default()
         };
 
-        let err = build_provider_entries(&config, 30).unwrap_err();
+        let err = build_provider_entries(&config, &[], 30).unwrap_err();
         assert!(err.to_string().contains("requires non-empty url"));
     }
 
@@ -258,7 +289,30 @@ mod tests {
             ..Default::default()
         };
 
-        let entries = build_provider_entries(&config, 30).unwrap();
+        let entries = build_provider_entries(&config, &[], 30).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn exec_models_become_exact_provider_entries() {
+        let config = ProxyConfig::default();
+        let entries = build_provider_entries(
+            &config,
+            &[ExecModelConfig {
+                id: "codex/gpt-5.5".to_string(),
+                name: None,
+                context_window: 262_144,
+                command: "/bin/echo".to_string(),
+                args: vec!["ok".to_string()],
+                env: HashMap::new(),
+                timeout_seconds: Some(10),
+            }],
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].patterns, vec!["codex/gpt-5.5"]);
+        assert!(find_provider(&entries, "codex/gpt-5.5").is_some());
     }
 }

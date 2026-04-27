@@ -951,7 +951,7 @@ impl CommandHandler {
             "  !ping    — connectivity check (replies: pong)",
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
-            "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
+            "  !model [alias|synthetic] — show shortcuts/synthetic models or activate one (requires auth)",
             "  !secure <list|help> — list fnox secret names; `set` is chat-retained legacy fallback",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
@@ -1032,6 +1032,17 @@ impl CommandHandler {
                             ));
                         }
                     }
+                    let exec_models = manager.list_exec_models();
+                    if !exec_models.is_empty() {
+                        lines.push(String::new());
+                        lines.push("Configured exec models:".to_string());
+                        for exec_model in exec_models {
+                            lines.push(format!(
+                                "  {} — {} ({} tokens)",
+                                exec_model.id, exec_model.name, exec_model.context_window
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -1043,7 +1054,7 @@ impl CommandHandler {
             lines.push("  !model <alias> — show model for alias".to_string());
             if self.alloy_manager.is_some() {
                 lines.push(
-                    "  !model <synthetic-id> — activate alloy/cascade/dispatcher for your identity"
+                    "  !model <synthetic-id> — activate alloy/cascade/dispatcher/exec model for your identity"
                         .to_string(),
                 );
             }
@@ -1214,6 +1225,15 @@ impl CommandHandler {
             for a in mgr.list() {
                 available.push(format!("  {} (alloy)", a.id));
             }
+            for c in mgr.list_cascades() {
+                available.push(format!("  {} (cascade)", c.id));
+            }
+            for d in mgr.list_dispatchers() {
+                available.push(format!("  {} (dispatcher)", d.id));
+            }
+            for e in mgr.list_exec_models() {
+                available.push(format!("  {} (exec)", e.id));
+            }
         }
         if let Some(ref lm) = self.local_manager {
             for m in lm.models() {
@@ -1380,8 +1400,8 @@ mod tests {
     use super::*;
     use crate::config::{
         AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CascadeConfig,
-        ChannelAlias, ChannelConfig, DispatcherConfig, Identity, PolyConfig, PolyHeader,
-        RoutingRule, SyntheticModelConfig,
+        ChannelAlias, ChannelConfig, DispatcherConfig, ExecModelConfig, Identity, PolyConfig,
+        PolyHeader, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
 
@@ -1431,6 +1451,20 @@ mod tests {
                     model: "gpt-4".to_string(),
                     context_window: 128_000,
                 }],
+            }],
+            &[ExecModelConfig {
+                id: "codex/gpt-5.5".to_string(),
+                name: Some("Codex GPT-5.5".to_string()),
+                context_window: 262_144,
+                command: "codex".to_string(),
+                args: vec![
+                    "exec".to_string(),
+                    "-m".to_string(),
+                    "gpt-5.5".to_string(),
+                    "-".to_string(),
+                ],
+                env: std::collections::HashMap::new(),
+                timeout_seconds: Some(900),
             }],
         )
         .expect("synthetic manager")
@@ -1530,6 +1564,7 @@ mod tests {
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             security: None,
             proxy: None,
             local_models: None,
@@ -1705,6 +1740,8 @@ mod tests {
         assert!(reply.contains("cascade-test"), "{reply}");
         assert!(reply.contains("Configured dispatchers:"), "{reply}");
         assert!(reply.contains("dispatcher-test"), "{reply}");
+        assert!(reply.contains("Configured exec models:"), "{reply}");
+        assert!(reply.contains("codex/gpt-5.5"), "{reply}");
     }
 
     #[test]
@@ -1750,6 +1787,7 @@ mod tests {
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             security: None,
             proxy: None,
             local_models: None,

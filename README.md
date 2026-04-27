@@ -19,7 +19,7 @@ live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 | Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
 | Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
-| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
@@ -94,6 +94,13 @@ strategy = "auto"
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
+
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5 subscription"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
 ```
 
 ## Architecture

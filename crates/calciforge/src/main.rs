@@ -181,8 +181,10 @@ async fn main() -> Result<()> {
     let router = Arc::new(Router::new());
 
     // Initialize model-gateway synthetic routing if configured.
-    let has_synthetic_models =
-        !config.alloys.is_empty() || !config.cascades.is_empty() || !config.dispatchers.is_empty();
+    let has_synthetic_models = !config.alloys.is_empty()
+        || !config.cascades.is_empty()
+        || !config.dispatchers.is_empty()
+        || !config.exec_models.is_empty();
     let alloy_manager = if !has_synthetic_models {
         None
     } else {
@@ -190,12 +192,14 @@ async fn main() -> Result<()> {
             &config.alloys,
             &config.cascades,
             &config.dispatchers,
+            &config.exec_models,
         ) {
             Ok(manager) => {
                 info!(
                     alloys = config.alloys.len(),
                     cascades = config.cascades.len(),
                     dispatchers = config.dispatchers.len(),
+                    exec_models = config.exec_models.len(),
                     "model gateway synthetic routing initialized"
                 );
                 Some(manager)
@@ -380,9 +384,15 @@ async fn main() -> Result<()> {
                 .map(|m| Arc::new((*m).clone()))
                 .unwrap_or_else(|| Arc::new(crate::providers::alloy::AlloyManager::empty()));
             let providers = Arc::new(crate::providers::ProviderRegistry::new());
-            proxy::start_proxy_server(proxy_config, alloy_mgr, providers, local_manager)
-                .await
-                .context("Proxy server error")
+            proxy::start_proxy_server(
+                proxy_config,
+                config.exec_models.clone(),
+                alloy_mgr,
+                providers,
+                local_manager,
+            )
+            .await
+            .context("Proxy server error")
         } else {
             Ok(())
         }

@@ -105,7 +105,7 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
         }
     }
 
-    // Check duplicate synthetic model IDs across alloys, cascades, dispatchers.
+    // Check duplicate synthetic model IDs across all synthetic model classes.
     let mut synthetic_model_ids = HashSet::new();
     for alloy in &config.alloys {
         if !synthetic_model_ids.insert(&alloy.id) {
@@ -120,6 +120,11 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
     for dispatcher in &config.dispatchers {
         if !synthetic_model_ids.insert(&dispatcher.id) {
             result.add_error(format!("Duplicate synthetic model ID: '{}'", dispatcher.id));
+        }
+    }
+    for exec_model in &config.exec_models {
+        if !synthetic_model_ids.insert(&exec_model.id) {
+            result.add_error(format!("Duplicate synthetic model ID: '{}'", exec_model.id));
         }
     }
 
@@ -211,7 +216,7 @@ fn validate_alloys(config: &PolyConfig, result: &mut ValidationResult) {
     }
 }
 
-/// Validate named cascades and dispatchers.
+/// Validate named cascades, dispatchers, and exec models.
 fn validate_synthetic_model_groups(config: &PolyConfig, result: &mut ValidationResult) {
     for cascade in &config.cascades {
         if cascade.models.is_empty() {
@@ -247,6 +252,24 @@ fn validate_synthetic_model_groups(config: &PolyConfig, result: &mut ValidationR
                     dispatcher.id, model.model
                 ));
             }
+        }
+    }
+
+    for exec_model in &config.exec_models {
+        if exec_model.id.trim().is_empty() {
+            result.add_error("Exec model has an empty id".to_string());
+        }
+        if exec_model.context_window == 0 {
+            result.add_error(format!(
+                "Exec model '{}' has context_window=0",
+                exec_model.id
+            ));
+        }
+        if exec_model.command.trim().is_empty() {
+            result.add_error(format!(
+                "Exec model '{}' has an empty command",
+                exec_model.id
+            ));
         }
     }
 }

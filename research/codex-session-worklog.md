@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 19:02 EDT.
+Last updated: 2026-04-26 22:30 EDT.
 
 ## Automation handoff
 
@@ -201,3 +201,21 @@ intentionally ignores its own Matrix events.
 - Follow-up security hardening: `.210` still has at least one provider credential
   stored inline in a systemd drop-in. Move that into an `EnvironmentFile` or
   service-specific secret file before treating the deployment as clean.
+
+## 2026-04-26 exec-model synthetic update
+
+- Promoted executable-backed model gateway support from only
+  `[[proxy.providers]] backend_type = "exec"` into first-class `[[exec_models]]`
+  synthetic models.
+- `[[exec_models]]` are black-box synthetic leaves: Calciforge renders a chat
+  transcript, invokes the configured binary/script without shell interpolation,
+  and wraps stdout or `{output_file}` contents as a chat completion.
+- Synthetic model composition now recursively flattens alloys, cascades,
+  dispatchers, and exec models as a DAG. Cycles are rejected during synthetic
+  manager initialization.
+- Added example wrappers under `scripts/exec-models/` for Codex CLI, Claude
+  CLI, and a generic stdin CLI. These are documented as starting points because
+  CLI flags and vendor subscription terms can change.
+- Verification passed: `cargo test -p calciforge --bins`,
+  `python3 scripts/model-gateway-synthetic-e2e.py`, shell syntax checks for the
+  exec-model wrapper scripts, and a focused `tiktoken-estimator` test.

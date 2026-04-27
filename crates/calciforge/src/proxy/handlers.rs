@@ -71,7 +71,7 @@ pub async fn chat_completions(
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
     //  - Backend is http (upstream is authoritative).
-    //  - It's a configured synthetic model (alloy, cascade, dispatcher).
+    //  - It's a configured synthetic model (alloy, cascade, dispatcher, exec model).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_http_backend = state.config.backend_type == "http";
     let is_valid_model = provider_matches
@@ -323,6 +323,14 @@ pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) ->
             object: "model".to_string(),
             created: now,
             owned_by: "calciforge/dispatcher".to_string(),
+        });
+    }
+    for exec_model in state.alloy_manager.list_exec_models() {
+        models.push(ModelInfo {
+            id: exec_model.id.clone(),
+            object: "model".to_string(),
+            created: now,
+            owned_by: "calciforge/exec".to_string(),
         });
     }
 

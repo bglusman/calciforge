@@ -1117,6 +1117,7 @@ printf 'mock-agent saw: %s\n' "$1"
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             security: None,
             proxy: None,
             local_models: None,

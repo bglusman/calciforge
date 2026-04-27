@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::sync::Arc;
 
-use crate::config::ProxyConfig;
+use crate::config::{ExecModelConfig, ProxyConfig};
 use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
 
@@ -91,6 +91,7 @@ fn resolve_api_key(
 /// Start the model gateway HTTP server
 pub async fn start_proxy_server(
     mut config: ProxyConfig,
+    exec_models: Vec<ExecModelConfig>,
     alloy_manager: Arc<AlloyManager>,
     provider_registry: Arc<ProviderRegistry>,
     local_manager: Option<Arc<crate::local_model::LocalModelManager>>,
@@ -189,7 +190,7 @@ pub async fn start_proxy_server(
         .map_err(|e| anyhow::anyhow!("Failed to create gateway: {}", e))?;
 
     // Build named provider entries from [[proxy.providers]] and [[proxy.model_routes]].
-    let providers = routing::build_provider_entries(&config, config.timeout_seconds)?;
+    let providers = routing::build_provider_entries(&config, &exec_models, config.timeout_seconds)?;
     info!(providers = providers.len(), "Named providers loaded");
 
     let state = ProxyState {

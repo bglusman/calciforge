@@ -65,6 +65,13 @@ pub struct PolyConfig {
     #[serde(default)]
     pub dispatchers: Vec<DispatcherConfig>,
 
+    /// `[[exec_models]]` — executable-backed synthetic models.
+    /// These expose subscription-authenticated CLIs such as `codex exec` or
+    /// `claude -p` through the OpenAI-compatible model gateway without copying
+    /// their OAuth/session credentials into provider API keys.
+    #[serde(default)]
+    pub exec_models: Vec<ExecModelConfig>,
+
     /// `[security]` — adversary detector profile and settings.
     /// Defaults to balanced if not specified in config.
     #[serde(default)]
@@ -159,6 +166,31 @@ pub struct DispatcherConfig {
     /// models later. Runtime selection sorts by declared context size.
     #[serde(default)]
     pub models: Vec<SyntheticModelConfig>,
+}
+
+/// Executable-backed synthetic model definition (`[[exec_models]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExecModelConfig {
+    /// Synthetic model id requested by agents, such as `codex/gpt-5.5`.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Declared context window (tokens) for fit checks.
+    pub context_window: u32,
+    /// Binary or script path to execute.
+    pub command: String,
+    /// Argument template. Supports `{prompt}`, `{message}`, `{model}`, and
+    /// `{output_file}` placeholders. When no prompt placeholder is present,
+    /// Calciforge writes the rendered transcript to stdin.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables passed only to this process.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Request timeout in seconds. Defaults to `[proxy].timeout_seconds`.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
 }
 
 /// One target inside a cascade or dispatcher.
@@ -1066,6 +1098,37 @@ safety_margin = 1.02
         assert_eq!(estimator.strategy, TokenEstimatorStrategy::Tiktoken);
         assert_eq!(estimator.tokenizer.as_deref(), Some("o200k_base"));
         assert_eq!(estimator.safety_margin, 1.02);
+    }
+
+    #[test]
+    fn exec_model_config_parses() {
+        let cfg: PolyConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
+timeout_seconds = 900
+
+[exec_models.env]
+CALCIFORGE_CODEX_MODEL = "gpt-5.5"
+"#,
+        )
+        .expect("parse exec model config");
+
+        let model = cfg.exec_models.first().expect("exec model");
+        assert_eq!(model.id, "codex/gpt-5.5");
+        assert_eq!(model.context_window, 262_144);
+        assert_eq!(model.args, vec!["-"]);
+        assert_eq!(
+            model.env.get("CALCIFORGE_CODEX_MODEL").map(String::as_str),
+            Some("gpt-5.5")
+        );
     }
 
     #[test]

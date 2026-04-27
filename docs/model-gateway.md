@@ -17,14 +17,16 @@ model choices.
 | Fallback behavior | Working, implicit | Alloy execution produces an ordered attempt plan; later constituents are tried when earlier ones fail. |
 | Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
+| Exec models | Working | `[[exec_models]]` exposes a local binary or wrapper script as a model-gateway model, useful for subscription-backed CLIs. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
-| Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage is exposed as a Calciforge agent path, not as a generic OpenAI-compatible upstream. |
+| Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage can be exposed either as a Calciforge agent path or via an exec model wrapper when a local CLI owns authentication. |
 
 ## Synthetic Model Classes
 
 Calciforge uses "synthetic model" to mean "a model name that represents
-logic, not a single upstream model ID." There are three intended
-classes.
+logic, not a single upstream model ID." There are four intended
+classes. Synthetic models may reference other synthetic models as long
+as the resulting graph is a DAG; cycles fail config initialization.
 
 ### Alloy
 
@@ -132,6 +134,38 @@ model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
 ```
 
+### Exec Model
+
+An exec model exposes an arbitrary local executable as an OpenAI-compatible
+model-gateway model. This is the subscription/OAuth escape hatch: Codex,
+Claude, Kimi, or another local CLI keeps its own login/session state, while
+Calciforge handles gateway auth, model ACLs, routing, and response wrapping.
+
+Calciforge treats the executable as a black box. It renders the chat transcript,
+passes it by stdin unless the argument template uses `{prompt}` or `{message}`,
+and wraps stdout or `{output_file}` contents as the assistant message. It does
+not introspect the CLI, negotiate provider-specific flags, or verify vendor
+subscription terms.
+
+```toml
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5 subscription"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
+timeout_seconds = 900
+
+[exec_models.env]
+CALCIFORGE_CODEX_MODEL = "gpt-5.5"
+```
+
+Example wrappers live in `scripts/exec-models/`. Treat them as starting
+points: CLI flags and subscription terms can change, and wrapper scripts are
+trusted operator code. Keep config files and wrapper paths writable only by
+trusted admins, validate behavior against the exact CLI version installed, and
+prefer small wrapper scripts over complex inline argument templates.
+
 ## Config Example
 
 ```toml
@@ -180,6 +214,17 @@ id = "qwen3-35b"
 hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
 display_name = "Qwen 35B local"
 
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5 subscription"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
+timeout_seconds = 900
+
+[exec_models.env]
+CALCIFORGE_CODEX_MODEL = "gpt-5.5"
+
 [[dispatchers]]
 id = "smart-local"
 name = "Use local until the prompt outgrows it"
@@ -191,12 +236,16 @@ context_window = 32768
 [[dispatchers.models]]
 model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
+
+[[dispatchers.models]]
+model = "codex/gpt-5.5"
+context_window = 262144
 ```
 
 ## Notes
 
-- Codex and Claude subscription-backed CLI routes are agent integrations,
-  not generic OpenAI-compatible model-gateway providers. See
+- Codex and Claude subscription-backed CLI routes can be configured as
+  agent integrations or as `[[exec_models]]`. See
   [Codex/OpenClaw integration](codex-openclaw-integration.md) for direct
   `codex-cli`, OpenClaw `openai-codex/*`, OpenClaw `codex/*`, and
   Claude CLI setup choices.

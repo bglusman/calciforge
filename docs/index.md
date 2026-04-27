@@ -292,6 +292,13 @@ The synthetic-model vocabulary is:
 - **Dispatcher** — choose by request shape, such as "smallest
   sufficient model." This is the size-routing primitive for mixing
   small local models with larger remote models.
+- **Exec model** — expose a local binary or wrapper script as a model
+  gateway model, typically for subscription-backed CLIs where the CLI
+  owns OAuth/session state.
+
+Synthetic models may compose other synthetic models as a DAG. Calciforge
+flattens the selected plan at request time and rejects cycles during
+initialization.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -364,6 +371,13 @@ id = "qwen3-35b"
 hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
 display_name = "Qwen 35B local"
 
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5 subscription"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
+
 [[dispatchers]]
 id = "smart-local"
 name = "Use local until the prompt outgrows it"
@@ -375,6 +389,10 @@ context_window = 32768
 [[dispatchers.models]]
 model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
+
+[[dispatchers.models]]
+model = "codex/gpt-5.5"
+context_window = 262144
 ```
 
 The full gateway reference is
