@@ -7,12 +7,12 @@
 kind = "signal"
 enabled = true
 
-# OpenClaw gateway endpoint that owns the Signal session
+# OpenClaw or ZeroClaw gateway endpoint that owns the Signal session
 # This is where Calciforge will POST replies via /tools/invoke
-nzc_endpoint = "http://127.0.0.1:18789"
+zeroclaw_endpoint = "http://127.0.0.1:18789"
 
-# Bearer token for the OpenClaw gateway
-nzc_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+# Bearer token for the OpenClaw or ZeroClaw gateway
+zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
 
 # HTTP address to listen on for incoming webhooks from OpenClaw
 # Default: 0.0.0.0:18796
