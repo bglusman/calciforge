@@ -338,15 +338,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args()
 
-    if shutil.which("cargo") is None and os.environ.get("CALCIFORGE_BIN") is None:
-        raise RuntimeError("cargo or CALCIFORGE_BIN is required")
-
     port = args.port or find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 
     with tempfile.TemporaryDirectory(prefix="calciforge-synthetic-e2e-") as tmp_raw:
         tmp = Path(tmp_raw)
         config_path = write_config(tmp, port)
+        command = calciforge_command(config_path)
+        if command and command[0] == "cargo" and shutil.which("cargo") is None:
+            raise RuntimeError("cargo or CALCIFORGE_BIN is required")
         proc = None
         try:
             proc, _logs = start_calciforge(config_path, tmp)

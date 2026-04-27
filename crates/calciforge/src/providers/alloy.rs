@@ -895,9 +895,8 @@ impl AlloyManager {
     }
 
     pub fn select_plan_for_identity(&self, identity_id: &str) -> Option<AlloyPlan> {
-        let alloy_id = self.active_for_identity(identity_id)?;
-        let provider = self.alloys.get(&alloy_id)?;
-        Some(provider.select_plan())
+        let model_id = self.active_for_identity(identity_id)?;
+        self.select_plan_for_model(&model_id, 0).ok().flatten()
     }
 
     pub fn record_attempt(&self, alloy_id: &str, model: &str, success: bool) {
@@ -1201,6 +1200,39 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(plan.ordered_models, vec!["codex/gpt-5.5"]);
+    }
+
+    #[test]
+    fn active_identity_selection_supports_non_alloy_synthetics() {
+        let cascade = CascadeConfig {
+            id: "local-then-remote".to_string(),
+            name: None,
+            models: vec![
+                SyntheticModelConfig {
+                    model: "local/small".to_string(),
+                    context_window: 32_768,
+                },
+                SyntheticModelConfig {
+                    model: "remote/large".to_string(),
+                    context_window: 262_144,
+                },
+            ],
+        };
+        let dispatcher = DispatcherConfig {
+            id: "smart".to_string(),
+            name: None,
+            models: vec![SyntheticModelConfig {
+                model: "local-then-remote".to_string(),
+                context_window: 262_144,
+            }],
+        };
+        let manager =
+            AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher], &[]).unwrap();
+
+        manager.set_active_for_identity("alice", "smart").unwrap();
+        let plan = manager.select_plan_for_identity("alice").unwrap();
+
+        assert_eq!(plan.ordered_models, vec!["local/small", "remote/large"]);
     }
 
     #[test]

@@ -53,13 +53,22 @@ impl ExecGateway {
         }
     }
 
-    fn output_path(&self) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        self.output_dir
-            .join(format!("exec-gateway-last-message-{nanos}.txt"))
+    fn prepare_output_file(&self) -> Result<tempfile::NamedTempFile, BackendError> {
+        std::fs::create_dir_all(&self.output_dir)
+            .map_err(|e| BackendError::ExecutionFailed(format!("create output dir: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.output_dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| {
+                    BackendError::ExecutionFailed(format!("secure output dir permissions: {e}"))
+                })?;
+        }
+        tempfile::Builder::new()
+            .prefix("exec-gateway-")
+            .suffix(".txt")
+            .tempfile_in(&self.output_dir)
+            .map_err(|e| BackendError::ExecutionFailed(format!("create exec output file: {e}")))
     }
 
     fn render_prompt(req: &ChatCompletionRequest) -> String {
@@ -74,24 +83,19 @@ impl ExecGateway {
     }
 
     fn build_args(&self, req: &ChatCompletionRequest, output_path: &Path) -> (Vec<String>, bool) {
-        let prompt = Self::render_prompt(req);
         let output_file = output_path.to_string_lossy();
-        let mut saw_prompt_placeholder = false;
         let args = self
             .args
             .iter()
             .map(|arg| {
-                if arg.contains("{prompt}") || arg.contains("{message}") {
-                    saw_prompt_placeholder = true;
-                }
-                arg.replace("{prompt}", &prompt)
-                    .replace("{message}", &prompt)
+                arg.replace("{prompt}", "")
+                    .replace("{message}", "")
                     .replace("{model}", &req.model)
                     .replace("{output_file}", &output_file)
             })
             .collect::<Vec<_>>();
 
-        let should_write_stdin = !saw_prompt_placeholder || args.iter().any(|arg| arg == "-");
+        let should_write_stdin = true;
         (args, should_write_stdin)
     }
 
@@ -163,11 +167,8 @@ impl GatewayBackend for ExecGateway {
         &self,
         req: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        tokio::fs::create_dir_all(&self.output_dir)
-            .await
-            .map_err(|e| BackendError::ExecutionFailed(format!("create output dir: {e}")))?;
-
-        let output_path = self.output_path();
+        let output_file = self.prepare_output_file()?;
+        let output_path = output_file.path().to_path_buf();
         let result = async {
             let (args, should_write_stdin) = self.build_args(&req, &output_path);
             let prompt = Self::render_prompt(&req);
@@ -213,14 +214,12 @@ impl GatewayBackend for ExecGateway {
         }
         .await;
 
-        let cleanup_result = tokio::fs::remove_file(&output_path).await;
-        if let Err(e) = cleanup_result {
-            if e.kind() != std::io::ErrorKind::NotFound && result.is_ok() {
-                return Err(BackendError::ExecutionFailed(format!(
-                    "failed to remove exec output file {}: {e}",
-                    output_path.display()
-                )));
-            }
+        if let Err(e) = output_file.close() {
+            eprintln!(
+                "failed to remove exec output file {}: {}",
+                output_path.display(),
+                e
+            );
         }
 
         result
@@ -308,7 +307,7 @@ printf 'file:%s\n' "$prompt" > "$out"
     }
 
     #[tokio::test]
-    async fn exec_gateway_uses_prompt_placeholder_without_stdin() {
+    async fn exec_gateway_uses_prompt_placeholder_via_stdin() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-cli");
         let mut f = std::fs::OpenOptions::new()
@@ -320,7 +319,8 @@ printf 'file:%s\n' "$prompt" > "$out"
         writeln!(
             f,
             r#"#!/bin/sh
-printf 'stdout:%s:%s\n' "$1" "$2"
+prompt="$(cat)"
+printf 'stdout:%s:%s\n' "$1" "$prompt"
 "#
         )
         .unwrap();

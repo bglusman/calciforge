@@ -142,10 +142,12 @@ Claude, Kimi, or another local CLI keeps its own login/session state, while
 Calciforge handles gateway auth, model ACLs, routing, and response wrapping.
 
 Calciforge treats the executable as a black box. It renders the chat transcript,
-passes it by stdin unless the argument template uses `{prompt}` or `{message}`,
-and wraps stdout or `{output_file}` contents as the assistant message. It does
-not introspect the CLI, negotiate provider-specific flags, or verify vendor
-subscription terms.
+passes it by stdin, and wraps stdout or `{output_file}` contents as the
+assistant message. `{prompt}` and `{message}` in exec-model args are legacy
+stdin markers: Calciforge replaces them with an empty string and sends the
+rendered transcript on stdin so prompt text is not exposed through process
+listings. It does not introspect the CLI, negotiate provider-specific flags, or
+verify vendor subscription terms.
 
 ```toml
 [[exec_models]]
@@ -164,7 +166,9 @@ Example wrappers live in `scripts/exec-models/`. Treat them as starting
 points: CLI flags and subscription terms can change, and wrapper scripts are
 trusted operator code. Keep config files and wrapper paths writable only by
 trusted admins, validate behavior against the exact CLI version installed, and
-prefer small wrapper scripts over complex inline argument templates.
+prefer small wrapper scripts over complex inline argument templates. If a
+vendor CLI requires prompt text in argv, document that wrapper as a local
+process-listing leakage risk and run it only on trusted single-user hosts.
 
 ## Config Example
 

@@ -807,11 +807,11 @@ if [[ -n "$NODES_FILE" ]]; then
 
     ensure_remote_fnox() {
         local name="$1" ssh_target="$2" ssh_key="$3"
-        local ssh_opts="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-        [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
+        local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+        [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
 
         echo "  [$name] checking fnox..."
-        ssh $ssh_opts "$ssh_target" 'bash -s' <<'REMOTE_FNOX'
+        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' <<'REMOTE_FNOX'
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 if ! command -v fnox >/dev/null 2>&1; then
@@ -844,11 +844,13 @@ REMOTE_FNOX
         local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" os="$6"
         local bin="$7" install_dir="$8" config_dir="$9"
 
-        local ssh_opts="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-        [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
+        local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+        [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+        local rsync_ssh
+        printf -v rsync_ssh '%q ' ssh "${ssh_opts[@]}"
         local ssh_target="${user}@${host}"
         local remote_home remote_service_path
-        remote_home=$(ssh $ssh_opts "$ssh_target" 'printf "%s" "$HOME"' 2>/dev/null || true)
+        remote_home=$(ssh "${ssh_opts[@]}" "$ssh_target" 'printf "%s" "$HOME"' 2>/dev/null || true)
         if [[ -z "$remote_home" && "$user" == "root" ]]; then
             remote_home="/root"
         fi
@@ -864,7 +866,7 @@ REMOTE_FNOX
         bin_path=$(build_for_arch "$arch" "$bin") || {
             # Cross-compile failed — try building on remote
             warn "  [$name] cross-compile unavailable; attempting remote build..."
-            ssh $ssh_opts "$ssh_target" bash -s -- "$bin" "$install_dir" <<'REMOTE_BUILD'
+            ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$bin" "$install_dir" <<'REMOTE_BUILD'
 set -e
 BIN=$1; INSTALL_DIR=$2
 command -v cargo &>/dev/null || {
@@ -888,18 +890,18 @@ REMOTE_BUILD
         }
 
         # ── rsync binary ─────────────────────────────────────────────────────
-        ssh $ssh_opts "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
-        rsync -az --checksum -e "ssh $ssh_opts" "$bin_path" "${ssh_target}:${install_dir}/${bin}"
-        ssh $ssh_opts "$ssh_target" "chmod +x ${install_dir}/${bin}"
+        ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
+        rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${install_dir}/${bin}"
+        ssh "${ssh_opts[@]}" "$ssh_target" "chmod +x ${install_dir}/${bin}"
 
         # ── rsync config files ────────────────────────────────────────────────
         if [[ "$bin" == "clashd" ]]; then
-            ssh $ssh_opts "$ssh_target" "mkdir -p $config_dir"
-            rsync -az -e "ssh $ssh_opts" \
+            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $config_dir"
+            rsync -az -e "$rsync_ssh" \
                 "$REPO_ROOT/crates/clashd/config/claude-code-policy.star" \
                 "${ssh_target}:${config_dir}/policy.star" 2>/dev/null || true
             # Write minimal agents.json if absent
-            ssh $ssh_opts "$ssh_target" \
+            ssh "${ssh_opts[@]}" "$ssh_target" \
                 "[[ -f ${config_dir}/agents.json ]] || echo '{\"agents\":[]}' > ${config_dir}/agents.json"
         fi
 
@@ -914,8 +916,8 @@ REMOTE_BUILD
                 calciforge)     env_pairs="" ;;
             esac
             unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")" "$remote_service_path")
-            ssh $ssh_opts "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${bin}.service" <<< "$unit_content"
-            ssh $ssh_opts "$ssh_target" "systemctl daemon-reload && systemctl enable --now ${bin}" 2>&1 | tail -2
+            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${bin}.service" <<< "$unit_content"
+            ssh "${ssh_opts[@]}" "$ssh_target" "systemctl daemon-reload && systemctl enable --now ${bin}" 2>&1 | tail -2
         else
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${bin}"
@@ -923,9 +925,9 @@ REMOTE_BUILD
                 "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" \
                 "PATH=${remote_service_path}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
-            ssh $ssh_opts "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
-            ssh $ssh_opts "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
-            ssh $ssh_opts "$ssh_target" "launchctl unload ${plist_path} 2>/dev/null; launchctl load ${plist_path}"
+            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
+            ssh "${ssh_opts[@]}" "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
+            ssh "${ssh_opts[@]}" "$ssh_target" "launchctl unload ${plist_path} 2>/dev/null; launchctl load ${plist_path}"
         fi
 
         ok "  [$name] $bin deployed and started"

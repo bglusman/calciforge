@@ -145,7 +145,10 @@ CALCIFORGE_CLAUDE_MODEL = "sonnet"
 The example wrappers in `scripts/exec-models/` are intentionally conservative
 starting points. CLI flags, installed versions, and vendor subscription terms
 can change, so validate the exact wrapper under the Unix account running
-Calciforge before exposing it to agents.
+Calciforge before exposing it to agents. Prefer wrappers that accept prompts on
+stdin; if a vendor CLI only accepts prompts as argv, treat that wrapper as a
+local process-listing leakage risk and expose it only on trusted single-user
+hosts.
 
 For deterministic gateway tests, use a mock OpenAI-compatible provider or
 replay fixture rather than a live LLM.

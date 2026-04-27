@@ -505,7 +505,7 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
             let trimmed = s.trim();
             let mut parts = trimmed.splitn(2, char::is_whitespace);
             let scheme = parts.next()?;
-            let token = parts.next()?.trim_start();
+            let token = parts.next()?.trim();
             if scheme.eq_ignore_ascii_case("Bearer") && !token.is_empty() {
                 Some(token)
             } else {
@@ -547,6 +547,16 @@ mod tests {
     fn require_api_key_accepts_case_insensitive_bearer_scheme() {
         let mut headers = HeaderMap::new();
         headers.insert("authorization", HeaderValue::from_static("bearer test-key"));
+        assert!(require_api_key(&config_with_key(Some("test-key")), &headers).is_none());
+    }
+
+    #[test]
+    fn require_api_key_accepts_trailing_bearer_token_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-key  "),
+        );
         assert!(require_api_key(&config_with_key(Some("test-key")), &headers).is_none());
     }
 

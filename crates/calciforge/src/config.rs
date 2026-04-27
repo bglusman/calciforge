@@ -180,9 +180,10 @@ pub struct ExecModelConfig {
     pub context_window: u32,
     /// Binary or script path to execute.
     pub command: String,
-    /// Argument template. Supports `{prompt}`, `{message}`, `{model}`, and
-    /// `{output_file}` placeholders. When no prompt placeholder is present,
-    /// Calciforge writes the rendered transcript to stdin.
+    /// Argument template. Supports `{model}` and `{output_file}` placeholders.
+    /// `{prompt}` / `{message}` are legacy aliases that are replaced with an
+    /// empty string and cause Calciforge to write the rendered transcript to
+    /// stdin, avoiding prompt leakage through process argv.
     #[serde(default)]
     pub args: Vec<String>,
     /// Extra environment variables passed only to this process.
@@ -732,7 +733,7 @@ pub struct ProxyProviderConfig {
     /// Argument template for `backend_type = "exec"` providers.
     ///
     /// Placeholders:
-    /// - `{prompt}` / `{message}`: rendered chat transcript
+    /// - `{prompt}` / `{message}`: stdin marker; replaced with an empty string
     /// - `{model}`: requested model after provider routing
     /// - `{output_file}`: temp file path for CLIs such as `codex exec`
     #[serde(default)]

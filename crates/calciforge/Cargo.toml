@@ -98,6 +98,9 @@ rand = "0.9"
 # UUID generation for API responses
 uuid = { version = "1", features = ["v4"] }
 
+# Secure temporary files for exec-backed model output handoff.
+tempfile = "3"
+
 # Retry logic (Helicone-style)
 backon = "0.4"
 
@@ -115,7 +118,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-tempfile = "3"
 futures-util = "0.3"
 loom = { version = "0.7", features = ["checkpoint"] }
 mockito = "1.5"

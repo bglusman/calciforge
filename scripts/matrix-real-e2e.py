@@ -401,7 +401,10 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="leave temp files/container for debugging")
     args = parser.parse_args()
 
-    require_command("cargo")
+    repo_calciforge_bin = Path(__file__).resolve().parents[1] / "target" / "debug" / "calciforge"
+    has_calciforge_bin = bool(os.environ.get("CALCIFORGE_BIN")) or repo_calciforge_bin.exists()
+    if not has_calciforge_bin:
+        require_command("cargo")
     require_command("docker")
 
     base_url = f"http://127.0.0.1:{args.port}"

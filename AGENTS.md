@@ -45,6 +45,7 @@ User-facing tour: `README.md` → [calciforge.org](https://calciforge.org/).
 5. **Substitution boundary order**: pre-substitution host extraction → URL substitution (gated by per-secret allowlist) → bypass check → header substitution → body substitution → outbound scan. New code must not move bypass before substitution.
 6. **No secret values in logs.** Log the secret *name*, never the value. URLs containing bearer tokens or short-lived auth go to `debug!`, not `info!`/`warn!`.
 7. **`fnox set <name> <value>` leaks via `ps`/`procfs`.** Use stdin mode (`set <name> -` + write to stdin).
+8. **Exec-backed model prompts should travel by stdin or secure temp files.** Avoid putting prompt or secret-bearing text in argv; process listings can expose it on multi-user systems.
 
 ## Build / test
 
@@ -75,7 +76,6 @@ Mixed: older crates on `2021`, newer on `2024`. Known and tracked. Don't bump in
 ## When working on a specific area, also read
 
 - `crates/host-agent/AGENTS.md` — host-agent security model (Unix-permissions enforcement, fail-closed, mTLS CN→Unix user mapping).
-- `crates/host-agent/SDD.md` — spec-driven development phases for host-agent work.
 - `docs/rfcs/` — design docs for in-flight subsystems (model gateway primitives, secret-input web UI, etc.).
 - `docs/security-gateway.md` — security-proxy internals.
 - `docs/model-gateway.md` — Alloy / Cascade / Dispatcher / ExecGateway primitives.
