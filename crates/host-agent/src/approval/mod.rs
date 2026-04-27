@@ -29,6 +29,7 @@ pub struct ApprovalRequest {
     #[serde(rename = "requested_at")]
     pub requested_at: DateTime<Utc>,
     /// ZeroClaw request ID for cross-agent visibility (P3-18)
+    #[serde(alias = "nzc_request_id")]
     pub zeroclaw_request_id: Option<String>,
 }
 
@@ -335,6 +336,36 @@ mod tests {
 
     fn test_manager() -> ApprovalManager {
         ApprovalManager::new(300, None)
+    }
+
+    #[test]
+    fn approval_request_accepts_legacy_nzc_request_id() {
+        let request: ApprovalRequest = serde_json::from_str(
+            r#"{
+                "id": "test-id",
+                "caller": "librarian",
+                "caller_uid": 1000,
+                "operation": "zfs-destroy",
+                "target": "tank/media@old",
+                "requested_at": "2026-04-27T00:00:00Z",
+                "nzc_request_id": "legacy-request"
+            }"#,
+        )
+        .expect("legacy approval request should deserialize");
+
+        assert_eq!(
+            request.zeroclaw_request_id.as_deref(),
+            Some("legacy-request")
+        );
+
+        let serialized = serde_json::to_value(&request).expect("serialize approval request");
+        assert_eq!(
+            serialized
+                .get("zeroclaw_request_id")
+                .and_then(|v| v.as_str()),
+            Some("legacy-request")
+        );
+        assert!(serialized.get("nzc_request_id").is_none());
     }
 
     #[tokio::test]
