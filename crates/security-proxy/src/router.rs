@@ -106,7 +106,7 @@ pub async fn vault_handler(
 
     match secrets_client::vault::get_secret(&secret_name).await {
         Ok(token) => {
-            tracing::info!(secret = %secret_name, "vault route resolved secret");
+            debug!(secret = %secret_name, "vault route resolved secret");
             Json(serde_json::json!({
                 "status": "ok",
                 "secret": secret_name,
