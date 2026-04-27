@@ -407,6 +407,14 @@ impl WhatsAppChannel {
         // Pre-auth commands (!ping, !help, !agents, !metrics)
         if let Some(reply) = self.command_handler.handle(&text) {
             debug!(identity = %identity.id, cmd = %text.trim(), "WhatsApp: handled pre-auth command");
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "command",
+                received_at.elapsed().as_millis() as u64,
+                0,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -435,6 +443,14 @@ impl WhatsAppChannel {
             && !CommandHandler::is_secure_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "unknown_command",
+                received_at.elapsed().as_millis() as u64,
+                0,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -455,10 +471,19 @@ impl WhatsAppChannel {
 
         // !status — post-auth command
         if CommandHandler::is_status_command(&text) {
+            let command_start = std::time::Instant::now();
             let reply = self
                 .command_handler
                 .cmd_status_for_identity(&identity.id)
                 .await;
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "status",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -479,7 +504,16 @@ impl WhatsAppChannel {
 
         // !switch — post-auth command
         if CommandHandler::is_switch_command(&text) {
+            let command_start = std::time::Instant::now();
             let reply = self.command_handler.handle_switch(&text, &identity.id);
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "switch",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -500,7 +534,16 @@ impl WhatsAppChannel {
 
         // !model — post-auth command for alloy selection
         if CommandHandler::is_model_command(&text) {
+            let command_start = std::time::Instant::now();
             let reply = self.command_handler.handle_model(&text, &identity.id);
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "model",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -521,10 +564,19 @@ impl WhatsAppChannel {
 
         // !sessions — post-auth command
         if CommandHandler::is_sessions_command(&text) {
+            let command_start = std::time::Instant::now();
             let reply = self
                 .command_handler
                 .handle_sessions(&text, &identity.id)
                 .await;
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "sessions",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -545,7 +597,16 @@ impl WhatsAppChannel {
 
         // !default — post-auth command
         if CommandHandler::is_default_command(&text) {
+            let command_start = std::time::Instant::now();
             let reply = self.command_handler.handle_default(&identity.id);
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "default",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -573,6 +634,14 @@ impl WhatsAppChannel {
                 && !crate::config::channel_allows_chat_secret_set(&self.config, "whatsapp")
             {
                 let reply = CommandHandler::secure_set_disabled_reply("WhatsApp");
+                telemetry::command_reply_ready(
+                    "whatsapp",
+                    &identity.id,
+                    "secure_disabled",
+                    received_at.elapsed().as_millis() as u64,
+                    0,
+                    reply.len(),
+                );
                 let channel = self.clone();
                 let from_owned = from.clone();
                 let zeroclaw_endpoint_owned = zeroclaw_endpoint.clone();
@@ -592,10 +661,19 @@ impl WhatsAppChannel {
                 });
                 return;
             }
+            let command_start = std::time::Instant::now();
             let reply = self
                 .command_handler
                 .handle_secure(&text, &identity.id)
                 .await;
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "secure",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {
@@ -617,6 +695,14 @@ impl WhatsAppChannel {
         // !context clear
         if text.trim().eq_ignore_ascii_case("!context clear") {
             self.context_store.clear(&chat_key);
+            telemetry::command_reply_ready(
+                "whatsapp",
+                &identity.id,
+                "context_clear",
+                received_at.elapsed().as_millis() as u64,
+                0,
+                "🧹 Conversation context cleared.".len(),
+            );
             let channel = self.clone();
             let from_owned = from.clone();
             tokio::spawn(async move {

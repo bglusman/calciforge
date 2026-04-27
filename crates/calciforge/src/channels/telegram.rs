@@ -161,6 +161,14 @@ fn handle_message_nonblocking(
     // Pre-auth-safe commands — no identity context needed.
     if let Some(reply) = command_handler.handle(&text) {
         debug!(chat_id = %chat_id, cmd = %text.trim(), "handled local pre-auth command");
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "command",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_plain_reply(bot2, chat_id, reply, "command").await;
@@ -180,6 +188,14 @@ fn handle_message_nonblocking(
         && !CommandHandler::is_secure_command(&text)
     {
         let reply = command_handler.unknown_command(&text);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "unknown_command",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_plain_reply(bot2, chat_id, reply, "unknown_command").await;
@@ -195,7 +211,16 @@ fn handle_message_nonblocking(
         let identity_id = identity.id.clone();
         let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             let reply = command_handler2.cmd_status_for_identity(&identity_id).await;
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "status",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             send_plain_reply(bot2, chat_id, reply, "status").await;
         });
         return;
@@ -204,7 +229,16 @@ fn handle_message_nonblocking(
     // !switch — requires identity context; handled post-auth.
     if CommandHandler::is_switch_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !switch command");
+        let command_start = std::time::Instant::now();
         let reply = command_handler.handle_switch(&text, &identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "switch",
+            received_at.elapsed().as_millis() as u64,
+            command_start.elapsed().as_millis() as u64,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_plain_reply(bot2, chat_id, reply, "switch").await;
@@ -215,7 +249,16 @@ fn handle_message_nonblocking(
     // !model — requires identity context for alloy selection; handled post-auth.
     if CommandHandler::is_model_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !model command");
+        let command_start = std::time::Instant::now();
         let reply = command_handler.handle_model(&text, &identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "model",
+            received_at.elapsed().as_millis() as u64,
+            command_start.elapsed().as_millis() as u64,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_plain_reply(bot2, chat_id, reply, "model").await;
@@ -230,7 +273,16 @@ fn handle_message_nonblocking(
         let identity_id = identity.id.clone();
         let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             let reply = command_handler2.handle_sessions(&text, &identity_id).await;
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "sessions",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             send_plain_reply(bot2, chat_id, reply, "sessions").await;
         });
         return;
@@ -239,7 +291,16 @@ fn handle_message_nonblocking(
     // !default — switch back to configured default agent; requires identity context.
     if CommandHandler::is_default_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !default command");
+        let command_start = std::time::Instant::now();
         let reply = command_handler.handle_default(&identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "default",
+            received_at.elapsed().as_millis() as u64,
+            command_start.elapsed().as_millis() as u64,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_plain_reply(bot2, chat_id, reply, "default").await;
@@ -262,6 +323,14 @@ fn handle_message_nonblocking(
             && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
         {
             let reply = CommandHandler::secure_set_disabled_reply("Telegram");
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity.id,
+                "secure_disabled",
+                received_at.elapsed().as_millis() as u64,
+                0,
+                reply.len(),
+            );
             let bot2 = bot.clone();
             tokio::spawn(async move {
                 send_plain_reply(bot2, chat_id, reply, "secure_disabled").await;
@@ -273,9 +342,18 @@ fn handle_message_nonblocking(
         let bot2 = bot.clone();
         let text_for_handler = text.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             let reply = cmd_handler
                 .handle_secure(&text_for_handler, &identity_id)
                 .await;
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "secure",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
             send_plain_reply(bot2, chat_id, reply, "secure").await;
         });
         return;
@@ -284,6 +362,14 @@ fn handle_message_nonblocking(
     // !context clear — clear the conversation buffer for this chat.
     if text.trim().eq_ignore_ascii_case("!context clear") {
         context_store.clear(&chat_key);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "context_clear",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            "🧹 Conversation context cleared.".len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_plain_reply(
@@ -304,7 +390,16 @@ fn handle_message_nonblocking(
         let text_owned = text.clone();
         let bot2 = bot.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             if let Some((ack, follow_up)) = cmd.handle_async(&text_owned).await {
+                telemetry::command_reply_ready(
+                    "telegram",
+                    &identity.id,
+                    "approval",
+                    received_at.elapsed().as_millis() as u64,
+                    command_start.elapsed().as_millis() as u64,
+                    ack.len() + follow_up.as_ref().map(|s| s.len()).unwrap_or(0),
+                );
                 send_plain_reply(bot2.clone(), chat_id, ack, "approval_ack").await;
                 if let Some(resp) = follow_up {
                     send_markdown_reply(bot2, chat_id, resp, "approval_follow_up").await;

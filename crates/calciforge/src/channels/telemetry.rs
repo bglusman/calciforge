@@ -51,6 +51,25 @@ pub fn agent_dispatch_started(
     );
 }
 
+pub fn command_reply_ready(
+    channel: &'static str,
+    identity: &str,
+    command_kind: &'static str,
+    queue_wait_ms: u64,
+    handler_latency_ms: u64,
+    response_len: usize,
+) {
+    info!(
+        channel,
+        identity,
+        command_kind,
+        queue_wait_ms,
+        handler_latency_ms,
+        response_len,
+        "channel command reply ready"
+    );
+}
+
 pub fn agent_dispatch_succeeded(
     channel: &'static str,
     identity: &str,
