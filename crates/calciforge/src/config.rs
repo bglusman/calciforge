@@ -228,10 +228,14 @@ pub struct ChannelAlias {
 
 /// An agent entry (`[[agents]]`).
 ///
-/// Fields vary by `kind`:
+/// Common fields used by subprocess and HTTP adapter kinds include:
 /// - `"openclaw-http"`: uses `endpoint`, `api_key` / `auth_token`, `model`
 /// - `"zeroclaw"`:      uses `endpoint`, `api_key` (required)
 /// - `"cli"`:           uses `command`, `args`, `env`, `timeout_ms`
+/// - `"codex-cli"`:     uses `command`(optional), `args`, `env`, `model`, `timeout_ms`
+/// - `"dirac-cli"`:     uses `command`(optional), `args`, `env`, `model`, `timeout_ms`
+///
+/// See `adapters::build_adapter` for the exhaustive adapter-kind matrix.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AgentConfig {
     pub id: String,

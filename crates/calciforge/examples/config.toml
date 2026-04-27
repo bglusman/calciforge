@@ -74,6 +74,21 @@ specialties = ["coding", "rust", "typescript", "python", "javascript"]
 access = ["filesystem", "git"]
 primary_channels = ["telegram"]
 
+# Dirac via official Dirac CLI
+[[agents]]
+id = "dirac"
+kind = "dirac-cli"
+command = "dirac"
+args = ["--yolo", "--json"]
+timeout_ms = 600000
+
+[agents.registry]
+display_name = "Dirac CLI"
+description = "Dirac coding agent via the official dirac-cli"
+specialties = ["coding", "refactoring", "token-efficiency"]
+access = ["filesystem", "git", "shell"]
+primary_channels = ["telegram"]
+
 # OpenCode via ACP (stdio transport)
 [[agents]]
 id = "opencode"

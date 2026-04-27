@@ -8,7 +8,7 @@
 # Flags:
 #   --yes                Non-interactive: install all missing tools automatically
 #   --configure-only     Skip builds; only configure (assumes everything present)
-#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw
+#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw,dirac
 #   --nodes-file <path>  JSON file listing SSH nodes to deploy to after local install
 #                        (see deploy/nodes.example.json)
 #   --nodes-only         Skip local install; only deploy to remote nodes
@@ -231,7 +231,7 @@ YES=false
 CONFIGURE_ONLY=false
 NODES_ONLY=false
 NODES_FILE=""
-AGENTS="claude,opencode,openclaw,zeroclaw"
+AGENTS="claude,opencode,openclaw,zeroclaw,dirac"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -938,7 +938,20 @@ PYEOF
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 9. zeroclaw
+# 9. dirac
+# ══════════════════════════════════════════════════════════════════════════════
+if agent_enabled dirac; then
+    hdr "dirac"
+    ensure_npm dirac-cli dirac || true
+
+    if command -v dirac &>/dev/null; then
+        ok "dirac CLI installed"
+        warn "Authenticate once before first use: dirac auth"
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. zeroclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled zeroclaw; then
     hdr "zeroclaw"
@@ -979,7 +992,7 @@ fi
 fi # !NODES_ONLY
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. Multi-node SSH deployment
+# 11. Multi-node SSH deployment
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ -n "$NODES_FILE" ]]; then
@@ -1341,6 +1354,8 @@ curl -sf "http://localhost:${CLASHD_PORT}/health"      > /dev/null 2>&1 && echo 
 curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null 2>&1 && echo "  ✓ security-proxy  :${SECURITY_PROXY_PORT}" || echo "  ✗ security-proxy  :${SECURITY_PROXY_PORT}  (check $SEC_LOG_DIR/security-proxy.err)"
 agent_enabled zeroclaw && (zeroclaw status 2>/dev/null | grep -q "running" \
     && echo "  ✓ zeroclaw" || echo "  ✗ zeroclaw  (run: zeroclaw onboard, then: zeroclaw daemon)")
+agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
+    && echo "  ✓ dirac" || echo "  ✗ dirac (run: npm install -g dirac-cli)")
 echo ""
 echo "To route Claude Code web requests through security-proxy, add to ~/.zshrc:"
 echo "  export HTTP_PROXY=http://localhost:${SECURITY_PROXY_PORT}"
