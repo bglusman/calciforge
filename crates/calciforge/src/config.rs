@@ -319,7 +319,7 @@ pub struct ChannelConfig {
     /// Matrix room ID the bot should join and listen in, e.g. `"!abc123:matrix.org"`.
     pub room_id: Option<String>,
 
-    /// List of Matrix user IDs allowed to send commands, e.g. `["@brian:matrix.org"]`.
+    /// List of Matrix user IDs allowed to send commands, e.g. `["@operator:matrix.org"]`.
     /// If empty, all room members can interact (not recommended).
     #[serde(default)]
     pub allowed_users: Vec<String>,
@@ -585,6 +585,11 @@ pub struct ProxyAgentConfig {
     /// API key for this agent (optional - can use global api_key)
     #[serde(default)]
     pub api_key: Option<String>,
+
+    /// Path to file containing this agent's API key. Prefer this over
+    /// inline `api_key` for local deployments.
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
 
     /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier")
     /// If empty and default_policy is "allow_all", all models are allowed

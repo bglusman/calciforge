@@ -31,6 +31,8 @@ use crate::{
     router::Router,
 };
 
+use super::telemetry;
+
 // ---------------------------------------------------------------------------
 // Matrix Client-Server API serde types
 // ---------------------------------------------------------------------------
@@ -67,6 +69,7 @@ struct RoomEvent {
     #[serde(rename = "type")]
     event_type: String,
     event_id: Option<String>,
+    origin_server_ts: Option<u64>,
     sender: String,
     content: serde_json::Value,
 }
@@ -540,14 +543,6 @@ pub async fn run(
                     continue;
                 }
 
-                info!(
-                    sender = %event.sender,
-                    room_id = %room_id,
-                    event_id = %event_id,
-                    body_len = body.len(),
-                    "Matrix: received message"
-                );
-
                 // Resolve identity
                 let identity = resolve_channel_sender("matrix", &event.sender, &config);
                 let identity_id = identity
@@ -555,8 +550,19 @@ pub async fn run(
                     .map(|i| i.id.clone())
                     .unwrap_or_else(|| event.sender.clone());
                 let chat_key = format!("matrix-{}", identity_id);
+                let delivery_lag_ms = event.origin_server_ts.map(|ts| {
+                    telemetry::delivery_lag_ms_from_unix_seconds(ts / 1_000).unwrap_or(0)
+                });
+                telemetry::authorized_message(
+                    "matrix",
+                    &identity_id,
+                    &event.sender,
+                    body.len(),
+                    delivery_lag_ms,
+                );
 
                 // Dispatch in a separate task so we don't block the sync loop
+                let received_at = std::time::Instant::now();
                 let homeserver = homeserver.clone();
                 let auth_header = auth_header.clone();
                 let http = http.clone();
@@ -581,6 +587,7 @@ pub async fn run(
                         &router,
                         &command_handler,
                         &context_store,
+                        received_at,
                     )
                     .await;
                 });
@@ -607,17 +614,31 @@ async fn handle_message(
     router: &Arc<Router>,
     cmd_handler: &Arc<CommandHandler>,
     ctx_store: &ContextStore,
+    received_at: std::time::Instant,
 ) {
-    let send = |text: String| {
+    let send = |text: String, reply_kind: &'static str| {
         let homeserver = homeserver.to_string();
         let http = http.clone();
         let auth_header = auth_header.to_string();
         let room_id = room_id.to_string();
         async move {
-            if let Err(e) =
-                send_matrix_message(&homeserver, &http, &auth_header, &room_id, &text).await
-            {
-                warn!(error = %e, "Matrix: failed to send message");
+            let start = std::time::Instant::now();
+            let response_len = text.len();
+            match send_matrix_message(&homeserver, &http, &auth_header, &room_id, &text).await {
+                Ok(()) => telemetry::reply_sent(
+                    "matrix",
+                    &room_id,
+                    reply_kind,
+                    response_len,
+                    start.elapsed().as_millis() as u64,
+                ),
+                Err(e) => telemetry::reply_failed(
+                    "matrix",
+                    &room_id,
+                    reply_kind,
+                    start.elapsed().as_millis() as u64,
+                    e,
+                ),
             }
         }
     };
@@ -625,7 +646,7 @@ async fn handle_message(
     // --- Command fast-path ---
     if let Some(reply) = cmd_handler.handle(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled local command");
-        send(reply).await;
+        send(reply, "command").await;
         return;
     }
 
@@ -638,34 +659,34 @@ async fn handle_message(
         && !CommandHandler::is_model_command(body)
         && !CommandHandler::is_secure_command(body)
     {
-        send(cmd_handler.unknown_command(body)).await;
+        send(cmd_handler.unknown_command(body), "unknown_command").await;
         return;
     }
 
     if CommandHandler::is_status_command(body) {
         let reply = cmd_handler.cmd_status_for_identity(identity_id).await;
-        send(reply).await;
+        send(reply, "status").await;
         return;
     }
 
     if CommandHandler::is_switch_command(body) {
-        send(cmd_handler.handle_switch(body, identity_id)).await;
+        send(cmd_handler.handle_switch(body, identity_id), "switch").await;
         return;
     }
 
     if CommandHandler::is_model_command(body) {
-        send(cmd_handler.handle_model(body, identity_id)).await;
+        send(cmd_handler.handle_model(body, identity_id), "model").await;
         return;
     }
 
     if CommandHandler::is_sessions_command(body) {
         let reply = cmd_handler.handle_sessions(body, identity_id).await;
-        send(reply).await;
+        send(reply, "sessions").await;
         return;
     }
 
     if CommandHandler::is_default_command(body) {
-        send(cmd_handler.handle_default(identity_id)).await;
+        send(cmd_handler.handle_default(identity_id), "default").await;
         return;
     }
 
@@ -678,26 +699,30 @@ async fn handle_message(
         if CommandHandler::is_secure_set_command(body)
             && !crate::config::channel_allows_chat_secret_set(config, "matrix")
         {
-            send(CommandHandler::secure_set_disabled_reply("Matrix")).await;
+            send(
+                CommandHandler::secure_set_disabled_reply("Matrix"),
+                "secure_disabled",
+            )
+            .await;
             return;
         }
         let reply = cmd_handler.handle_secure(body, identity_id).await;
-        send(reply).await;
+        send(reply, "secure").await;
         return;
     }
 
     if body.trim().eq_ignore_ascii_case("!context clear") {
         ctx_store.clear(chat_key);
-        send("Conversation context cleared.".to_string()).await;
+        send("Conversation context cleared.".to_string(), "context_clear").await;
         return;
     }
 
     if CommandHandler::is_approve_command(body) || CommandHandler::is_deny_command(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handling async approval command");
         if let Some((ack, follow_up)) = cmd_handler.handle_async(body).await {
-            send(ack).await;
+            send(ack, "approval_ack").await;
             if let Some(resp) = follow_up {
-                send(resp).await;
+                send(resp, "approval_follow_up").await;
             }
         }
         return;
@@ -716,7 +741,7 @@ async fn handle_message(
         Some(a) => a.clone(),
         None => {
             warn!(agent_id = %agent_id, "Matrix: agent not found in config");
-            send("Agent not configured.".to_string()).await;
+            send("Agent not configured.".to_string(), "agent_not_configured").await;
             return;
         }
     };
@@ -730,6 +755,12 @@ async fn handle_message(
         .to_string();
 
     let augmented = ctx_store.augment_message(chat_key, &agent_id, body);
+    telemetry::agent_dispatch_started(
+        "matrix",
+        identity_id,
+        &agent_id,
+        received_at.elapsed().as_millis() as u64,
+    );
     let dispatch_start = std::time::Instant::now();
     let model_override = cmd_handler.active_model_for_identity(identity_id);
 
@@ -746,6 +777,13 @@ async fn handle_message(
         Ok(response) => {
             let latency_ms = dispatch_start.elapsed().as_millis() as u64;
             cmd_handler.record_dispatch(latency_ms);
+            telemetry::agent_dispatch_succeeded(
+                "matrix",
+                identity_id,
+                &agent_id,
+                latency_ms,
+                response.len(),
+            );
             debug!(
                 identity = %identity_id,
                 agent_id = %agent_id,
@@ -753,7 +791,7 @@ async fn handle_message(
                 "Matrix: got agent response"
             );
             ctx_store.push(chat_key, &sender_label, body, &agent_id, &response);
-            send(response).await;
+            send(response, "agent_response").await;
         }
         Err(e) => {
             // Clash approval flow
@@ -783,11 +821,11 @@ async fn handle_message(
                     "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
                     req.command, req.reason, req.request_id
                 );
-                send(notification).await;
+                send(notification, "approval_request").await;
                 return;
             }
             warn!(identity = %identity_id, error = %e, "Matrix: agent dispatch failed");
-            send(format!("Agent error: {}", e)).await;
+            send(format!("Agent error: {}", e), "agent_error").await;
         }
     }
 }

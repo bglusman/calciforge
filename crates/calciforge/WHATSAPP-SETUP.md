@@ -3,12 +3,12 @@
 ## Architecture
 
 ```
-WA user  ──→  ZeroClaw (wa-rs session on .210)  ──→  POST /webhooks/whatsapp  ──→  Calciforge
+WA user  ──→  ZeroClaw (wa-rs session host)  ──→  POST /webhooks/whatsapp  ──→  Calciforge
                                                                                    │
                                                   identity resolution              │
                                                   agent dispatch (Librarian/ZeroClaw)   │
                                                                                    ↓
-WA user  ←──  ZeroClaw (wa-rs session on .210)  ←──  POST /tools/invoke  ←──  Calciforge reply
+WA user  ←──  ZeroClaw (wa-rs session host)  ←──  POST /tools/invoke  ←──  Calciforge reply
 ```
 
 ## Step 1: Calciforge config (`/root/.calciforge/config.toml` on 10.0.0.10)
@@ -22,8 +22,8 @@ enabled       = true
 
 # ZeroClaw / OpenClaw gateway that owns the WhatsApp Web session.
 # Calciforge sends replies by POSTing to {zeroclaw_endpoint}/tools/invoke.
-# If Calciforge is co-located with OpenClaw on .210, use 127.0.0.1.
-# If Calciforge is on .229 (Librarian), point to .210 where ZeroClaw runs.
+# If Calciforge is co-located with OpenClaw, use 127.0.0.1.
+# If they run on separate hosts, point to the host where ZeroClaw runs.
 zeroclaw_endpoint  = "http://127.0.0.1:18789"
 zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
 
@@ -47,8 +47,8 @@ For each allowed WA number, add a `whatsapp` alias to the `[[identities]]` block
 
 ```toml
 [[identities]]
-id           = "brian"
-display_name = "Brian"
+id           = "operator"
+display_name = "Operator"
 role         = "owner"
 
 [[identities.aliases]]
@@ -60,7 +60,7 @@ channel = "whatsapp"
 id      = "+15555550001"   # E.164 format
 ```
 
-## Step 3: ZeroClaw forwarding config (on the ZeroClaw instance at .210)
+## Step 3: ZeroClaw forwarding config
 
 ZeroClaw needs to forward incoming WA messages to Calciforge instead of processing them
 locally. Add to ZeroClaw's `zeroclaw.toml`:
@@ -102,7 +102,7 @@ If ZeroClaw and Calciforge are on the same host:
 # No firewall changes needed — both use localhost
 ```
 
-If ZeroClaw is on .210 and Calciforge is on .229:
+If ZeroClaw and Calciforge are on separate hosts:
 ```bash
 ufw allow from 10.0.0.10 to any port 18795
 ```

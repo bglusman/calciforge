@@ -34,8 +34,8 @@ allowed_numbers = ["+15555550001"]
 # -----------------------------------------------------------------------------
 
 [[identities]]
-id = "brian"
-display_name = "Brian"
+id = "operator"
+display_name = "Operator"
 role = "admin"
 aliases = [
     { channel = "signal", id = "+15555550001" },
@@ -43,6 +43,6 @@ aliases = [
 ]
 
 [[routing]]
-identity = "brian"
+identity = "operator"
 default_agent = "librarian"
 allowed_agents = ["librarian", "max", "qwen"]

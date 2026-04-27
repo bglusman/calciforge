@@ -196,8 +196,11 @@ gateway covers seven overlapping concerns; you can adopt any subset.
 ### Secret management
 
 Your agent never holds the actual API key. The gateway resolves
-through [fnox](https://github.com/jdx/fnox) and substitutes at the
-request boundary.
+through the configured local secret backend and substitutes at the
+request boundary. In the default deployment that backend is
+[fnox](https://github.com/jdx/fnox); Calciforge and the `fnox` CLI can
+share the same `fnox.toml` and profile, so manual `fnox set/list/tui`
+operations manage the same store.
 
 ```toml
 # fnox.toml — the secret store the gateway resolves through
@@ -212,6 +215,10 @@ browser form and keeps the value out of Telegram, Matrix, WhatsApp,
 and other chat history:
 
 ```bash
+!secure input OPENAI_API_KEY OpenAI API key
+!secure bulk env-import bulk .env import
+
+# Equivalent host-local commands:
 paste-server OPENAI_API_KEY "OpenAI API key"
 # prints http://127.0.0.1:PORT/paste/<token>
 
@@ -222,6 +229,10 @@ paste-server --bulk env-import "bulk .env import"
 The URLs expire after five minutes and are single-use. The bulk URL
 accepts a whole `.env`-shaped paste and returns per-key results
 (stored / already-exists / illegal-name / malformed).
+
+The paste server binds to localhost by default. Remote/phone use should
+go through an explicit short-lived authenticated tunnel or proxy; do
+not expose the paste server directly to the open internet.
 
 ### Outbound traffic gating
 
@@ -480,7 +491,6 @@ wrappers.
 ```bash
 git clone https://github.com/bglusman/calciforge
 cd calciforge
-brew install fnox && fnox init
 bash scripts/install.sh
 ```
 
@@ -501,16 +511,14 @@ export HTTPS_PROXY=http://localhost:8888
 ## Status
 
 Solo-operator usable and actively hardening, multi-user team mode in
-progress. Mac-tested, Linux-ready (CI runs Ubuntu, daily-use is macOS
-and a Proxmox CT for headless deployment). Treat new deployments as
+progress. Mac-tested, Linux-ready (CI runs Ubuntu, daily-use includes
+macOS and a headless Linux service host). Treat new deployments as
 operator-reviewed until their channel credentials, fnox store, model
 gateway providers, and synthetic model routes pass smoke tests.
 
 The list of what works today and what's still in flight lives in the
 [README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
-Internal reviews and planning notes live under
-[`research/`](https://github.com/bglusman/calciforge/tree/main/research);
-public roadmap ideas live in
+Public roadmap ideas live in
 [`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
 
 <footer>

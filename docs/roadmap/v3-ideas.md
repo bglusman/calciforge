@@ -2,7 +2,7 @@
 ---
 
 ## Channel-Level Outpost / Content Interception Layer
-*Captured: 2026-03-31 — Brian*
+*Captured: 2026-03-31*
 
 **Idea:** Extend the outpost/scanning layer to optionally man-in-the-middle all channel communications — not just tool results, but inbound messages from users as well.
 
@@ -14,7 +14,7 @@
 **Proposed placement:** Calciforge ingress pipeline, between channel receive and identity/router dispatch. Every message would pass through a configurable scan policy before reaching the agent.
 
 **Naming:** "Outpost" is overloaded (OpenClaw tool result scanner + outpost-lite service). This feature deserves a new name. Candidates:
-- **Censor** — Brian's suggestion; accurate, clear, slightly heavy-handed connotation
+- **Censor** — accurate, clear, slightly heavy-handed connotation
 - **Sentry** — watches the gate, doesn't necessarily block
 - **Checkpoint** — neutral, process-oriented
 - **Gatekeeper** — strong, clear role
@@ -31,7 +31,7 @@
 - TTSR stream-rewrite: complementary — inbound scan catches *input* injection, TTSR catches *output* drift
 
 **Open questions:**
-- Does scanning inbound content from trusted identities (Brian) add value or just latency?
+- Does scanning inbound content from trusted identities add value or just latency?
 - Should scanned-and-modified messages be flagged to the user transparently?
 - Privacy: scanning DM content means the scanner sees everything — audit logging must be opt-in
 

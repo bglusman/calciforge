@@ -18,7 +18,7 @@ cargo build --release -p adversary-detector -p security-gateway -p clashd
 ## Step 2: Copy binaries
 
 ```bash
-TARGET=192.168.1.210  # change per host
+TARGET=gateway.example.internal  # change per host
 
 ssh -i ~/.ssh/id_ed25519 root@$TARGET "mkdir -p /opt/calciforge/bin /etc/calciforge"
 
@@ -110,7 +110,7 @@ Create `/etc/profile.d/calciforge-proxy.sh`:
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8080
 export HTTPS_PROXY=http://127.0.0.1:8080
-export NO_PROXY=localhost,127.0.0.1,192.168.1.*,10.*.*.*
+export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 ```
 
 ```bash

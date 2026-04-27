@@ -520,8 +520,8 @@ A literal "262K" would parse as 262 * 1024 = 268288, not 262144 — use `"256K"`
 **Alloy constituents now REQUIRE `context_window`.** No back-compat for missing fields. Prototype phase, all installations owned in-house — fixing existing config files is a one-time edit; the upside (no silent truncation, ever) is worth breaking the schema. `min_context_window` on the alloy stays optional and auto-computes as `min(constituent.context_window)` when not specified.
 
 **Existing config files needing updates:**
-- `.210` `/etc/calciforge/config.toml`: `kimi-for-coding` alloy (Kimi + DeepSeek constituents)
-- Anywhere else currently using `[[alloys]]`
+- Any deployed `/etc/calciforge/config.toml` using `[[alloys]]`
+- Any user-level Calciforge config using `[[alloys]]`
 
 Migration done in the same PR that introduces the required field.
 

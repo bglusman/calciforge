@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use teloxide::{
     prelude::*,
-    types::{Me, ParseMode},
+    types::{ChatId, Me, ParseMode},
 };
 use tracing::{debug, info, warn};
 
@@ -19,6 +19,8 @@ use crate::{
     context::ContextStore,
     router::Router,
 };
+
+use super::telemetry;
 
 /// Run the Telegram bot until shutdown.
 pub async fn run(
@@ -106,7 +108,9 @@ fn handle_message_nonblocking(
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
 ) {
+    let received_at = std::time::Instant::now();
     let chat_id = msg.chat.id;
+    let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg.date.timestamp() as u64);
 
     // Extract text (ignore non-text messages like photos, stickers, etc.)
     let text = match msg.text() {
@@ -137,11 +141,12 @@ fn handle_message_nonblocking(
         }
     };
 
-    info!(
-        identity = %identity.id,
-        sender_id = %sender_id,
-        text_len = %text.len(),
-        "authorized message from identity"
+    telemetry::authorized_message(
+        "telegram",
+        &identity.id,
+        &sender_id.to_string(),
+        text.len(),
+        delivery_lag_ms,
     );
 
     // Context key: scoped to (chat_id, identity_id) so each identity has isolated
@@ -158,9 +163,7 @@ fn handle_message_nonblocking(
         debug!(chat_id = %chat_id, cmd = %text.trim(), "handled local pre-auth command");
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send command reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "command").await;
         });
         return;
     }
@@ -179,9 +182,7 @@ fn handle_message_nonblocking(
         let reply = command_handler.unknown_command(&text);
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send unknown-command reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "unknown_command").await;
         });
         return;
     }
@@ -195,9 +196,7 @@ fn handle_message_nonblocking(
         let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
             let reply = command_handler2.cmd_status_for_identity(&identity_id).await;
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send status reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "status").await;
         });
         return;
     }
@@ -208,9 +207,7 @@ fn handle_message_nonblocking(
         let reply = command_handler.handle_switch(&text, &identity.id);
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send switch reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "switch").await;
         });
         return;
     }
@@ -221,9 +218,7 @@ fn handle_message_nonblocking(
         let reply = command_handler.handle_model(&text, &identity.id);
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send model reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "model").await;
         });
         return;
     }
@@ -236,9 +231,7 @@ fn handle_message_nonblocking(
         let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
             let reply = command_handler2.handle_sessions(&text, &identity_id).await;
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send sessions reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "sessions").await;
         });
         return;
     }
@@ -249,9 +242,7 @@ fn handle_message_nonblocking(
         let reply = command_handler.handle_default(&identity.id);
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send default reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "default").await;
         });
         return;
     }
@@ -273,9 +264,7 @@ fn handle_message_nonblocking(
             let reply = CommandHandler::secure_set_disabled_reply("Telegram");
             let bot2 = bot.clone();
             tokio::spawn(async move {
-                if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                    warn!(chat_id = %chat_id, error = %e, "failed to send !secure disabled reply");
-                }
+                send_plain_reply(bot2, chat_id, reply, "secure_disabled").await;
             });
             return;
         }
@@ -287,9 +276,7 @@ fn handle_message_nonblocking(
             let reply = cmd_handler
                 .handle_secure(&text_for_handler, &identity_id)
                 .await;
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "secure").await;
         });
         return;
     }
@@ -299,12 +286,13 @@ fn handle_message_nonblocking(
         context_store.clear(&chat_key);
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2
-                .send_message(chat_id, "🧹 Conversation context cleared.")
-                .await
-            {
-                warn!(chat_id = %chat_id, error = %e, "failed to send context-clear reply");
-            }
+            send_plain_reply(
+                bot2,
+                chat_id,
+                "🧹 Conversation context cleared.",
+                "context_clear",
+            )
+            .await;
         });
         return;
     }
@@ -317,16 +305,9 @@ fn handle_message_nonblocking(
         let bot2 = bot.clone();
         tokio::spawn(async move {
             if let Some((ack, follow_up)) = cmd.handle_async(&text_owned).await {
-                let _ = bot2.send_message(chat_id, &ack).await;
+                send_plain_reply(bot2.clone(), chat_id, ack, "approval_ack").await;
                 if let Some(resp) = follow_up {
-                    // Try MarkdownV2 for the continuation agent response; fall back to plain.
-                    let send_result = bot2
-                        .send_message(chat_id, &resp)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await;
-                    if send_result.is_err() {
-                        let _ = bot2.send_message(chat_id, &resp).await;
-                    }
+                    send_markdown_reply(bot2, chat_id, resp, "approval_follow_up").await;
                 }
             }
         });
@@ -352,7 +333,13 @@ fn handle_message_nonblocking(
             warn!(agent_id = %agent_id, "agent not found in config");
             let bot2 = bot.clone();
             tokio::spawn(async move {
-                let _ = bot2.send_message(chat_id, "⚠️ Agent not configured.").await;
+                send_plain_reply(
+                    bot2,
+                    chat_id,
+                    "⚠️ Agent not configured.",
+                    "agent_not_configured",
+                )
+                .await;
             });
             return;
         }
@@ -372,6 +359,8 @@ fn handle_message_nonblocking(
     // Spawn the agent dispatch — handler returns immediately.
     // All slow I/O (context augment, HTTP, reply send) happens in the task.
     tokio::spawn(async move {
+        let queue_wait_ms = received_at.elapsed().as_millis() as u64;
+        telemetry::agent_dispatch_started("telegram", &identity.id, &agent_id, queue_wait_ms);
         // Augment message with conversation context (unseen exchanges for this agent).
         let augmented_text = context_store.augment_message(&chat_key, &agent_id, &text);
 
@@ -400,6 +389,13 @@ fn handle_message_nonblocking(
             Ok(response) => {
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                 command_handler.record_dispatch(latency_ms);
+                telemetry::agent_dispatch_succeeded(
+                    "telegram",
+                    &identity.id,
+                    &agent_id,
+                    latency_ms,
+                    response.len(),
+                );
                 debug!(
                     identity = %identity.id,
                     agent_id = %agent_id,
@@ -411,13 +407,7 @@ fn handle_message_nonblocking(
                 context_store.push(&chat_key, &sender_label, &text, &agent_id, &response);
 
                 // Send response — try MarkdownV2 first, fall back to plain text.
-                let send_result = bot
-                    .send_message(chat_id, &response)
-                    .parse_mode(ParseMode::MarkdownV2)
-                    .await;
-                if send_result.is_err() {
-                    let _ = bot.send_message(chat_id, &response).await;
-                }
+                send_markdown_reply(bot, chat_id, response, "agent_response").await;
             }
             Err(e) => {
                 // ── Clash approval flow ─────────────────────────────────────
@@ -452,17 +442,81 @@ fn handle_message_nonblocking(
                         "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
                         req.command, req.reason, req.request_id
                     );
-                    let _ = bot.send_message(chat_id, &notification).await;
+                    send_plain_reply(bot, chat_id, notification, "approval_request").await;
                     return; // Don't send an error — we already notified.
                 }
                 // ─────────────────────────────────────────────────────────────
                 warn!(identity = %identity.id, error = %e, "agent dispatch failed");
-                let _ = bot
-                    .send_message(chat_id, format!("⚠️ Agent error: {}", e))
-                    .await;
+                send_plain_reply(
+                    bot,
+                    chat_id,
+                    format!("⚠️ Agent error: {}", e),
+                    "agent_error",
+                )
+                .await;
             }
         }
     });
+}
+
+async fn send_plain_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: impl Into<String>,
+    reply_kind: &'static str,
+) {
+    let reply = reply.into();
+    let response_len = reply.len();
+    let start = std::time::Instant::now();
+    match bot.send_message(chat_id, reply).await {
+        Ok(_) => telemetry::reply_sent(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            response_len,
+            start.elapsed().as_millis() as u64,
+        ),
+        Err(e) => telemetry::reply_failed(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            start.elapsed().as_millis() as u64,
+            e,
+        ),
+    }
+}
+
+async fn send_markdown_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: impl Into<String>,
+    reply_kind: &'static str,
+) {
+    let reply = reply.into();
+    let response_len = reply.len();
+    let start = std::time::Instant::now();
+    let send_result = bot
+        .send_message(chat_id, &reply)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await;
+    match send_result {
+        Ok(_) => telemetry::reply_sent(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            response_len,
+            start.elapsed().as_millis() as u64,
+        ),
+        Err(markdown_error) => {
+            debug!(
+                chat_id = %chat_id,
+                reply_kind,
+                error = %markdown_error,
+                "Telegram MarkdownV2 send failed; retrying as plain text"
+            );
+            send_plain_reply(bot, chat_id, reply, reply_kind).await;
+        }
+    }
 }
 
 /// Handle a single incoming Telegram message (async, awaits agent response).
@@ -530,7 +584,7 @@ async fn handle_message(
 
     // Context key: scoped to (chat_id, identity_id) so each identity has isolated
     // conversation history even within the same Telegram chat.
-    // This prevents context bleed when Brian switches between identities (e.g. Max → IronClaw).
+    // This prevents context bleed when an operator switches between identities.
     let chat_key = format!("{}-{}", chat_id.0, identity.id);
 
     // Pre-auth-safe commands — no identity context needed, intercept before any await.

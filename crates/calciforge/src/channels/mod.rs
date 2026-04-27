@@ -22,4 +22,5 @@ pub mod matrix;
 pub mod mock;
 pub mod signal;
 pub mod telegram;
+pub mod telemetry;
 pub mod whatsapp;

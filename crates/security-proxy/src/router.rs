@@ -105,12 +105,15 @@ pub async fn vault_handler(
     }
 
     match secrets_client::vault::get_secret(&secret_name).await {
-        Ok(token) => Json(serde_json::json!({
-            "status": "ok",
-            "secret": secret_name,
-            "token": token,
-        }))
-        .into_response(),
+        Ok(token) => {
+            tracing::info!(secret = %secret_name, "vault route resolved secret");
+            Json(serde_json::json!({
+                "status": "ok",
+                "secret": secret_name,
+                "token": token,
+            }))
+            .into_response()
+        }
         Err(_) => {
             // Name only; no error text. If you need to debug, enable
             // `RUST_LOG=secrets_client=debug` to see the underlying

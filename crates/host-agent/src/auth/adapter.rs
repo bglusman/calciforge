@@ -1,7 +1,7 @@
 //! Agent adapter framework for mapping certificates to agent identities (P3-17)
 //!
 //! This module provides adapters for different agent types:
-//! - Librarian: Brian's primary agent
+//! - Librarian: primary operator agent
 //! - Lucien: Infrastructure guardian
 //! - Zeroclaw: ZeroClaw CLI agent
 //! - ACPX: Anthropic Computer Protocol eXtended agents (Codex, Claude Code, etc.)

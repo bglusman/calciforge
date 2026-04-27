@@ -219,12 +219,9 @@ pub async fn spawn_request(
         .route("/paste/:token", get(get_form).post(post_submit))
         .with_state(state);
 
-    // Bind: 0.0.0.0 by default so any device on the trusted LAN (e.g.,
-    // a phone) can use the paste flow. The Origin check (widened below
-    // to accept RFC 1918 origins) is the actual rebinding defense, not
-    // the bind address. PASTE_BIND env still overrides if you want
-    // strict localhost-only.
-    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "0.0.0.0:0".into());
+    // Bind localhost by default. Phone/LAN use should be explicit via
+    // PASTE_BIND or, better, a short-lived authenticated tunnel/proxy.
+    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
     let url = format!("http://{addr}/paste/{token}");
@@ -325,7 +322,7 @@ pub async fn spawn_bulk_request(
         .route("/bulk/:token", get(get_bulk_form).post(post_bulk_submit))
         .with_state(state);
 
-    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "0.0.0.0:0".into());
+    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
     let url = format!("http://{addr}/bulk/{token}");

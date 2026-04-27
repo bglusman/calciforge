@@ -37,8 +37,6 @@ being treated as daily-driver infrastructure.
 ```bash
 git clone https://github.com/bglusman/calciforge
 cd calciforge
-brew install fnox
-fnox init
 bash scripts/install.sh
 ```
 
@@ -51,12 +49,19 @@ After install, the default local pieces are:
 - `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
 - `paste-server` — short-lived local forms for adding secrets without putting values in chat history
 
+The installer attempts to install and initialize `fnox` automatically.
+Calciforge and the `fnox` CLI can share the same `fnox.toml` and
+profile, so using `fnox set/list/tui` manually is a valid way to manage
+the same store Calciforge resolves through. The paste UI currently
+stores through that configured local backend.
+
 Channel-based secret input is intentionally being de-emphasized. It
 may remain as a per-channel opt-in fallback for travel, low-stakes
-keys, or values you plan to rotate soon, but direct `fnox` input and
-the local web UI are the preferred paths. The risk varies by channel:
-self-hosted encrypted Matrix is the least bad, Signal is still a
-chat-history tradeoff, and Telegram is a poor place for raw secrets.
+keys, or values you plan to rotate soon. Prefer `!secure input NAME`,
+`!secure bulk LABEL`, `paste-server`, or direct `fnox` input. The risk
+varies by channel: self-hosted encrypted Matrix is the least bad,
+Signal is still a chat-history tradeoff, and Telegram is a poor place
+for raw secrets.
 
 Route Claude Code or another HTTP-speaking agent through the gateway:
 

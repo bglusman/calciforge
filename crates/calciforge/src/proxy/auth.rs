@@ -239,6 +239,7 @@ mod tests {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),
                 api_key: Some("test-key".to_string()),
+                api_key_file: None,
                 allowed_models: vec!["deepseek/*".to_string(), "test-alloy".to_string()],
                 blocked_models: vec![],
                 rate_limit_rpm: 0,
@@ -291,6 +292,7 @@ mod tests {
                 id: "test-agent".to_string(),
                 name: Some("Test Agent".to_string()),
                 api_key: Some("test-key".to_string()),
+                api_key_file: None,
                 allowed_models: vec!["*".to_string()], // Allow all
                 blocked_models: vec!["dangerous-model".to_string(), "secret/*".to_string()],
                 rate_limit_rpm: 0,

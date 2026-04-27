@@ -26,6 +26,10 @@ CLASH_DIR="$HOME/.clash"
 CLAUDE_DIR="$HOME/.claude"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
+LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
+LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
+ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
+ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
 
 # ── platform detection ────────────────────────────────────────────────────────
 # Drives choice of service manager (launchd vs systemd --user) and package
@@ -78,6 +82,147 @@ case "$PLATFORM" in
         exit 1
         ;;
 esac
+
+rotate_log_file() {
+    local file="$1" max_bytes="${2:-$LOG_MAX_BYTES}" backups="${3:-$LOG_BACKUPS}"
+    [[ -f "$file" ]] || return 0
+    local size
+    size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    (( size < max_bytes )) && return 0
+
+    local i
+    for ((i=backups; i>=1; i--)); do
+        if [[ -f "${file}.${i}" ]]; then
+            if (( i == backups )); then
+                rm -f "${file}.${i}"
+            else
+                mv -f "${file}.${i}" "${file}.$((i + 1))"
+            fi
+        fi
+    done
+    mv -f "$file" "${file}.1"
+    : > "$file"
+}
+
+write_log_rotator() {
+    mkdir -p "$BIN_DIR"
+    cat > "$BIN_DIR/calciforge-rotate-logs" <<'ROTATE'
+#!/usr/bin/env bash
+set -euo pipefail
+
+max_bytes="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
+backups="${CALCIFORGE_LOG_BACKUPS:-5}"
+
+rotate_one() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+
+    local size
+    size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    (( size < max_bytes )) && return 0
+
+    local i
+    for ((i=backups; i>=1; i--)); do
+        if [[ -f "${file}.${i}" ]]; then
+            if (( i == backups )); then
+                rm -f "${file}.${i}"
+            else
+                mv -f "${file}.${i}" "${file}.$((i + 1))"
+            fi
+        fi
+    done
+    mv -f "$file" "${file}.1"
+    : > "$file"
+}
+
+for dir in "$@"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r file; do
+        rotate_one "$file"
+    done < <(find "$dir" -maxdepth 1 -type f \( -name '*.log' -o -name '*.err' \) -print)
+done
+ROTATE
+    chmod 755 "$BIN_DIR/calciforge-rotate-logs"
+}
+
+install_log_rotation() {
+    write_log_rotator
+    mkdir -p "$LOG_DIR" "$SEC_LOG_DIR" "$ZC_LOG_DIR"
+
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        local rotate_plist="$PLIST_DIR/com.calciforge.log-rotate.plist"
+        mkdir -p "$PLIST_DIR"
+        cat > "$rotate_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>com.calciforge.log-rotate</string>
+    <key>ProgramArguments</key><array>
+        <string>${BIN_DIR}/calciforge-rotate-logs</string>
+        <string>${LOG_DIR}</string>
+        <string>${SEC_LOG_DIR}</string>
+        <string>${ZC_LOG_DIR}</string>
+        <string>${HOME}/Library/Logs/calciforge</string>
+    </array>
+    <key>StartInterval</key><integer>300</integer>
+    <key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
+        launchctl unload "$rotate_plist" 2>/dev/null || true
+        launchctl load "$rotate_plist" 2>/dev/null || warn "log rotation LaunchAgent did not load"
+        ok "Log rotation installed (launchd, ${LOG_MAX_BYTES} bytes, ${LOG_BACKUPS} backups)"
+    elif $IS_ROOT; then
+        local patterns="${LOG_DIR}/*.log ${LOG_DIR}/*.err"
+        if [[ "$SEC_LOG_DIR" != "$LOG_DIR" ]]; then
+            patterns="${patterns} ${SEC_LOG_DIR}/*.log ${SEC_LOG_DIR}/*.err"
+        fi
+        if [[ "$ZC_LOG_DIR" != "$LOG_DIR" && "$ZC_LOG_DIR" != "$SEC_LOG_DIR" ]]; then
+            patterns="${patterns} ${ZC_LOG_DIR}/*.log ${ZC_LOG_DIR}/*.err"
+        fi
+        cat > /etc/logrotate.d/calciforge <<EOF
+${patterns} {
+    size ${LOG_MAX_BYTES}
+    rotate ${LOG_BACKUPS}
+    missingok
+    notifempty
+    copytruncate
+    compress
+}
+EOF
+        ok "Log rotation installed (/etc/logrotate.d/calciforge)"
+    else
+        local rotate_service="$PLIST_DIR/calciforge-log-rotate.service"
+        local rotate_timer="$PLIST_DIR/calciforge-log-rotate.timer"
+        mkdir -p "$PLIST_DIR"
+        cat > "$rotate_service" <<EOF
+[Unit]
+Description=Rotate Calciforge logs
+
+[Service]
+Type=oneshot
+ExecStart=${BIN_DIR}/calciforge-rotate-logs ${LOG_DIR} ${SEC_LOG_DIR} ${ZC_LOG_DIR}
+EOF
+        cat > "$rotate_timer" <<EOF
+[Unit]
+Description=Rotate Calciforge logs periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=calciforge-log-rotate.service
+
+[Install]
+WantedBy=timers.target
+EOF
+        $SYSTEMCTL daemon-reload
+        $SYSTEMCTL enable --now calciforge-log-rotate.timer 2>&1 | tail -3 || \
+            warn "log rotation timer did not start — if running as non-root, run: loginctl enable-linger \$USER"
+        ok "Log rotation installed (systemd user timer, ${LOG_MAX_BYTES} bytes, ${LOG_BACKUPS} backups)"
+    fi
+}
 
 YES=false
 CONFIGURE_ONLY=false
@@ -365,6 +510,8 @@ echo "  Mode:    $([ "$CONFIGURE_ONLY" = true ] && echo configure-only || echo i
 echo "  Yes:     $YES"
 echo ""
 
+install_log_rotation
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Build + install calciforge, clashd, security-proxy
 # ══════════════════════════════════════════════════════════════════════════════
@@ -375,13 +522,13 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
 
     # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
     # Build each crate separately so --features only applies to calciforge.
-    "$CARGO" build --release -p clashd -p security-proxy -p mcp-server 2>&1 \
-        | grep -E "^error|Compiling (clashd|security.proxy|calciforge.mcp)|Finished" || true
+    "$CARGO" build --release -p clashd -p security-proxy -p mcp-server -p paste-server 2>&1 \
+        | grep -E "^error|Compiling (clashd|security.proxy|calciforge.mcp|paste.server)|Finished" || true
     "$CARGO" build --release -p calciforge --features channel-matrix 2>&1 \
         | grep -E "^error|Compiling calciforge|Finished" || true
 
     mkdir -p "$BIN_DIR"
-    for bin in clashd calciforge security-proxy mcp-server; do
+    for bin in clashd calciforge security-proxy mcp-server paste-server; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
         # On Linux, overwriting a running binary fails with "Text file busy".
@@ -555,8 +702,6 @@ ensure_fnox || true
 # launchd/systemd will keep retrying).
 hdr "calciforge"
 
-ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
-ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
 mkdir -p "$ZC_LOG_DIR"
 
 if [[ ! -f "$ZC_CONFIG" ]]; then

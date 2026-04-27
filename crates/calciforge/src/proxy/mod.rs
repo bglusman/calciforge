@@ -88,6 +88,20 @@ fn resolve_api_key(
     Ok(api_key.and_then(normalize_api_key))
 }
 
+/// Resolve all per-agent proxy API key files into in-memory keys before the
+/// config is shared with request handlers.
+fn resolve_proxy_agent_api_keys(config: &mut ProxyConfig) -> anyhow::Result<()> {
+    for agent in &mut config.agents {
+        if let Some(file) = agent.api_key_file.as_deref() {
+            agent.api_key = read_key_file(file)
+                .with_context(|| format!("reading API key file for proxy agent '{}'", agent.id))?;
+        } else {
+            agent.api_key = agent.api_key.as_deref().and_then(normalize_api_key);
+        }
+    }
+    Ok(())
+}
+
 /// Start the model gateway HTTP server
 pub async fn start_proxy_server(
     mut config: ProxyConfig,
@@ -110,6 +124,7 @@ pub async fn start_proxy_server(
     // handlers. `api_key_file` is preferred so deployments can avoid inline
     // TOML secrets while still enforcing Authorization on chat completions.
     config.api_key = resolve_api_key(config.api_key.as_deref(), config.api_key_file.as_deref())?;
+    resolve_proxy_agent_api_keys(&mut config)?;
 
     // Resolve the default backend API key (file takes precedence over inline).
     let default_api_key = resolve_api_key(

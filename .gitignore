@@ -10,6 +10,13 @@ src-backup/
 infra/
 node_modules/
 
+# Local operator notes and deployment inventory.
+# These can include private hostnames, LAN addresses, and session handoff notes.
+research/
+scripts/targets.txt
+deploy/nodes.json
+deploy/*.local.json
+
 # ── secrets / credentials — never commit ────────────────────────────────────
 # Defense in depth; main guard is .gitleaks.toml + CI. These keep obvious
 # secret-file shapes out of accidental adds.

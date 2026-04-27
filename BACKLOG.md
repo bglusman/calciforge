@@ -39,7 +39,7 @@
 - [ ] Add optional flush delay (e.g., 500ms for rapid-fire DMs)
 - [ ] Detect "agent busy" state (in-flight request tracking)
 - [ ] Single dispatch with combined context
-- **Use case:** Brian's multi-message DMs with corrections/additions
+- **Use case:** operator multi-message DMs with corrections/additions
 
 ### Outpost Channel Gate ("Sentinel")
 - [ ] Evolve outpost into configurable channel MitM gate
@@ -95,7 +95,7 @@
 
 **Claw-code repo:** https://github.com/instructkr/claw-code  
 **ZeroClaw repo:** https://github.com/zeroclaw-labs/zeroclaw  
-**Deploy target:** 192.168.1.210 (CT on Proxmox)  
+**Deploy target:** local operator inventory lives outside the public repo
 **Local scripts:** `infra/` (gitignored, not in repo)
 
 **Integration architecture:**

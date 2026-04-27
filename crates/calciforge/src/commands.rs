@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
+
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
@@ -311,8 +313,8 @@ impl CommandHandler {
     pub fn secure_set_disabled_reply(channel_kind: &str) -> String {
         format!(
             "⚠️ `!secure set` is disabled for {channel_kind} by default because \
-             it sends the secret through chat history. Use `paste-server NAME` \
-             on the host, or set `allow_chat_secret_set = true` on this channel \
+             it sends the secret through chat history. Use `!secure input NAME` \
+             from chat, or set `allow_chat_secret_set = true` on this channel \
              only if you accept that retention tradeoff."
         )
     }
@@ -884,12 +886,14 @@ impl CommandHandler {
         format!("✅ Switched to default agent: {}", default_agent_id)
     }
 
-    /// Handle `!secure <subcommand>`. Dispatches to `fnox` as a
-    /// subprocess; nothing about the secret value transits an agent's
-    /// context. Never echoes back values — responses are name-only.
+    /// Handle `!secure <subcommand>`. Secret values never transit an
+    /// agent's context. `set` is the legacy chat-retained path;
+    /// `input`/`bulk` mint short-lived paste URLs.
     ///
     /// Subcommands:
     ///   - `!secure set NAME=value`  — store a secret via chat (legacy/caution)
+    ///   - `!secure input NAME`      — create a one-shot paste URL
+    ///   - `!secure bulk LABEL`      — create a one-shot `.env` paste URL
     ///   - `!secure list`            — list stored secret names
     ///   - `!secure help`            — usage string
     ///
@@ -897,9 +901,7 @@ impl CommandHandler {
     /// this command's text passes through the chat transport
     /// (Telegram/Matrix/WhatsApp), which retains message history.
     /// For values where chat-transport exposure is unacceptable, use
-    /// `paste-server NAME` locally. A follow-up `!secure input NAME`
-    /// flow can wrap that server from chat without sending the value
-    /// through chat.
+    /// `!secure input NAME` or run `paste-server NAME` locally.
     pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // `!secure ...` — split off the subcommand word using
@@ -927,6 +929,8 @@ impl CommandHandler {
 
         match sub.as_str() {
             "set" => secure_set(rest).await,
+            "input" | "request" => secure_input(rest, false).await,
+            "bulk" => secure_input(rest, true).await,
             "list" => secure_list().await,
             "help" | "" => secure_help(),
             _ => format!(
@@ -952,7 +956,7 @@ impl CommandHandler {
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [alias|synthetic] — show shortcuts/synthetic models or activate one (requires auth)",
-            "  !secure <list|help> — list fnox secret names; `set` is chat-retained legacy fallback",
+            "  !secure <input|bulk|list|help> — mint paste URLs or list secret names; `set` is legacy fallback",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -1293,10 +1297,12 @@ impl CommandHandler {
 fn secure_help() -> String {
     [
         "!secure subcommands:",
+        "  !secure input NAME [desc] — create a one-shot localhost paste link",
+        "  !secure bulk LABEL [desc] — create a one-shot .env paste link",
         "  !secure list              — list stored secret names (not values)",
         "  !secure help              — show this help",
         "",
-        "Preferred input path:",
+        "Equivalent host-local commands:",
         "  paste-server NAME \"description\"",
         "  paste-server --bulk env-import \"bulk .env import\"",
         "",
@@ -1305,10 +1311,88 @@ fn secure_help() -> String {
         "  !secure set NAME value    — same, for mobile keyboards",
         "",
         "⚠️ `!secure set` passes through the chat transport, which retains",
-        "   history and may not be end-to-end encrypted. For values that",
-        "   must never touch chat, use the local paste UI or `fnox set NAME`.",
+        "   history and may not be end-to-end encrypted. `input`/`bulk` send",
+        "   only a short-lived URL; the value is entered in the browser.",
+        "",
+        "Calciforge and fnox can share the same fnox.toml/profile. Installing",
+        "fnox is still useful for manual `fnox set/list/tui` operations and as",
+        "the default local secret backend for paste-server.",
     ]
     .join("\n")
+}
+
+async fn secure_input(rest: &str, bulk: bool) -> String {
+    let mut parts = rest.split_whitespace();
+    let Some(name_or_label) = parts.next() else {
+        return if bulk {
+            "⚠️ Usage: `!secure bulk LABEL [description]`".to_string()
+        } else {
+            "⚠️ Usage: `!secure input NAME [description]`".to_string()
+        };
+    };
+    let description = parts.collect::<Vec<_>>().join(" ");
+
+    let mut command = tokio::process::Command::new("paste-server");
+    if bulk {
+        command.arg("--bulk");
+    }
+    command
+        .arg(name_or_label)
+        .arg(description)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(false);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return "⚠️ paste-server is not installed or not on the service PATH. Re-run the Calciforge installer or install the `paste-server` binary.".to_string();
+        }
+        Err(e) => return format!("⚠️ Failed to start paste-server: {e}"),
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return "⚠️ paste-server started without a URL stream".to_string();
+    };
+
+    let mut line = String::new();
+    let mut reader = BufReader::new(stdout);
+    let read_result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        reader.read_line(&mut line),
+    )
+    .await;
+    let url = match read_result {
+        Ok(Ok(n)) if n > 0 => line.trim().to_string(),
+        Ok(Ok(_)) => {
+            let _ = child.kill().await;
+            return "⚠️ paste-server exited before returning a URL".to_string();
+        }
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            return format!("⚠️ Failed reading paste-server URL: {e}");
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return "⚠️ paste-server did not return a URL within 3 seconds".to_string();
+        }
+    };
+
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+
+    let mode = if bulk {
+        "bulk .env paste"
+    } else {
+        "secret paste"
+    };
+    format!(
+        "🔐 One-shot {mode} link:\n{url}\n\n\
+         Open it from a browser that can reach the Calciforge host. The link expires quickly and stores through the configured local secret backend. \
+         For phone/off-network use, use a short-lived authenticated proxy/tunnel; do not expose this paste server directly to the open internet."
+    )
 }
 
 async fn secure_set(rest: &str) -> String {

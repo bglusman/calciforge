@@ -78,6 +78,8 @@ use crate::{
     router::Router,
 };
 
+use super::telemetry;
+
 use adversary_detector::middleware::ChannelScanner;
 use adversary_detector::verdict::ScanContext;
 
@@ -314,6 +316,8 @@ impl SignalChannel {
             req = req.bearer_auth(token);
         }
 
+        let start = std::time::Instant::now();
+        let response_len = text.len();
         let resp = req
             .send()
             .await
@@ -325,7 +329,13 @@ impl SignalChannel {
             anyhow::bail!("Signal: OpenClaw replied {status} for send to {to}: {body_text}");
         }
 
-        debug!(to = %to, "Signal: reply sent via OpenClaw");
+        telemetry::reply_sent(
+            "signal",
+            to,
+            "reply",
+            response_len,
+            start.elapsed().as_millis() as u64,
+        );
         Ok(())
     }
 
@@ -338,6 +348,9 @@ impl SignalChannel {
         zeroclaw_endpoint: String,
         zeroclaw_auth_token: Option<String>,
     ) {
+        let received_at = std::time::Instant::now();
+        let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg._timestamp);
+
         // Clone owned strings up front so they can be moved into spawned tasks.
         let from: String = msg.from.clone();
         let text: String = msg.text.clone();
@@ -351,12 +364,7 @@ impl SignalChannel {
             }
         };
 
-        info!(
-            identity = %identity.id,
-            from = %from,
-            text_len = %text.len(),
-            "Signal: authorised message from identity"
-        );
+        telemetry::authorized_message("signal", &identity.id, &from, text.len(), delivery_lag_ms);
 
         // Context key: scoped per identity (phone is the key)
         let chat_key = format!("signal-{}", identity.id);
@@ -631,6 +639,9 @@ impl SignalChannel {
 
         // Spawn agent dispatch — handler returns immediately
         tokio::spawn(async move {
+            let queue_wait_ms = received_at.elapsed().as_millis() as u64;
+            telemetry::agent_dispatch_started("signal", &identity_id, &agent_id, queue_wait_ms);
+
             let augmented = self
                 .context_store
                 .augment_message(&chat_key, &agent_id, &text);
@@ -650,6 +661,13 @@ impl SignalChannel {
                 Ok(response) => {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                     self.command_handler.record_dispatch(latency_ms);
+                    telemetry::agent_dispatch_succeeded(
+                        "signal",
+                        &identity_id,
+                        &agent_id,
+                        latency_ms,
+                        response.len(),
+                    );
 
                     // Outbound scanning dropped — see docs/roadmap/outbound-sensitive-data-detection.md
                     let final_response = response;
