@@ -1,20 +1,18 @@
 //! JSON5 / JSONC comment stripping for Calciforge's installer.
 //!
-//! This module provides the **correct** implementation of `strip_json_comments`
-//! and `parse_json5_relaxed`, copied from the canonical NZC implementation in
-//! `crates/nonzeroclaw/src/onboard/migration.rs`.
+//! This module provides Calciforge's implementation of `strip_json_comments`
+//! and `parse_json5_relaxed` for installer-managed JSONC/JSON5-like config
+//! files.
 //!
 //! # Why a separate copy?
 //!
-//! `calciforge` does not depend on `nonzeroclaw` (to avoid circular crate
-//! dependencies and to keep calciforge independently distributable).  Until a
-//! shared `claw-types` crate is extracted, this module is the authoritative
-//! copy for use within `calciforge`.
+//! Keeping this parser local makes Calciforge independently distributable and
+//! avoids coupling installer behavior to another project's crate layout.
 //!
 //! # TODO (follow-on)
 //!
-//! Extract both this and NZC's copy to a shared `claw-types` crate so there
-//! is exactly one implementation.  See `research/reviews/opus-review.md` D1 for context.
+//! Extract this to a small shared crate only if another active project needs the
+//! same installer/discovery surface.
 //!
 //! # Bug fixed vs old executor.rs copy
 //!

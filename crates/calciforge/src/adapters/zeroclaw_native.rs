@@ -1,19 +1,19 @@
-//! NzcNativeAdapter — NZC webhook adapter with conversation history across turns.
+//! ZeroClawNativeAdapter — ZeroClaw webhook adapter with conversation history across turns.
 //!
 //! ## Background
 //!
-//! `NzcHttpAdapter` (in `openclaw.rs`) correctly uses the native `/webhook`
+//! `ZeroClawHttpAdapter` (in `openclaw.rs`) correctly uses the native `/webhook`
 //! endpoint, but **does not accumulate conversation history across turns**.
-//! Each call dispatches only the current user message; NZC has no knowledge
+//! Each call dispatches only the current user message; ZeroClaw has no knowledge
 //! of prior assistant turns (the model starts fresh each time).
 //!
 //! ## What this adapter adds
 //!
-//! `NzcNativeAdapter` wraps `NzcHttpAdapter` with an in-memory conversation
+//! `ZeroClawNativeAdapter` wraps `ZeroClawHttpAdapter` with an in-memory conversation
 //! history buffer:
 //!
 //! 1. On each dispatch: the previous `(user, assistant)` turns are prepended
-//!    to the outgoing message as a context preamble so NZC's agent sees the
+//!    to the outgoing message as a context preamble so the ZeroClaw agent sees the
 //!    full conversation.
 //! 2. `ApprovalPending` responses are handled without losing history — the
 //!    pending turn's user message is retained; the assistant turn is inserted
@@ -35,7 +35,7 @@
 //! <current user message>
 //! ```
 //!
-//! This is readable by all LLM backends NZC may use and avoids JSON encoding.
+//! This is readable by all LLM backends ZeroClaw may use and avoids JSON encoding.
 //!
 //! ## History limits
 //!
@@ -45,7 +45,7 @@
 //!
 //! ## ApprovalPending flow
 //!
-//! When NZC returns `ApprovalPending`, the user message that triggered the
+//! When ZeroClaw returns `ApprovalPending`, the user message that triggered the
 //! approval is **not** added to history yet.  When `!approve` or `!deny` is
 //! processed and the continuation response is received, the
 //! `record_approval_continuation` method should be called with the original
@@ -58,7 +58,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use super::openclaw::NzcHttpAdapter;
+use super::openclaw::ZeroClawHttpAdapter;
 use super::{AdapterError, AgentAdapter, DispatchContext, RuntimeStatus};
 
 // ---------------------------------------------------------------------------
@@ -123,24 +123,24 @@ impl SenderHistory {
 // Adapter
 // ---------------------------------------------------------------------------
 
-/// NZC adapter with per-sender conversation history accumulation.
+/// ZeroClaw adapter with per-sender conversation history accumulation.
 ///
-/// Wraps [`NzcHttpAdapter`] and maintains a history ring buffer so NZC sees
+/// Wraps [`ZeroClawHttpAdapter`] and maintains a history ring buffer so ZeroClaw sees
 /// prior turns in every request.
-pub struct NzcNativeAdapter {
-    inner: NzcHttpAdapter,
+pub struct ZeroClawNativeAdapter {
+    inner: ZeroClawHttpAdapter,
     /// Per-sender history: sender id → SenderHistory.
     /// Key `""` is used when no sender is available.
     history: Arc<Mutex<HashMap<String, SenderHistory>>>,
 }
 
-impl NzcNativeAdapter {
-    /// Create a new NZC native adapter.
+impl ZeroClawNativeAdapter {
+    /// Create a new ZeroClaw native adapter.
     ///
-    /// Parameters match `NzcHttpAdapter::new`.
+    /// Parameters match `ZeroClawHttpAdapter::new`.
     pub fn new(endpoint: String, auth_token: String, timeout_ms: Option<u64>) -> Self {
         Self {
-            inner: NzcHttpAdapter::new(endpoint, auth_token, timeout_ms),
+            inner: ZeroClawHttpAdapter::new(endpoint, auth_token, timeout_ms),
             history: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -155,7 +155,7 @@ impl NzcNativeAdapter {
 }
 
 #[async_trait]
-impl AgentAdapter for NzcNativeAdapter {
+impl AgentAdapter for ZeroClawNativeAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
         self.dispatch_with_context(DispatchContext::message_only(msg))
             .await
@@ -182,11 +182,14 @@ impl AgentAdapter for NzcNativeAdapter {
         info!(
             sender = ?ctx.sender,
             history_turns,
-            "nzc-native dispatch"
+            "zeroclaw-native dispatch"
         );
-        debug!(full_message_len = full_message.len(), "nzc-native outbound");
+        debug!(
+            full_message_len = full_message.len(),
+            "zeroclaw-native outbound"
+        );
 
-        // Dispatch via the inner NZC HTTP adapter
+        // Dispatch via the inner ZeroClaw HTTP adapter.
         let inner_ctx = DispatchContext {
             message: &full_message,
             sender: ctx.sender,
@@ -201,7 +204,7 @@ impl AgentAdapter for NzcNativeAdapter {
                 entry.push(ctx.message.to_string(), reply.clone());
                 info!(
                     history_turns = entry.turns.len(),
-                    "nzc-native: turn recorded"
+                    "zeroclaw-native: turn recorded"
                 );
                 Ok(reply)
             }
@@ -211,7 +214,7 @@ impl AgentAdapter for NzcNativeAdapter {
                 // `record_approval_continuation` after resolution.
                 info!(
                     request_id = %req.request_id,
-                    "nzc-native: approval pending — history deferred"
+                    "zeroclaw-native: approval pending — history deferred"
                 );
                 Err(AdapterError::ApprovalPending(req))
             }
@@ -220,7 +223,7 @@ impl AgentAdapter for NzcNativeAdapter {
     }
 
     fn kind(&self) -> &'static str {
-        "nzc-native"
+        "zeroclaw-native"
     }
 
     async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
@@ -237,8 +240,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn make_adapter(port: u16) -> NzcNativeAdapter {
-        NzcNativeAdapter::new(
+    fn make_adapter(port: u16) -> ZeroClawNativeAdapter {
+        ZeroClawNativeAdapter::new(
             format!("http://127.0.0.1:{}", port),
             "test-token".to_string(),
             Some(2000),
@@ -337,12 +340,12 @@ mod tests {
     /// Verifies that after a successful dispatch, the next dispatch includes
     /// the prior (user, assistant) turn in the outgoing message.
     #[tokio::test]
-    async fn test_nzc_native_appends_history() {
+    async fn test_zeroclaw_native_appends_history() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        // NZC webhook response format
-        let make_nzc_response = |text: &str| {
+        // ZeroClaw webhook response format.
+        let make_zeroclaw_response = |text: &str| {
             let body = format!(r#"{{"response":"{}"}}"#, text);
             format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -351,8 +354,8 @@ mod tests {
             )
         };
 
-        let resp1 = make_nzc_response("first assistant reply");
-        let resp2 = make_nzc_response("second assistant reply");
+        let resp1 = make_zeroclaw_response("first assistant reply");
+        let resp2 = make_zeroclaw_response("second assistant reply");
 
         // Capture the body of the SECOND request
         let second_body: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -383,7 +386,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let a = NzcNativeAdapter::new(
+        let a = ZeroClawNativeAdapter::new(
             format!("http://127.0.0.1:{}", port),
             "test-token".to_string(),
             Some(2000),
@@ -437,11 +440,11 @@ mod tests {
     /// Verify that history is isolated by sender (different senders do not
     /// see each other's conversation history).
     #[tokio::test]
-    async fn test_nzc_native_history_isolated_by_sender() {
+    async fn test_zeroclaw_native_history_isolated_by_sender() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        let make_nzc_response = |text: &str| {
+        let make_zeroclaw_response = |text: &str| {
             let body = format!(r#"{{"response":"{}"}}"#, text);
             format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -452,9 +455,9 @@ mod tests {
 
         // We need 3 responses: brian turn 1, renee turn 1, brian turn 2
         let responses = vec![
-            make_nzc_response("brian reply 1"),
-            make_nzc_response("renee reply 1"),
-            make_nzc_response("brian reply 2"),
+            make_zeroclaw_response("brian reply 1"),
+            make_zeroclaw_response("renee reply 1"),
+            make_zeroclaw_response("brian reply 2"),
         ];
 
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -481,7 +484,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let a = NzcNativeAdapter::new(
+        let a = ZeroClawNativeAdapter::new(
             format!("http://127.0.0.1:{}", port),
             "test-token".to_string(),
             Some(2000),

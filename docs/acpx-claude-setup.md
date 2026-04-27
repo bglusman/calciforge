@@ -78,7 +78,7 @@ Set it as the default for an identity:
 [[routing]]
 identity = "alice"
 default_agent = "claude-acpx"
-allowed_agents = ["claude-acpx", "nonzeroclaw"]
+allowed_agents = ["claude-acpx", "zeroclaw"]
 ```
 
 ### 4. Set up a working directory and CLAUDE.md
@@ -106,7 +106,7 @@ Once configured, messages routed to `claude-acpx` go directly to Claude Code. Us
 
 ```
 !switch claude-acpx   # switch to Claude
-!switch nonzeroclaw   # switch back to NZC
+!switch zeroclaw   # switch back to ZeroClaw
 !agents               # list available agents
 ```
 

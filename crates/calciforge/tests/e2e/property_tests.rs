@@ -75,7 +75,7 @@ proptest! {
         let valid_kinds = [
             "cli", "codex-cli", "acp", "acpx", "zeroclaw",
             "openclaw-http", "openclaw-channel", "openclaw-native",
-            "nzc-http", "nzc-native",
+            "zeroclaw-http", "zeroclaw-native",
         ];
 
         let should_be_valid = valid_kinds.contains(&kind.as_str());
@@ -87,7 +87,7 @@ proptest! {
             kind.as_str(),
             "cli" | "codex-cli" | "acp" | "acpx" | "zeroclaw"
                 | "openclaw-http" | "openclaw-channel" | "openclaw-native"
-                | "nzc-http" | "nzc-native"
+                | "zeroclaw-http" | "zeroclaw-native"
         );
 
         prop_assert_eq!(

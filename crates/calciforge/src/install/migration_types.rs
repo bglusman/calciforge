@@ -1,13 +1,11 @@
 //! Shared migration types for the Calciforge installer.
 //!
-//! These types mirror the canonical definitions in
-//! `crates/nonzeroclaw/src/onboard/migration.rs`.  They are duplicated here
-//! because `calciforge` does not (yet) depend on `nonzeroclaw` — doing so would
-//! create an awkward crate dependency direction.
+//! These types are local installer DTOs for discovered OpenClaw configuration.
+//! They intentionally live in Calciforge so the installer can remain
+//! independently distributable.
 //!
-//! # Canonical source
+//! # Definitions
 //!
-//! The authoritative definitions live in `nonzeroclaw::onboard::migration`:
 //! - `OpenClawInstallation`
 //! - `DetectedChannel`
 //! - `ChannelOwner`
@@ -15,11 +13,8 @@
 //!
 //! # TODO (follow-on)
 //!
-//! Extract these types (and the JSON5 parser) to a shared `claw-types` crate.
-//! Both `nonzeroclaw` and `calciforge` should depend on it.  This eliminates the
-//! duplication.  See `research/reviews/opus-review.md` D1 for the full context.
-//!
-//! Until then: if you change either copy, update the other too.
+//! Extract these types (and the JSON5 parser) to a small shared crate if another
+//! project needs the same installer/discovery surface.
 
 use std::path::PathBuf;
 
@@ -29,7 +24,6 @@ use std::path::PathBuf;
 /// during install to decide which channels to configure, what version we're
 /// talking to, and where the config file lives for patching.
 ///
-/// Mirrors `nonzeroclaw::onboard::migration::OpenClawInstallation`.
 #[derive(Debug, Clone)]
 pub struct OpenClawInstallation {
     /// Path to `openclaw.json` on the remote host.
@@ -46,7 +40,6 @@ pub struct OpenClawInstallation {
 
 /// A communication channel detected in an OpenClaw config.
 ///
-/// Mirrors `nonzeroclaw::onboard::migration::DetectedChannel`.
 #[derive(Debug, Clone)]
 pub struct DetectedChannel {
     /// Canonical lowercase name: `"telegram"`, `"signal"`, etc.
@@ -61,7 +54,6 @@ pub struct DetectedChannel {
 
 /// Who should own a channel after Calciforge takes over routing.
 ///
-/// Mirrors `nonzeroclaw::onboard::migration::ChannelOwner`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelOwner {
     /// Calciforge routes this channel to one of its configured claws.
@@ -84,7 +76,6 @@ impl std::fmt::Display for ChannelOwner {
 
 /// The result of the channel assignment step for one channel.
 ///
-/// Mirrors `nonzeroclaw::onboard::migration::ChannelAssignment`.
 #[derive(Debug, Clone)]
 pub struct ChannelAssignment {
     pub channel: DetectedChannel,

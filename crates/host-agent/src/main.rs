@@ -502,7 +502,7 @@ async fn zfs_destroy(
         operation: "zfs-destroy".to_string(),
         target: req.dataset.clone(),
         requested_at: chrono::Utc::now(),
-        nzc_request_id: None,
+        zeroclaw_request_id: None,
     };
 
     let token = state.approvals.create_approval(approval_req.clone()).await;
@@ -864,7 +864,7 @@ async fn host_op_dispatch(
                     operation: operation_label.clone(),
                     target: op.resource.clone().unwrap_or_default(),
                     requested_at: chrono::Utc::now(),
-                    nzc_request_id: None,
+                    zeroclaw_request_id: None,
                 };
 
                 let token = state.approvals.create_approval(approval_req.clone()).await;

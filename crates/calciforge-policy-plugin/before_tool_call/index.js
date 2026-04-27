@@ -51,7 +51,7 @@ function beforeToolCall(context) {
                     toolName = context.toolName;
                     args = context.args;
                     identity = ((_a = context.session) === null || _a === void 0 ? void 0 : _a.identity) || "unknown";
-                    console.log("[zeroclawed-policy] Evaluating: ".concat(toolName, " for ").concat(identity));
+                    console.log("[calciforge-policy] Evaluating: ".concat(toolName, " for ").concat(identity));
                     _b.label = 1;
                 case 1:
                     _b.trys.push([1, 4, , 5]);
@@ -85,7 +85,7 @@ function beforeToolCall(context) {
                     return [2 /*return*/, { block: false }];
                 case 4:
                     error_1 = _b.sent();
-                    console.error("[zeroclawed-policy] Error: ".concat(error_1));
+                    console.error("[calciforge-policy] Error: ".concat(error_1));
                     // Fail-safe: deny on error
                     return [2 /*return*/, { block: true, reason: "Policy enforcement unavailable" }];
                 case 5: return [2 /*return*/];

@@ -12,8 +12,8 @@
 ### ZeroClaw (zeroclawlabs) Integration  
 - [ ] Install zeroclawlabs on 210 via deploy script (`--with-zeroclaw`)
 - [ ] Configure zeroclawlabs gateway URL to use OneCLI proxy
-- [ ] Create wrapper script: `nzc-wrapped` → routes through OneCLI + clash
-- [ ] Test: Telegram → calciforge → nzc → OneCLI → provider
+- [ ] Create wrapper script: `zeroclaw-wrapped` → routes through OneCLI + clash
+- [ ] Test: Telegram → calciforge → zeroclaw → OneCLI → provider
 - [ ] Document zeroclaw integration
 
 ### OneCLI + Clash Adapter Layer
@@ -32,7 +32,7 @@
 
 ## 📋 MEDIUM PRIORITY — Next Up
 
-### Message Batching (from PolyClaw v2)
+### Message Batching (from earlier Calciforge prototypes)
 - [ ] Implement message buffer per chat/identity
 - [ ] While agent processing: accumulate new messages
 - [ ] Concatenate with separator (`\n---\n`)
@@ -81,13 +81,13 @@
 
 ## ✅ COMPLETED (Recently)
 
-- [x] Remove vendored nonzeroclaw crate (use upstream)
+- [x] Remove vendored zeroclaw crate (use upstream)
 - [x] Remove robot-kit, aardvark-sys (use upstream)
 - [x] Remove local clash (use crates.io)
 - [x] Update deps: zeroclawlabs 0.6.8, clash 0.6.2
 - [x] Sanitize deploy scripts (move to infra/, gitignore)
 - [x] Git history filter to remove secrets/artifacts
-- [x] CI cleanup (remove nonzeroclaw from matrix)
+- [x] CI cleanup (remove zeroclaw from matrix)
 
 ---
 
@@ -100,5 +100,5 @@
 
 **Integration architecture:**
 ```
-User DM → calciforge → [OneCLI proxy] → [clash policy] → claw-code/nzc → Provider
+User DM → calciforge → [OneCLI proxy] → [clash policy] → claw-code/zeroclaw → Provider
 ```

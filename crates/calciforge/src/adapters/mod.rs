@@ -24,21 +24,21 @@ pub mod acp;
 pub mod acpx;
 pub mod cli;
 pub mod codex_cli;
-pub mod nzc_native;
 pub mod openclaw;
 pub mod openclaw_channel;
 pub mod openclaw_native;
 pub mod zeroclaw;
+pub mod zeroclaw_native;
 
 pub use acp::AcpAdapter;
 pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
-pub use nzc_native::NzcNativeAdapter;
-pub use openclaw::{NzcHttpAdapter, OpenClawHttpAdapter};
+pub use openclaw::{OpenClawHttpAdapter, ZeroClawHttpAdapter};
 pub use openclaw_channel::OpenClawChannelAdapter;
 pub use openclaw_native::OpenClawNativeAdapter;
 pub use zeroclaw::ZeroClawAdapter;
+pub use zeroclaw_native::ZeroClawNativeAdapter;
 
 use crate::config::AgentConfig;
 
@@ -46,11 +46,11 @@ use crate::config::AgentConfig;
 // Error type
 // ---------------------------------------------------------------------------
 
-/// Approval request embedded in an NZC webhook response when a Clash `Review`
+/// Approval request embedded in a ZeroClaw webhook response when a Clash `Review`
 /// verdict fires.  Bubbled up through `AdapterError::ApprovalPending` so the
 /// Calciforge router can send the approval notification to the user.
 #[derive(Debug, Clone)]
-pub struct NzcApprovalRequest {
+pub struct ZeroClawApprovalRequest {
     pub request_id: String,
     pub reason: String,
     pub command: String,
@@ -67,7 +67,7 @@ pub enum AdapterError {
     Protocol(String),
     /// The agent loop paused for human approval (Clash `Review` verdict).
     /// The router should notify the user and not send any other reply yet.
-    ApprovalPending(NzcApprovalRequest),
+    ApprovalPending(ZeroClawApprovalRequest),
 }
 
 impl fmt::Display for AdapterError {
@@ -94,7 +94,7 @@ impl std::error::Error for AdapterError {}
 /// Optional sender context forwarded to downstream agents.
 ///
 /// Most adapters ignore sender fields and just use `message`.
-/// `NzcHttpAdapter` forwards `sender` to NZC so it can maintain
+/// `ZeroClawHttpAdapter` forwards `sender` to ZeroClaw so it can maintain
 /// per-sender conversation history keyed on the resolved identity name.
 #[derive(Debug, Clone)]
 pub struct DispatchContext<'a> {
@@ -149,7 +149,7 @@ pub trait AgentAdapter: Send + Sync {
     ///
     /// The default implementation ignores sender fields and delegates to
     /// `dispatch(ctx.message)`. Adapters that support sender-aware routing
-    /// (e.g. `NzcHttpAdapter`) override this.
+    /// (e.g. `ZeroClawHttpAdapter`) override this.
     async fn dispatch_with_context(
         &self,
         ctx: DispatchContext<'_>,
@@ -163,7 +163,7 @@ pub trait AgentAdapter: Send + Sync {
     /// Query the underlying agent's runtime model/provider status.
     ///
     /// Default implementation returns `None` — adapters that support
-    /// runtime introspection (e.g. NZC) override this.
+    /// runtime introspection (e.g. ZeroClaw) override this.
     async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
         None
     }
@@ -184,9 +184,9 @@ pub trait AgentAdapter: Send + Sync {
 /// |--------------------|---------------------|--------------------|-----------------|
 /// | `openclaw-http`    | `/v1/chat/completions` (SSE) | ⚠️ via header | ❌ |
 /// | `openclaw-native`  | `/hooks/agent`      | ✅ native sessionKey | ✅ |
-/// | `nzc-http`         | `/webhook`          | ❌ stateless        | ✅ |
-/// | `nzc-native`       | `/webhook` + history | ✅ in-process ring buffer | ✅ |
-/// | `zeroclaw`         | `/webhook`          | per-NZC-config     | n/a |
+/// | `zeroclaw-http`    | `/webhook`          | ❌ stateless        | ✅ |
+/// | `zeroclaw-native`  | `/webhook` + history | ✅ in-process ring buffer | ✅ |
+/// | `zeroclaw`         | `/webhook`          | per-ZeroClaw-config | n/a |
 /// | `cli`              | subprocess stdin    | ❌ one-shot         | n/a |
 /// | `codex-cli`        | `codex exec`        | ❌ one-shot         | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
@@ -228,13 +228,13 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
-        "nzc-http" => {
+        "zeroclaw-http" => {
             let token = agent
                 .api_key
                 .clone()
                 .or_else(|| agent.auth_token.clone())
                 .unwrap_or_default();
-            Ok(Box::new(NzcHttpAdapter::new(
+            Ok(Box::new(ZeroClawHttpAdapter::new(
                 agent.endpoint.clone(),
                 token,
                 agent.timeout_ms,
@@ -274,19 +274,19 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
-        // `nzc-native`: wraps `NzcHttpAdapter` with an in-process conversation
+        // `zeroclaw-native`: wraps `ZeroClawHttpAdapter` with an in-process conversation
         // history ring buffer.  Each request includes the prior (user, assistant)
-        // turns as a preamble so NZC's agent has full conversational context.
+        // turns as a preamble so the ZeroClaw agent has full conversational context.
         //
         // `ApprovalPending` responses are handled gracefully — the pending turn is
         // not recorded until the approval is resolved.
-        "nzc-native" => {
+        "zeroclaw-native" => {
             let token = agent
                 .api_key
                 .clone()
                 .or_else(|| agent.auth_token.clone())
                 .unwrap_or_default();
-            Ok(Box::new(NzcNativeAdapter::new(
+            Ok(Box::new(ZeroClawNativeAdapter::new(
                 agent.endpoint.clone(),
                 token,
                 agent.timeout_ms,
@@ -662,10 +662,10 @@ mod tests {
         }
     }
 
-    fn nzc_native_agent() -> AgentConfig {
+    fn zeroclaw_native_agent() -> AgentConfig {
         AgentConfig {
-            id: "test-nzc".to_string(),
-            kind: "nzc-native".to_string(),
+            id: "test-zeroclaw".to_string(),
+            kind: "zeroclaw-native".to_string(),
             endpoint: "http://127.0.0.1:18799".to_string(),
             timeout_ms: Some(5000),
             model: None,
@@ -690,10 +690,10 @@ mod tests {
     }
 
     #[test]
-    fn test_build_nzc_native_adapter() {
-        let agent = nzc_native_agent();
-        let adapter = build_adapter(&agent).expect("should build nzc-native adapter");
-        assert_eq!(adapter.kind(), "nzc-native");
+    fn test_build_zeroclaw_native_adapter() {
+        let agent = zeroclaw_native_agent();
+        let adapter = build_adapter(&agent).expect("should build zeroclaw-native adapter");
+        assert_eq!(adapter.kind(), "zeroclaw-native");
     }
 
     #[test]
@@ -721,10 +721,10 @@ mod tests {
     }
 
     #[test]
-    fn test_nzc_native_uses_auth_token_fallback() {
+    fn test_zeroclaw_native_uses_auth_token_fallback() {
         let agent = AgentConfig {
-            id: "nzc-test".to_string(),
-            kind: "nzc-native".to_string(),
+            id: "zeroclaw-test".to_string(),
+            kind: "zeroclaw-native".to_string(),
             endpoint: "http://localhost:18799".to_string(),
             timeout_ms: None,
             model: None,
@@ -740,7 +740,7 @@ mod tests {
             aliases: vec![],
         };
         let adapter = build_adapter(&agent).expect("should build with auth_token fallback");
-        assert_eq!(adapter.kind(), "nzc-native");
+        assert_eq!(adapter.kind(), "zeroclaw-native");
     }
 
     #[test]

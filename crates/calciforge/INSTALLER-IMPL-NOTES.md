@@ -22,14 +22,14 @@ _Session 4 of the calciforge sprint. Written for the Opus review session._
 
 **`ClawAdapter` enum (corrected from original spec)**  
 The key axis is *remote configurability*, not adapter protocol:
-- `NzcNative` and `OpenClawHttp` → SSH-configurable, installer knows config format
+- `ZeroClawNative` and `OpenClawHttp` → SSH-configurable, installer knows config format
 - `OpenAiCompat`, `Webhook`, `Cli` → endpoint-only, installer just registers them
 
 `ClawTarget.ssh_key` is `Option<PathBuf>` — only required for SSH-configurable adapters.
 
 **CLI flag format**
 ```
---claw name=foo,adapter=nzc,host=user@host,key=/path,endpoint=http://...
+--claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path,endpoint=http://...
 --claw name=bar,adapter=openclaw,host=user@host,key=/path,endpoint=http://...
 --claw name=baz,adapter=openai-compat,endpoint=http://claw/v1
 --claw name=qux,adapter=webhook,endpoint=http://hook/receive,format=json
@@ -51,17 +51,17 @@ Uses POSIX `'\''` idiom. The test initially checked "no single-quotes in inner c
 **This is the most important stub.** Currently writes a `_calciforge_registered: true` marker to the remote config. Production implementation should:
 
 **For `OpenClawHttp`:**
-- Parse `openclaw.json` fully (use the JSON5-relaxed parser from `nonzeroclaw::migration`)
+- Parse `openclaw.json` fully with `install::json5::parse_json5_relaxed`
 - Add `hooks.enabled = true` if not present
 - Add a `hooks.token` with a generated shared secret
 - Possibly add a named `calciforge` plugin entry (depends on what OpenClaw schema version supports)
 - Write back with `write_file` — never overwrite without backup
 - The exact field names depend on the target's version (use `meta.lastTouchedVersion`)
 
-**For `NzcNative`:**
-- Parse `~/.config/nzc/config.toml`
+**For `ZeroClawNative`:**
+- Parse `~/.config/zeroclaw/config.toml`
 - Add a `[calciforge]` upstream section with the Calciforge endpoint + token
-- The NZC config schema is in `nonzeroclaw::config`
+- Follow the upstream ZeroClaw TOML schema for field names and validation.
 
 The stub is tested (marker appears in config, idempotent on second run) but the real JSON/TOML patching is left for the Opus session.
 
@@ -71,7 +71,7 @@ The stub is tested (marker appears in config, idempotent on second run) but the 
 
 ### Wizard channel routing
 
-Step 4 (channel routing) collects `ChannelRouting` assignments but doesn't actually write them anywhere. The `ChannelRouting` struct is the right shape to feed into `PolyConfig::routing` entries. The Opus session should:
+Step 4 (channel routing) collects `ChannelRouting` assignments but doesn't actually write them anywhere. The `ChannelRouting` struct is the right shape to feed into `CalciforgeConfig::routing` entries. The Opus session should:
 1. Generate `[[routing]]` TOML entries from the wizard's collected assignments
 2. Write them to `~/.calciforge/config.toml` (or the specified config path)
 3. Optionally disable the same channels in the OpenClaw config (with backup)
@@ -110,22 +110,20 @@ No vault integration yet. Generated shared secrets (e.g. `hooks.token`) are curr
 
 ---
 
-## Shared Structs Between NZC and Calciforge
+## Shared Installer Structs
 
-The Opus review session should consider extracting these into a shared crate:
+Consider extracting these into a shared crate if another project needs the same
+installer/discovery surface:
 
-### Currently in `nonzeroclaw::onboard::migration` only:
-
-- `OpenClawInstallation` — needed by Calciforge installer to read OpenClaw config
-- `DetectedChannel` / `ChannelOwner` / `ChannelAssignment` — needed for installer's channel routing step
+- `OpenClawInstallation` — used by Calciforge installer to read OpenClaw config
+- `DetectedChannel` / `ChannelOwner` / `ChannelAssignment` — used for installer channel routing
 - `parse_json5_relaxed` / `strip_json_comments` — needed by `apply_remote_config` to parse openclaw.json
 - `detect_openclaw_installation` / `detect_channels` — useful in the installer flow
 
 ### Proposed shared crate: `crates/calciforge-shared` or `crates/claw-types`
 
-Moving these to a shared crate avoids the circular dependency (calciforge can't depend on nonzeroclaw). Both crates would then depend on `claw-types`.
-
-The Calciforge installer currently has its own minimal `strip_json_comments_simple` (in executor.rs) — this is a stopgap. The real one from migration.rs is better (handles edge cases, tested).
+The Calciforge installer should own the implementation until a second active
+consumer exists.
 
 ---
 
@@ -151,9 +149,9 @@ From Workstream 2 requirements:
 
 ## What the Opus Review Session Should Focus On
 
-1. **`apply_remote_config` real implementation** — the most important stub. Needs actual JSON/TOML patching for both OpenClaw and NZC formats. Should use the migration module's JSON parser.
+1. **`apply_remote_config` real implementation** — the most important stub. Needs actual JSON/TOML patching for both OpenClaw and ZeroClaw formats. Should use the installer JSON5 parser.
 
-2. **Shared crate extraction** — `OpenClawInstallation`, `DetectedChannel`, `parse_json5_relaxed` into a crate both NZC and Calciforge can use.
+2. **Shared crate extraction** — only extract `OpenClawInstallation`, `DetectedChannel`, and `parse_json5_relaxed` once another active consumer needs them.
 
 3. **`--yes` flag propagation** — wire through to suppress `Confirm` dialogs in scripted runs.
 

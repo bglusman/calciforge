@@ -15,14 +15,14 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
     commands::CommandHandler,
-    config::{expand_tilde, PolyConfig},
+    config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
     router::Router,
 };
 
 /// Run the Telegram bot until shutdown.
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -101,7 +101,7 @@ pub async fn run(
 fn handle_message_nonblocking(
     bot: Bot,
     msg: Message,
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -435,8 +435,8 @@ fn handle_message_nonblocking(
                     command_handler.register_pending_approval(
                         crate::adapters::openclaw::PendingApprovalMeta {
                             request_id: req.request_id.clone(),
-                            nzc_endpoint: agent.endpoint.clone(),
-                            nzc_auth_token: agent
+                            zeroclaw_endpoint: agent.endpoint.clone(),
+                            zeroclaw_auth_token: agent
                                 .auth_token
                                 .clone()
                                 .unwrap_or_default(),
@@ -484,7 +484,7 @@ fn handle_message_nonblocking(
 async fn handle_message(
     bot: Bot,
     msg: Message,
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -720,19 +720,20 @@ async fn handle_message(
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule,
+        AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig, Identity,
+        RoutingRule,
     };
 
     /// Create a CommandHandler backed by a temp state directory so tests are
     /// isolated from `~/.calciforge/state/active-agents.json` on disk.
-    fn make_handler(config: Arc<PolyConfig>) -> CommandHandler {
+    fn make_handler(config: Arc<CalciforgeConfig>) -> CommandHandler {
         let tmp = tempfile::tempdir().expect("tempdir for telegram test state isolation");
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
     }
 
-    fn make_test_config() -> PolyConfig {
-        PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn make_test_config() -> CalciforgeConfig {
+        CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![Identity {
                 id: "brian".to_string(),
                 display_name: Some("Brian".to_string()),

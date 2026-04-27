@@ -379,24 +379,20 @@ pub fn detect_openclaw_version(
     Ok(None)
 }
 
-/// Detect the version of a remote NZC installation.
+/// Detect the version of a remote ZeroClaw installation.
 ///
-/// Runs `nzc --version` on the remote host.
-pub fn detect_nzc_version(
+/// Runs `zeroclaw --version` on the remote host.
+pub fn detect_zeroclaw_version(
     client: &dyn SshClient,
     host: &str,
     key: Option<&Path>,
 ) -> Result<Option<String>> {
-    let out = client.run(
-        host,
-        key,
-        "nzc --version 2>/dev/null || nonzeroclaw --version 2>/dev/null || true",
-    )?;
+    let out = client.run(host, key, "zeroclaw --version 2>/dev/null || true")?;
     let version = out.stdout.trim().to_string();
     if version.is_empty() {
         return Ok(None);
     }
-    // Parse "nzc 0.3.0" or "nonzeroclaw 0.3.0" → "0.3.0"
+    // Parse "zeroclaw 0.3.0" → "0.3.0"
     let version = version.split_whitespace().last().unwrap_or("").to_string();
     if version.is_empty() {
         Ok(None)

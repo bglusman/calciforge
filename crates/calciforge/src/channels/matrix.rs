@@ -26,7 +26,7 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{expand_tilde, PolyConfig},
+    config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
     router::Router,
 };
@@ -347,7 +347,7 @@ async fn join_matrix_room(
 // ---------------------------------------------------------------------------
 
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -603,7 +603,7 @@ async fn handle_message(
     identity_id: &str,
     chat_key: &str,
     body: &str,
-    config: &Arc<PolyConfig>,
+    config: &Arc<CalciforgeConfig>,
     router: &Arc<Router>,
     cmd_handler: &Arc<CommandHandler>,
     ctx_store: &ContextStore,
@@ -770,8 +770,8 @@ async fn handle_message(
                     .register_pending_approval(
                         crate::adapters::openclaw::PendingApprovalMeta {
                             request_id: req.request_id.clone(),
-                            nzc_endpoint: agent.endpoint.clone(),
-                            nzc_auth_token: agent.auth_token.clone().unwrap_or_default(),
+                            zeroclaw_endpoint: agent.endpoint.clone(),
+                            zeroclaw_auth_token: agent.auth_token.clone().unwrap_or_default(),
                             _summary: format!(
                                 "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
                                 req.command, req.reason, req.request_id
@@ -887,8 +887,8 @@ mod tests {
     #[tokio::test]
     async fn matrix_loop_dispatches_allowed_message_and_sends_agent_reply() {
         use crate::config::{
-            AgentConfig, ChannelAlias, ChannelConfig, ContextConfig, Identity, PolyConfig,
-            PolyHeader, RoutingRule,
+            AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig,
+            ContextConfig, Identity, RoutingRule,
         };
         use axum::{
             extract::{Path, Query, State},
@@ -1068,8 +1068,8 @@ printf 'mock-agent saw: %s\n' "$1"
         script.sync_all().unwrap();
         drop(script);
 
-        let config = Arc::new(PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+        let config = Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![Identity {
                 id: "alice".to_string(),
                 display_name: Some("Alice".to_string()),

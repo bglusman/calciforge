@@ -133,10 +133,10 @@ def analyze(log_path: str) -> None:
     
     if any(patterns.values()):
         print("1. **Run specific test:**")
-        print(f"   cargo test -p zeroclawed {failed_tests[0]} -- --nocapture")
+        print(f"   cargo test -p calciforge {failed_tests[0]} -- --nocapture")
         print()
         print("2. **Enable backtrace:**")
-        print("   RUST_BACKTRACE=1 cargo test -p zeroclawed")
+        print("   RUST_BACKTRACE=1 cargo test -p calciforge")
         print()
         print("3. **Check for recent changes:**")
         print("   git diff HEAD~5 -- '*.rs' '*.toml'")

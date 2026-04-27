@@ -20,7 +20,7 @@ const DEFAULT_CONFIG: PolicyConfig = {
 };
 
 /**
- * ZeroClawed Policy Plugin
+ * Calciforge Policy Plugin
  *
  * Integrates with clashd policy sidecar to enforce approval requirements
  * on critical operations (config changes, destructive commands, etc.)
@@ -35,8 +35,8 @@ const DEFAULT_CONFIG: PolicyConfig = {
  * - block: false = continue with tool execution
  */
 export default definePluginEntry({
-  id: "zeroclawed-policy",
-  name: "ZeroClawed Policy Enforcement",
+  id: "calciforge-policy",
+  name: "Calciforge Policy Enforcement",
   description:
     "Enforces tool call policies via clashd sidecar - requires OpenClaw >= 2026.3.24-beta.2",
 
@@ -46,18 +46,18 @@ export default definePluginEntry({
       // Could load from plugin config store in future
     };
 
-    api.logger.info("[zeroclawed-policy] Initializing policy enforcement");
+    api.logger.info("[calciforge-policy] Initializing policy enforcement");
     api.logger.info(
-      `[zeroclawed-policy] clashd endpoint: ${config.clashdEndpoint}`,
+      `[calciforge-policy] clashd endpoint: ${config.clashdEndpoint}`,
     );
 
     // Check clashd health on startup
     checkClashdHealth(config.clashdEndpoint).then((healthy) => {
       if (healthy) {
-        api.logger.info("[zeroclawed-policy] clashd health check: OK");
+        api.logger.info("[calciforge-policy] clashd health check: OK");
       } else {
         api.logger.warn(
-          "[zeroclawed-policy] clashd health check: FAILED - policy enforcement may not work",
+          "[calciforge-policy] clashd health check: FAILED - policy enforcement may not work",
         );
       }
     });
@@ -71,7 +71,7 @@ export default definePluginEntry({
         const identity = context.session?.identity || "unknown";
 
         api.logger.debug(
-          `[zeroclawed-policy] Evaluating: ${toolName} for ${identity}`,
+          `[calciforge-policy] Evaluating: ${toolName} for ${identity}`,
         );
 
         try {
@@ -84,7 +84,7 @@ export default definePluginEntry({
 
           if (verdict.verdict === "deny") {
             api.logger.info(
-              `[zeroclawed-policy] DENIED: ${toolName} - ${verdict.reason}`,
+              `[calciforge-policy] DENIED: ${toolName} - ${verdict.reason}`,
             );
             return {
               block: true,
@@ -94,7 +94,7 @@ export default definePluginEntry({
 
           if (verdict.verdict === "review") {
             api.logger.info(
-              `[zeroclawed-policy] REVIEW REQUIRED: ${toolName} - ${verdict.reason}`,
+              `[calciforge-policy] REVIEW REQUIRED: ${toolName} - ${verdict.reason}`,
             );
             return {
               requireApproval: true,
@@ -103,19 +103,19 @@ export default definePluginEntry({
           }
 
           // verdict === "allow"
-          api.logger.debug(`[zeroclawed-policy] ALLOWED: ${toolName}`);
+          api.logger.debug(`[calciforge-policy] ALLOWED: ${toolName}`);
           return { block: false };
         } catch (error) {
           const errorMsg =
             error instanceof Error ? error.message : String(error);
           api.logger.error(
-            `[zeroclawed-policy] Error contacting clashd: ${errorMsg}`,
+            `[calciforge-policy] Error contacting clashd: ${errorMsg}`,
           );
 
           // Fail-safe: configurable fallback
           if (config.fallbackOnError === "deny") {
             api.logger.warn(
-              `[zeroclawed-policy] Falling back to DENY due to clashd error`,
+              `[calciforge-policy] Falling back to DENY due to clashd error`,
             );
             return {
               block: true,
@@ -123,7 +123,7 @@ export default definePluginEntry({
             };
           } else {
             api.logger.warn(
-              `[zeroclawed-policy] Falling back to ALLOW due to clashd error`,
+              `[calciforge-policy] Falling back to ALLOW due to clashd error`,
             );
             return { block: false };
           }
@@ -131,7 +131,7 @@ export default definePluginEntry({
       },
     );
 
-    api.logger.info("[zeroclawed-policy] Hook registered successfully");
+    api.logger.info("[calciforge-policy] Hook registered successfully");
   },
 });
 

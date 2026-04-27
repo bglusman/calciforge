@@ -3,7 +3,7 @@
 //! This is the FIRST check on any inbound message. If the sender cannot be
 //! resolved to a known identity, the message is silently dropped.
 
-use crate::config::PolyConfig;
+use crate::config::CalciforgeConfig;
 
 /// The resolved identity of a sender, if authorized.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,11 +12,14 @@ pub struct ResolvedIdentity {
     pub role: Option<String>,
 }
 
-/// Resolve a Telegram sender (numeric user ID) to a PolyConfig identity.
+/// Resolve a Telegram sender (numeric user ID) to a CalciforgeConfig identity.
 ///
 /// Returns `Some(ResolvedIdentity)` if the sender matches a known alias,
 /// or `None` if the sender is unknown (message should be dropped).
-pub fn resolve_telegram_sender(user_id: i64, config: &PolyConfig) -> Option<ResolvedIdentity> {
+pub fn resolve_telegram_sender(
+    user_id: i64,
+    config: &CalciforgeConfig,
+) -> Option<ResolvedIdentity> {
     let id_str = user_id.to_string();
     resolve_channel_sender("telegram", &id_str, config)
 }
@@ -28,7 +31,7 @@ pub fn resolve_telegram_sender(user_id: i64, config: &PolyConfig) -> Option<Reso
 pub fn resolve_channel_sender(
     channel_kind: &str,
     sender_id: &str,
-    config: &PolyConfig,
+    config: &CalciforgeConfig,
 ) -> Option<ResolvedIdentity> {
     for identity in &config.identities {
         for alias in &identity.aliases {
@@ -47,7 +50,7 @@ pub fn resolve_channel_sender(
 ///
 /// Returns the agent ID string if a routing rule exists for this identity,
 /// or `None` if no routing rule is configured.
-pub fn default_agent_for(identity_id: &str, config: &PolyConfig) -> Option<String> {
+pub fn default_agent_for(identity_id: &str, config: &CalciforgeConfig) -> Option<String> {
     config
         .routing
         .iter()
@@ -58,7 +61,7 @@ pub fn default_agent_for(identity_id: &str, config: &PolyConfig) -> Option<Strin
 /// Look up an agent config by ID.
 pub fn find_agent<'a>(
     agent_id: &str,
-    config: &'a PolyConfig,
+    config: &'a CalciforgeConfig,
 ) -> Option<&'a crate::config::AgentConfig> {
     config.agents.iter().find(|a| a.id == agent_id)
 }
@@ -69,7 +72,7 @@ pub fn find_agent<'a>(
 /// - The routing rule has no `allowed_agents` restriction (empty list = unrestricted), OR
 /// - The agent is in the `allowed_agents` list.
 #[cfg(test)]
-pub fn is_agent_allowed(identity_id: &str, agent_id: &str, config: &PolyConfig) -> bool {
+pub fn is_agent_allowed(identity_id: &str, agent_id: &str, config: &CalciforgeConfig) -> bool {
     match config.routing.iter().find(|r| r.identity == identity_id) {
         Some(rule) => {
             rule.allowed_agents.is_empty() || rule.allowed_agents.iter().any(|a| a == agent_id)
@@ -85,11 +88,13 @@ pub fn is_agent_allowed(identity_id: &str, agent_id: &str, config: &PolyConfig) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, ChannelAlias, Identity, PolyConfig, PolyHeader, RoutingRule};
+    use crate::config::{
+        AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, Identity, RoutingRule,
+    };
 
-    fn make_config() -> PolyConfig {
-        PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn make_config() -> CalciforgeConfig {
+        CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![
                 Identity {
                     id: "brian".to_string(),
@@ -253,8 +258,8 @@ mod tests {
 
     #[test]
     fn test_resolve_with_empty_identities() {
-        let cfg = PolyConfig {
-            calciforge: crate::config::PolyHeader { version: 2 },
+        let cfg = CalciforgeConfig {
+            calciforge: crate::config::CalciforgeHeader { version: 2 },
             identities: vec![],
             agents: vec![],
             routing: vec![],

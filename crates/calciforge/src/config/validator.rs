@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 
-use crate::config::PolyConfig;
+use crate::config::CalciforgeConfig;
 
 /// Validation result with detailed error messages.
 #[derive(Debug)]
@@ -44,8 +44,8 @@ impl ValidationResult {
     }
 }
 
-/// Validate a complete PolyConfig.
-pub fn validate_config(config: &PolyConfig) -> ValidationResult {
+/// Validate a complete CalciforgeConfig.
+pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     let mut result = ValidationResult::new();
 
     // Check for duplicate IDs
@@ -77,7 +77,7 @@ pub fn validate_config(config: &PolyConfig) -> ValidationResult {
 }
 
 /// Check for duplicate IDs across all config sections.
-fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult) {
+fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationResult) {
     // Check duplicate identity IDs
     let mut identity_ids = HashSet::new();
     for identity in &config.identities {
@@ -141,7 +141,7 @@ fn validate_no_duplicate_ids(config: &PolyConfig, result: &mut ValidationResult)
 }
 
 /// Validate routing rules reference valid agents.
-fn validate_routing_rules(config: &PolyConfig, result: &mut ValidationResult) {
+fn validate_routing_rules(config: &CalciforgeConfig, result: &mut ValidationResult) {
     let valid_agents: HashSet<_> = config.agents.iter().map(|a| &a.id).collect();
 
     for rule in &config.routing {
@@ -166,7 +166,7 @@ fn validate_routing_rules(config: &PolyConfig, result: &mut ValidationResult) {
 }
 
 /// Validate identities have valid channel aliases.
-fn validate_identities(config: &PolyConfig, result: &mut ValidationResult) {
+fn validate_identities(config: &CalciforgeConfig, result: &mut ValidationResult) {
     let valid_channels: HashSet<_> = config.channels.iter().map(|c| c.kind.clone()).collect();
 
     for identity in &config.identities {
@@ -182,7 +182,7 @@ fn validate_identities(config: &PolyConfig, result: &mut ValidationResult) {
 }
 
 /// Validate alloy configurations.
-fn validate_alloys(config: &PolyConfig, result: &mut ValidationResult) {
+fn validate_alloys(config: &CalciforgeConfig, result: &mut ValidationResult) {
     for alloy in &config.alloys {
         // Check strategy is valid
         match alloy.strategy.as_str() {
@@ -217,7 +217,7 @@ fn validate_alloys(config: &PolyConfig, result: &mut ValidationResult) {
 }
 
 /// Validate named cascades, dispatchers, and exec models.
-fn validate_synthetic_model_groups(config: &PolyConfig, result: &mut ValidationResult) {
+fn validate_synthetic_model_groups(config: &CalciforgeConfig, result: &mut ValidationResult) {
     for cascade in &config.cascades {
         if cascade.models.is_empty() {
             result.add_error(format!("Cascade '{}' has no models", cascade.id));
@@ -344,8 +344,8 @@ pub fn validate_config_file(path: &std::path::PathBuf) -> Result<ValidationResul
     validate_toml_syntax(&raw)
         .with_context(|| format!("validating TOML syntax: {}", path.display()))?;
 
-    // Then try to parse as PolyConfig
-    let config: PolyConfig =
+    // Then try to parse as CalciforgeConfig
+    let config: CalciforgeConfig =
         toml::from_str(&raw).with_context(|| format!("parsing config file: {}", path.display()))?;
 
     // Run semantic validation
@@ -362,7 +362,7 @@ mod tests {
     //! most important invariants (duplicates, dangling references,
     //! out-of-range fields) so future refactors can't silently regress.
     use super::*;
-    use crate::config::PolyConfig;
+    use crate::config::CalciforgeConfig;
 
     /// Minimal TOML that passes validation. Each negative test
     /// derives from this by prepending/appending ONE targeted
@@ -392,7 +392,7 @@ kind = "telegram"
 bot_token_file = "/tmp/nope"
 "#;
 
-    fn parse(toml: &str) -> PolyConfig {
+    fn parse(toml: &str) -> CalciforgeConfig {
         toml::from_str(toml).expect("fixture should parse")
     }
 

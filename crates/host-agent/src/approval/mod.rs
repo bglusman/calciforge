@@ -1,6 +1,6 @@
 //! Approval token management for destructive operations
 //!
-//! Integrates with NonZeroClaw policy engine for unified approvals (P3-16, P3-18).
+//! Integrates with ZeroClaw policy engine for unified approvals (P3-16, P3-18).
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -28,8 +28,8 @@ pub struct ApprovalRequest {
     pub target: String,
     #[serde(rename = "requested_at")]
     pub requested_at: DateTime<Utc>,
-    /// NZC request ID for cross-agent visibility (P3-18)
-    pub nzc_request_id: Option<String>,
+    /// ZeroClaw request ID for cross-agent visibility (P3-18)
+    pub zeroclaw_request_id: Option<String>,
 }
 
 /// Response for pending approvals
@@ -347,7 +347,7 @@ mod tests {
             operation: "zfs-destroy".to_string(),
             target: "tank/media@old".to_string(),
             requested_at: Utc::now(),
-            nzc_request_id: None,
+            zeroclaw_request_id: None,
         };
 
         let token = manager.create_approval(request).await;
@@ -364,7 +364,7 @@ mod tests {
             operation: "zfs-destroy".to_string(),
             target: "tank/media@old".to_string(),
             requested_at: Utc::now(),
-            nzc_request_id: None,
+            zeroclaw_request_id: None,
         };
 
         let token = manager.create_approval(request).await;
@@ -388,7 +388,7 @@ mod tests {
             operation: "zfs-destroy".to_string(),
             target: "tank/media@old".to_string(),
             requested_at: Utc::now(),
-            nzc_request_id: None,
+            zeroclaw_request_id: None,
         };
         manager.create_approval(request1).await;
 
@@ -400,7 +400,7 @@ mod tests {
             operation: "zfs-destroy".to_string(),
             target: "tank/system@old".to_string(),
             requested_at: Utc::now(),
-            nzc_request_id: None,
+            zeroclaw_request_id: None,
         };
         manager.create_approval(request2).await;
 

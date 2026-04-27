@@ -87,24 +87,24 @@ profile = "balanced"  # open | balanced | hardened | paranoid
 scan_outbound = false
 
 # ── Channels ────────────────────────────────────────────────────
-# WhatsApp channel (requires NZC/OpenClaw gateway with WA session)
+# WhatsApp channel (requires ZeroClaw/OpenClaw gateway with WA session)
 [[channels]]
 kind = "whatsapp"
 enabled = false
 scan_messages = false
-# nzc_endpoint = "http://127.0.0.1:18789"
-# nzc_auth_token = "YOUR_NZC_TOKEN"
+# zeroclaw_endpoint = "http://127.0.0.1:18789"
+# zeroclaw_auth_token = "YOUR_ZEROCLAW_TOKEN"
 # webhook_listen = "0.0.0.0:18795"
 # webhook_path = "/webhooks/whatsapp"
 # allowed_numbers = ["+15555550001"]
 
-# Signal channel (requires NZC/OpenClaw gateway with Signal session)
+# Signal channel (requires ZeroClaw/OpenClaw gateway with Signal session)
 [[channels]]
 kind = "signal"
 enabled = false
 scan_messages = false
-# nzc_endpoint = "http://127.0.0.1:18789"
-# nzc_auth_token = "YOUR_NZC_TOKEN"
+# zeroclaw_endpoint = "http://127.0.0.1:18789"
+# zeroclaw_auth_token = "YOUR_ZEROCLAW_TOKEN"
 # webhook_listen = "0.0.0.0:18796"
 # webhook_path = "/webhooks/signal"
 # allowed_numbers = ["+15555550001"]

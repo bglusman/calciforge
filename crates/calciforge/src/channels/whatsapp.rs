@@ -5,22 +5,22 @@
 //! This channel is a **webhook receiver + identity router + reply sender**.
 //!
 //! The actual WhatsApp protocol handling (QR pairing, WA Web encryption, send/receive
-//! at the WA wire level) lives in NonZeroClaw's `whatsapp-web` feature. Calciforge
+//! at the WA wire level) lives in ZeroClaw's `whatsapp-web` feature. Calciforge
 //! acts as a routing sidecar:
 //!
 //! ```text
-//! WA user  →  NZC (wa-rs session)  →  POST /webhooks/whatsapp  →  Calciforge
+//! WA user  →  ZeroClaw (wa-rs session)  →  POST /webhooks/whatsapp  →  Calciforge
 //!                                                                      │
 //!                                          identity resolution         │
 //!                                          agent dispatch              │
 //!                                                                      ↓
-//! WA user  ←  NZC (wa-rs session)  ←  POST /tools/invoke  ←  Calciforge reply
+//! WA user  ←  ZeroClaw (wa-rs session)  ←  POST /tools/invoke  ←  Calciforge reply
 //! ```
 //!
 //! ## Webhook payload format
 //!
 //! Incoming messages are expected in the WhatsApp Cloud API webhook format
-//! (also used by NonZeroClaw's outbound forwarding):
+//! (also used by ZeroClaw's outbound forwarding):
 //!
 //! ```json
 //! {
@@ -51,9 +51,9 @@
 //! enabled = true
 //! # OpenClaw gateway endpoint — the running OpenClaw instance that owns the WA session
 //! # and can forward messages via its /tools/invoke HTTP API.
-//! nzc_endpoint = "http://127.0.0.1:18789"
+//! zeroclaw_endpoint = "http://127.0.0.1:18789"
 //! # Bearer token for the OpenClaw gateway
-//! nzc_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+//! zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
 //! # Webhook path Calciforge registers (on the Calciforge gateway HTTP server — see main.rs TODO)
 //! webhook_path = "/webhooks/whatsapp"
 //! # HMAC secret for webhook signature verification (optional but recommended)
@@ -72,7 +72,7 @@ use tracing::{debug, info, warn};
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::PolyConfig,
+    config::CalciforgeConfig,
     context::ContextStore,
     router::Router,
 };
@@ -131,7 +131,7 @@ pub struct InboundWaMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Outbound reply request (for the NZC /tools/invoke send API)
+// Outbound reply request (for the ZeroClaw /tools/invoke send API)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -154,11 +154,11 @@ struct ToolInvokeArgs {
 
 /// WhatsApp channel adapter.
 ///
-/// Runs an HTTP server listening for incoming webhook POSTs from NZC (or any
+/// Runs an HTTP server listening for incoming webhook POSTs from ZeroClaw (or any
 /// conforming WA webhook source), resolves sender identity, dispatches to the
-/// configured agent, and sends the reply back via the NZC `/tools/invoke` API.
+/// configured agent, and sends the reply back via the ZeroClaw `/tools/invoke` API.
 pub struct WhatsAppChannel {
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -168,7 +168,7 @@ pub struct WhatsAppChannel {
 
 impl WhatsAppChannel {
     pub fn new(
-        config: Arc<PolyConfig>,
+        config: Arc<CalciforgeConfig>,
         router: Arc<Router>,
         command_handler: Arc<CommandHandler>,
         context_store: ContextStore,
@@ -274,18 +274,18 @@ impl WhatsAppChannel {
         messages
     }
 
-    /// Send a reply to a WhatsApp user via the NZC OpenClaw gateway `/tools/invoke` API.
+    /// Send a reply to a WhatsApp user via the ZeroClaw OpenClaw gateway `/tools/invoke` API.
     ///
-    /// NZC must be running with a live WA Web session for this to succeed.
+    /// ZeroClaw must be running with a live WA Web session for this to succeed.
     /// Returns Ok(()) if the HTTP call was accepted (2xx), Err otherwise.
     pub async fn send_reply(
         &self,
-        nzc_endpoint: &str,
-        nzc_auth_token: Option<&str>,
+        zeroclaw_endpoint: &str,
+        zeroclaw_auth_token: Option<&str>,
         to: &str,
         text: &str,
     ) -> Result<()> {
-        let url = format!("{nzc_endpoint}/tools/invoke");
+        let url = format!("{zeroclaw_endpoint}/tools/invoke");
 
         let body = ToolInvokeRequest {
             tool: "message",
@@ -299,7 +299,7 @@ impl WhatsAppChannel {
 
         let mut req = self.http_client.post(&url).json(&body);
 
-        if let Some(token) = nzc_auth_token {
+        if let Some(token) = zeroclaw_auth_token {
             req = req.bearer_auth(token);
         }
 
@@ -311,10 +311,10 @@ impl WhatsAppChannel {
         let status = resp.status();
         if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("WhatsApp: NZC replied {status} for send to {to}: {body_text}");
+            anyhow::bail!("WhatsApp: ZeroClaw replied {status} for send to {to}: {body_text}");
         }
 
-        debug!(to = %to, "WhatsApp: reply sent via NZC");
+        debug!(to = %to, "WhatsApp: reply sent via ZeroClaw");
         Ok(())
     }
 
@@ -324,8 +324,8 @@ impl WhatsAppChannel {
     pub async fn handle_message(
         self: Arc<Self>,
         msg: InboundWaMessage,
-        nzc_endpoint: String,
-        nzc_auth_token: Option<String>,
+        zeroclaw_endpoint: String,
+        zeroclaw_auth_token: Option<String>,
     ) {
         // Clone owned strings up front so they can be moved into spawned tasks.
         let from: String = msg.from.clone();
@@ -372,8 +372,8 @@ impl WhatsAppChannel {
                             format!("🚫 Message blocked by security scanner: {reason_owned}");
                         if let Err(e) = channel
                             .send_reply(
-                                &nzc_endpoint,
-                                nzc_auth_token.as_deref(),
+                                &zeroclaw_endpoint,
+                                zeroclaw_auth_token.as_deref(),
                                 &from_owned,
                                 &reply,
                             )
@@ -404,8 +404,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -432,8 +432,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -456,8 +456,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -477,8 +477,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -498,8 +498,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -522,8 +522,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -543,8 +543,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -567,13 +567,13 @@ impl WhatsAppChannel {
                 let reply = CommandHandler::secure_set_disabled_reply("WhatsApp");
                 let channel = self.clone();
                 let from_owned = from.clone();
-                let nzc_endpoint_owned = nzc_endpoint.clone();
-                let nzc_auth_token_owned = nzc_auth_token.clone();
+                let zeroclaw_endpoint_owned = zeroclaw_endpoint.clone();
+                let zeroclaw_auth_token_owned = zeroclaw_auth_token.clone();
                 tokio::spawn(async move {
                     if let Err(e) = channel
                         .send_reply(
-                            &nzc_endpoint_owned,
-                            nzc_auth_token_owned.as_deref(),
+                            &zeroclaw_endpoint_owned,
+                            zeroclaw_auth_token_owned.as_deref(),
                             &from_owned,
                             &reply,
                         )
@@ -593,8 +593,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -614,8 +614,8 @@ impl WhatsAppChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         "🧹 Conversation context cleared.",
                     )
@@ -646,8 +646,8 @@ impl WhatsAppChannel {
                 tokio::spawn(async move {
                     let _ = channel
                         .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
+                            &zeroclaw_endpoint,
+                            zeroclaw_auth_token.as_deref(),
                             &from_owned,
                             "⚠️ Agent not configured.",
                         )
@@ -713,8 +713,8 @@ impl WhatsAppChannel {
 
                     if let Err(e) = self
                         .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
+                            &zeroclaw_endpoint,
+                            zeroclaw_auth_token.as_deref(),
                             &from,
                             &final_response,
                         )
@@ -731,8 +731,8 @@ impl WhatsAppChannel {
                     warn!(identity = %identity_id, error = %e, "WhatsApp: agent dispatch failed");
                     let _ = self
                         .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
+                            &zeroclaw_endpoint,
+                            zeroclaw_auth_token.as_deref(),
                             &from,
                             &format!("⚠️ Agent error: {e}"),
                         )
@@ -751,11 +751,11 @@ impl WhatsAppChannel {
 ///
 /// Starts an HTTP server on `listen_addr` that accepts POST requests on
 /// `webhook_path`. For each valid inbound message, spawns a handler task that
-/// routes through Calciforge's identity/agent system and sends the reply via NZC.
+/// routes through Calciforge's identity/agent system and sends the reply via ZeroClaw.
 ///
 /// This function runs until the server errors or is cancelled.
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -778,13 +778,13 @@ pub async fn run(
         .parse()
         .context("invalid whatsapp webhook_listen address")?;
 
-    let nzc_endpoint = wa_channel_cfg
-        .nzc_endpoint
+    let zeroclaw_endpoint = wa_channel_cfg
+        .zeroclaw_endpoint
         .as_deref()
         .unwrap_or("http://127.0.0.1:18789")
         .to_string();
 
-    let nzc_auth_token = wa_channel_cfg.nzc_auth_token.clone();
+    let zeroclaw_auth_token = wa_channel_cfg.zeroclaw_auth_token.clone();
     let webhook_path = wa_channel_cfg
         .webhook_path
         .as_deref()
@@ -796,7 +796,7 @@ pub async fn run(
     info!(
         listen = %listen_addr,
         path = %webhook_path,
-        nzc = %nzc_endpoint,
+        zeroclaw = %zeroclaw_endpoint,
         "WhatsApp webhook channel starting"
     );
 
@@ -824,8 +824,8 @@ pub async fn run(
         };
 
         let channel = channel.clone();
-        let nzc_endpoint = nzc_endpoint.clone();
-        let nzc_auth_token = nzc_auth_token.clone();
+        let zeroclaw_endpoint = zeroclaw_endpoint.clone();
+        let zeroclaw_auth_token = zeroclaw_auth_token.clone();
         let webhook_path = webhook_path.clone();
         let webhook_secret = webhook_secret.clone();
         let allowed_numbers = allowed_numbers.clone();
@@ -918,7 +918,7 @@ pub async fn run(
                 }
             };
 
-            // Acknowledge immediately (Meta/NZC expects fast 200)
+            // Acknowledge immediately (Meta/ZeroClaw expects fast 200)
             let _ = send_http_response(&mut stream, 200, "OK", r#"{"status":"ok"}"#).await;
 
             // Parse and dispatch messages
@@ -930,8 +930,8 @@ pub async fn run(
 
             for msg in messages {
                 let ch = channel.clone();
-                let ep = nzc_endpoint.clone();
-                let tok = nzc_auth_token.clone();
+                let ep = zeroclaw_endpoint.clone();
+                let tok = zeroclaw_auth_token.clone();
                 tokio::spawn(async move {
                     ch.handle_message(msg, ep, tok).await;
                 });
@@ -1020,12 +1020,13 @@ async fn send_http_response(
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule,
+        AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig, Identity,
+        RoutingRule,
     };
 
-    fn make_test_config() -> Arc<PolyConfig> {
-        Arc::new(PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn make_test_config() -> Arc<CalciforgeConfig> {
+        Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![Identity {
                 id: "brian".to_string(),
                 display_name: Some("Brian".to_string()),
@@ -1066,8 +1067,8 @@ mod tests {
             channels: vec![ChannelConfig {
                 kind: "whatsapp".to_string(),
                 enabled: true,
-                nzc_endpoint: Some("http://127.0.0.1:18789".to_string()),
-                nzc_auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
+                zeroclaw_endpoint: Some("http://127.0.0.1:18789".to_string()),
+                zeroclaw_auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                 webhook_path: Some("/webhooks/whatsapp".to_string()),
                 webhook_listen: Some("0.0.0.0:18795".to_string()),
                 webhook_secret: None,
@@ -1088,7 +1089,7 @@ mod tests {
         })
     }
 
-    fn make_channel(config: Arc<PolyConfig>) -> Arc<WhatsAppChannel> {
+    fn make_channel(config: Arc<CalciforgeConfig>) -> Arc<WhatsAppChannel> {
         let router = Arc::new(Router::new());
         // Use a per-test temp state dir to avoid cross-test state pollution.
         let tmp = tempfile::tempdir().expect("tempdir for whatsapp test state isolation");

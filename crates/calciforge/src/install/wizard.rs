@@ -217,7 +217,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
     println!("  Add the downstream claws Calciforge should route messages to.");
     println!(
         "  {} — knows the config format, can SSH in and apply changes safely.",
-        style("NZC / OpenClaw").bold()
+        style("ZeroClaw / OpenClaw").bold()
     );
     println!(
         "  {} — registered in Calciforge config; no remote config management.",
@@ -240,7 +240,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 
         // Adapter selection.
         let adapter_options = &[
-            "nzc          — NonZeroClaw native (SSH-configurable)",
+            "zeroclaw          — ZeroClaw native (SSH-configurable)",
             "openclaw     — OpenClaw HTTP gateway (SSH-configurable)",
             "openai-compat — OpenAI-compatible endpoint (endpoint-only)",
             "webhook      — Generic HTTP webhook (endpoint-only)",
@@ -254,7 +254,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
             .context("failed to select adapter")?;
 
         let adapter_str = match adapter_idx {
-            0 => "nzc",
+            0 => "zeroclaw",
             1 => "openclaw",
             2 => "openai-compat",
             3 => "webhook",
@@ -289,7 +289,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 
 fn collect_adapter_config(adapter_str: &str) -> Result<ClawKind> {
     match adapter_str {
-        "nzc" => Ok(ClawKind::NzcNative),
+        "zeroclaw" => Ok(ClawKind::ZeroClawNative),
         "openclaw" => Ok(ClawKind::OpenClawHttp),
         "openai-compat" => {
             let endpoint: String = Input::new()
@@ -369,14 +369,14 @@ fn collect_connectivity(
         None
     };
 
-    // Endpoint — for SSH adapters (NZC/OpenClaw); non-SSH adapters set it
+    // Endpoint — for SSH adapters (ZeroClaw/OpenClaw); non-SSH adapters set it
     // in collect_adapter_config, but we may need it here for display.
     let endpoint = match adapter {
         ClawKind::OpenAiCompat { endpoint } => endpoint.clone(),
         ClawKind::Webhook { endpoint, .. } => endpoint.clone(),
         ClawKind::Cli { .. } => String::new(),
         _ => {
-            // NZC / OpenClaw: collect endpoint separately.
+            // ZeroClaw / OpenClaw: collect endpoint separately.
             let e: String = Input::new()
                 .with_prompt(format!("  {} endpoint URL", adapter_str))
                 .interact_text()
@@ -605,7 +605,7 @@ mod tests {
             claws: vec![
                 ClawTarget {
                     name: "lib".into(),
-                    adapter: ClawKind::NzcNative,
+                    adapter: ClawKind::ZeroClawNative,
                     host: "user@10.0.0.20".into(),
                     ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
                     endpoint: "http://10.0.0.20:18799".into(),

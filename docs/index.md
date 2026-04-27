@@ -456,8 +456,8 @@ allowed_users = ["@alice:example.com"]
 [[channels]]
 kind = "whatsapp"
 enabled = true
-nzc_endpoint = "http://127.0.0.1:18789"
-nzc_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
+zeroclaw_endpoint = "http://127.0.0.1:18789"
+zeroclaw_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
 allowed_numbers = ["+15555550100"]
 ```
 

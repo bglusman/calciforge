@@ -41,7 +41,7 @@ use super::{
         VersionCompatibility,
     },
     ssh::{
-        detect_nzc_version, detect_openclaw_version, test_connectivity, MockSshClient,
+        detect_openclaw_version, detect_zeroclaw_version, test_connectivity, MockSshClient,
         RealSshClient, SshClient,
     },
 };
@@ -508,7 +508,7 @@ fn run_version_detection(claw: &ClawTarget, deps: &ExecutorDeps) -> Option<Strin
                 .ok()
                 .flatten()
         }
-        ClawKind::NzcNative => detect_nzc_version(deps.ssh.as_ref(), &claw.host, key)
+        ClawKind::ZeroClawNative => detect_zeroclaw_version(deps.ssh.as_ref(), &claw.host, key)
             .ok()
             .flatten(),
         _ => None,
@@ -617,7 +617,7 @@ fn attempt_rollback(
 fn remote_config_path(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawHttp => "~/.openclaw/openclaw.json".to_string(),
-        ClawKind::NzcNative => "~/.config/nzc/config.toml".to_string(),
+        ClawKind::ZeroClawNative => "~/.config/zeroclaw/config.toml".to_string(),
         _ => String::new(),
     }
 }
@@ -630,8 +630,8 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
              (hooks.enabled = true, hooks.token = <generated>)",
             claw.host
         ),
-        ClawKind::NzcNative => format!(
-            "Will register Calciforge as upstream router in NZC config on {}",
+        ClawKind::ZeroClawNative => format!(
+            "Will register Calciforge as upstream router in ZeroClaw config on {}",
             claw.host
         ),
         ClawKind::OpenAiCompat { endpoint } => format!(
@@ -655,8 +655,8 @@ fn describe_apply_changes(claw: &ClawTarget) -> String {
             "would patch openclaw.json on {} to add Calciforge hook entry",
             claw.host
         ),
-        ClawKind::NzcNative => format!(
-            "would patch NZC config on {} to register Calciforge upstream",
+        ClawKind::ZeroClawNative => format!(
+            "would patch ZeroClaw config on {} to register Calciforge upstream",
             claw.host
         ),
         _ => format!("would register '{}' in Calciforge config", claw.name),
@@ -670,8 +670,8 @@ fn describe_apply_changes(claw: &ClawTarget) -> String {
 /// `hooks.entries.calciforge`, serializes back to pretty JSON, writes via SSH,
 /// and verifies the written file parses correctly.
 ///
-/// For `NzcNative`: stub — adds a `[calciforge]` section to `config.toml`.
-/// The NZC config format is TOML and has its own migration path; full patching
+/// For `ZeroClawNative`: stub — adds a `[calciforge]` section to `config.toml`.
+/// The ZeroClaw config format is TOML and has its own migration path; full patching
 /// is deferred to a follow-on session.
 fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String> {
     let config_path = remote_config_path(claw);
@@ -686,10 +686,10 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
     let patched = match &claw.adapter {
         ClawKind::OpenClawHttp => patch_openclaw_config(&current, &claw.name, &claw.endpoint)
             .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
-        ClawKind::NzcNative => {
-            // NZC uses TOML — full patching deferred; use safe stub for now.
-            // TODO (follow-on): implement real TOML patching for NZC config.
-            patch_nzc_config_stub(&current, &claw.name)
+        ClawKind::ZeroClawNative => {
+            // ZeroClaw uses TOML — full patching deferred; use safe stub for now.
+            // TODO (follow-on): implement real TOML patching for ZeroClaw config.
+            patch_zeroclaw_config_stub(&current, &claw.name)
         }
         _ => {
             // Non-SSH adapters should never reach apply_remote_config.
@@ -827,11 +827,11 @@ fn generate_hook_token() -> String {
     format!("{:016x}{:016x}{:016x}", v1, v2, v3)
 }
 
-/// Stub patcher for NZC TOML config.
+/// Stub patcher for ZeroClaw TOML config.
 ///
 /// Appends a minimal `[calciforge]` section if not already present.
 /// Full TOML-aware patching is deferred to a follow-on session.
-fn patch_nzc_config_stub(content: &str, claw_name: &str) -> String {
+fn patch_zeroclaw_config_stub(content: &str, claw_name: &str) -> String {
     if content.contains("[calciforge]") {
         return content.to_owned();
     }
@@ -1263,21 +1263,21 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// patch_nzc_config_stub appends [calciforge] section.
+    /// patch_zeroclaw_config_stub appends [calciforge] section.
     #[test]
-    fn patch_nzc_config_stub_appends_section() {
+    fn patch_zeroclaw_config_stub_appends_section() {
         let input = "[agent]\nname = \"librarian\"\n";
-        let patched = patch_nzc_config_stub(input, "test-claw");
+        let patched = patch_zeroclaw_config_stub(input, "test-claw");
         assert!(patched.contains("[calciforge]"));
         assert!(patched.contains("registered = true"));
         assert!(patched.contains("test-claw"));
     }
 
-    /// patch_nzc_config_stub is idempotent.
+    /// patch_zeroclaw_config_stub is idempotent.
     #[test]
-    fn patch_nzc_config_stub_idempotent() {
+    fn patch_zeroclaw_config_stub_idempotent() {
         let input = "[agent]\nname = \"x\"\n[calciforge]\nregistered = true\n";
-        let patched = patch_nzc_config_stub(input, "claw");
+        let patched = patch_zeroclaw_config_stub(input, "claw");
         assert_eq!(
             patched, input,
             "should not re-add [calciforge] if already present"
@@ -1374,14 +1374,14 @@ mod tests {
     }
 
     #[test]
-    fn remote_config_path_nzc() {
+    fn remote_config_path_zeroclaw() {
         let claw = ClawTarget {
             name: "x".into(),
-            adapter: ClawKind::NzcNative,
+            adapter: ClawKind::ZeroClawNative,
             host: "h".into(),
             ssh_key: None,
             endpoint: "http://h".into(),
         };
-        assert_eq!(remote_config_path(&claw), "~/.config/nzc/config.toml");
+        assert_eq!(remote_config_path(&claw), "~/.config/zeroclaw/config.toml");
     }
 }

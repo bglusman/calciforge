@@ -11,8 +11,8 @@
 //! callers receive a `String` and are unaware that streaming happened.
 //!
 //! Benefits:
-//! - No HTTP-level timeout on either side (NZC or Calciforge)
-//! - First-byte timeout of 30s is applied server-side in NZC
+//! - No HTTP-level timeout on either side (OpenClaw or Calciforge)
+//! - First-byte timeout of 30s is applied server-side in OpenClaw
 //! - Calciforge waits until the SSE stream terminates (`data: [DONE]`)
 
 use std::collections::HashMap;
@@ -86,8 +86,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// **NOT intercepted here** — they are forwarded verbatim to the LLM and
 /// processed as ordinary chat messages rather than handled natively.
 ///
-/// For native command support, a Calciforge channel plugin for OpenClaw is
-/// required. See `adapters/TODO-native-channel.md` for the full plan.
+/// For native command support, use `OpenClawNativeAdapter`, which dispatches
+/// through OpenClaw's hooks API instead of the OpenAI-compatible LLM path.
 pub struct OpenClawHttpAdapter {
     client: reqwest::Client,
     endpoint: String,
@@ -127,7 +127,7 @@ impl OpenClawHttpAdapter {
         let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
         let client = reqwest::Client::builder()
             // No request timeout — LLM calls can take arbitrarily long.
-            // NZC applies a 30s first-byte timeout on the streaming side.
+            // OpenClaw applies a 30s first-byte timeout on the streaming side.
             // connect_timeout guards TCP hangs.
             .connect_timeout(Duration::from_secs(30))
             .build()
@@ -299,21 +299,21 @@ impl AgentAdapter for OpenClawHttpAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// NzcHttpAdapter — NZC native /webhook protocol
+// ZeroClawHttpAdapter — ZeroClaw native /webhook protocol
 // ---------------------------------------------------------------------------
 
 /// Metadata tracked by Calciforge for a pending Clash approval.
 ///
-/// Created when NZC's `/webhook` returns `approval_required`.
+/// Created when ZeroClaw's `/webhook` returns `approval_required`.
 /// Consumed when the human sends `!approve` or `!deny`.
 #[derive(Debug, Clone)]
 pub struct PendingApprovalMeta {
-    /// The request ID used to key the approval in NZC.
+    /// The request ID used to key the approval in ZeroClaw.
     pub request_id: String,
-    /// NZC base URL (for calling `/webhook/approve`).
-    pub nzc_endpoint: String,
-    /// Bearer token for the NZC endpoint.
-    pub nzc_auth_token: String,
+    /// ZeroClaw base URL (for calling `/webhook/approve`).
+    pub zeroclaw_endpoint: String,
+    /// Bearer token for the ZeroClaw endpoint.
+    pub zeroclaw_auth_token: String,
     /// Human-readable summary for display.
     pub _summary: String,
 }
@@ -321,24 +321,24 @@ pub struct PendingApprovalMeta {
 /// Shared map of pending approvals: request_id → PendingApprovalMeta.
 pub type SharedPendingApprovals = Arc<Mutex<HashMap<String, PendingApprovalMeta>>>;
 
-/// Adapter for NonZeroClaw agents using the native `/webhook` endpoint.
+/// Adapter for ZeroClaw-compatible agents using the native `/webhook` endpoint.
 ///
 /// Unlike `openclaw-http` which uses the OpenAI-compat `/v1/chat/completions`
-/// shim, this adapter calls NZC's native webhook endpoint which runs the full
+/// shim, this adapter calls ZeroClaw's native webhook endpoint which runs the full
 /// agent loop (tools, memory, workspace) directly.
 ///
 /// Request:  POST /webhook  {"message": "..."}
 /// Response: {"response": "...", "status": "ok"}  (or {"error": "..."})
 /// Special:  {"approval_required": {...}} — Calciforge notifies user, polls for result.
-pub struct NzcHttpAdapter {
+pub struct ZeroClawHttpAdapter {
     client: reqwest::Client,
     endpoint: String,
     auth_token: String,
-    /// Shared pending approvals tracked across all NZC interactions.
+    /// Shared pending approvals tracked across all ZeroClaw interactions.
     pub pending_approvals: SharedPendingApprovals,
 }
 
-impl NzcHttpAdapter {
+impl ZeroClawHttpAdapter {
     pub fn new(endpoint: String, auth_token: String, _timeout_ms: Option<u64>) -> Self {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
@@ -354,7 +354,7 @@ impl NzcHttpAdapter {
 }
 
 #[derive(Serialize)]
-struct NzcWebhookRequest<'a> {
+struct ZeroClawWebhookRequest<'a> {
     message: &'a str,
     /// Resolved Calciforge identity name (e.g. "brian"). Omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -364,27 +364,27 @@ struct NzcWebhookRequest<'a> {
     model: Option<&'a str>,
 }
 
-/// Wire-level approval request from NZC (deserialized from `/webhook` response).
+/// Wire-level approval request from ZeroClaw (deserialized from `/webhook` response).
 #[derive(Debug, Deserialize, Clone)]
-struct NzcApprovalRequiredWire {
+struct ZeroClawApprovalRequiredWire {
     request_id: String,
     reason: String,
     command: String,
 }
 
 #[derive(Deserialize)]
-struct NzcWebhookResponse {
+struct ZeroClawWebhookResponse {
     #[serde(default)]
     response: Option<String>,
     #[serde(default)]
     error: Option<String>,
     /// Present when the agent loop paused for human approval.
     #[serde(default)]
-    approval_required: Option<NzcApprovalRequiredWire>,
+    approval_required: Option<ZeroClawApprovalRequiredWire>,
 }
 
 #[async_trait]
-impl AgentAdapter for NzcHttpAdapter {
+impl AgentAdapter for ZeroClawHttpAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
         self.dispatch_with_context(DispatchContext::message_only(msg))
             .await
@@ -398,10 +398,10 @@ impl AgentAdapter for NzcHttpAdapter {
         info!(
             endpoint = %url,
             sender = ?ctx.sender,
-            "nzc-http dispatch"
+            "zeroclaw-http dispatch"
         );
 
-        let body = NzcWebhookRequest {
+        let body = ZeroClawWebhookRequest {
             message: ctx.message,
             sender: ctx.sender,
             model: ctx.model_override,
@@ -425,27 +425,29 @@ impl AgentAdapter for NzcHttpAdapter {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            warn!(status = %status, body = %body, "nzc-http error response");
+            warn!(status = %status, body = %body, "zeroclaw-http error response");
             return Err(AdapterError::Protocol(format!(
-                "NZC returned HTTP {status}: {body}"
+                "ZeroClaw returned HTTP {status}: {body}"
             )));
         }
 
-        let nzc_resp: NzcWebhookResponse = resp
+        let zeroclaw_resp: ZeroClawWebhookResponse = resp
             .json()
             .await
-            .map_err(|e| AdapterError::Protocol(format!("nzc-http JSON parse error: {e}")))?;
+            .map_err(|e| AdapterError::Protocol(format!("zeroclaw-http JSON parse error: {e}")))?;
 
-        if let Some(err) = nzc_resp.error {
-            return Err(AdapterError::Protocol(format!("NZC agent error: {err}")));
+        if let Some(err) = zeroclaw_resp.error {
+            return Err(AdapterError::Protocol(format!(
+                "ZeroClaw agent error: {err}"
+            )));
         }
 
         // ── Clash approval flow ───────────────────────────────────────────────
-        // When NZC's policy engine returns a `Review` verdict, the webhook
+        // When ZeroClaw's policy engine returns a `Review` verdict, the webhook
         // responds immediately with `approval_required` instead of a final
         // response.  Calciforge stores the pending approval and returns
         // `ApprovalPending` so the router can notify the user.
-        if let Some(approval) = nzc_resp.approval_required {
+        if let Some(approval) = zeroclaw_resp.approval_required {
             let request_id = approval.request_id.clone();
             let summary = format!(
                 "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
@@ -457,8 +459,8 @@ impl AgentAdapter for NzcHttpAdapter {
                 request_id.clone(),
                 PendingApprovalMeta {
                     request_id: request_id.clone(),
-                    nzc_endpoint: self.endpoint.clone(),
-                    nzc_auth_token: self.auth_token.clone(),
+                    zeroclaw_endpoint: self.endpoint.clone(),
+                    zeroclaw_auth_token: self.auth_token.clone(),
                     _summary: summary.clone(),
                 },
             );
@@ -466,13 +468,13 @@ impl AgentAdapter for NzcHttpAdapter {
             info!(
                 request_id = %request_id,
                 command = %approval.command,
-                "nzc-http: approval required — notifying user"
+                "zeroclaw-http: approval required — notifying user"
             );
 
             // Return ApprovalPending so the router sends the notification and
             // waits for the user's !approve / !deny command.
             return Err(AdapterError::ApprovalPending(
-                crate::adapters::NzcApprovalRequest {
+                crate::adapters::ZeroClawApprovalRequest {
                     request_id: approval.request_id,
                     reason: approval.reason,
                     command: approval.command,
@@ -481,17 +483,17 @@ impl AgentAdapter for NzcHttpAdapter {
         }
         // ─────────────────────────────────────────────────────────────────────
 
-        Ok(nzc_resp.response.unwrap_or_default())
+        Ok(zeroclaw_resp.response.unwrap_or_default())
     }
 
     fn kind(&self) -> &'static str {
-        "nzc-http"
+        "zeroclaw-http"
     }
 
-    /// Query NZC runtime status via GET /v1/status endpoint.
+    /// Query ZeroClaw runtime status via GET /v1/status endpoint.
     ///
     /// Returns runtime provider/model info including alloy constituents.
-    /// Returns None if NZC doesn't support the endpoint (backward compatible).
+    /// Returns None if ZeroClaw doesn't support the endpoint (backward compatible).
     async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
         let url = format!("{}/v1/status", self.endpoint.trim_end_matches('/'));
 
@@ -508,14 +510,14 @@ impl AgentAdapter for NzcHttpAdapter {
         }
 
         #[derive(Deserialize)]
-        struct NzcStatusResponse {
+        struct ZeroClawStatusResponse {
             default_provider: String,
             #[serde(rename = "default_model")]
             _default_model: String,
             alloy_constituents: Option<Vec<(String, String)>>,
         }
 
-        let status: NzcStatusResponse = resp.json().await.ok()?;
+        let status: ZeroClawStatusResponse = resp.json().await.ok()?;
 
         // Check if this is an alloy by looking at constituents
         let is_alloy = status.alloy_constituents.is_some();
@@ -528,34 +530,37 @@ impl AgentAdapter for NzcHttpAdapter {
             },
             model: status.default_provider, // This is the alias name (e.g., "fast-alloy")
             alloy_constituents: status.alloy_constituents,
-            _last_selected: None, // NZC could add this later
+            _last_selected: None, // ZeroClaw could add this later
         })
     }
 }
 
-/// Request body for NZC's `POST /webhook/approve` endpoint.
+/// Request body for ZeroClaw's `POST /webhook/approve` endpoint.
 #[derive(Serialize)]
-struct NzcApproveRequest<'a> {
+struct ZeroClawApproveRequest<'a> {
     request_id: &'a str,
     approved: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
 }
 
-impl NzcHttpAdapter {
-    /// Send an approve or deny signal to NZC for a pending approval.
+impl ZeroClawHttpAdapter {
+    /// Send an approve or deny signal to ZeroClaw for a pending approval.
     ///
     /// Called by the `!approve` / `!deny` command handler.
     pub async fn send_approval_decision(
         client: &reqwest::Client,
-        nzc_endpoint: &str,
-        nzc_auth_token: &str,
+        zeroclaw_endpoint: &str,
+        zeroclaw_auth_token: &str,
         request_id: &str,
         approved: bool,
         reason: Option<&str>,
     ) -> Result<(), AdapterError> {
-        let url = format!("{}/webhook/approve", nzc_endpoint.trim_end_matches('/'));
-        let body = NzcApproveRequest {
+        let url = format!(
+            "{}/webhook/approve",
+            zeroclaw_endpoint.trim_end_matches('/')
+        );
+        let body = ZeroClawApproveRequest {
             request_id,
             approved,
             reason,
@@ -563,7 +568,7 @@ impl NzcHttpAdapter {
 
         let resp = client
             .post(&url)
-            .bearer_auth(nzc_auth_token)
+            .bearer_auth(zeroclaw_auth_token)
             .json(&body)
             .send()
             .await
@@ -573,28 +578,28 @@ impl NzcHttpAdapter {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             return Err(AdapterError::Protocol(format!(
-                "NZC /webhook/approve returned HTTP {status}: {body}"
+                "ZeroClaw /webhook/approve returned HTTP {status}: {body}"
             )));
         }
         Ok(())
     }
 
-    /// Poll NZC's `/webhook/result/{id}` for the continuation result.
+    /// Poll ZeroClaw's `/webhook/result/{id}` for the continuation result.
     ///
     /// Blocks until the result is available or the timeout elapses.
     pub async fn poll_result(
         _client: &reqwest::Client,
-        nzc_endpoint: &str,
-        nzc_auth_token: &str,
+        zeroclaw_endpoint: &str,
+        zeroclaw_auth_token: &str,
         request_id: &str,
     ) -> Result<String, AdapterError> {
         let url = format!(
             "{}/webhook/result/{}",
-            nzc_endpoint.trim_end_matches('/'),
+            zeroclaw_endpoint.trim_end_matches('/'),
             request_id
         );
 
-        // NZC's long-poll endpoint blocks up to ~10 minutes.
+        // ZeroClaw's long-poll endpoint blocks up to ~10 minutes.
         // We give our HTTP client up to 12 minutes to accommodate.
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
@@ -604,7 +609,7 @@ impl NzcHttpAdapter {
 
         let resp = client
             .get(&url)
-            .bearer_auth(nzc_auth_token)
+            .bearer_auth(zeroclaw_auth_token)
             .send()
             .await
             .map_err(|e| AdapterError::Unavailable(e.to_string()))?;
@@ -616,7 +621,7 @@ impl NzcHttpAdapter {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             return Err(AdapterError::Protocol(format!(
-                "NZC /webhook/result returned HTTP {status}: {body}"
+                "ZeroClaw /webhook/result returned HTTP {status}: {body}"
             )));
         }
 
@@ -711,8 +716,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nzc_webhook_request_serialization_without_sender() {
-        let req = NzcWebhookRequest {
+    fn test_zeroclaw_webhook_request_serialization_without_sender() {
+        let req = ZeroClawWebhookRequest {
             message: "hello",
             sender: None,
             model: None,
@@ -727,8 +732,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nzc_webhook_request_serialization_with_sender() {
-        let req = NzcWebhookRequest {
+    fn test_zeroclaw_webhook_request_serialization_with_sender() {
+        let req = ZeroClawWebhookRequest {
             message: "hi",
             sender: Some("brian"),
             model: None,
@@ -746,13 +751,13 @@ mod tests {
     }
 
     #[test]
-    fn test_nzc_kind_is_nzc_http() {
-        let adapter = NzcHttpAdapter::new(
+    fn test_zeroclaw_kind_is_zeroclaw_http() {
+        let adapter = ZeroClawHttpAdapter::new(
             "http://127.0.0.1:18799".to_string(),
             "tok".to_string(),
             None,
         );
-        assert_eq!(adapter.kind(), "nzc-http");
+        assert_eq!(adapter.kind(), "zeroclaw-http");
     }
 
     #[tokio::test]

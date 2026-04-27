@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
-use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
-use crate::config::PolyConfig;
+use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
+use crate::config::CalciforgeConfig;
 use crate::providers::alloy::AlloyManager;
 
 /// Default state directory: `~/.calciforge/state/`.
@@ -57,7 +57,7 @@ fn save_active_agents_to(state_dir: &Path, map: &HashMap<String, String>) {
 /// In-memory command handler with simple counters and per-identity active-agent state.
 pub struct CommandHandler {
     start_time: Instant,
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     messages_routed: AtomicU64,
     total_latency_ms: AtomicU64,
     /// Per-identity active agent: identity_id → agent_id.
@@ -67,9 +67,9 @@ pub struct CommandHandler {
     /// Defaults to `~/.calciforge/state/`; overridable for tests via
     /// [`CommandHandler::with_state_dir`].
     state_dir: PathBuf,
-    /// Pending Clash approvals: request_id → NZC endpoint + metadata.
-    /// Shared with any `NzcHttpAdapter` instances created for the same agent
-    /// so that `!approve` / `!deny` can signal the right NZC instance.
+    /// Pending Clash approvals: request_id → ZeroClaw endpoint + metadata.
+    /// Shared with any `ZeroClawHttpAdapter` instances created for the same agent
+    /// so that `!approve` / `!deny` can signal the right ZeroClaw instance.
     pub pending_approvals: SharedPendingApprovals,
     /// reqwest client reused for approve/deny HTTP calls.
     http_client: reqwest::Client,
@@ -85,7 +85,7 @@ impl CommandHandler {
     ///
     /// State is persisted to `~/.calciforge/state/`.  For test isolation, use
     /// [`CommandHandler::with_state_dir`] to supply a per-test temp directory.
-    pub fn new(config: Arc<PolyConfig>) -> Self {
+    pub fn new(config: Arc<CalciforgeConfig>) -> Self {
         Self::with_state_dir(config, default_state_dir())
     }
 
@@ -93,7 +93,7 @@ impl CommandHandler {
     ///
     /// Allows tests to inject a temp directory so that persisted state
     /// (`active-agents.json`) does not bleed between test runs.
-    pub fn with_state_dir(config: Arc<PolyConfig>, state_dir: PathBuf) -> Self {
+    pub fn with_state_dir(config: Arc<CalciforgeConfig>, state_dir: PathBuf) -> Self {
         let active_agents = load_active_agents_from(&state_dir);
         if !active_agents.is_empty() {
             tracing::info!(
@@ -333,7 +333,7 @@ impl CommandHandler {
     ///
     /// Callers should send `ack` immediately, then send `follow_up` (if present)
     /// once it arrives — it carries the continuation agent response after the
-    /// approval/denial has been relayed to NZC and polled for a result.
+    /// approval/denial has been relayed to ZeroClaw and polled for a result.
     pub async fn handle_async(&self, text: &str) -> Option<(String, Option<String>)> {
         if Self::is_approve_command(text) {
             let (ack, follow_up) = self.handle_approve(text).await;
@@ -363,7 +363,7 @@ impl CommandHandler {
     /// Handle an `!approve [request_id]` command.
     ///
     /// If no `request_id` is provided and exactly one approval is pending,
-    /// auto-selects it.  Signals NZC to allow the blocked tool call, then
+    /// auto-selects it.  Signals ZeroClaw to allow the blocked tool call, then
     /// polls for the continuation result (up to 10 minutes).
     ///
     /// Returns `(reply_message, Option<final_agent_response>)`.
@@ -378,11 +378,11 @@ impl CommandHandler {
             Err(msg) => return (msg, None),
         };
 
-        // Signal NZC to approve.
-        match NzcHttpAdapter::send_approval_decision(
+        // Signal ZeroClaw to approve.
+        match ZeroClawHttpAdapter::send_approval_decision(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
             true,
             None,
@@ -399,10 +399,10 @@ impl CommandHandler {
         self.pending_approvals.lock().await.remove(&meta.request_id);
 
         // Poll for the continuation result.
-        let result = NzcHttpAdapter::poll_result(
+        let result = ZeroClawHttpAdapter::poll_result(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
         )
         .await;
@@ -422,7 +422,7 @@ impl CommandHandler {
     /// Handle a `!deny [request_id] [reason]` command.
     ///
     /// If no `request_id` is provided and exactly one approval is pending,
-    /// auto-selects it.  Signals NZC to deny the blocked tool call, then
+    /// auto-selects it.  Signals ZeroClaw to deny the blocked tool call, then
     /// polls for the continuation result.
     pub async fn handle_deny(&self, text: &str) -> (String, Option<String>) {
         let trimmed = text.trim();
@@ -449,11 +449,11 @@ impl CommandHandler {
             Err(msg) => return (msg, None),
         };
 
-        // Signal NZC to deny.
-        match NzcHttpAdapter::send_approval_decision(
+        // Signal ZeroClaw to deny.
+        match ZeroClawHttpAdapter::send_approval_decision(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
             false,
             reason,
@@ -470,10 +470,10 @@ impl CommandHandler {
         self.pending_approvals.lock().await.remove(&meta.request_id);
 
         // Poll for the continuation result.
-        let result = NzcHttpAdapter::poll_result(
+        let result = ZeroClawHttpAdapter::poll_result(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
         )
         .await;
@@ -546,7 +546,7 @@ impl CommandHandler {
             .active_agent_for(identity_id)
             .unwrap_or_else(|| "none".to_string());
 
-        // Try to get runtime status from the adapter (for NZC and others that support it)
+        // Try to get runtime status from the adapter (for ZeroClaw and others that support it)
         let runtime_info =
             if let Some(agent_cfg) = self.config.agents.iter().find(|a| a.id == active_agent) {
                 match crate::adapters::build_adapter(agent_cfg) {
@@ -1399,9 +1399,9 @@ async fn secure_list() -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CascadeConfig,
-        ChannelAlias, ChannelConfig, DispatcherConfig, ExecModelConfig, Identity, PolyConfig,
-        PolyHeader, RoutingRule, SyntheticModelConfig,
+        AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CalciforgeConfig,
+        CalciforgeHeader, CascadeConfig, ChannelAlias, ChannelConfig, DispatcherConfig,
+        ExecModelConfig, Identity, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
 
@@ -1477,9 +1477,9 @@ mod tests {
             .with_alloy_manager(synthetic_manager())
     }
 
-    fn make_config() -> PolyConfig {
-        PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn make_config() -> CalciforgeConfig {
+        CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![
                 Identity {
                     id: "brian".to_string(),
@@ -1774,8 +1774,8 @@ mod tests {
 
     #[test]
     fn test_agents_empty_config() {
-        let config = Arc::new(PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+        let config = Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![],
             agents: vec![],
             routing: vec![],

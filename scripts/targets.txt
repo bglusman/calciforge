@@ -1,4 +1,4 @@
-# ZeroClawed deployment targets (one IP per line)
+# Calciforge deployment targets (one IP per line)
 # Lines starting with # are comments
 # Edit this file, then run: ./scripts/install-security-stack.sh install
 

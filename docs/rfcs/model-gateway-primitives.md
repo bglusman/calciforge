@@ -385,7 +385,7 @@ chars_per_token = 2.8      # Chinese-English mixed, code-heavy
 
 ### Config surface
 
-> **Note:** the `[tokenizer]`, `[model_defaults]`, and `[[models]]` sections below are **proposed additions** to `PolyConfig`. They do not exist in the current schema and will be added as part of the implementation of this RFC. A schema version bump is expected; existing configs stay valid without them (resolution falls through to built-in defaults).
+> **Note:** the `[tokenizer]`, `[model_defaults]`, and `[[models]]` sections below are **proposed additions** to `CalciforgeConfig`. They do not exist in the current schema and will be added as part of the implementation of this RFC. A schema version bump is expected; existing configs stay valid without them (resolution falls through to built-in defaults).
 
 **Global default** in top-level config:
 
