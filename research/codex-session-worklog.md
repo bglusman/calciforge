@@ -182,3 +182,22 @@ intentionally ignores its own Matrix events.
   on `18793`, the Mac config had been targeting stale port `18789`, and hooks are
   disabled there, so exposing a port alone would not fix the `openclaw-native`
   `/hooks/agent` path.
+
+## 2026-04-26 .210 Mac subscription gateway update
+
+- PR #54 CI is fully green and the PR is mergeable.
+- `.210` SSH is healthy; `zeroclawed`, `nonzeroclaw`, and `nonzeroclaw-david`
+  services are active.
+- `.210` can reach the Mac gateway at `192.168.1.175:18083`; unauthenticated
+  model listing returns `401`, as expected.
+- Copied the Mac gateway bearer token into a root-only file on `.210` at
+  `/etc/calciforge/mac-gateway-api-key` with mode `0600`.
+- Added a `mac-subscription` HTTP provider to `.210` Calciforge pointing at the
+  Mac gateway, plus `local-kimi-gpt55` and `claude-kimi-gpt55` dispatchers.
+- Validated the modified `.210` config before restart, backed up the prior
+  config, restarted only `zeroclawed.service`, and confirmed health on `8083`.
+- Verified authenticated `.210 -> Mac gateway -> Codex gpt-5.5` chat completion
+  with a minimal smoke prompt. The response matched the expected sentinel.
+- Follow-up security hardening: `.210` still has at least one provider credential
+  stored inline in a systemd drop-in. Move that into an `EnvironmentFile` or
+  service-specific secret file before treating the deployment as clean.
