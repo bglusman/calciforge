@@ -1,6 +1,6 @@
 # Codex Session Work Log
 
-Last updated: 2026-04-26 22:30 EDT.
+Last updated: 2026-04-26 23:25 EDT.
 
 ## Automation handoff
 
@@ -16,31 +16,36 @@ durable handoff anchor before relying on chat memory. On each wakeup:
 
 Current immediate resume order:
 
-1. Debug local exec-backed `codex/gpt-5.5` gateway failures on
-   `127.0.0.1:18083`; direct `codex exec -m gpt-5.5` works, but the gateway
-   returned `service_unavailable`. Status: fixed locally by removing the stale
-   `--ask-for-approval` CLI arg from local config and using `--ephemeral`.
-   Verified authenticated gateway response from `codex/gpt-5.5`.
-2. Finish `.210` repair. Status: remote Rust build completed after freeing
-   disk and using `CARGO_BUILD_JOBS=1` with no release LTO. The resulting Linux
-   binary was installed to `/usr/local/bin/calciforge`, `zeroclawed.service`
-   restarted cleanly, and HTTP `/health` responds. The duplicate proxy-only
-   systemd unit remains disabled. A subsequent `cargo install fnox --locked`
-   again starved SSH banner exchange; the local SSH client was killed, but
-   `.210` still accepts TCP/22 without completing SSH banner exchange while
-   HTTP `/health` remains available. Do not start more remote build jobs until
-   SSH recovers or is restarted externally.
-3. After `.210` SSH recovers, configure it to consume the Mac subscription
-   gateway via a file-backed provider key without printing that key. The Mac
-   LAN address is `192.168.1.175`, and its gateway is healthy at
-   `http://192.168.1.175:18083`.
-4. Continue Matrix manual/E2E testing. Do not block on `matrix.enjyn.com`
+1. Finish PR #54 review hygiene. Current head `01fa8c1e` had passing named CI,
+   but GitHub still showed stale unresolved Copilot threads plus two real
+   follow-ups: `scripts/exec-models/claude-print.sh` passing prompts via argv
+   and `crates/calciforge/src/proxy/exec_gateway.rs` using `eprintln!` for
+   cleanup logging. Both were fixed locally after `01fa8c1e`; commit and push
+   them, then re-check review threads and CI. Do not merge.
+2. Run local Matrix real E2E once Docker is actually usable. Homebrew now has
+   `docker` and `docker-compose` installed, but Docker daemon/Colima/Lima
+   availability still needs checking. If Docker is unavailable, install/start an
+   appropriate local runtime or record the exact blocker.
+3. Audit real deployment readiness for daily-driver use. Treat docs/readme
+   “mature for personal use” language as provisional until Mac and `.210`
+   install/config are proven by smoke tests from real channels and gateway
+   endpoints.
+4. Verify local Mac gateway and `.210` gateway health/config without printing
+   secrets: fnox installed and initialized, api key files readable by services,
+   provider URLs reachable, active agents sane, `.210` consuming the Mac
+   subscription gateway, and broken legacy `.229` custodian route either fixed
+   or disabled.
+5. Validate `!model` propagation end-to-end for the agents the user actually
+   uses: openclaw, custodian, Max/dad agent replacement path, and gateway-backed
+   agents. Synthetic selections should affect future agent dispatch where the
+   adapter supports model override.
+6. Continue Matrix manual/E2E testing. Do not block on `matrix.enjyn.com`
    account creation for CI: use the disposable Synapse E2E harness added in
    `scripts/matrix-real-e2e.py`. It starts a real homeserver, registers a
    Calciforge bot user plus a separate allowed sender, opens a direct Matrix
    chat from the sender, and verifies Calciforge replies through the real
    Matrix Client-Server API.
-5. Implement cross-channel one-off reply only after the gateway/deployment path
+7. Implement cross-channel one-off reply only after the gateway/deployment path
    is stable, because it needs a shared channel-send abstraction.
 
 ## Active deployment repair
@@ -219,3 +224,26 @@ intentionally ignores its own Matrix events.
 - Verification passed: `cargo test -p calciforge --bins`,
   `python3 scripts/model-gateway-synthetic-e2e.py`, shell syntax checks for the
   exec-model wrapper scripts, and a focused `tiktoken-estimator` test.
+
+## 2026-04-26 late PR #54 / overnight handoff update
+
+- Updated heartbeat `calciforge-overnight-worker-loop` to fire every 45 minutes
+  and carry the current deployment-readiness priorities.
+- PR #54 was rebased on `main` and force-pushed at `01fa8c1e`. Named GitHub CI
+  checks were passing, with final aggregate jobs still in progress when the
+  user asked for overnight continuity.
+- Addressed additional Copilot feedback locally after `01fa8c1e`:
+  - `claude-print.sh` now leaves prompt text on stdin instead of passing it as
+    an argv argument to `claude -p`;
+  - `ExecGateway` cleanup now uses structured `tracing::warn!` rather than
+    `eprintln!`.
+- Local verification for those follow-up edits passed:
+  `cargo test -p calciforge proxy::exec_gateway --bin calciforge`,
+  `cargo clippy -p calciforge --all-targets -- -D warnings`, shell syntax checks
+  for exec-model wrappers, and `git diff --check`.
+- Commit and push these two follow-up fixes next, then re-fetch PR #54 review
+  threads. Expect many unresolved threads to be stale/outdated; only current
+  non-outdated feedback should drive more code changes.
+- Homebrew reports `docker 29.4.1` and `docker-compose 5.1.3` installed. Next
+  step is to verify the Docker daemon/runtime and run
+  `python3 scripts/matrix-real-e2e.py` locally.

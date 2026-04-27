@@ -3,6 +3,7 @@
 #
 # Claude CLI flags and subscription terms can change. Treat this as a starting
 # point, not a compatibility guarantee; test with your installed version.
+# The prompt is intentionally left on stdin so it is not exposed in argv.
 
 set -eu
 
@@ -11,10 +12,8 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 127
 fi
 
-prompt="$(cat)"
-
 if [ -n "${CALCIFORGE_CLAUDE_MODEL:-}" ]; then
-  exec claude -p --model "$CALCIFORGE_CLAUDE_MODEL" "$prompt"
+  exec claude -p --model "$CALCIFORGE_CLAUDE_MODEL"
 fi
 
-exec claude -p "$prompt"
+exec claude -p

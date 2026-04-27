@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tracing::warn;
 
 use crate::proxy::backend::{BackendError, ModelInfo};
 use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
@@ -215,11 +216,7 @@ impl GatewayBackend for ExecGateway {
         .await;
 
         if let Err(e) = output_file.close() {
-            eprintln!(
-                "failed to remove exec output file {}: {}",
-                output_path.display(),
-                e
-            );
+            warn!(path = %output_path.display(), error = %e, "failed to remove exec output file");
         }
 
         result
