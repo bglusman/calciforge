@@ -500,9 +500,11 @@ export HTTPS_PROXY=http://localhost:8888
 
 ## Status
 
-Solo-operator mature, multi-user team mode in progress. Mac-tested,
-Linux-ready (CI runs Ubuntu, daily-use is macOS + a Proxmox CT for
-headless deployment).
+Solo-operator usable and actively hardening, multi-user team mode in
+progress. Mac-tested, Linux-ready (CI runs Ubuntu, daily-use is macOS
+and a Proxmox CT for headless deployment). Treat new deployments as
+operator-reviewed until their channel credentials, fnox store, model
+gateway providers, and synthetic model routes pass smoke tests.
 
 The list of what works today and what's still in flight lives in the
 [README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).

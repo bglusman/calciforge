@@ -192,14 +192,12 @@ pub trait AgentAdapter: Send + Sync {
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
 /// | `acpx`             | acpx CLI            | ✅ acpx sessions    | n/a |
 pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, String> {
+    let agent_token = || resolve_agent_token(agent, true);
+    let agent_token_no_env = || resolve_agent_token(agent, false);
+
     match agent.kind.as_str() {
         "openclaw-http" => {
-            let token = agent
-                .api_key
-                .clone()
-                .or_else(|| agent.auth_token.clone())
-                .or_else(|| std::env::var("CALCIFORGE_AGENT_TOKEN").ok())
-                .unwrap_or_default();
+            let token = agent_token()?;
             Ok(Box::new(OpenClawHttpAdapter::new_with_agent_id(
                 agent.endpoint.clone(),
                 token,
@@ -209,12 +207,7 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "openclaw-channel" => {
-            let token = agent
-                .api_key
-                .clone()
-                .or_else(|| agent.auth_token.clone())
-                .or_else(|| std::env::var("CALCIFORGE_AGENT_TOKEN").ok())
-                .unwrap_or_default();
+            let token = agent_token()?;
             let openclaw_agent_id = agent
                 .openclaw_agent_id
                 .clone()
@@ -229,11 +222,7 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "zeroclaw-http" => {
-            let token = agent
-                .api_key
-                .clone()
-                .or_else(|| agent.auth_token.clone())
-                .unwrap_or_default();
+            let token = agent_token_no_env()?;
             Ok(Box::new(ZeroClawHttpAdapter::new(
                 agent.endpoint.clone(),
                 token,
@@ -253,12 +242,7 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
         //
         // `api_key` / `auth_token` should be the `hooks.token` (NOT the gateway token).
         "openclaw-native" => {
-            let token = agent
-                .api_key
-                .clone()
-                .or_else(|| agent.auth_token.clone())
-                .or_else(|| std::env::var("CALCIFORGE_AGENT_TOKEN").ok())
-                .unwrap_or_default();
+            let token = agent_token()?;
             // Use openclaw_agent_id if set, otherwise fall back to agent.id.
             // This allows a Calciforge agent named "openclaw-max" to route to
             // OpenClaw's "david" agent without renaming the Calciforge-side entry.
@@ -281,11 +265,7 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
         // `ApprovalPending` responses are handled gracefully — the pending turn is
         // not recorded until the approval is resolved.
         "zeroclaw-native" => {
-            let token = agent
-                .api_key
-                .clone()
-                .or_else(|| agent.auth_token.clone())
-                .unwrap_or_default();
+            let token = agent_token_no_env()?;
             Ok(Box::new(ZeroClawNativeAdapter::new(
                 agent.endpoint.clone(),
                 token,
@@ -293,10 +273,13 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "zeroclaw" => {
-            let api_key = agent
-                .api_key
-                .clone()
-                .ok_or_else(|| format!("agent '{}': kind='zeroclaw' requires api_key", agent.id))?;
+            let api_key = agent_token_no_env()?;
+            if api_key.is_empty() {
+                return Err(format!(
+                    "agent '{}': kind='zeroclaw' requires api_key or api_key_file",
+                    agent.id
+                ));
+            }
             Ok(Box::new(ZeroClawAdapter::new(
                 agent.endpoint.clone(),
                 api_key,
@@ -353,6 +336,29 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
     }
 }
 
+fn resolve_agent_token(agent: &AgentConfig, allow_env: bool) -> Result<String, String> {
+    if let Some(path) = &agent.api_key_file {
+        let path = crate::config::expand_tilde(&path.to_string_lossy());
+        let token = std::fs::read_to_string(path)
+            .map_err(|e| format!("agent '{}': failed to read api_key_file: {e}", agent.id))?;
+        return Ok(token.trim().to_string());
+    }
+
+    if let Some(token) = &agent.api_key {
+        return Ok(token.clone());
+    }
+
+    if let Some(token) = &agent.auth_token {
+        return Ok(token.clone());
+    }
+
+    if allow_env {
+        return Ok(std::env::var("CALCIFORGE_AGENT_TOKEN").unwrap_or_default());
+    }
+
+    Ok(String::new())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -372,6 +378,7 @@ mod tests {
             model: Some("openclaw:main".to_string()),
             auth_token: Some("tok123".to_string()),
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -392,6 +399,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: Some("zc_abc123".to_string()),
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -412,6 +420,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -462,6 +471,7 @@ mod tests {
             model: Some("gpt-5.5".to_string()),
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -485,6 +495,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -510,6 +521,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None, // missing!
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -534,6 +546,7 @@ mod tests {
             model: Some("claude-sonnet-4-5".to_string()),
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -562,6 +575,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -587,6 +601,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -626,6 +641,7 @@ mod tests {
             model: None,
             auth_token: Some("old-token".to_string()),
             api_key: Some("new-api-key".to_string()),
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -636,6 +652,34 @@ mod tests {
             aliases: vec![],
         };
         // Should build without error — api_key takes priority
+        let adapter = build_adapter(&agent).expect("should build");
+        assert_eq!(adapter.kind(), "openclaw-http");
+    }
+
+    #[test]
+    fn test_openclaw_accepts_api_key_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_file = dir.path().join("gateway-token");
+        std::fs::write(&key_file, "file-token\n").expect("write token");
+        let agent = AgentConfig {
+            id: "gateway".to_string(),
+            kind: "openclaw-http".to_string(),
+            endpoint: "http://localhost".to_string(),
+            timeout_ms: None,
+            model: Some("local-kimi-gpt55".to_string()),
+            auth_token: None,
+            api_key: None,
+            api_key_file: Some(key_file),
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+
         let adapter = build_adapter(&agent).expect("should build");
         assert_eq!(adapter.kind(), "openclaw-http");
     }
@@ -651,6 +695,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: Some("REPLACE_WITH_HOOKS_TOKEN".to_string()),
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -671,6 +716,7 @@ mod tests {
             model: None,
             auth_token: Some("tok".to_string()),
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -706,6 +752,7 @@ mod tests {
             model: None,
             auth_token: Some("old-token".to_string()),
             api_key: Some("new-hooks-token".to_string()),
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -730,6 +777,7 @@ mod tests {
             model: None,
             auth_token: Some("auth-token".to_string()),
             api_key: None, // no api_key — falls back to auth_token
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -755,6 +803,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,

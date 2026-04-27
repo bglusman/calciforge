@@ -12,6 +12,11 @@ live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 
 ## What Works Today
 
+This is usable for a solo operator, but still in active hardening. New
+installations should be smoke-tested against their real channel
+credentials, fnox store, gateway providers, and synthetic routes before
+being treated as daily-driver infrastructure.
+
 | Area | Status | Where to read more |
 |---|---:|---|
 | `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |

@@ -244,6 +244,10 @@ pub struct AgentConfig {
     pub auth_token: Option<String>,
     /// Per-agent API key / Bearer token. Overrides global `CALCIFORGE_AGENT_TOKEN`.
     pub api_key: Option<String>,
+    /// Path to a file containing the per-agent API key. Prefer this over
+    /// inline `api_key` for local gateway/self-routing agents.
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
     /// OpenClaw agent lane id for kind = "openclaw-channel" (defaults to this agent id).
     #[serde(default)]
     pub openclaw_agent_id: Option<String>,
@@ -1398,6 +1402,31 @@ timeout_ms = 60000
         let agent = &cfg.agents[0];
         assert_eq!(agent.api_key.as_deref(), Some("REPLACE_WITH_AUTH_TOKEN"));
         assert!(agent.auth_token.is_none());
+    }
+
+    #[test]
+    fn test_agent_api_key_file_field() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openclaw-http"
+endpoint = "http://127.0.0.1:18083"
+api_key_file = "/etc/calciforge/secrets/gateway-token"
+model = "local-kimi-gpt55"
+timeout_ms = 60000
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("parse failed");
+        let agent = &cfg.agents[0];
+        assert_eq!(
+            agent.api_key_file.as_deref(),
+            Some(std::path::Path::new(
+                "/etc/calciforge/secrets/gateway-token"
+            ))
+        );
+        assert!(agent.api_key.is_none());
     }
 
     #[test]

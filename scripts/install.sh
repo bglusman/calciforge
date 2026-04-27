@@ -122,6 +122,46 @@ ask_install() {
 require_brew() { command -v brew &>/dev/null || die "Homebrew not found — install from https://brew.sh"; }
 require_npm()  { command -v npm  &>/dev/null || die "npm not found — brew install node"; }
 
+fnox_release_asset() {
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "${os}:${arch}" in
+        Linux:x86_64|Linux:amd64) echo "fnox-x86_64-unknown-linux-gnu.tar.gz" ;;
+        Linux:aarch64|Linux:arm64) echo "fnox-aarch64-unknown-linux-gnu.tar.gz" ;;
+        Darwin:x86_64) echo "fnox-x86_64-apple-darwin.tar.gz" ;;
+        Darwin:arm64|Darwin:aarch64) echo "fnox-aarch64-apple-darwin.tar.gz" ;;
+        *) return 1 ;;
+    esac
+}
+
+install_fnox_release() {
+    local version="${FNOX_VERSION:-v1.23.0}"
+    local asset install_dir url tmp
+
+    asset="$(fnox_release_asset)" || return 1
+    url="https://github.com/jdx/fnox/releases/download/${version}/${asset}"
+
+    if [[ -w /usr/local/bin || "$IS_ROOT" == true ]]; then
+        install_dir="/usr/local/bin"
+    else
+        install_dir="$HOME/.local/bin"
+        mkdir -p "$install_dir"
+        export PATH="$install_dir:$PATH"
+    fi
+
+    tmp="$(mktemp -d)"
+    echo "  Installing fnox ${version} release..."
+    if ! curl -fsSL "$url" -o "$tmp/fnox.tar.gz" ||
+        ! tar -xzf "$tmp/fnox.tar.gz" -C "$tmp" ||
+        ! install -m 0755 "$tmp/fnox" "$install_dir/fnox"; then
+        rm -rf "$tmp"
+        return 1
+    fi
+    rm -rf "$tmp"
+}
+
 ensure_fnox_cargo_deps() {
     [[ "$PLATFORM" == "Linux" ]] || return 0
     command -v pkg-config &>/dev/null && pkg-config --exists libudev && return 0
@@ -177,9 +217,9 @@ ensure_npm() {
     fi
 }
 
-# fnox — secret resolver (brew on macOS, cargo fallback on Linux / no-brew).
-# Uses a dedicated helper because fnox isn't on npm; cargo is the
-# cross-platform fallback (install.sh already requires it for source builds).
+# fnox — secret resolver (brew on macOS, release tarball on Linux, cargo last).
+# Uses a dedicated helper because fnox isn't on npm. Prefer prebuilt release
+# tarballs on Linux because compiling fnox can overwhelm small deployment VMs.
 ensure_fnox() {
     if command -v fnox &>/dev/null; then
         ok "fnox $(fnox --version 2>/dev/null | head -1 || echo '(installed)')"
@@ -206,6 +246,18 @@ ensure_fnox() {
             warn "brew install fnox failed (exit $brew_rc); falling back to cargo path"
         fi
     fi
+
+    if [[ "$PLATFORM" == "Linux" ]] && command -v curl &>/dev/null && command -v tar &>/dev/null; then
+        if ask_install fnox "from upstream release tarball"; then
+            if install_fnox_release; then
+                ok "fnox installed"
+                ensure_fnox_config
+                return $?
+            fi
+            warn "fnox release install failed; falling back to cargo path"
+        fi
+    fi
+
     local cargo_bin="$HOME/.cargo/bin/cargo"
     if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
         if ! ensure_fnox_cargo_deps; then
@@ -813,10 +865,38 @@ if [[ -n "$NODES_FILE" ]]; then
         echo "  [$name] checking fnox..."
         ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' <<'REMOTE_FNOX'
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 if ! command -v fnox >/dev/null 2>&1; then
     if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
         brew install fnox >/dev/null
+    elif command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+        os="$(uname -s)"
+        arch="$(uname -m)"
+        case "${os}:${arch}" in
+            Linux:x86_64|Linux:amd64) asset="fnox-x86_64-unknown-linux-gnu.tar.gz" ;;
+            Linux:aarch64|Linux:arm64) asset="fnox-aarch64-unknown-linux-gnu.tar.gz" ;;
+            Darwin:x86_64) asset="fnox-x86_64-apple-darwin.tar.gz" ;;
+            Darwin:arm64|Darwin:aarch64) asset="fnox-aarch64-apple-darwin.tar.gz" ;;
+            *) asset="" ;;
+        esac
+        if [[ -n "$asset" ]]; then
+            tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+            version="${FNOX_VERSION:-v1.23.0}"
+            curl -fsSL "https://github.com/jdx/fnox/releases/download/${version}/${asset}" -o "$tmp/fnox.tar.gz"
+            tar -xzf "$tmp/fnox.tar.gz" -C "$tmp"
+            if [[ -w /usr/local/bin || "$(id -u)" -eq 0 ]]; then
+                install -m 0755 "$tmp/fnox" /usr/local/bin/fnox
+            else
+                mkdir -p "$HOME/.local/bin"
+                install -m 0755 "$tmp/fnox" "$HOME/.local/bin/fnox"
+            fi
+        elif command -v cargo >/dev/null 2>&1; then
+            cargo install fnox >/dev/null
+        else
+            echo "fnox missing and no supported release asset is available" >&2
+            exit 2
+        fi
     elif command -v cargo >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1 && { ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists libudev; }; then
             apt-get update -qq

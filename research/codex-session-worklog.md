@@ -262,3 +262,53 @@ intentionally ignores its own Matrix events.
   invite/join, command happy paths, `!switch`, `!default`, and CLI dispatch.
 - Next deployment-readiness priority: audit actual Mac and `.210` configs and
   services for daily-driver correctness without printing secrets.
+
+## 2026-04-26 late deployment hardening update
+
+- PR #54 head `ac1ec7ed` had no unresolved review threads when rechecked.
+  GitHub CI was green except aggregate jobs still finishing at the time.
+- `.210` services were active and its gateway health endpoint responded, but
+  `fnox` was still missing. Installed upstream `jdx/fnox` release `v1.23.0`
+  from the x86_64 Linux tarball instead of compiling on the small VM; `fnox
+  list` now succeeds.
+- Patched `scripts/install.sh` so local Linux installs and remote node deploys
+  prefer upstream fnox release tarballs before falling back to `cargo install`.
+  This directly addresses the `.210` failure mode where compiling fnox can
+  starve SSH and exhaust small-node resources.
+- Added `api_key_file` to `[[agents]]` so gateway-backed channel agents can use
+  bearer token files instead of inline tokens. `openclaw-http`,
+  `openclaw-channel`, `openclaw-native`, `zeroclaw-http`, `zeroclaw-native`,
+  and `zeroclaw` token resolution now all use the shared file/inline/env
+  resolver appropriate to each adapter.
+- Mac live deployment:
+  - backed up `/Users/admin/.calciforge/config.toml`;
+  - added a `gateway` agent pointing at `http://127.0.0.1:18083`, using the
+    proxy API key file and default model `local-kimi-gpt55`;
+  - made `brian` default and active agent `gateway`;
+  - removed `{prompt}` from the live Claude exec provider args so prompts stay
+    on stdin with the updated exec gateway;
+  - validated the config, installed a fresh release build to
+    `/Users/admin/.local/bin/calciforge`, restarted only
+    `com.calciforge.calciforge`, and confirmed health.
+- Smoke tests passed without printing secrets:
+  - Mac local gateway authenticated `/v1/models` listed five models;
+  - Mac `local-kimi-gpt55` chat completion returned the expected sentinel;
+  - `.210` has `fnox 1.23.0`, health OK, four gateway models, and authenticated
+    access to the Mac gateway;
+  - `.210 local-kimi-gpt55` chat completion returned the expected sentinel.
+- Docs status wording was softened from “solo-operator mature” to
+  “solo-operator usable and actively hardening,” with explicit smoke-test
+  expectations for new deployments.
+- Verification after source edits: `cargo test -p calciforge --bin
+  calciforge`, `cargo clippy -p calciforge --all-targets -- -D warnings`,
+  `bash -n scripts/install.sh`, and `git diff --check`.
+
+Remaining deployment follow-ups:
+
+1. `.210` still has at least one provider credential stored inline in a systemd
+   drop-in; move it to an `EnvironmentFile` or root-only secret file.
+2. The old Mac `com.zeroclawed.*` launchd services are still present/running.
+   Disable them once the user confirms no legacy path is still needed.
+3. `claude-cli` as a channel-facing `kind = "cli"` agent still uses argv-based
+   message passing if explicitly enabled. It is no longer in Brian's allowed
+   agent list; prefer the exec-model/gateway path for Claude subscription use.
