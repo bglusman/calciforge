@@ -6,7 +6,7 @@
 //! wrapping.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -29,7 +29,6 @@ pub struct ExecGateway {
     args: Vec<String>,
     env: HashMap<String, String>,
     timeout: Duration,
-    output_dir: PathBuf,
 }
 
 impl ExecGateway {
@@ -50,25 +49,14 @@ impl ExecGateway {
             args,
             env,
             timeout: Duration::from_secs(timeout_seconds),
-            output_dir: std::env::temp_dir().join("calciforge-exec-gateway"),
         }
     }
 
     fn prepare_output_file(&self) -> Result<tempfile::NamedTempFile, BackendError> {
-        std::fs::create_dir_all(&self.output_dir)
-            .map_err(|e| BackendError::ExecutionFailed(format!("create output dir: {e}")))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.output_dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| {
-                    BackendError::ExecutionFailed(format!("secure output dir permissions: {e}"))
-                })?;
-        }
         tempfile::Builder::new()
             .prefix("exec-gateway-")
             .suffix(".txt")
-            .tempfile_in(&self.output_dir)
+            .tempfile()
             .map_err(|e| BackendError::ExecutionFailed(format!("create exec output file: {e}")))
     }
 
