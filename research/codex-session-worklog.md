@@ -322,3 +322,51 @@ Remaining deployment follow-ups:
   keeps only non-secret provider/model environment names inline.
 - Restarted `nonzeroclaw.service`; it is active and its local health endpoint
   reports `status=ok`.
+
+## 2026-04-27 live config correction after user review
+
+- Clarified status: the prior “nonzeroclaw active” note was a finding of legacy
+  service/config residue, not desired architecture. `nonzeroclaw` is dead and
+  should not be part of the Calciforge daily-driver path.
+- Confirmed command semantics in source: `!agent` exists as an alias for
+  `!switch`; `!model` activates synthetic model selections per identity and is
+  consumed by gateway-backed adapters such as `openclaw-http`.
+- Sent a real outbound Matrix/Beeper DM from the configured `.210` Matrix bot to
+  the user's Beeper Matrix ID. This proves `.210` can send through the Matrix
+  path, but it does not prove inbound Beeper→Calciforge command handling because
+  we cannot impersonate the user's Matrix account.
+- Cleaned live Mac config:
+  - removed `nonzeroclaw` and `nonzeroclaw-david` agents;
+  - removed `nzc` aliases;
+  - removed `nonzeroclaw` from allowed-agent lists;
+  - moved David's default to `gateway`;
+  - validated config and restarted `com.calciforge.calciforge`;
+  - health remained OK.
+- Cleaned live `.210` config:
+  - removed `nonzeroclaw` and `nonzeroclaw-david` agents;
+  - removed `nzc` aliases;
+  - added a local `gateway` agent pointing at `.210`'s model gateway on
+    `127.0.0.1:8083`;
+  - set Brian and David defaults to `gateway`;
+  - renamed old WhatsApp `nzc_endpoint`/`nzc_auth_token` fields to the current
+    generic `zeroclaw_endpoint`/`zeroclaw_auth_token` while preserving the
+    existing WhatsApp sidecar endpoint;
+  - validated config, restarted `zeroclawed.service`, and confirmed health.
+- Disabled dead `.210` services: `nzc-watchdog`, `nonzeroclaw-david`, and
+  `nonzeroclaw`. Remaining listeners are Calciforge (`18795`, `8083`) and the
+  WhatsApp sidecar (`18796`).
+- Post-cleanup smoke passed:
+  - live Mac config validates and local gateway health is OK;
+  - live `.210` config has zero `nonzeroclaw`/`nzc` references;
+  - live Mac config has zero `nonzeroclaw`/`nzc` references;
+  - `.210 local-kimi-gpt55` chat completion returned the expected sentinel
+    after disabling dead services.
+
+Remaining confidence gap:
+
+- Full live inbound E2E from the user's real Beeper/WhatsApp/Telegram accounts
+  into both Calciforge instances is not complete. We have CI/local real Matrix
+  E2E with disposable Synapse, outbound Matrix DM from `.210`, and live gateway
+  model smoke tests. We still need user-originated channel messages (or a
+  dedicated allowed test identity) to prove real-channel command handling end to
+  end for `!agent`/`!switch`, `!model`, and normal agent dispatch.
