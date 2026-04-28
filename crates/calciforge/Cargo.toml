@@ -2,7 +2,7 @@
 name = "calciforge"
 version = "0.1.0"
 edition = "2021"
-description = "Calciforge — Rust agent gateway (ZeroClaw fork)"
+description = "Calciforge — Rust agent and model gateway"
 license = "MIT"
 
 [[bin]]
