@@ -247,6 +247,7 @@ fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
 async fn check_install_node_ssh(node: &InstallNodeMetadata, report: &mut DoctorReport) {
     let target = format!("{}@{}", node.user, node.host);
     let mut cmd = TokioCommand::new("ssh");
+    cmd.kill_on_drop(true);
     cmd.arg("-o")
         .arg("StrictHostKeyChecking=accept-new")
         .arg("-o")
@@ -900,7 +901,7 @@ async fn check_agent_wiring(
                     && agent.auth_token.is_none()
                 {
                     report.warn(format!(
-                        "agent '{}' uses openclaw-channel without api_key/api_key_file/auth_token; only unauthenticated loopback gateways should do this",
+                        "agent '{}' uses openclaw-channel without api_key/api_key_file/auth_token; no per-agent token is configured, though adapters may still fall back to CALCIFORGE_AGENT_TOKEN. Only loopback gateways intended to rely on that setup should do this",
                         agent.id
                     ));
                 }

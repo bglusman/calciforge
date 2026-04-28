@@ -108,6 +108,7 @@ struct SharedReplyServer {
     router: ReplyRouter,
     once: Arc<OnceLock<()>>,
     ready_notify: Arc<Notify>,
+    startup_complete: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
     start_error: Arc<Mutex<Option<String>>>,
 }
@@ -148,6 +149,7 @@ impl ReplyServerHandle {
             router: ReplyRouter::new(),
             once: Arc::new(OnceLock::new()),
             ready_notify: Arc::new(Notify::new()),
+            startup_complete: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
             start_error: Arc::new(Mutex::new(None)),
         };
@@ -276,8 +278,9 @@ impl OpenClawChannelAdapter {
                     *shared.start_error.lock().await = Some(e);
                 }
             }
+            shared.startup_complete.store(true, Ordering::SeqCst);
             shared.ready_notify.notify_waiters();
-        } else if !shared.started.load(Ordering::SeqCst) {
+        } else if !shared.startup_complete.load(Ordering::SeqCst) {
             shared.ready_notify.notified().await;
         }
 
@@ -604,5 +607,28 @@ mod tests {
         assert!(err
             .to_string()
             .contains("already registered with a different reply_auth_token"));
+    }
+
+    #[tokio::test]
+    async fn test_reply_server_startup_error_is_reused_without_hanging() {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let reply_port = listener.local_addr().unwrap().port();
+        let first = make_adapter("http://127.0.0.1:1".to_string(), reply_port, None);
+
+        let first_err = first
+            .ensure_reply_server_started()
+            .await
+            .expect_err("occupied reply port should fail startup");
+        assert!(first_err.to_string().contains("failed to start"));
+
+        let second = make_adapter("http://127.0.0.1:1".to_string(), reply_port, None);
+        let second_result = tokio::time::timeout(
+            Duration::from_millis(200),
+            second.ensure_reply_server_started(),
+        )
+        .await
+        .expect("stored startup failure should not wait forever");
+        let second_err = second_result.expect_err("same startup error should be reused");
+        assert!(second_err.to_string().contains("failed to start"));
     }
 }

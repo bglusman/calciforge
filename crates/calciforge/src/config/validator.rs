@@ -95,7 +95,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     && agent.auth_token.is_none()
                 {
                     result.add_warning(format!(
-                        "Agent '{}' uses openclaw-channel without api_key/api_key_file/auth_token; only unauthenticated loopback gateways should do this",
+                        "Agent '{}' uses openclaw-channel without api_key/api_key_file/auth_token; no per-agent token is configured, though adapters may still fall back to CALCIFORGE_AGENT_TOKEN. Only loopback gateways intended to rely on that setup should do this",
                         agent.id
                     ));
                 }
