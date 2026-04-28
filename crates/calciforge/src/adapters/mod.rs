@@ -24,6 +24,7 @@ pub mod acp;
 pub mod acpx;
 pub mod cli;
 pub mod codex_cli;
+pub mod dirac_cli;
 pub mod openclaw;
 pub mod openclaw_channel;
 pub mod openclaw_native;
@@ -34,6 +35,7 @@ pub use acp::AcpAdapter;
 pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
+pub use dirac_cli::DiracCliAdapter;
 pub use openclaw::{OpenClawHttpAdapter, ZeroClawHttpAdapter};
 pub use openclaw_channel::OpenClawChannelAdapter;
 pub use openclaw_native::OpenClawNativeAdapter;
@@ -189,6 +191,7 @@ pub trait AgentAdapter: Send + Sync {
 /// | `zeroclaw`         | `/webhook`          | per-ZeroClaw-config | n/a |
 /// | `cli`              | subprocess stdin    | ❌ one-shot         | n/a |
 /// | `codex-cli`        | `codex exec`        | ❌ one-shot         | n/a |
+/// | `dirac-cli`        | `dirac --yolo --json` | ❌ one-shot       | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
 /// | `acpx`             | acpx CLI            | ✅ acpx sessions    | n/a |
 pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, String> {
@@ -300,6 +303,13 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "codex-cli" => Ok(Box::new(CodexCliAdapter::new(
+            agent.command.clone(),
+            agent.args.clone(),
+            agent.model.clone(),
+            agent.env.clone(),
+            agent.timeout_ms,
+        ))),
+        "dirac-cli" => Ok(Box::new(DiracCliAdapter::new(
             agent.command.clone(),
             agent.args.clone(),
             agent.model.clone(),
@@ -484,6 +494,30 @@ mod tests {
         };
         let adapter = build_adapter(&agent).expect("should build codex-cli adapter");
         assert_eq!(adapter.kind(), "codex-cli");
+    }
+
+    #[test]
+    fn test_build_dirac_cli_adapter() {
+        let agent = AgentConfig {
+            id: "dirac".to_string(),
+            kind: "dirac-cli".to_string(),
+            endpoint: String::new(),
+            timeout_ms: Some(600_000),
+            model: Some("claude-sonnet-4.6".to_string()),
+            auth_token: None,
+            api_key: None,
+            api_key_file: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+        let adapter = build_adapter(&agent).expect("should build dirac-cli adapter");
+        assert_eq!(adapter.kind(), "dirac-cli");
     }
 
     #[test]
