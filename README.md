@@ -164,6 +164,7 @@ bash scripts/install-git-hooks.sh
 - [Security proxy docs](docs/security-gateway.md)
 - [Host-agent docs](crates/host-agent/README.md)
 - [Roadmap](docs/roadmap/)
+- [Staging test matrix](docs/staging-test-matrix.md)
 - [Channel secret-input deprecation note](docs/roadmap/channel-secret-input-deprecation.md)
 - [Internal research and planning notes](research/)
 

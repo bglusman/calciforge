@@ -7,6 +7,7 @@ that should be reasonably stable:
 - `agent-adapters.md` — agent adapter selection and evaluation notes
 - `model-gateway.md` — model gateway reference
 - `security-gateway.md` — outbound proxy and scanning reference
+- `staging-test-matrix.md` — local, CI, staging, and release-candidate test tiers
 - `MANUAL_INSTALL.md`, `OPS-HARDENING.md`, setup guides — operator docs
 - `rfcs/` — durable design proposals
 - `roadmap/` — public future-work notes
