@@ -281,7 +281,10 @@ impl OpenClawChannelAdapter {
             shared.startup_complete.store(true, Ordering::SeqCst);
             shared.ready_notify.notify_waiters();
         } else if !shared.startup_complete.load(Ordering::SeqCst) {
-            shared.ready_notify.notified().await;
+            let notified = shared.ready_notify.notified();
+            if !shared.startup_complete.load(Ordering::SeqCst) {
+                notified.await;
+            }
         }
 
         if let Some(err) = shared.start_error.lock().await.clone() {

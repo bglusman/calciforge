@@ -199,6 +199,7 @@ impl ExecGateway {
 
         req.messages.iter().any(|msg| {
             msg.role == "tool"
+                || msg.role == "function"
                 || msg
                     .tool_calls
                     .as_ref()
@@ -550,6 +551,44 @@ printf 'stdout:%s:%s\n' "$1" "$prompt"
             name: None,
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
+            reasoning: None,
+            reasoning_content: None,
+        });
+
+        let err = gw.chat_completion(req).await.unwrap_err();
+        assert!(
+            err.to_string().contains("tool-call history"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_gateway_rejects_legacy_function_call_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-cli");
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script)
+            .unwrap();
+        writeln!(f, "#!/bin/sh\ncat\n").unwrap();
+        drop(f);
+
+        let gw = ExecGateway::new(
+            GatewayConfig::default(),
+            script.to_string_lossy().to_string(),
+            vec!["-".to_string()],
+            HashMap::new(),
+        );
+
+        let mut req = request("kimi-cli", "use a legacy function");
+        req.messages.push(ChatMessage {
+            role: "function".to_string(),
+            content: Some(MessageContent::Text("legacy function result".to_string())),
+            name: Some("lookup".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
             reasoning: None,
             reasoning_content: None,
         });
