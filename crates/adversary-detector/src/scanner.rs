@@ -1200,6 +1200,7 @@ def scan(input):
         let deserialized: ScannerConfig =
             serde_json::from_value(serde_json::json!({})).expect("empty config should deserialize");
 
+        assert_eq!(programmatic.checks, deserialized.checks);
         assert_eq!(
             programmatic.discussion_ratio_threshold,
             deserialized.discussion_ratio_threshold
@@ -1208,8 +1209,30 @@ def scan(input):
             programmatic.min_signals_for_ratio,
             deserialized.min_signals_for_ratio
         );
+        assert_eq!(
+            programmatic.digest_store_path,
+            deserialized.digest_store_path
+        );
+        assert_eq!(
+            programmatic.override_on_review,
+            deserialized.override_on_review
+        );
+        assert_eq!(
+            programmatic.skip_protection_domains,
+            deserialized.skip_protection_domains
+        );
+        assert_eq!(
+            programmatic.digest_cache_ttl_secs,
+            deserialized.digest_cache_ttl_secs
+        );
+
+        assert!(programmatic.checks.is_empty());
         assert_eq!(programmatic.discussion_ratio_threshold, 0.3);
         assert_eq!(programmatic.min_signals_for_ratio, 1);
+        assert_eq!(programmatic.digest_store_path, None);
+        assert!(!programmatic.override_on_review);
+        assert!(programmatic.skip_protection_domains.is_empty());
+        assert_eq!(programmatic.digest_cache_ttl_secs, 0);
     }
 
     #[test]
