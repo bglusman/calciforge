@@ -1161,6 +1161,13 @@ kind = "starlark"
 path = "/etc/calciforge/scanner.star"
 fail_closed = true
 max_callstack = 32
+
+[[security.scanner_checks]]
+kind = "keywords"
+terms = ["wire", "urgent"]
+match_all = true
+verdict = "review"
+reason = "review urgent wire language"
 "#,
         )
         .expect("parse security scanner checks");
@@ -1168,7 +1175,7 @@ max_callstack = 32
         let security = cfg.security.expect("security section");
         assert_eq!(security.profile, "hardened");
         assert!(security.scan_outbound);
-        assert_eq!(security.scanner_checks.len(), 4);
+        assert_eq!(security.scanner_checks.len(), 5);
         assert_eq!(
             security.scanner_checks[2],
             adversary_detector::ScannerCheckConfig::RemoteHttp {
@@ -1182,6 +1189,16 @@ max_callstack = 32
                 path: "/etc/calciforge/scanner.star".into(),
                 fail_closed: true,
                 max_callstack: 32,
+            }
+        );
+        assert_eq!(
+            security.scanner_checks[4],
+            adversary_detector::ScannerCheckConfig::Keywords {
+                terms: vec!["wire".into(), "urgent".into()],
+                case_sensitive: false,
+                match_all: true,
+                verdict: adversary_detector::RuleVerdict::Review,
+                reason: Some("review urgent wire language".into()),
             }
         );
     }

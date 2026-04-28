@@ -65,9 +65,11 @@ Calciforge's security checks are an ordered pipeline:
    Unicode tags, CSS hiding, and large base64 blobs.
 2. `semantic` — local prompt-injection, PII-harvest, and exfiltration-pattern
    checks.
-3. `starlark` — optional in-process operator policy. This is the low-latency
+3. `regex`, `keywords`, and `max_size` — declarative low-latency checks for
+   common operator rules that should not require custom code.
+4. `starlark` — optional in-process operator policy. This is the low-latency
    path for site-specific rules that do not need network calls.
-4. `remote_http` — optional custom policy service. This is where operators can
+5. `remote_http` — optional custom policy service. This is where operators can
    add an LLM classifier, heavyweight DLP checks, or organization-specific
    threat modeling that belongs outside the proxy process.
 
@@ -135,6 +137,26 @@ kind = "structural"
 kind = "semantic"
 
 [[security.scanner_checks]]
+kind = "keywords"
+terms = ["wire", "urgent"]
+match_all = true
+verdict = "review"
+reason = "review urgent wire language"
+
+[[security.scanner_checks]]
+kind = "regex"
+pattern = "\\bcredential dump\\b"
+case_insensitive = true
+verdict = "unsafe"
+reason = "credential-dump language blocked"
+
+[[security.scanner_checks]]
+kind = "max_size"
+bytes = 1048576
+verdict = "review"
+reason = "review unusually large content"
+
+[[security.scanner_checks]]
 kind = "starlark"
 path = "/etc/calciforge/scanner.star"
 fail_closed = true
@@ -145,6 +167,10 @@ kind = "remote_http"
 url = "http://127.0.0.1:9801"
 fail_closed = true
 ```
+
+Declarative checks are evaluated in order with the rest of the scanner
+pipeline. `verdict` accepts `clean`, `review`, or `unsafe`; omitted verdicts
+default to `unsafe`.
 
 Starlark checks run in-process with `load()` disabled and a bounded call stack.
 The policy file must define `scan(input)` and return `"clean"`, `"review"`,
@@ -216,8 +242,9 @@ custom in-process layer because it is already used by Calciforge policy code,
 has no ambient filesystem or network access in this integration, and is simple
 to audit. WebAssembly remains a possible future plugin layer when stronger fuel
 and memory controls are needed. Declarative checks such as regexes, keyword
-lists, host/body-field rules, and size limits are also good candidates for
-low-latency in-process policy.
+lists, and size limits should be preferred for simple rules. Use Starlark when
+a rule needs conditionals or context-specific branching, and `remote_http` when
+the rule needs networked services or heavyweight dependencies.
 
 ## 🧪 Testing
 
