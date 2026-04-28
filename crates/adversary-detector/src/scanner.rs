@@ -118,7 +118,7 @@ impl ScannerCheckConfig {
 }
 
 /// Configuration for the adversary scanner and transparent proxy.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannerConfig {
     /// Ordered scanner checks to run. Empty means the built-in default
     /// Starlark scanner policy.
@@ -128,7 +128,7 @@ pub struct ScannerConfig {
     /// downgrade Unsafe → Review. Default: 0.3
     #[serde(default = "ScannerConfig::default_discussion_ratio")]
     pub discussion_ratio_threshold: f64,
-    /// Minimum injection signal count before ratio heuristic applies. Default: 3
+    /// Minimum injection signal count before ratio heuristic applies. Default: 1
     #[serde(default = "ScannerConfig::default_min_signals")]
     pub min_signals_for_ratio: usize,
     /// Path to the persistent digest store JSON file.
@@ -158,6 +158,20 @@ pub struct ScannerConfig {
     pub digest_cache_ttl_secs: u64,
 }
 
+impl Default for ScannerConfig {
+    fn default() -> Self {
+        Self {
+            checks: Vec::new(),
+            discussion_ratio_threshold: Self::default_discussion_ratio(),
+            min_signals_for_ratio: Self::default_min_signals(),
+            digest_store_path: None,
+            override_on_review: false,
+            skip_protection_domains: Vec::new(),
+            digest_cache_ttl_secs: 0,
+        }
+    }
+}
+
 impl ScannerConfig {
     /// Default scanner policy used when `checks` is empty.
     pub fn default_checks() -> Vec<ScannerCheckConfig> {
@@ -180,7 +194,7 @@ impl ScannerConfig {
         0.3
     }
     fn default_min_signals() -> usize {
-        3
+        1
     }
 
     /// Check if a URL's domain matches any `skip_protection_domains` entry.
@@ -1178,6 +1192,47 @@ def scan(input):
                 max_callstack: 64,
             }]
         );
+    }
+
+    #[test]
+    fn test_scanner_config_default_matches_deserialized_defaults() {
+        let programmatic = ScannerConfig::default();
+        let deserialized: ScannerConfig =
+            serde_json::from_value(serde_json::json!({})).expect("empty config should deserialize");
+
+        assert_eq!(programmatic.checks, deserialized.checks);
+        assert_eq!(
+            programmatic.discussion_ratio_threshold,
+            deserialized.discussion_ratio_threshold
+        );
+        assert_eq!(
+            programmatic.min_signals_for_ratio,
+            deserialized.min_signals_for_ratio
+        );
+        assert_eq!(
+            programmatic.digest_store_path,
+            deserialized.digest_store_path
+        );
+        assert_eq!(
+            programmatic.override_on_review,
+            deserialized.override_on_review
+        );
+        assert_eq!(
+            programmatic.skip_protection_domains,
+            deserialized.skip_protection_domains
+        );
+        assert_eq!(
+            programmatic.digest_cache_ttl_secs,
+            deserialized.digest_cache_ttl_secs
+        );
+
+        assert!(programmatic.checks.is_empty());
+        assert_eq!(programmatic.discussion_ratio_threshold, 0.3);
+        assert_eq!(programmatic.min_signals_for_ratio, 1);
+        assert_eq!(programmatic.digest_store_path, None);
+        assert!(!programmatic.override_on_review);
+        assert!(programmatic.skip_protection_domains.is_empty());
+        assert_eq!(programmatic.digest_cache_ttl_secs, 0);
     }
 
     #[test]
