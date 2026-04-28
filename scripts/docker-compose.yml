@@ -1,90 +1,47 @@
-version: "3.9"
-
-# Realistic integration test stack for Calciforge + OneCLI
-# This stack reproduces the bugs we found manually:
-# 1. Path routing 404s
-# 2. Credential injection
-# 3. Config file location issues
-# 4. Tool calling through proxy
+# Realistic local staging smoke stack for Calciforge's model gateway.
+#
+# The stack intentionally avoids real provider credentials. `mock-llm` exposes
+# an OpenAI-compatible `/v1` API; Calciforge proxies to it using the same HTTP
+# backend path used for local OpenAI-compatible providers.
 
 services:
-  # Mock VaultWarden for credential storage
-  vaultwarden:
-    image: vaultwarden/server:latest
-    container_name: test-vaultwarden
-    environment:
-      - WEBSOCKET_ENABLED=false
-      - SIGNUPS_ALLOWED=false
-      - ADMIN_TOKEN=test-admin-token
-    volumes:
-      - vault-data:/data
-    ports:
-      - "8888:80"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/accounts/prelogin"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # OneCLI credential proxy
-  secrets:
-    build:
-      context: ../../
-      dockerfile: crates/secrets-client/Dockerfile
-    container_name: test-secrets
-    environment:
-      - SECRETS_BIND=0.0.0.0:8081
-      - VAULTWARDEN_URL=http://vaultwarden:80
-      - VAULTWARDEN_TOKEN=test-admin-token
-    ports:
-      - "8081:8081"
-    depends_on:
-      vaultwarden:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
-      interval: 3s
-      timeout: 2s
-      retries: 10
-
-  # Mock LLM API that returns tool_calls
   mock-llm:
     image: python:3.11-slim
     container_name: test-mock-llm
     volumes:
       - ./mock-llm.py:/app/mock-llm.py:ro
-    command: ["sh", "-c", "pip install flask && python /app/mock-llm.py"]
+    command: ["sh", "-c", "pip install --no-cache-dir flask && python /app/mock-llm.py"]
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
       interval: 3s
       timeout: 2s
-      retries: 10
+      retries: 20
 
-  # Calciforge with test config
   calciforge:
     build:
-      context: ../../
+      context: ..
       dockerfile: crates/calciforge/Dockerfile
     container_name: test-calciforge
     volumes:
       - ./test-config.toml:/root/.calciforge/config.toml:ro
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=calciforge=debug
+    command: ["--config", "/root/.calciforge/config.toml", "--proxy-only"]
     ports:
       - "18792:18792"
-      - "18793:18793"
     depends_on:
-      secrets:
-        condition: service_healthy
       mock-llm:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:18792/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18792/health"]
       interval: 5s
       timeout: 3s
-      retries: 10
-
-volumes:
-  vault-data:
+      retries: 20

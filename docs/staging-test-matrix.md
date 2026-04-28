@@ -56,6 +56,12 @@ Scope:
 
 Purpose: realism and hardening beyond hosted CI limits.
 
+Automation:
+
+- `.github/workflows/staging-nightly.yml` runs on a schedule and by manual
+  dispatch. It currently exercises the Docker model-gateway smoke stack, real
+  Matrix DM E2E, and synthetic model gateway E2E.
+
 Recommended environment:
 
 - Dedicated VM(s) or self-hosted runner(s) with Docker available.
@@ -125,10 +131,10 @@ Rationale: keep speed benefits without hiding stateful bugs.
 
 ## Immediate Next Steps
 
-1. Convert `scripts/manual-docker-test.sh` output into machine-readable pass/fail summary.
-2. Promote the existing real Matrix and synthetic gateway E2E scripts into a
-   reusable nightly staging workflow on a Docker-capable runner.
-3. Archive logs, metrics, `doctor` summaries, and service-state snapshots as CI
-   artifacts.
-4. Add explicit security assertions for approval/audit invariants and outbound
+1. Add failure-injection cases to the nightly Docker smoke stack.
+2. Add release-candidate soak mode with longer runtime and retained latency
+   histograms.
+3. Add explicit security assertions for approval/audit invariants and outbound
    scanner policy behavior.
+4. Extend artifact retention beyond Docker logs and JSONL summaries once metrics
+   export is stable.

@@ -2,6 +2,7 @@
 .gga
 target/
 target-local/
+.tmp/
 vendor/
 *.orig
 mutants.out/

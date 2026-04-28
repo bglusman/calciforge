@@ -1,48 +1,15 @@
-# Test config that reproduces bugs we found manually
-# This config intentionally has issues that tests should catch
-
+[calciforge]
 version = 2
 
-# Intentionally put [memory] BEFORE agents (correct order)
-[memory]
-pre_read_hook = "none"
+[proxy]
+enabled = true
+bind = "0.0.0.0:18792"
+backend_type = "http"
+backend_url = "http://mock-llm:8000/v1"
+backend_api_key = "test-token"
+timeout_seconds = 30
 
-# Agent that uses OneCLI through the proxy
-# This tests: credential injection, path routing, tool calling
-[[agents]]
-id = "test-openai"
-kind = "openclaw-http"
-endpoint = "http://secrets:8081"
-api_key = "dummy-token"
-timeout_ms = 30000
-aliases = ["openai-test"]
-
-# CLI agent that doesn't need api_key (should work)
-[[agents]]
-id = "test-cli"
-kind = "cli"
-command = "/bin/echo"
-args = ["test"]
-timeout_ms = 10000
-
-# This agent has WRONG kind (should fail validation)
-# Tests: unknown adapter kind detection
-[[agents]]
-id = "bad-agent"
-kind = "openclaw"  # WRONG - should be openclaw-http
-endpoint = "http://localhost:8080"
-api_key = "test"
-
-# This agent is missing api_key (should fail for openclaw-http)
-# Tests: missing credential detection
-[[agents]]
-id = "missing-key-agent"
-kind = "openclaw-http"
-endpoint = "http://localhost:8080"
-# Missing: api_key
-timeout_ms = 30000
-
-# Identity for testing
-[[identities]]
-id = "test-user"
-name = "Test User"
+[proxy.token_estimator]
+strategy = "char_ratio"
+chars_per_token = 1.0
+safety_margin = 1.0

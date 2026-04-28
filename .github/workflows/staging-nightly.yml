@@ -1,0 +1,95 @@
+name: Staging Nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Early UTC morning, after normal PR activity has usually settled.
+    - cron: "17 7 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  docker-smoke:
+    name: Docker Gateway Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run Docker smoke stack
+        run: bash scripts/manual-docker-test.sh
+        env:
+          CALCIFORGE_STAGING_ARTIFACT_DIR: staging-artifacts/docker-smoke
+
+      - name: Upload Docker smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-smoke-artifacts
+          path: staging-artifacts/docker-smoke
+          if-no-files-found: ignore
+
+  real-matrix-e2e:
+    name: Real Matrix E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-staging-matrix-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Calciforge with Matrix channel
+        run: cargo build -p calciforge --features channel-matrix
+
+      - name: Run real Matrix homeserver E2E
+        run: python3 scripts/matrix-real-e2e.py
+
+  synthetic-gateway-e2e:
+    name: Synthetic Gateway E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-staging-synthetic-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Calciforge
+        run: cargo build -p calciforge
+
+      - name: Run synthetic model gateway E2E
+        run: python3 scripts/model-gateway-synthetic-e2e.py
