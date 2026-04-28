@@ -21,7 +21,7 @@ and failure modes.
 | Codex CLI | `kind = "codex-cli"` or `[[exec_models]]` | Good fit when the Unix account running Calciforge owns Codex credentials. Keep chat-facing agents conservative unless the channel is trusted. |
 | Claude Code | `kind = "cli"` or `acpx` | Use `claude -p` for simple subscription-backed prompt execution. Use `acpx` when ACP sessions are needed. |
 | OpenClaw | `openclaw-channel` | Preferred path for richer agent runtime, skills, plugins, provider routing, and slash commands. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
-| OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Use this for models, not OpenClaw agent identities. |
+| OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
 | opencode | `acpx` or generic CLI | Model-agnostic terminal agent with a mature CLI/TUI surface. Prefer ACP when available. |
 | Dirac | `kind = "dirac-cli"` | Good scriptable fit. The adapter uses `--yolo --json`, sends the user task on stdin, ignores internal JSON event spam, and returns the final `completion_result`. |
 | AgentSwift | Not supported directly | Interesting iOS-specific workflow, but current public shape is a SwiftUI app that drives Claude plus `xcodebuildmcp`/`openspec`, not a stable CLI adapter surface. Revisit if it exposes a noninteractive JSON/ACP/HTTP protocol. |

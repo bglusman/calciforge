@@ -1136,6 +1136,7 @@ printf 'mock-agent saw: %s\n' "$1"
                 api_key: None,
                 api_key_file: None,
                 openclaw_agent_id: None,
+                allow_model_override: None,
                 reply_port: None,
                 reply_auth_token: None,
                 command: Some(agent_path.to_string_lossy().to_string()),

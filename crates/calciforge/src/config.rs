@@ -257,6 +257,12 @@ pub struct AgentConfig {
     /// OpenClaw agent lane id for kind = "openclaw-channel" (defaults to this agent id).
     #[serde(default)]
     pub openclaw_agent_id: Option<String>,
+    /// Whether Calciforge should forward per-identity `!model` overrides to
+    /// this agent. Defaults are adapter-specific; set this explicitly for
+    /// generic OpenAI-compatible gateway agents that should accept synthetic
+    /// model names.
+    #[serde(default)]
+    pub allow_model_override: Option<bool>,
     /// Local port for OpenClaw callback replies on POST /hooks/reply (default 18797).
     #[serde(default)]
     pub reply_port: Option<u16>,

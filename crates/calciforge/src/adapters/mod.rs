@@ -180,6 +180,23 @@ pub fn agent_supports_native_commands(agent: &AgentConfig) -> bool {
     matches!(agent.kind.as_str(), "openclaw-channel")
 }
 
+/// Return true if this adapter kind intentionally consumes Calciforge's
+/// per-identity `!model` override.
+///
+/// Keep this as an explicit allowlist. Model IDs are protocol-specific: sending
+/// a model-gateway synthetic ID to an agent endpoint that expects native agent
+/// model IDs can produce hard-to-diagnose HTTP 400/protocol errors.
+pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
+    if let Some(allow_model_override) = agent.allow_model_override {
+        return allow_model_override;
+    }
+
+    matches!(
+        agent.kind.as_str(),
+        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "codex-cli"
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -388,6 +405,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -409,6 +427,7 @@ mod tests {
             api_key: Some("zc_abc123".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -430,6 +449,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: Some("/usr/local/bin/ironclaw".to_string()),
@@ -481,6 +501,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -505,6 +526,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -529,6 +551,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -555,6 +578,7 @@ mod tests {
             api_key: None, // missing!
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -580,6 +604,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: Some("claude".to_string()),
@@ -609,6 +634,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None, // missing!
@@ -635,6 +661,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None, // missing!
@@ -674,6 +701,35 @@ mod tests {
     }
 
     #[test]
+    fn test_model_override_support_is_explicit_allowlist() {
+        let mut agent = openclaw_agent();
+        agent.kind = "openclaw-channel".to_string();
+        assert!(
+            !agent_supports_model_override(&agent),
+            "OpenClaw channel model changes should use native OpenClaw commands, not Calciforge synthetic model IDs"
+        );
+
+        agent.kind = "openai-compat".to_string();
+        assert!(
+            !agent_supports_model_override(&agent),
+            "OpenAI-compatible endpoints require explicit opt-in because supported model IDs are endpoint-specific"
+        );
+
+        agent.allow_model_override = Some(true);
+        assert!(agent_supports_model_override(&agent));
+        agent.allow_model_override = None;
+
+        agent.kind = "cli".to_string();
+        assert!(agent_supports_model_override(&agent));
+
+        agent.kind = "acpx".to_string();
+        assert!(
+            !agent_supports_model_override(&agent),
+            "ACP/ACPX model handling is provider/session-specific until implemented explicitly"
+        );
+    }
+
+    #[test]
     fn test_openclaw_channel_uses_api_key_over_auth_token() {
         // api_key should take priority over auth_token
         let agent = AgentConfig {
@@ -686,6 +742,7 @@ mod tests {
             api_key: Some("new-api-key".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -714,6 +771,7 @@ mod tests {
             api_key: None,
             api_key_file: Some(key_file),
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -739,6 +797,7 @@ mod tests {
             api_key: Some("gateway-token".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -765,6 +824,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -787,6 +847,7 @@ mod tests {
             api_key: Some("REPLACE_WITH_HOOKS_TOKEN".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -822,6 +883,7 @@ mod tests {
             api_key: None, // no api_key — falls back to auth_token
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,

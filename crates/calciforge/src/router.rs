@@ -8,7 +8,8 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::adapters::{
-    agent_supports_native_commands, build_adapter, AdapterError, DispatchContext,
+    agent_supports_model_override, agent_supports_native_commands, build_adapter, AdapterError,
+    DispatchContext,
 };
 use crate::config::{AgentConfig, CalciforgeConfig};
 use crate::context::is_native_agent_command;
@@ -75,12 +76,22 @@ impl Router {
             anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
         })?;
 
-        let effective_model_override =
-            if agent_supports_native_commands(agent) && is_native_agent_command(text) {
-                None
-            } else {
-                model_override
-            };
+        let effective_model_override = if agent_supports_native_commands(agent)
+            && is_native_agent_command(text)
+        {
+            None
+        } else if agent_supports_model_override(agent) {
+            model_override
+        } else {
+            if model_override.is_some() {
+                info!(
+                    agent_id = %agent.id,
+                    kind = %agent.kind,
+                    "active model override ignored because adapter kind does not consume Calciforge model overrides"
+                );
+            }
+            None
+        };
 
         info!(
             agent_id = %agent.id,
@@ -168,6 +179,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -189,6 +201,7 @@ mod tests {
             api_key: Some("zc_test".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -210,6 +223,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: Some("/bin/echo".to_string()),
@@ -237,6 +251,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -291,6 +306,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: Some("/nonexistent/bin/xyzzy".to_string()),
