@@ -9,6 +9,14 @@ version = 1
 profile = "balanced"  # open | balanced | hardened | paranoid
 scan_outbound = false
 
+# Optional scanner pipeline extension. Empty scanner_checks uses the local
+# structural + semantic defaults.
+# [[security.scanner_checks]]
+# kind = "starlark"
+# path = "/etc/calciforge/scanner.star"
+# fail_closed = true
+# max_callstack = 64
+
 # ============================================================================
 # Identity Registry - Who can use Calciforge
 # ============================================================================

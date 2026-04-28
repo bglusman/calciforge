@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use adversary_detector::ScannerCheckConfig;
 use serde::{Deserialize, Serialize};
 
 /// What action to take for a request/response.
@@ -50,6 +51,10 @@ pub struct GatewayConfig {
     pub bypass_domains: Vec<String>,
     /// Log all traffic (even allowed) for audit
     pub audit_log: bool,
+    /// Ordered adversary scanner checks for inbound and outbound proxy
+    /// scanning. Empty uses the adversary-detector default local checks.
+    #[serde(default)]
+    pub scanner_checks: Vec<ScannerCheckConfig>,
     /// Per-secret destination allowlist. Keys are secret names (the
     /// `NAME` from `{{secret:NAME}}`); values are host patterns the
     /// secret may be substituted into. Patterns follow the same
@@ -99,6 +104,7 @@ impl Default for GatewayConfig {
                 "10.*.*.*".into(),
             ],
             audit_log: true,
+            scanner_checks: Vec::new(),
             // Empty by default — preserves current behavior (no secret
             // is destination-locked). Operators opt in per-secret as
             // they tighten the deployment.
@@ -171,6 +177,19 @@ mod tests {
             inject_credentials: false,
             bypass_domains: vec!["a.example".into(), "b.example".into()],
             audit_log: false,
+            scanner_checks: vec![
+                ScannerCheckConfig::Structural,
+                ScannerCheckConfig::Semantic,
+                ScannerCheckConfig::RemoteHttp {
+                    url: "http://127.0.0.1:9801".into(),
+                    fail_closed: true,
+                },
+                ScannerCheckConfig::Starlark {
+                    path: "/etc/calciforge/scanner.star".into(),
+                    fail_closed: true,
+                    max_callstack: 32,
+                },
+            ],
             secret_destination_allowlist: HashMap::from([
                 ("MY_KEY".into(), vec!["api.example.com".into()]),
                 ("LOCKED".into(), vec![]),

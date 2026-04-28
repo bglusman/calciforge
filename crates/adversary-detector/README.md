@@ -45,15 +45,75 @@ detector.mark_override(url, &digest).await;
 // (new content = fresh scan, human must re-approve)
 ```
 
-## Three-Layer Scanning Pipeline
+## Configurable Scanning Pipeline
 
 | Layer | What it detects | Mechanism |
 |-------|----------------|-----------|
 | **Layer 1 — Structural** | Zero-width chars, unicode tags, CSS hiding, base64 blobs | Regex patterns |
 | **Layer 2 — Semantic** | Prompt injection phrases, PII harvesting, exfiltration signals | Aho-Corasick + regex, with discussion-context heuristic |
-| **Layer 3 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
+| **Layer 3 — Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
+| **Layer 4 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
 
-Layer 1 and 2 run locally. Layer 3 is optional and non-blocking — if the service is unreachable, L1+L2 results stand.
+By default, layer 1 and 2 run locally. Starlark checks are optional low-latency
+extension points for deployment-specific policy. Remote checks are optional
+extension points for heavyweight policy or LLM-based classification. Both
+custom check types can be configured best-effort (`fail_closed = false`) or
+fail-closed (`fail_closed = true`) if unavailable.
+
+```rust
+use adversary_detector::{ScannerCheckConfig, ScannerConfig};
+
+let config = ScannerConfig {
+    checks: vec![
+        ScannerCheckConfig::Structural,
+        ScannerCheckConfig::Semantic,
+        ScannerCheckConfig::Starlark {
+            path: "/etc/calciforge/scanner.star".into(),
+            fail_closed: true,
+            max_callstack: 64,
+        },
+        ScannerCheckConfig::RemoteHttp {
+            url: "http://127.0.0.1:9801".into(),
+            fail_closed: true,
+        },
+    ],
+    ..Default::default()
+};
+```
+
+The Starlark policy must define `scan(input)` and return `"clean"`, `"review"`,
+`"unsafe"`, or a dict with `verdict` and optional `reason`. `load()` is
+disabled, the call stack is bounded, and parsed policies are cached by file
+metadata so normal scans avoid repeated parsing. See
+`examples/security-scanner.star` for a starter policy.
+
+To measure local policy overhead on your hardware:
+
+```sh
+cargo run -p adversary-detector --example starlark-latency -- \
+  examples/security-scanner.star 1000
+```
+
+The remote service contract is:
+
+```http
+POST /scan
+Content-Type: application/json
+
+{"url":"https://example.com","content":"...","context":"api"}
+```
+
+and the response is:
+
+```json
+{"verdict":"clean|review|unsafe","reason":"short operator-facing reason"}
+```
+
+See `scripts/remote-llm-scanner.py` for a dependency-free example that wraps
+an OpenAI-compatible chat-completions model with a classifier prompt covering
+prompt injection, exfiltration, malicious tool use, false authority,
+cross-agent propagation, denial-of-service attempts, destructive cleanup,
+unbounded resource use, and related agent-governance failures.
 
 ### Discussion Context Heuristic
 

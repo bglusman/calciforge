@@ -122,10 +122,175 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     ));
 
     check_secret_files(&config, &mut report);
+    check_secret_tooling(&mut report);
+    check_proxy_environment(&mut report);
     check_agent_wiring(&config, no_network, &mut report).await;
     check_persisted_state(&config, &mut report);
 
     Ok(report)
+}
+
+fn check_secret_tooling(report: &mut DoctorReport) {
+    match which("fnox") {
+        Some(path) => report.ok(format!("fnox found at {}", path.display())),
+        None => report.warn(
+            "fnox not found in PATH; env and Vaultwarden secrets may still work, \
+             but fnox-backed discovery/substitution will fail",
+        ),
+    }
+
+    match which("mcp-server") {
+        Some(path) => report.ok(format!(
+            "calciforge secret MCP server found at {}",
+            path.display()
+        )),
+        None => report.warn(
+            "mcp-server not found in PATH; agents will not get Calciforge MCP \
+             secret-name discovery unless configured with an absolute path",
+        ),
+    }
+
+    match which("calciforge-secrets") {
+        Some(path) => report.ok(format!(
+            "calciforge-secrets CLI found at {}",
+            path.display()
+        )),
+        None => report.warn(
+            "calciforge-secrets CLI not found in PATH; non-MCP secret-name discovery \
+             is unavailable",
+        ),
+    }
+}
+
+#[derive(Debug, Default)]
+struct ProxyEnvironment {
+    http: Option<String>,
+    https: Option<String>,
+    no_proxy: Option<String>,
+}
+
+fn check_proxy_environment(report: &mut DoctorReport) {
+    check_proxy_environment_in(proxy_environment_from_process(), report);
+}
+
+fn proxy_environment_from_process() -> ProxyEnvironment {
+    ProxyEnvironment {
+        http: std::env::var("HTTP_PROXY")
+            .ok()
+            .or_else(|| std::env::var("http_proxy").ok()),
+        https: std::env::var("HTTPS_PROXY")
+            .ok()
+            .or_else(|| std::env::var("https_proxy").ok()),
+        no_proxy: std::env::var("NO_PROXY")
+            .ok()
+            .or_else(|| std::env::var("no_proxy").ok()),
+    }
+}
+
+fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) {
+    match (env.http, env.https) {
+        (Some(http), Some(https)) => {
+            if http == https {
+                report.ok(format!(
+                    "HTTP(S)_PROXY configured: {}",
+                    display_proxy_value(&http)
+                ));
+            } else {
+                report.warn(format!(
+                    "HTTP_PROXY and HTTPS_PROXY differ; HTTP_PROXY={}, HTTPS_PROXY={}",
+                    display_proxy_value(&http),
+                    display_proxy_value(&https)
+                ));
+            }
+        }
+        (Some(http), None) => report.warn(format!(
+            "HTTP_PROXY is set ({}) but HTTPS_PROXY is not; HTTPS agent traffic may bypass security-proxy",
+            display_proxy_value(&http)
+        )),
+        (None, Some(https)) => report.warn(format!(
+            "HTTPS_PROXY is set ({}) but HTTP_PROXY is not; HTTP agent traffic may bypass security-proxy",
+            display_proxy_value(&https)
+        )),
+        (None, None) => report.warn(
+            "HTTP_PROXY/HTTPS_PROXY are not set in this process; subprocess agents \
+             may bypass security-proxy unless OS/network enforcement is active",
+        ),
+    }
+
+    let no_proxy = env.no_proxy.unwrap_or_default();
+    if no_proxy.contains("127.0.0.1") || no_proxy.contains("localhost") {
+        report.ok("NO_PROXY includes local loopback");
+    } else {
+        report.warn("NO_PROXY does not include localhost/127.0.0.1; local health calls may loop through security-proxy");
+    }
+}
+
+fn display_proxy_value(value: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return value.to_string();
+    };
+
+    if url.username().is_empty() && url.password().is_none() {
+        return value.to_string();
+    }
+
+    let _ = url.set_username("redacted");
+    let _ = url.set_password(Some("redacted"));
+    url.to_string()
+}
+
+fn which(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        executable_candidates(&dir, bin)
+            .into_iter()
+            .find(|candidate| is_executable_file(candidate))
+    })
+}
+
+#[cfg(windows)]
+fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
+    if Path::new(bin).extension().is_some() {
+        return vec![dir.join(bin)];
+    }
+
+    let pathext = std::env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+
+    pathext
+        .split(';')
+        .filter(|ext| !ext.trim().is_empty())
+        .map(|ext| dir.join(format!("{bin}{ext}")))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
+    vec![dir.join(bin)]
+}
+
+fn is_executable_file(candidate: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(candidate) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
+    }
 }
 
 fn check_secret_files(config: &CalciforgeConfig, report: &mut DoctorReport) {
@@ -547,5 +712,78 @@ mod tests {
             "http://127.0.0.1:18793",
             "127.0.0.1:18083"
         ));
+    }
+
+    #[test]
+    fn proxy_environment_warns_when_missing() {
+        let mut report = DoctorReport::default();
+        check_proxy_environment_in(
+            ProxyEnvironment {
+                http: None,
+                https: None,
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("HTTP_PROXY/HTTPS_PROXY are not set")
+        }));
+    }
+
+    #[test]
+    fn proxy_environment_accepts_matching_http_and_https_proxy() {
+        let mut report = DoctorReport::default();
+        check_proxy_environment_in(
+            ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok && finding.message.contains("HTTP(S)_PROXY configured")
+        }));
+    }
+
+    #[test]
+    fn proxy_environment_redacts_credentials() {
+        let proxy = format!(
+            "{}://{}:{}@{}",
+            "http", "user", "pass", "proxy.example:8080"
+        );
+        assert_eq!(
+            display_proxy_value(&proxy),
+            format!(
+                "{}://{}:{}@{}/",
+                "http", "redacted", "redacted", "proxy.example:8080"
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_detection_rejects_non_executable_regular_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("fnox");
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write file");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        assert!(!is_executable_file(&path));
+
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        assert!(is_executable_file(&path));
     }
 }

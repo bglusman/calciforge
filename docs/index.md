@@ -215,10 +215,6 @@ browser form and keeps the value out of Telegram, Matrix, WhatsApp,
 and other chat history:
 
 ```bash
-!secure input OPENAI_API_KEY OpenAI API key
-!secure bulk env-import bulk .env import
-
-# Equivalent host-local commands:
 paste-server OPENAI_API_KEY "OpenAI API key"
 # prints http://127.0.0.1:PORT/paste/<token>
 
@@ -261,6 +257,11 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 (JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
 during the channel-integration cut and is on the
 [roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
+
+The scanner pipeline is configurable: built-in structural and semantic
+checks run locally by default, Starlark policies add low-latency
+operator-specific rules, and optional remote HTTP scanners can host
+heavier DLP or LLM classifier passes.
 
 ### Inbound traffic gating and tool policy
 
@@ -505,11 +506,12 @@ After editing config or moving an agent, run:
 calciforge doctor
 ```
 
-`doctor` validates the config, checks referenced secret files without
-printing values, catches stale active-agent/model state, warns when an
-agent appears to point back into the local model gateway by accident,
-and can probe configured endpoints. Use `calciforge doctor --no-network`
-when you want a local-only check.
+The installer runs `calciforge doctor --no-network` after local service
+installation when a config file exists. `doctor` validates the config,
+checks referenced secret files without printing values, catches stale
+active-agent/model state, warns when an agent appears to point back into
+the local model gateway by accident, and can probe configured endpoints.
+Use `calciforge doctor --no-network` when you want a local-only check.
 
 Route Claude Code through the gateway:
 
