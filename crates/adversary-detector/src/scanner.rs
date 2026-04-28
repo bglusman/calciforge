@@ -6,7 +6,7 @@ use crate::verdict::{ScanContext, ScanVerdict};
 use base64::{engine::general_purpose, Engine as _};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use starlark::{
     collections::SmallMap,
     environment::{Globals, GlobalsBuilder, Module},
@@ -34,7 +34,7 @@ const STARLARK_REGEX_CACHE_MAX_ENTRIES: usize = 256;
 /// arbitrary policy with local Starlark or by running their own service and
 /// adding a `remote_http` check; Rust integrations can implement
 /// [`ScannerCheck`] directly.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScannerCheckConfig {
     /// Call an external HTTP scanner compatible with the adversary-detector
@@ -62,6 +62,53 @@ pub enum ScannerCheckConfig {
         #[serde(default = "ScannerCheckConfig::default_starlark_max_callstack")]
         max_callstack: usize,
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct RawScannerCheckConfig {
+    kind: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    fail_closed: bool,
+    #[serde(default)]
+    max_callstack: Option<usize>,
+}
+
+impl<'de> Deserialize<'de> for ScannerCheckConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawScannerCheckConfig::deserialize(deserializer)?;
+        match raw.kind.as_str() {
+            "remote_http" => Ok(Self::RemoteHttp {
+                url: raw.url.ok_or_else(|| de::Error::missing_field("url"))?,
+                fail_closed: raw.fail_closed,
+            }),
+            "starlark" => Ok(Self::Starlark {
+                path: raw.path.ok_or_else(|| de::Error::missing_field("path"))?,
+                fail_closed: raw.fail_closed,
+                max_callstack: raw
+                    .max_callstack
+                    .unwrap_or_else(Self::default_starlark_max_callstack),
+            }),
+            "structural" | "semantic" | "regex" | "keywords" | "max_size" => {
+                Err(de::Error::custom(format!(
+                    "scanner check kind {:?} was removed; replace it with kind = \
+                     \"starlark\" using /etc/calciforge/scanner-policies/default-scanner.star \
+                     or kind = \"remote_http\" for an external scanner",
+                    raw.kind
+                )))
+            }
+            other => Err(de::Error::unknown_variant(
+                other,
+                &["starlark", "remote_http"],
+            )),
+        }
+    }
 }
 
 impl ScannerCheckConfig {
@@ -1057,6 +1104,19 @@ def scan(input):
                 max_callstack: 64,
             }]
         );
+    }
+
+    #[test]
+    fn test_removed_scanner_check_variants_report_migration_hint() {
+        let err = serde_json::from_value::<ScannerCheckConfig>(serde_json::json!({
+            "kind": "structural"
+        }))
+        .expect_err("removed check kind should fail with migration hint");
+
+        let message = err.to_string();
+        assert!(message.contains("scanner check kind \"structural\" was removed"));
+        assert!(message.contains("kind = \"starlark\""));
+        assert!(message.contains("kind = \"remote_http\""));
     }
 
     #[tokio::test]
