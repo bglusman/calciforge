@@ -3,14 +3,15 @@
 //! Implements the per-claw install steps in order:
 //!
 //! 1. SSH connectivity test (SSH-configurable claws only)
-//! 2. Endpoint health check
-//! 3. Backup config (SSH-configurable claws only)
-//! 4. Version detection
-//! 5. Compatibility check
-//! 6. Proposed changes display + confirmation
-//! 7. Apply changes (SSH-configurable claws only)
-//! 8. Post-apply health check
-//! 9. Rollback on failure
+//! 2. Remote config permission preflight (SSH-configurable claws only)
+//! 3. Endpoint health check
+//! 4. Backup config (SSH-configurable claws only)
+//! 5. Version detection
+//! 6. Compatibility check
+//! 7. Proposed changes display + confirmation
+//! 8. Apply changes (SSH-configurable claws only)
+//! 9. Post-apply health check
+//! 10. Rollback on failure
 //!
 //! Non-SSH adapters skip steps 1, 3, 7, 9; they just register in Calciforge's
 //! config and pass the health check.
@@ -41,8 +42,8 @@ use super::{
         VersionCompatibility,
     },
     ssh::{
-        detect_openclaw_version, detect_zeroclaw_version, test_connectivity, MockSshClient,
-        RealSshClient, SshClient,
+        detect_openclaw_version, detect_zeroclaw_version, test_connectivity,
+        test_remote_config_access, MockSshClient, RealSshClient, SshClient,
     },
 };
 
@@ -69,6 +70,7 @@ pub struct StepResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallStep {
     SshConnectivity,
+    RemoteConfigAccess,
     HealthCheckBaseline,
     Backup,
     VersionDetection,
@@ -82,6 +84,7 @@ impl std::fmt::Display for InstallStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallStep::SshConnectivity => write!(f, "SSH connectivity"),
+            InstallStep::RemoteConfigAccess => write!(f, "remote config access"),
             InstallStep::HealthCheckBaseline => write!(f, "baseline health check"),
             InstallStep::Backup => write!(f, "config backup"),
             InstallStep::VersionDetection => write!(f, "version detection"),
@@ -228,7 +231,29 @@ async fn install_claw(
         });
     }
 
-    // ── Step 2: Baseline health check ────────────────────────────────────────
+    // ── Step 2: Remote config permission preflight ───────────────────────────
+    if claw.needs_ssh_config() {
+        let step = run_remote_config_access(claw, deps);
+        let failed = step.outcome.is_failure();
+        steps.push(step);
+        if failed {
+            return ClawInstallResult {
+                name: claw.name.clone(),
+                success: false,
+                steps,
+                rollback_status: Some(RollbackStatus::NotApplicable),
+            };
+        }
+    } else {
+        steps.push(StepResult {
+            step: InstallStep::RemoteConfigAccess,
+            outcome: StepOutcome::Skipped {
+                _reason: "no remote config for this adapter kind".into(),
+            },
+        });
+    }
+
+    // ── Step 3: Baseline health check ────────────────────────────────────────
     let health_step = run_health_check(claw, deps, InstallStep::HealthCheckBaseline).await;
     let health_failed = health_step.outcome.is_failure();
     steps.push(health_step);
@@ -242,7 +267,7 @@ async fn install_claw(
         };
     }
 
-    // ── Step 3: Backup ───────────────────────────────────────────────────────
+    // ── Step 4: Backup ───────────────────────────────────────────────────────
     if claw.needs_ssh_config() {
         let (backup_step, bak_path) = run_backup(claw, args, deps);
         let failed = backup_step.outcome.is_failure();
@@ -265,7 +290,7 @@ async fn install_claw(
         });
     }
 
-    // ── Step 4: Version detection ────────────────────────────────────────────
+    // ── Step 5: Version detection ────────────────────────────────────────────
     let detected_version = run_version_detection(claw, deps);
     let version_str = detected_version
         .clone()
@@ -277,7 +302,7 @@ async fn install_claw(
         },
     });
 
-    // ── Step 5: Compatibility check ──────────────────────────────────────────
+    // ── Step 6: Compatibility check ──────────────────────────────────────────
     let compat = check_version_compatibility(&claw.adapter, &version_str);
     let compat_step = StepResult {
         step: InstallStep::CompatibilityCheck,
@@ -307,14 +332,14 @@ async fn install_claw(
         };
     }
 
-    // ── Step 6: Proposed changes ─────────────────────────────────────────────
+    // ── Step 7: Proposed changes ─────────────────────────────────────────────
     let proposed = describe_proposed_changes(claw);
     steps.push(StepResult {
         step: InstallStep::ProposedChanges,
         outcome: StepOutcome::Ok { _detail: proposed },
     });
 
-    // ── Step 7: Apply ────────────────────────────────────────────────────────
+    // ── Step 8: Apply ────────────────────────────────────────────────────────
     let apply_step = run_apply(claw, args, deps, backup_path.as_deref());
     let apply_failed = apply_step.outcome.is_failure();
     steps.push(apply_step);
@@ -330,7 +355,7 @@ async fn install_claw(
         };
     }
 
-    // ── Step 8: Post-apply health check ──────────────────────────────────────
+    // ── Step 9: Post-apply health check ──────────────────────────────────────
     let post_health = run_health_check(claw, deps, InstallStep::HealthCheckPostApply).await;
     let post_failed = post_health.outcome.is_failure();
     steps.push(post_health);
@@ -371,6 +396,31 @@ fn run_ssh_connectivity(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
             error!(claw = %claw.name, host = %claw.host, err = %e, "SSH connectivity failed");
             StepResult {
                 step: InstallStep::SshConnectivity,
+                outcome: StepOutcome::Failed {
+                    error: e.to_string(),
+                },
+            }
+        }
+    }
+}
+
+fn run_remote_config_access(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
+    let key = claw.ssh_key.as_deref();
+    let config_path = remote_config_path(claw);
+    match test_remote_config_access(deps.ssh.as_ref(), &claw.host, key, &config_path) {
+        Ok(()) => StepResult {
+            step: InstallStep::RemoteConfigAccess,
+            outcome: StepOutcome::Ok {
+                _detail: format!(
+                    "remote config {} is readable and its directory is writable",
+                    config_path
+                ),
+            },
+        },
+        Err(e) => {
+            error!(claw = %claw.name, host = %claw.host, err = %e, "remote config access failed");
+            StepResult {
+                step: InstallStep::RemoteConfigAccess,
                 outcome: StepOutcome::Failed {
                     error: e.to_string(),
                 },
@@ -502,7 +552,7 @@ fn run_version_detection(claw: &ClawTarget, deps: &ExecutorDeps) -> Option<Strin
     }
     let key = claw.ssh_key.as_deref();
     match &claw.adapter {
-        ClawKind::OpenClawHttp => {
+        ClawKind::OpenClawChannel => {
             let config_path = remote_config_path(claw);
             detect_openclaw_version(deps.ssh.as_ref(), &claw.host, key, &config_path)
                 .ok()
@@ -616,7 +666,7 @@ fn attempt_rollback(
 /// The remote path to the config file for a claw, based on adapter kind.
 fn remote_config_path(claw: &ClawTarget) -> String {
     match &claw.adapter {
-        ClawKind::OpenClawHttp => "~/.openclaw/openclaw.json".to_string(),
+        ClawKind::OpenClawChannel => "~/.openclaw/openclaw.json".to_string(),
         ClawKind::ZeroClawNative => "~/.config/zeroclaw/config.toml".to_string(),
         _ => String::new(),
     }
@@ -625,7 +675,7 @@ fn remote_config_path(claw: &ClawTarget) -> String {
 /// Describe what the apply step will do for display.
 fn describe_proposed_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
-        ClawKind::OpenClawHttp => format!(
+        ClawKind::OpenClawChannel => format!(
             "Will add Calciforge webhook hook entry to openclaw.json on {} \
              (hooks.enabled = true, hooks.token = <generated>)",
             claw.host
@@ -651,7 +701,7 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
 
 fn describe_apply_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
-        ClawKind::OpenClawHttp => format!(
+        ClawKind::OpenClawChannel => format!(
             "would patch openclaw.json on {} to add Calciforge hook entry",
             claw.host
         ),
@@ -665,7 +715,7 @@ fn describe_apply_changes(claw: &ClawTarget) -> String {
 
 /// Apply remote config changes for SSH-configurable claws.
 ///
-/// For `OpenClawHttp`: reads `openclaw.json` via SSH, strips JSON5 comments,
+/// For `OpenClawChannel`: reads `openclaw.json` via SSH, strips JSON5 comments,
 /// parses as JSON, injects the Calciforge webhook hook entry under
 /// `hooks.entries.calciforge`, serializes back to pretty JSON, writes via SSH,
 /// and verifies the written file parses correctly.
@@ -684,7 +734,7 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
         .map_err(|e| anyhow::anyhow!("failed to read remote config: {}", e))?;
 
     let patched = match &claw.adapter {
-        ClawKind::OpenClawHttp => patch_openclaw_config(&current, &claw.name, &claw.endpoint)
+        ClawKind::OpenClawChannel => patch_openclaw_config(&current, &claw.name, &claw.endpoint)
             .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
         ClawKind::ZeroClawNative => {
             // ZeroClaw uses TOML — full patching deferred; use safe stub for now.
@@ -711,7 +761,7 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
         .map_err(|e| anyhow::anyhow!("failed to read back patched config: {}", e))?;
 
     // For OpenClaw: parse the written JSON to confirm it's valid.
-    if let ClawKind::OpenClawHttp = &claw.adapter {
+    if let ClawKind::OpenClawChannel = &claw.adapter {
         parse_json5_relaxed(&written)
             .map_err(|e| anyhow::anyhow!("written openclaw.json is not valid JSON: {}", e))?;
     }
@@ -861,7 +911,7 @@ mod tests {
     fn make_openclaw_claw(healthy: bool) -> (ClawTarget, MockSshClient, MockHealthChecker) {
         let claw = ClawTarget {
             name: "test-claw".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
@@ -869,6 +919,8 @@ mod tests {
 
         let ssh = MockSshClient::new();
         // connectivity OK
+        ssh.push_success("OK\n");
+        // remote config permission preflight
         ssh.push_success("OK\n");
         // backup
         ssh.push_success(""); // cp
@@ -938,7 +990,7 @@ mod tests {
             calciforge_key: Some(PathBuf::from("/tmp/calciforge-ephemeral/id_ed25519")),
             claw_specs: vec![concat!(
                 "name=matrix-e2e-openclaw,",
-                "adapter=openclaw,",
+                "adapter=openclaw-channel,",
                 "host=openclaw@ephemeral-runner.invalid,",
                 "key=/tmp/calciforge-ephemeral/openclaw_id_ed25519,",
                 "endpoint=http://127.0.0.1:18080/hooks/calciforge"
@@ -955,9 +1007,10 @@ mod tests {
         );
         assert_eq!(target.claws.len(), 1);
         assert_eq!(target.claws[0].name, "matrix-e2e-openclaw");
-        assert!(matches!(target.claws[0].adapter, ClawKind::OpenClawHttp));
+        assert!(matches!(target.claws[0].adapter, ClawKind::OpenClawChannel));
 
         let ssh = MockSshClient::new();
+        ssh.push_success("OK\n");
         ssh.push_success("OK\n");
         ssh.push_success("");
         ssh.push_success("EXISTS\n");
@@ -982,6 +1035,7 @@ mod tests {
         let executed_steps = result.steps.iter().map(|s| &s.step).collect::<Vec<_>>();
         let expected_steps = vec![
             &InstallStep::SshConnectivity,
+            &InstallStep::RemoteConfigAccess,
             &InstallStep::HealthCheckBaseline,
             &InstallStep::Backup,
             &InstallStep::VersionDetection,
@@ -1006,6 +1060,13 @@ mod tests {
         assert!(
             index_of(&InstallStep::SshConnectivity) < index_of(&InstallStep::HealthCheckBaseline)
         );
+        assert!(
+            index_of(&InstallStep::SshConnectivity) < index_of(&InstallStep::RemoteConfigAccess)
+        );
+        assert!(
+            index_of(&InstallStep::RemoteConfigAccess)
+                < index_of(&InstallStep::HealthCheckBaseline)
+        );
         assert!(index_of(&InstallStep::HealthCheckBaseline) < index_of(&InstallStep::Backup));
         assert!(
             index_of(&InstallStep::VersionDetection) < index_of(&InstallStep::CompatibilityCheck)
@@ -1022,7 +1083,7 @@ mod tests {
     async fn post_apply_health_check_failure_triggers_rollback() {
         let claw = ClawTarget {
             name: "bad-claw".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
@@ -1030,6 +1091,7 @@ mod tests {
 
         let ssh = MockSshClient::new();
         ssh.push_success("OK\n"); // connectivity
+        ssh.push_success("OK\n"); // remote config permission preflight
         ssh.push_success(""); // backup cp
         ssh.push_success("EXISTS\n"); // backup verify
         ssh.push_success("2026.3.13\n"); // version (jq)
@@ -1062,7 +1124,7 @@ mod tests {
     async fn baseline_health_failure_aborts_without_rollback() {
         let claw = ClawTarget {
             name: "down-claw".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
@@ -1091,7 +1153,7 @@ mod tests {
     async fn ssh_connectivity_failure_aborts() {
         let claw = ClawTarget {
             name: "unreachable".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@unreachable".into(),
             ssh_key: None,
             endpoint: "http://unreachable:18789".into(),
@@ -1115,6 +1177,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_config_permission_failure_aborts_before_backup() {
+        let claw = ClawTarget {
+            name: "no-write".into(),
+            adapter: ClawKind::OpenClawChannel,
+            host: "user@host".into(),
+            ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
+            endpoint: "http://host:18789".into(),
+        };
+
+        let ssh = MockSshClient::new();
+        ssh.push_success("OK\n"); // connectivity
+        ssh.push_response(crate::install::ssh::SshOutput {
+            stdout: String::new(),
+            stderr: "remote config directory is not writable".to_string(),
+            exit_code: 42,
+            success: false,
+        });
+
+        let health = MockHealthChecker::new();
+        let args = InstallArgs::default();
+        let deps = ExecutorDeps::mock(ssh, health);
+
+        let result = install_claw(&claw, &args, &deps).await;
+        assert!(!result.success);
+        let access_step = result
+            .steps
+            .iter()
+            .find(|s| s.step == InstallStep::RemoteConfigAccess)
+            .unwrap();
+        assert!(access_step.outcome.is_failure());
+        assert!(!result.steps.iter().any(|s| s.step == InstallStep::Backup));
+    }
+
+    #[tokio::test]
     async fn dry_run_makes_no_ssh_writes() {
         let (claw, ssh, health) = make_openclaw_claw(true);
 
@@ -1122,6 +1218,7 @@ mod tests {
         // We need to repopulate the mock since make_openclaw_claw pre-loads responses.
         let ssh2 = MockSshClient::new();
         ssh2.push_success("OK\n"); // connectivity
+        ssh2.push_success("OK\n"); // remote config permission preflight
                                    // version detection (jq) — this is a read
         ssh2.push_success("2026.3.13\n");
         // No backup write, no apply write.
@@ -1290,7 +1387,7 @@ mod tests {
     async fn apply_remote_config_via_mock_writes_hooks_entry() {
         let claw = ClawTarget {
             name: "calciforge".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://calciforge.host:18799/webhook".into(),
@@ -1365,7 +1462,7 @@ mod tests {
     fn remote_config_path_openclaw() {
         let claw = ClawTarget {
             name: "x".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "h".into(),
             ssh_key: None,
             endpoint: "http://h".into(),

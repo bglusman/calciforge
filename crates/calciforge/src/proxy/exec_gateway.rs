@@ -184,6 +184,28 @@ impl ExecGateway {
             system_fingerprint: None,
         }
     }
+
+    fn requests_tool_use(req: &ChatCompletionRequest) -> bool {
+        if req.tools.as_ref().is_some_and(|tools| !tools.is_empty()) {
+            return true;
+        }
+
+        match req.tool_choice.as_ref() {
+            None => {}
+            Some(crate::proxy::openai::ToolChoice::Mode(mode))
+                if mode.trim().eq_ignore_ascii_case("none") => {}
+            Some(_) => return true,
+        }
+
+        req.messages.iter().any(|msg| {
+            msg.role == "tool"
+                || msg
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|tool_calls| !tool_calls.is_empty())
+                || msg.tool_call_id.is_some()
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -196,6 +218,13 @@ impl GatewayBackend for ExecGateway {
         &self,
         req: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, BackendError> {
+        if Self::requests_tool_use(&req) {
+            return Err(BackendError::NotAvailable(
+                "exec providers are text-only and cannot broker tool calls or tool-call history; use a tool-capable HTTP/ACP provider or agent adapter"
+                    .to_string(),
+            ));
+        }
+
         let output_file = self.prepare_output_file()?;
         let output_path = output_file.path().to_path_buf();
         let result = async {
@@ -389,5 +418,146 @@ printf 'stdout:%s:%s\n' "$1" "$prompt"
             .and_then(|c| c.to_text())
             .unwrap();
         assert_eq!(text, "stdout:claude/sonnet:user: hi");
+    }
+
+    #[tokio::test]
+    async fn exec_gateway_allows_explicit_no_tool_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-cli");
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script)
+            .unwrap();
+        writeln!(f, "#!/bin/sh\ncat\n").unwrap();
+        drop(f);
+
+        let gw = ExecGateway::new(
+            GatewayConfig::default(),
+            script.to_string_lossy().to_string(),
+            vec!["-".to_string()],
+            HashMap::new(),
+        );
+
+        let mut req = request("kimi-cli", "plain text");
+        req.tool_choice = Some(crate::proxy::openai::ToolChoice::Mode("none".to_string()));
+
+        let resp = gw.chat_completion(req).await.unwrap();
+        let text = resp.choices[0]
+            .message
+            .content
+            .as_ref()
+            .and_then(|c| c.to_text())
+            .unwrap();
+        assert_eq!(text, "user: plain text");
+    }
+
+    #[tokio::test]
+    async fn exec_gateway_rejects_tool_choice_auto_without_tool_definitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-cli");
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script)
+            .unwrap();
+        writeln!(f, "#!/bin/sh\ncat\n").unwrap();
+        drop(f);
+
+        let gw = ExecGateway::new(
+            GatewayConfig::default(),
+            script.to_string_lossy().to_string(),
+            vec!["-".to_string()],
+            HashMap::new(),
+        );
+
+        let mut req = request("kimi-cli", "maybe use a tool");
+        req.tool_choice = Some(crate::proxy::openai::ToolChoice::Mode("auto".to_string()));
+
+        let err = gw.chat_completion(req).await.unwrap_err();
+        assert!(
+            err.to_string().contains("cannot broker tool calls"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_gateway_rejects_tool_bearing_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-cli");
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script)
+            .unwrap();
+        writeln!(f, "#!/bin/sh\ncat\n").unwrap();
+        drop(f);
+
+        let gw = ExecGateway::new(
+            GatewayConfig::default(),
+            script.to_string_lossy().to_string(),
+            vec!["-".to_string()],
+            HashMap::new(),
+        );
+
+        let mut req = request("kimi-cli", "use a tool");
+        req.tools = Some(vec![crate::proxy::openai::ToolDefinition {
+            r#type: "function".to_string(),
+            function: crate::proxy::openai::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: Some("look up a value".to_string()),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+        }]);
+
+        let err = gw.chat_completion(req).await.unwrap_err();
+        assert!(
+            err.to_string().contains("cannot broker tool calls"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_gateway_rejects_tool_call_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-cli");
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script)
+            .unwrap();
+        writeln!(f, "#!/bin/sh\ncat\n").unwrap();
+        drop(f);
+
+        let gw = ExecGateway::new(
+            GatewayConfig::default(),
+            script.to_string_lossy().to_string(),
+            vec!["-".to_string()],
+            HashMap::new(),
+        );
+
+        let mut req = request("kimi-cli", "use a tool");
+        req.messages.push(ChatMessage {
+            role: "tool".to_string(),
+            content: Some(MessageContent::Text("tool result".to_string())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: Some("call_1".to_string()),
+            reasoning: None,
+            reasoning_content: None,
+        });
+
+        let err = gw.chat_completion(req).await.unwrap_err();
+        assert!(
+            err.to_string().contains("tool-call history"),
+            "unexpected error: {err}"
+        );
     }
 }

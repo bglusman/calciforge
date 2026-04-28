@@ -636,15 +636,19 @@ impl SignalChannel {
 
         let identity_id = identity.id.clone();
         let model_override = self.command_handler.active_model_for_identity(&identity_id);
+        let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
         // Spawn agent dispatch — handler returns immediately
         tokio::spawn(async move {
             let queue_wait_ms = received_at.elapsed().as_millis() as u64;
             telemetry::agent_dispatch_started("signal", &identity_id, &agent_id, queue_wait_ms);
 
-            let augmented = self
-                .context_store
-                .augment_message(&chat_key, &agent_id, &text);
+            let augmented = self.context_store.augment_message_with_options(
+                &chat_key,
+                &agent_id,
+                &text,
+                preserve_native_commands,
+            );
 
             let dispatch_start = std::time::Instant::now();
             match self
@@ -680,12 +684,13 @@ impl SignalChannel {
                     );
 
                     // Record exchange in context buffer
-                    self.context_store.push(
+                    self.context_store.push_with_options(
                         &chat_key,
                         &sender_label,
                         &text,
                         &agent_id,
                         &final_response,
+                        preserve_native_commands,
                     );
 
                     if let Err(e) = self

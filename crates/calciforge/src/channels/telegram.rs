@@ -450,6 +450,7 @@ fn handle_message_nonblocking(
         .unwrap_or(&identity.id)
         .to_string();
     let model_override = command_handler.active_model_for_identity(&identity.id);
+    let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
     // Spawn the agent dispatch — handler returns immediately.
     // All slow I/O (context augment, HTTP, reply send) happens in the task.
@@ -457,7 +458,12 @@ fn handle_message_nonblocking(
         let queue_wait_ms = received_at.elapsed().as_millis() as u64;
         telemetry::agent_dispatch_started("telegram", &identity.id, &agent_id, queue_wait_ms);
         // Augment message with conversation context (unseen exchanges for this agent).
-        let augmented_text = context_store.augment_message(&chat_key, &agent_id, &text);
+        let augmented_text = context_store.augment_message_with_options(
+            &chat_key,
+            &agent_id,
+            &text,
+            preserve_native_commands,
+        );
 
         if augmented_text.len() > text.len() {
             debug!(
@@ -499,7 +505,14 @@ fn handle_message_nonblocking(
                 );
 
                 // Record the exchange (original, un-augmented prompt) in the context buffer.
-                context_store.push(&chat_key, &sender_label, &text, &agent_id, &response);
+                context_store.push_with_options(
+                    &chat_key,
+                    &sender_label,
+                    &text,
+                    &agent_id,
+                    &response,
+                    preserve_native_commands,
+                );
 
                 // Send response — try MarkdownV2 first, fall back to plain text.
                 send_markdown_reply(bot, chat_id, response, "agent_response").await;
@@ -803,9 +816,15 @@ async fn handle_message(
         .unwrap_or(&identity.id)
         .to_string();
     let model_override = command_handler.active_model_for_identity(&identity.id);
+    let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
     // Augment message with conversation context (unseen exchanges for this agent).
-    let augmented_text = context_store.augment_message(&chat_key, &agent_id, &text);
+    let augmented_text = context_store.augment_message_with_options(
+        &chat_key,
+        &agent_id,
+        &text,
+        preserve_native_commands,
+    );
 
     if augmented_text.len() > text.len() {
         debug!(
@@ -841,7 +860,14 @@ async fn handle_message(
             );
 
             // Record the exchange (original, un-augmented prompt) in the context buffer.
-            context_store.push(&chat_key, &sender_label, &text, &agent_id, &response);
+            context_store.push_with_options(
+                &chat_key,
+                &sender_label,
+                &text,
+                &agent_id,
+                &response,
+                preserve_native_commands,
+            );
 
             // Send response — try MarkdownV2 first, fall back to plain text.
             let send_result = bot
@@ -894,7 +920,7 @@ mod tests {
             }],
             agents: vec![AgentConfig {
                 id: "librarian".to_string(),
-                kind: "openclaw-http".to_string(),
+                kind: "openclaw-channel".to_string(),
                 endpoint: "http://10.0.0.20:18789".to_string(),
                 timeout_ms: Some(120000),
                 model: None,

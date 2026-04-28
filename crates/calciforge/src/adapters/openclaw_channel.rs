@@ -101,6 +101,65 @@ impl ReplyServer {
     }
 }
 
+#[derive(Clone)]
+struct SharedReplyServer {
+    port: u16,
+    auth_token: Option<String>,
+    router: ReplyRouter,
+    once: Arc<OnceLock<()>>,
+    ready_notify: Arc<Notify>,
+    started: Arc<AtomicBool>,
+    start_error: Arc<Mutex<Option<String>>>,
+}
+
+#[derive(Clone)]
+struct ReplyServerHandle {
+    shared: SharedReplyServer,
+    config_error: Option<String>,
+}
+
+impl ReplyServerHandle {
+    fn for_port(port: u16, auth_token: Option<String>) -> Self {
+        static REPLY_SERVERS: OnceLock<std::sync::Mutex<HashMap<u16, SharedReplyServer>>> =
+            OnceLock::new();
+
+        let registry = REPLY_SERVERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        let mut servers = registry
+            .lock()
+            .expect("openclaw-channel reply server registry poisoned");
+
+        if let Some(existing) = servers.get(&port) {
+            let config_error = if existing.auth_token == auth_token {
+                None
+            } else {
+                Some(format!(
+                    "reply port {port} is already registered with a different reply_auth_token"
+                ))
+            };
+            return Self {
+                shared: existing.clone(),
+                config_error,
+            };
+        }
+
+        let shared = SharedReplyServer {
+            port,
+            auth_token,
+            router: ReplyRouter::new(),
+            once: Arc::new(OnceLock::new()),
+            ready_notify: Arc::new(Notify::new()),
+            started: Arc::new(AtomicBool::new(false)),
+            start_error: Arc::new(Mutex::new(None)),
+        };
+        servers.insert(port, shared.clone());
+
+        Self {
+            shared,
+            config_error: None,
+        }
+    }
+}
+
 async fn handle_reply(
     State(state): State<ReplyServerState>,
     headers: HeaderMap,
@@ -145,14 +204,8 @@ pub struct OpenClawChannelAdapter {
     endpoint: String,
     auth_token: String,
     openclaw_agent_id: String,
-    reply_port: u16,
-    reply_auth_token: Option<String>,
     timeout: Duration,
-    reply_router: ReplyRouter,
-    reply_server_once: Arc<OnceLock<()>>,
-    reply_server_ready_notify: Arc<Notify>,
-    reply_server_started: Arc<AtomicBool>,
-    reply_server_start_error: Arc<Mutex<Option<String>>>,
+    reply_server: ReplyServerHandle,
 }
 
 impl OpenClawChannelAdapter {
@@ -171,19 +224,16 @@ impl OpenClawChannelAdapter {
             .build()
             .expect("reqwest client");
 
+        let reply_server =
+            ReplyServerHandle::for_port(reply_port.unwrap_or(DEFAULT_REPLY_PORT), reply_auth_token);
+
         Self {
             client,
             endpoint,
             auth_token,
             openclaw_agent_id,
-            reply_port: reply_port.unwrap_or(DEFAULT_REPLY_PORT),
-            reply_auth_token,
             timeout,
-            reply_router: ReplyRouter::new(),
-            reply_server_once: Arc::new(OnceLock::new()),
-            reply_server_ready_notify: Arc::new(Notify::new()),
-            reply_server_started: Arc::new(AtomicBool::new(false)),
-            reply_server_start_error: Arc::new(Mutex::new(None)),
+            reply_server,
         }
     }
 
@@ -196,13 +246,18 @@ impl OpenClawChannelAdapter {
     }
 
     async fn ensure_reply_server_started(&self) -> Result<(), AdapterError> {
-        if self.reply_server_once.set(()).is_ok() {
+        if let Some(err) = self.reply_server.config_error.as_deref() {
+            return Err(AdapterError::Unavailable(err.to_string()));
+        }
+
+        let shared = &self.reply_server.shared;
+        if shared.once.set(()).is_ok() {
             let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
             let state = ReplyServerState {
-                router: self.reply_router.clone(),
-                auth_token: self.reply_auth_token.clone(),
+                router: shared.router.clone(),
+                auth_token: shared.auth_token.clone(),
             };
-            let port = self.reply_port;
+            let port = shared.port;
 
             tokio::spawn(async move {
                 ReplyServer::run(port, state, ready_tx).await;
@@ -214,19 +269,19 @@ impl OpenClawChannelAdapter {
 
             match startup_result {
                 Ok(()) => {
-                    self.reply_server_started.store(true, Ordering::SeqCst);
+                    shared.started.store(true, Ordering::SeqCst);
                     info!(port, "openclaw-channel reply server started");
                 }
                 Err(e) => {
-                    *self.reply_server_start_error.lock().await = Some(e);
+                    *shared.start_error.lock().await = Some(e);
                 }
             }
-            self.reply_server_ready_notify.notify_waiters();
-        } else if !self.reply_server_started.load(Ordering::SeqCst) {
-            self.reply_server_ready_notify.notified().await;
+            shared.ready_notify.notify_waiters();
+        } else if !shared.started.load(Ordering::SeqCst) {
+            shared.ready_notify.notified().await;
         }
 
-        if let Some(err) = self.reply_server_start_error.lock().await.clone() {
+        if let Some(err) = shared.start_error.lock().await.clone() {
             return Err(AdapterError::Unavailable(format!(
                 "openclaw-channel reply server failed to start: {}",
                 err
@@ -253,7 +308,11 @@ impl AgentAdapter for OpenClawChannelAdapter {
         let sender = ctx.sender.unwrap_or("unknown");
         let session_key = self.session_key_for(sender);
         let (tx, rx) = oneshot::channel::<String>();
-        self.reply_router.insert(session_key.clone(), tx).await;
+        self.reply_server
+            .shared
+            .router
+            .insert(session_key.clone(), tx)
+            .await;
 
         let body = InboundPayload {
             message: ctx.message,
@@ -284,7 +343,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
         let inbound_resp = match inbound_resp {
             Ok(r) => r,
             Err(e) => {
-                self.reply_router.remove(&session_key).await;
+                self.reply_server.shared.router.remove(&session_key).await;
                 return Err(e);
             }
         };
@@ -292,7 +351,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
         if !inbound_resp.status().is_success() {
             let status = inbound_resp.status();
             let body = inbound_resp.text().await.unwrap_or_default();
-            self.reply_router.remove(&session_key).await;
+            self.reply_server.shared.router.remove(&session_key).await;
             return Err(AdapterError::Protocol(format!(
                 "openclaw-channel inbound HTTP {}: {}",
                 status, body
@@ -302,13 +361,13 @@ impl AgentAdapter for OpenClawChannelAdapter {
         match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(_)) => {
-                self.reply_router.remove(&session_key).await;
+                self.reply_server.shared.router.remove(&session_key).await;
                 Err(AdapterError::Protocol(
                     "openclaw-channel reply receiver dropped".to_string(),
                 ))
             }
             Err(_) => {
-                self.reply_router.remove(&session_key).await;
+                self.reply_server.shared.router.remove(&session_key).await;
                 Err(AdapterError::Timeout)
             }
         }
@@ -476,5 +535,74 @@ mod tests {
             .expect("dispatch should return reply callback");
 
         assert_eq!(reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_rebuilt_adapters_share_reply_server() {
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: Some("reply-secret".to_string()),
+        };
+        let inbound_port = start_inbound_server(state).await;
+        let endpoint = format!("http://127.0.0.1:{inbound_port}");
+
+        let first = make_adapter(
+            endpoint.clone(),
+            reply_port,
+            Some("reply-secret".to_string()),
+        );
+        let first_reply = first
+            .dispatch_with_context(DispatchContext {
+                message: "first",
+                sender: Some("brian"),
+                model_override: None,
+            })
+            .await
+            .expect("first dispatch should start reply server");
+        assert_eq!(first_reply, "reply from openclaw");
+
+        let second = make_adapter(endpoint, reply_port, Some("reply-secret".to_string()));
+        let second_reply = second
+            .dispatch_with_context(DispatchContext {
+                message: "second",
+                sender: Some("renee"),
+                model_override: None,
+            })
+            .await
+            .expect("rebuilt adapter should reuse reply server/router");
+        assert_eq!(second_reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_reply_port_auth_mismatch_fails_before_dispatch() {
+        let reply_port = free_port();
+        let first = make_adapter(
+            "http://127.0.0.1:1".to_string(),
+            reply_port,
+            Some("reply-secret".to_string()),
+        );
+        let _ = first.ensure_reply_server_started().await;
+
+        let second = make_adapter(
+            "http://127.0.0.1:1".to_string(),
+            reply_port,
+            Some("different-secret".to_string()),
+        );
+        let err = second
+            .dispatch_with_context(DispatchContext {
+                message: "will not send",
+                sender: Some("brian"),
+                model_override: None,
+            })
+            .await
+            .expect_err("conflicting reply auth token should fail");
+
+        assert!(err
+            .to_string()
+            .contains("already registered with a different reply_auth_token"));
     }
 }

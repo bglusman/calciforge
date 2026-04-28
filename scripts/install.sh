@@ -40,6 +40,7 @@ LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
 ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
 ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
+INSTALL_NODES_STATE="${CALCIFORGE_INSTALL_NODES_STATE:-$HOME/.calciforge/install-nodes.json}"
 LEGACY_SERVICE_PREFIX="${CALCIFORGE_LEGACY_SERVICE_PREFIX:-}"
 CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
 AGENTS_JSON="$CLASH_DIR/agents.json"
@@ -49,13 +50,6 @@ case "$REMOTE_SCANNER_ENABLED" in
         REMOTE_SCANNER_URL="http://127.0.0.1:${REMOTE_SCANNER_PORT}"
         ;;
 esac
-
-proxy_env_pairs() {
-    printf 'HTTP_PROXY=%s\nHTTPS_PROXY=%s\nhttp_proxy=%s\nhttps_proxy=%s\nNO_PROXY=%s\nno_proxy=%s\n' \
-        "$SECURITY_PROXY_URL" "$SECURITY_PROXY_URL" \
-        "$SECURITY_PROXY_URL" "$SECURITY_PROXY_URL" \
-        "$SECURITY_PROXY_NO_PROXY" "$SECURITY_PROXY_NO_PROXY"
-}
 
 # ── platform detection ────────────────────────────────────────────────────────
 # Drives choice of service manager (launchd vs systemd --user) and package
@@ -1146,6 +1140,34 @@ if [[ -n "$NODES_FILE" ]]; then
     [[ -f "$NODES_FILE" ]] || die "Nodes file not found: $NODES_FILE"
     command -v python3 &>/dev/null || die "python3 required for node deployment"
 
+    mkdir -p "$(dirname "$INSTALL_NODES_STATE")"
+    python3 - "$NODES_FILE" "$INSTALL_NODES_STATE" <<'PYEOF'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    data = json.load(f)
+nodes = []
+for node in data.get("nodes", []):
+    nodes.append({
+        "name": node.get("name", node["host"]),
+        "host": node["host"],
+        "user": node.get("user", "root"),
+        "ssh_key": node.get("ssh_key", ""),
+        "arch": node.get("arch", "x86_64-unknown-linux-musl"),
+        "os": node.get("os", "linux"),
+        "services": node.get("services", ["clashd", "security-proxy"]),
+        "install_dir": node.get("install_dir", "/usr/local/bin"),
+        "config_dir": node.get("config_dir", "/etc/calciforge"),
+    })
+with open(dst, "w") as f:
+    json.dump({"nodes": nodes}, f, indent=2)
+    f.write("\n")
+PYEOF
+    chmod 600 "$INSTALL_NODES_STATE"
+    ok "Persisted install-node metadata for doctor → $INSTALL_NODES_STATE"
+
     # ── binary build cache: arch+bin → path ──────────────────────────────────
     # Use indexed arrays instead of associative arrays so the installer works
     # with macOS' default Bash 3.2.
@@ -1333,6 +1355,55 @@ REMOTE_FNOX
         ok "  [$name] fnox ready"
     }
 
+    preflight_node() {
+        local name="$1" host="$2" user="$3" ssh_key="$4" os="$5"
+        local services="$6" install_dir="$7" config_dir="$8"
+        local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes)
+        [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+        local ssh_target="${user}@${host}"
+
+        echo "  [$name] preflight SSH and permissions..."
+        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- \
+            "$name" "$os" "$services" "$install_dir" "$config_dir" <<'REMOTE_PREFLIGHT'
+set -euo pipefail
+name="$1"; os="$2"; services="$3"; install_dir="$4"; config_dir="$5"
+
+if [[ "$os" == "linux" && "$(id -u)" != "0" ]]; then
+    echo "linux node '$name' must be installed by root for systemd units and /usr/local/bin writes; rerun with user=root or install via a root-capable SSH target" >&2
+    exit 10
+fi
+
+mkdir -p "$install_dir" "$config_dir"
+for dir in "$install_dir" "$config_dir"; do
+    if [[ ! -d "$dir" ]]; then
+        echo "required directory does not exist after mkdir: $dir" >&2
+        exit 11
+    fi
+    if [[ ! -w "$dir" ]]; then
+        echo "no write permission for required directory: $dir" >&2
+        exit 12
+    fi
+    tmp="$dir/.calciforge-permission-test.$$"
+    : > "$tmp"
+    rm -f "$tmp"
+done
+
+if [[ "$os" == "linux" ]]; then
+    command -v systemctl >/dev/null 2>&1 || {
+        echo "systemctl not found on linux node '$name'" >&2
+        exit 13
+    }
+    if [[ ! -w /etc/systemd/system ]]; then
+        echo "no write permission for /etc/systemd/system on linux node '$name'" >&2
+        exit 14
+    fi
+fi
+
+echo "OK"
+REMOTE_PREFLIGHT
+        ok "  [$name] SSH and remote permissions ready"
+    }
+
     # ── deploy one service to one node ───────────────────────────────────────
     deploy_service() {
         local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" os="$6"
@@ -1491,12 +1562,13 @@ for n in data.get("nodes", []):
 PYEOF
         echo ""
         echo "  Node: $name ($user@$host, $arch, $os)"
+        preflight_node "$name" "$host" "$user" "$ssh_key" "$os" "$services" "$install_dir" "$config_dir"
         ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" || \
             warn "  [$name] fnox not ready — secret resolution may fail on that node"
         IFS=',' read -ra svc_list <<< "$services"
         for svc in "${svc_list[@]}"; do
             deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \
-                "$svc" "$install_dir" "$config_dir" || true
+                "$svc" "$install_dir" "$config_dir"
         done
     done
 fi

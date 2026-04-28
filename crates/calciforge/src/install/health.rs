@@ -282,7 +282,7 @@ mod tests {
         let checker = MockHealthChecker::new();
         checker.set_healthy("http://host:18789");
 
-        let adapter = ClawKind::OpenClawHttp;
+        let adapter = ClawKind::OpenClawChannel;
         let result = health_check_claw(&checker, &adapter, "http://host:18789").await;
         assert!(result.is_ok());
         assert_eq!(checker.call_count(), 1);
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn supports_health_check_others_true() {
         assert!(supports_health_check(&ClawKind::ZeroClawNative));
-        assert!(supports_health_check(&ClawKind::OpenClawHttp));
+        assert!(supports_health_check(&ClawKind::OpenClawChannel));
         assert!(supports_health_check(&ClawKind::OpenAiCompat {
             endpoint: "http://x".into()
         }));

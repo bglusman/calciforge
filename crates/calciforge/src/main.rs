@@ -1,7 +1,7 @@
 //! Calciforge — Rust agent gateway
 //!
-//! Entry point: loads config, starts Telegram bot, routes messages to
-//! the downstream OpenClaw HTTP agent.
+//! Entry point: loads config, starts enabled channels, routes messages to
+//! configured downstream agents, and optionally serves the model gateway.
 
 #![recursion_limit = "512"]
 

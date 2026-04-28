@@ -754,7 +754,9 @@ async fn handle_message(
         .unwrap_or(identity_id)
         .to_string();
 
-    let augmented = ctx_store.augment_message(chat_key, &agent_id, body);
+    let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
+    let augmented =
+        ctx_store.augment_message_with_options(chat_key, &agent_id, body, preserve_native_commands);
     telemetry::agent_dispatch_started(
         "matrix",
         identity_id,
@@ -790,7 +792,14 @@ async fn handle_message(
                 response_len = response.len(),
                 "Matrix: got agent response"
             );
-            ctx_store.push(chat_key, &sender_label, body, &agent_id, &response);
+            ctx_store.push_with_options(
+                chat_key,
+                &sender_label,
+                body,
+                &agent_id,
+                &response,
+                preserve_native_commands,
+            );
             send(response, "agent_response").await;
         }
         Err(e) => {

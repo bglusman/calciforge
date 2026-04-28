@@ -492,8 +492,8 @@ route.
 
 Read the [agent adapter notes](agent-adapters.md) and
 [Codex/OpenClaw integration guide](codex-openclaw-integration.md) for
-direct `codex-cli`, `openclaw-native`, `openclaw-http`, `cli`, `acpx`,
-and exec-model examples.
+direct `codex-cli`, `openclaw-channel`, `cli`, `acpx`, and exec-model
+examples.
 
 ### Agent-facing tools (MCP and CLI)
 

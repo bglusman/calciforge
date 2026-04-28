@@ -17,7 +17,7 @@
 //! | Adapter | Remote config via SSH? | What installer does |
 //! |---------|----------------------|---------------------|
 //! | `ZeroClawNative` | ✅ | SSH in, read/backup/edit ZeroClaw config, health-check |
-//! | `OpenClawHttp` | ✅ | SSH in, read/backup/edit `openclaw.json`, health-check |
+//! | `OpenClawChannel` | ✅ | SSH in, read/backup/edit `openclaw.json`, health-check |
 //! | `OpenAiCompat` | ❌ | Record endpoint, health-check only |
 //! | `Webhook` | ❌ | Record endpoint, health-check only |
 //! | `Cli` | ❌ | Record command, no network health-check |

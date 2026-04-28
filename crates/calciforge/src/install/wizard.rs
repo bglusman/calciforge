@@ -241,7 +241,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
         // Adapter selection.
         let adapter_options = &[
             "zeroclaw          — ZeroClaw native (SSH-configurable)",
-            "openclaw     — OpenClaw HTTP gateway (SSH-configurable)",
+            "openclaw-channel — OpenClaw Calciforge channel plugin (SSH-configurable)",
             "openai-compat — OpenAI-compatible endpoint (endpoint-only)",
             "webhook      — Generic HTTP webhook (endpoint-only)",
             "cli          — Local binary (no network)",
@@ -255,7 +255,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 
         let adapter_str = match adapter_idx {
             0 => "zeroclaw",
-            1 => "openclaw",
+            1 => "openclaw-channel",
             2 => "openai-compat",
             3 => "webhook",
             4 => "cli",
@@ -290,7 +290,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 fn collect_adapter_config(adapter_str: &str) -> Result<ClawKind> {
     match adapter_str {
         "zeroclaw" => Ok(ClawKind::ZeroClawNative),
-        "openclaw" => Ok(ClawKind::OpenClawHttp),
+        "openclaw-channel" => Ok(ClawKind::OpenClawChannel),
         "openai-compat" => {
             let endpoint: String = Input::new()
                 .with_prompt("  OpenAI-compat endpoint (e.g. http://host/v1)")

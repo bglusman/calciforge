@@ -1,7 +1,7 @@
 //! Core data model for the Calciforge multi-target installer.
 //!
 //! The key design axis is **remote configurability**:
-//! - [`ClawKind::ZeroClawNative`] and [`ClawKind::OpenClawHttp`] → installer
+//! - [`ClawKind::ZeroClawNative`] and [`ClawKind::OpenClawChannel`] → installer
 //!   knows the config format and can SSH in to make changes safely.
 //! - All other adapters → installer just registers the endpoint in Calciforge's
 //!   config and health-checks it; no SSH config management is performed.
@@ -20,9 +20,9 @@ pub enum ClawKind {
     /// Installer can SSH in and edit ZeroClaw's config.
     ZeroClawNative,
 
-    /// OpenClaw OpenAI-compatible HTTP gateway.
+    /// OpenClaw native Calciforge channel/plugin.
     /// Installer can SSH in and safely edit `openclaw.json`.
-    OpenClawHttp,
+    OpenClawChannel,
 
     /// Any OpenAI-compatible `/v1/chat/completions` endpoint.
     /// Installer registers the endpoint only — no SSH config management.
@@ -43,18 +43,18 @@ pub enum ClawKind {
 impl ClawKind {
     /// Returns `true` if this adapter supports remote SSH config management.
     ///
-    /// Only [`ClawKind::ZeroClawNative`] and [`ClawKind::OpenClawHttp`] do.
+    /// Only [`ClawKind::ZeroClawNative`] and [`ClawKind::OpenClawChannel`] do.
     /// All other adapters are registered in Calciforge's config and health-checked,
     /// but the installer never SSHes into them to edit their config files.
     pub fn is_remotely_configurable(&self) -> bool {
-        matches!(self, ClawKind::ZeroClawNative | ClawKind::OpenClawHttp)
+        matches!(self, ClawKind::ZeroClawNative | ClawKind::OpenClawChannel)
     }
 
     /// Short label for display and TOML serialization.
     pub fn kind_label(&self) -> &'static str {
         match self {
             ClawKind::ZeroClawNative => "zeroclaw-native",
-            ClawKind::OpenClawHttp => "openclaw",
+            ClawKind::OpenClawChannel => "openclaw-channel",
             ClawKind::OpenAiCompat { .. } => "openai-compat",
             ClawKind::Webhook { .. } => "webhook",
             ClawKind::Cli { .. } => "cli",
@@ -203,7 +203,7 @@ impl std::fmt::Display for VersionCompatibility {
 /// Check a version string against the known compatibility list for a given adapter.
 pub fn check_version_compatibility(adapter: &ClawKind, version: &str) -> VersionCompatibility {
     let compatible_list = match adapter {
-        ClawKind::OpenClawHttp => OPENCLAW_COMPATIBLE_VERSIONS,
+        ClawKind::OpenClawChannel => OPENCLAW_COMPATIBLE_VERSIONS,
         ClawKind::ZeroClawNative => ZEROCLAW_COMPATIBLE_VERSIONS,
         // Non-SSH adapters: we don't manage their config, so version is informational only.
         _ => return VersionCompatibility::Compatible,
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn remotely_configurable_only_zeroclaw_and_openclaw() {
         assert!(ClawKind::ZeroClawNative.is_remotely_configurable());
-        assert!(ClawKind::OpenClawHttp.is_remotely_configurable());
+        assert!(ClawKind::OpenClawChannel.is_remotely_configurable());
         assert!(!ClawKind::OpenAiCompat {
             endpoint: "http://localhost".into()
         }
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn kind_label_roundtrip() {
         assert_eq!(ClawKind::ZeroClawNative.kind_label(), "zeroclaw-native");
-        assert_eq!(ClawKind::OpenClawHttp.kind_label(), "openclaw");
+        assert_eq!(ClawKind::OpenClawChannel.kind_label(), "openclaw-channel");
         assert_eq!(
             ClawKind::OpenAiCompat {
                 endpoint: "http://x".into()
@@ -320,7 +320,7 @@ mod tests {
     fn ssh_key_required_returns_key_when_present() {
         let target = ClawTarget {
             name: "t".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_rsa")),
             endpoint: "http://host:18789".into(),
@@ -333,7 +333,7 @@ mod tests {
     fn ssh_key_required_errors_when_missing() {
         let target = ClawTarget {
             name: "t".into(),
-            adapter: ClawKind::OpenClawHttp,
+            adapter: ClawKind::OpenClawChannel,
             host: "user@host".into(),
             ssh_key: None,
             endpoint: "http://host:18789".into(),
@@ -351,11 +351,11 @@ mod tests {
     #[test]
     fn version_compat_known_openclaw() {
         assert_eq!(
-            check_version_compatibility(&ClawKind::OpenClawHttp, "2026.3.13"),
+            check_version_compatibility(&ClawKind::OpenClawChannel, "2026.3.13"),
             VersionCompatibility::Compatible
         );
         assert_eq!(
-            check_version_compatibility(&ClawKind::OpenClawHttp, "9999.99.99"),
+            check_version_compatibility(&ClawKind::OpenClawChannel, "9999.99.99"),
             VersionCompatibility::Unknown
         );
     }
@@ -660,7 +660,7 @@ mod hegel_tests {
 
         // Test all adapter types that have version lists.
         for adapter in &[
-            super::ClawKind::OpenClawHttp,
+            super::ClawKind::OpenClawChannel,
             super::ClawKind::ZeroClawNative,
         ] {
             let result = super::check_version_compatibility(adapter, &version);
@@ -699,7 +699,7 @@ mod hegel_tests {
         );
 
         let oc_ver = openclaw_versions[oc_idx];
-        let result = super::check_version_compatibility(&super::ClawKind::OpenClawHttp, oc_ver);
+        let result = super::check_version_compatibility(&super::ClawKind::OpenClawChannel, oc_ver);
         assert_eq!(
             result,
             super::VersionCompatibility::Compatible,
