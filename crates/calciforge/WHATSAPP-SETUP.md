@@ -3,12 +3,12 @@
 ## Architecture
 
 ```
-WA user  ──→  NZC (wa-rs session on .210)  ──→  POST /webhooks/whatsapp  ──→  Calciforge
+WA user  ──→  ZeroClaw (wa-rs session host)  ──→  POST /webhooks/whatsapp  ──→  Calciforge
                                                                                    │
                                                   identity resolution              │
-                                                  agent dispatch (Librarian/NZC)   │
+                                                  agent dispatch (Librarian/ZeroClaw)   │
                                                                                    ↓
-WA user  ←──  NZC (wa-rs session on .210)  ←──  POST /tools/invoke  ←──  Calciforge reply
+WA user  ←──  ZeroClaw (wa-rs session host)  ←──  POST /tools/invoke  ←──  Calciforge reply
 ```
 
 ## Step 1: Calciforge config (`/root/.calciforge/config.toml` on 10.0.0.10)
@@ -20,20 +20,20 @@ Add this `[[channels]]` block:
 kind          = "whatsapp"
 enabled       = true
 
-# NZC / OpenClaw gateway that owns the WhatsApp Web session.
-# Calciforge sends replies by POSTing to {nzc_endpoint}/tools/invoke.
-# If Calciforge is co-located with OpenClaw on .210, use 127.0.0.1.
-# If Calciforge is on .229 (Librarian), point to .210 where NZC runs.
-nzc_endpoint  = "http://127.0.0.1:18789"
-nzc_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+# ZeroClaw / OpenClaw gateway that owns the WhatsApp Web session.
+# Calciforge sends replies by POSTing to {zeroclaw_endpoint}/tools/invoke.
+# If Calciforge is co-located with OpenClaw, use 127.0.0.1.
+# If they run on separate hosts, point to the host where ZeroClaw runs.
+zeroclaw_endpoint  = "http://127.0.0.1:18789"
+zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
 
-# Calciforge's own webhook listener — NZC will POST incoming WA messages here.
-# Must be reachable from wherever NZC is running.
+# Calciforge's own webhook listener — ZeroClaw will POST incoming WA messages here.
+# Must be reachable from wherever ZeroClaw is running.
 webhook_listen = "0.0.0.0:18795"
 webhook_path   = "/webhooks/whatsapp"
 
 # Optional HMAC secret for X-Hub-Signature-256 header verification.
-# Set the same value in NZC config as its webhook_forward_secret.
+# Set the same value in ZeroClaw config as its webhook_forward_secret.
 # webhook_secret = "change-me-to-a-random-secret"
 
 # Allowed sender phone numbers (E.164).
@@ -47,8 +47,8 @@ For each allowed WA number, add a `whatsapp` alias to the `[[identities]]` block
 
 ```toml
 [[identities]]
-id           = "brian"
-display_name = "Brian"
+id           = "operator"
+display_name = "Operator"
 role         = "owner"
 
 [[identities.aliases]]
@@ -60,10 +60,10 @@ channel = "whatsapp"
 id      = "+15555550001"   # E.164 format
 ```
 
-## Step 3: NZC forwarding config (on the NZC instance at .210)
+## Step 3: ZeroClaw forwarding config
 
-NZC needs to forward incoming WA messages to Calciforge instead of processing them
-locally. Add to NZC's `zeroclaw.toml`:
+ZeroClaw needs to forward incoming WA messages to Calciforge instead of processing them
+locally. Add to ZeroClaw's `zeroclaw.toml`:
 
 ```toml
 [channels_config.whatsapp]
@@ -79,30 +79,30 @@ allowed_numbers = ["+15555550001", "+14085551234"]
 
 ## Step 4: QR pairing
 
-Once NZC is configured with `session_path`, start NZC — it will print a QR code.
+Once ZeroClaw is configured with `session_path`, start ZeroClaw — it will print a QR code.
 Scan it from WhatsApp on the phone. The session is persisted to the SQLite DB.
 After that, incoming messages flow:
 
 ```
-WA  →  NZC (wa-rs receives)  →  NZC forwards to Calciforge webhook
+WA  →  ZeroClaw (wa-rs receives)  →  ZeroClaw forwards to Calciforge webhook
                                         ↓
                                Calciforge routes → Agent
                                         ↓
-                               Calciforge POSTs reply to NZC /tools/invoke
+                               Calciforge POSTs reply to ZeroClaw /tools/invoke
                                         ↓
-                                NZC sends WA reply
+                                ZeroClaw sends WA reply
 ```
 
 ## Step 5: Firewall
 
-Ensure port 18795 is open on the Calciforge host (or at least reachable from NZC).
+Ensure port 18795 is open on the Calciforge host (or at least reachable from ZeroClaw).
 
-If NZC and Calciforge are on the same host:
+If ZeroClaw and Calciforge are on the same host:
 ```
 # No firewall changes needed — both use localhost
 ```
 
-If NZC is on .210 and Calciforge is on .229:
+If ZeroClaw and Calciforge are on separate hosts:
 ```bash
 ufw allow from 10.0.0.10 to any port 18795
 ```
@@ -134,7 +134,7 @@ before identity lookup.
 
 ## Reply API
 
-Calciforge sends replies by POSTing to `{nzc_endpoint}/tools/invoke`:
+Calciforge sends replies by POSTing to `{zeroclaw_endpoint}/tools/invoke`:
 
 ```json
 {
@@ -149,7 +149,7 @@ Calciforge sends replies by POSTing to `{nzc_endpoint}/tools/invoke`:
 ```
 
 This uses OpenClaw's built-in `message` tool — the same mechanism agents use
-internally. NZC must have a live WA Web session for this to succeed.
+internally. ZeroClaw must have a live WA Web session for this to succeed.
 
 ## Health check
 

@@ -17,7 +17,7 @@ SSH_KEY="${SSH_KEY:-~/.ssh/id_ed25519}"
 # ── Target resolution ──────────────────────────────────────────────
 # Usage: install-security-stack.sh <action> [host1 host2 ...]
 # If no hosts given, reads targets.txt (one IP per line)
-# Example: ./scripts/install-security-stack.sh install 192.168.1.210 192.168.1.127 192.168.1.49
+# Example: ./scripts/install-security-stack.sh install gateway.example.internal worker.example.internal
 
 ACTION="${1:-help}"
 shift || true
@@ -140,7 +140,7 @@ systemctl restart adversary-detector security-gateway clashd" 2>&1
 # All HTTP/HTTPS traffic is routed through the security gateway
 export HTTP_PROXY=http://127.0.0.1:$GATEWAY_PORT
 export HTTPS_PROXY=http://127.0.0.1:$GATEWAY_PORT
-export NO_PROXY=localhost,127.0.0.1,192.168.1.*,10.*.*.*
+export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 EOF
 chmod +x /etc/profile.d/calciforge-proxy.sh" 2>&1
 
@@ -221,21 +221,21 @@ Actions:
 
 Examples:
   # Single host
-  ./scripts/install-security-stack.sh install 192.168.1.210
+  ./scripts/install-security-stack.sh install gateway.example.internal
 
   # Multiple hosts
-  ./scripts/install-security-stack.sh install 192.168.1.210 192.168.1.127 192.168.1.49
+  ./scripts/install-security-stack.sh install gateway.example.internal worker.example.internal
 
   # Use targets.txt (one IP per line)
-  echo "192.168.1.210" > scripts/targets.txt
-  echo "192.168.1.127" >> scripts/targets.txt
+  echo "gateway.example.internal" > scripts/targets.txt
+  echo "worker.example.internal" >> scripts/targets.txt
   ./scripts/install-security-stack.sh install
 
   # Just verify all hosts
-  ./scripts/install-security-stack.sh verify 192.168.1.210 192.168.1.127
+  ./scripts/install-security-stack.sh verify gateway.example.internal worker.example.internal
 
   # Set custom SSH key
-  SSH_KEY=~/.ssh/id_ed25519_librarian ./scripts/install-security-stack.sh install 192.168.1.210
+  SSH_KEY=~/.ssh/id_ed25519_calciforge ./scripts/install-security-stack.sh install gateway.example.internal
 USAGE
         ;;
 esac

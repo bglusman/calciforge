@@ -102,9 +102,9 @@ approval_required = true
 14. **Audit log rotation** — Daily rotation with retention (P2-14)
 15. **Clean code** — Compiler warnings addressed
 
-### P3 — NonZeroClaw & Agent Integration 🔄 (Partial)
+### P3 — ZeroClaw & Agent Integration 🔄 (Partial)
 
-16. **NZC integration framework** — Policy engine trait defined, ready for NZC connection
+16. **ZeroClaw integration framework** — Policy engine trait defined, ready for ZeroClaw connection
 17. **Agent adapter framework** — CN → agent identity mapping, ACPX support
 18. **Unified approvals** — Signal webhook integration for human confirmation
 

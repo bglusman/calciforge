@@ -8,7 +8,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::adapters::{build_adapter, AdapterError, DispatchContext};
-use crate::config::{AgentConfig, PolyConfig};
+use crate::config::{AgentConfig, CalciforgeConfig};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -31,7 +31,7 @@ impl Router {
         &self,
         text: &str,
         agent: &AgentConfig,
-        config: &PolyConfig,
+        config: &CalciforgeConfig,
     ) -> Result<String> {
         self.dispatch_with_sender(text, agent, config, None).await
     }
@@ -39,13 +39,20 @@ impl Router {
     /// Dispatch a message with optional sender identity forwarded to the agent.
     ///
     /// `sender` is the resolved Calciforge identity name (e.g. "brian").
-    /// Forwarded to adapters that support per-sender context (`nzc-http`).
+    /// Forwarded to adapters that support per-sender context (`zeroclaw-http`).
     /// Other adapters ignore it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kept for callers that need sender context without model override"
+        )
+    )]
     pub async fn dispatch_with_sender(
         &self,
         text: &str,
         agent: &AgentConfig,
-        _config: &PolyConfig,
+        _config: &CalciforgeConfig,
         sender: Option<&str>,
     ) -> Result<String> {
         self.dispatch_with_sender_and_model(text, agent, _config, sender, None)
@@ -57,7 +64,7 @@ impl Router {
         &self,
         text: &str,
         agent: &AgentConfig,
-        _config: &PolyConfig,
+        _config: &CalciforgeConfig,
         sender: Option<&str>,
         model_override: Option<&str>,
     ) -> Result<String> {
@@ -68,6 +75,9 @@ impl Router {
         info!(
             agent_id = %agent.id,
             kind = %agent.kind,
+            endpoint = %agent.endpoint,
+            configured_model = ?agent.model,
+            model_override = ?model_override,
             sender = ?sender,
             "routing message via {} adapter",
             adapter.kind()
@@ -91,7 +101,7 @@ impl Router {
                 }
                 AdapterError::ApprovalPending(req) => {
                     // Re-wrap as anyhow error so callers can downcast and
-                    // extract the NzcApprovalRequest for user notification.
+                    // extract the ZeroClawApprovalRequest for user notification.
                     return anyhow::Error::new(AdapterError::ApprovalPending(req.clone()));
                 }
             };
@@ -113,18 +123,19 @@ impl Default for Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, PolyConfig, PolyHeader};
+    use crate::config::{AgentConfig, CalciforgeConfig, CalciforgeHeader};
     use std::collections::HashMap;
 
-    fn base_config() -> PolyConfig {
-        PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn base_config() -> CalciforgeConfig {
+        CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![],
             agents: vec![],
             routing: vec![],
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             channels: vec![],
             permissions: None,
             memory: None,
@@ -145,6 +156,7 @@ mod tests {
             model: None,
             auth_token: Some("test-token".to_string()),
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -165,6 +177,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: Some("zc_test".to_string()),
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -185,6 +198,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -211,6 +225,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -264,6 +279,7 @@ mod tests {
             model: None,
             auth_token: None,
             api_key: None,
+            api_key_file: None,
             openclaw_agent_id: None,
             reply_port: None,
             reply_auth_token: None,
@@ -283,9 +299,8 @@ mod tests {
     /// to the `/v1/chat/completions` LLM endpoint — no command parsing happens
     /// in the HTTP adapter layer.
     ///
-    /// This is a known v3 limitation. For native command support a dedicated
-    /// Calciforge channel plugin for OpenClaw is required (see
-    /// `adapters/TODO-native-channel.md`).
+    /// This documents the OpenAI-compatible adapter boundary; native command
+    /// support belongs in `OpenClawNativeAdapter`.
     #[tokio::test]
     async fn test_openclaw_http_adapter_does_not_intercept_slash_commands() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

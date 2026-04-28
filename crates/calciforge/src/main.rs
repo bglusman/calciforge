@@ -11,6 +11,7 @@ mod channels;
 mod commands;
 mod config;
 mod context;
+mod doctor;
 #[cfg(test)]
 mod hooks;
 #[cfg(test)]
@@ -26,7 +27,7 @@ mod unified_context;
 mod voice;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -47,17 +48,30 @@ use crate::{
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    /// Path to config file (default: ~/.calciforge/config.toml)
-    #[arg(short, long)]
+    /// Path to config file (default: ~/.calciforge/config.toml, then /etc/calciforge/config.toml)
+    #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
     /// Run only the proxy server, skip channels (for testing)
-    #[arg(long)]
+    #[arg(long, global = true)]
     proxy_only: bool,
 
     /// Validate config file and exit (don't start server)
-    #[arg(long)]
+    #[arg(long, global = true)]
     validate: bool,
+
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum CliCommand {
+    /// Diagnose common config, state, secret-file, and endpoint problems.
+    Doctor {
+        /// Skip TCP reachability checks.
+        #[arg(long)]
+        no_network: bool,
+    },
 }
 
 #[tokio::main]
@@ -65,18 +79,17 @@ async fn main() -> Result<()> {
     // Parse CLI args
     let args = Args::parse();
 
-    // Initialize tracing — respects RUST_LOG env var
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("calciforge=info".parse()?))
-        .init();
-
-    info!("Calciforge starting");
-
     // Load config (from CLI arg or default path)
     let config_path = args
         .config
         .unwrap_or_else(|| config::config_path().expect("Failed to determine default config path"));
-    info!(path = %config_path.display(), "loading config");
+
+    if let Some(CliCommand::Doctor { no_network }) = args.command {
+        let report = doctor::run(&config_path, no_network).await?;
+        let has_errors = report.has_errors();
+        report.print();
+        std::process::exit(if has_errors { 1 } else { 0 });
+    }
 
     // If --validate flag is set, just validate and exit
     if args.validate {
@@ -111,6 +124,15 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    // Initialize tracing — respects RUST_LOG env var. Diagnostic commands above
+    // print their own concise output and avoid startup log noise.
+    fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("calciforge=info".parse()?))
+        .init();
+
+    info!("Calciforge starting");
+    info!(path = %config_path.display(), "loading config");
 
     let config = config::load_config_from(&config_path).with_context(|| {
         format!(
@@ -181,8 +203,10 @@ async fn main() -> Result<()> {
     let router = Arc::new(Router::new());
 
     // Initialize model-gateway synthetic routing if configured.
-    let has_synthetic_models =
-        !config.alloys.is_empty() || !config.cascades.is_empty() || !config.dispatchers.is_empty();
+    let has_synthetic_models = !config.alloys.is_empty()
+        || !config.cascades.is_empty()
+        || !config.dispatchers.is_empty()
+        || !config.exec_models.is_empty();
     let alloy_manager = if !has_synthetic_models {
         None
     } else {
@@ -190,12 +214,14 @@ async fn main() -> Result<()> {
             &config.alloys,
             &config.cascades,
             &config.dispatchers,
+            &config.exec_models,
         ) {
             Ok(manager) => {
                 info!(
                     alloys = config.alloys.len(),
                     cascades = config.cascades.len(),
                     dispatchers = config.dispatchers.len(),
+                    exec_models = config.exec_models.len(),
                     "model gateway synthetic routing initialized"
                 );
                 Some(manager)
@@ -380,9 +406,15 @@ async fn main() -> Result<()> {
                 .map(|m| Arc::new((*m).clone()))
                 .unwrap_or_else(|| Arc::new(crate::providers::alloy::AlloyManager::empty()));
             let providers = Arc::new(crate::providers::ProviderRegistry::new());
-            proxy::start_proxy_server(proxy_config, alloy_mgr, providers, local_manager)
-                .await
-                .context("Proxy server error")
+            proxy::start_proxy_server(
+                proxy_config,
+                config.exec_models.clone(),
+                alloy_mgr,
+                providers,
+                local_manager,
+            )
+            .await
+            .context("Proxy server error")
         } else {
             Ok(())
         }

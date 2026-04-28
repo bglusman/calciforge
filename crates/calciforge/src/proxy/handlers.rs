@@ -2,7 +2,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Sse},
     Json,
 };
@@ -11,6 +11,7 @@ use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
+use crate::config::ProxyConfig;
 use crate::providers::alloy::AlloyPlan;
 use crate::proxy::{
     openai::{
@@ -36,10 +37,14 @@ const KNOWN_MODELS: &[&str] = &[
 /// Handler for POST /v1/chat/completions
 pub async fn chat_completions(
     State(state): State<ProxyState>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
     debug!(model = %req.model, stream = req.stream.unwrap_or(false), "Chat completion request");
+
+    if let Some(response) = require_api_key(&state.config, &headers) {
+        return response;
+    }
 
     // Extract agent ID from header
     let agent_id = headers
@@ -66,7 +71,7 @@ pub async fn chat_completions(
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
     //  - Backend is http (upstream is authoritative).
-    //  - It's a configured synthetic model (alloy, cascade, dispatcher).
+    //  - It's a configured synthetic model (alloy, cascade, dispatcher, exec model).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_http_backend = state.config.backend_type == "http";
     let is_valid_model = provider_matches
@@ -201,21 +206,8 @@ pub async fn local_model_switch(
     headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    // Auth check — same key as the proxy API.
-    if let Some(ref expected_key) = state.config.api_key {
-        let provided = headers
-            .get("authorization")
-            .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if provided != expected_key.as_str() {
-            return api_error(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Invalid API key",
-                None,
-            );
-        }
+    if let Some(response) = require_api_key(&state.config, &headers) {
+        return response;
     }
 
     let model_id = match body.get("model").and_then(|v| v.as_str()) {
@@ -278,7 +270,11 @@ pub async fn local_model_switch(
 }
 
 /// Handler for GET /v1/models
-pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
+pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    if let Some(response) = require_api_key(&state.config, &headers) {
+        return response;
+    }
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -327,6 +323,14 @@ pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
             object: "model".to_string(),
             created: now,
             owned_by: "calciforge/dispatcher".to_string(),
+        });
+    }
+    for exec_model in state.alloy_manager.list_exec_models() {
+        models.push(ModelInfo {
+            id: exec_model.id.clone(),
+            object: "model".to_string(),
+            created: now,
+            owned_by: "calciforge/exec".to_string(),
         });
     }
 
@@ -382,6 +386,7 @@ pub async fn list_models(State(state): State<ProxyState>) -> impl IntoResponse {
         object: "list".to_string(),
         data: models,
     })
+    .into_response()
 }
 
 /// Handler for GET /health
@@ -485,4 +490,80 @@ fn api_error(status: StatusCode, error_type: &str, message: &str, param: Option<
     };
 
     (status, Json(error)).into_response()
+}
+
+fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
+    let expected_key = config.api_key.as_deref()?.trim();
+    if expected_key.is_empty() {
+        return None;
+    }
+
+    let provided = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| {
+            let trimmed = s.trim();
+            let mut parts = trimmed.splitn(2, char::is_whitespace);
+            let scheme = parts.next()?;
+            let token = parts.next()?.trim();
+            if scheme.eq_ignore_ascii_case("Bearer") && !token.is_empty() {
+                Some(token)
+            } else {
+                None
+            }
+        });
+
+    if provided == Some(expected_key) {
+        None
+    } else {
+        Some(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid API key",
+            None,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn config_with_key(key: Option<&str>) -> ProxyConfig {
+        ProxyConfig {
+            api_key: key.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn require_api_key_treats_empty_configured_key_as_disabled() {
+        let headers = HeaderMap::new();
+        assert!(require_api_key(&config_with_key(Some("  ")), &headers).is_none());
+    }
+
+    #[test]
+    fn require_api_key_accepts_case_insensitive_bearer_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("bearer test-key"));
+        assert!(require_api_key(&config_with_key(Some("test-key")), &headers).is_none());
+    }
+
+    #[test]
+    fn require_api_key_accepts_trailing_bearer_token_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-key  "),
+        );
+        assert!(require_api_key(&config_with_key(Some("test-key")), &headers).is_none());
+    }
+
+    #[test]
+    fn require_api_key_rejects_missing_bearer_token() {
+        let headers = HeaderMap::new();
+        let response = require_api_key(&config_with_key(Some("test-key")), &headers);
+        assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
 }

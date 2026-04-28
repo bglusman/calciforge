@@ -26,10 +26,12 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{expand_tilde, PolyConfig},
+    config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
     router::Router,
 };
+
+use super::telemetry;
 
 // ---------------------------------------------------------------------------
 // Matrix Client-Server API serde types
@@ -67,6 +69,7 @@ struct RoomEvent {
     #[serde(rename = "type")]
     event_type: String,
     event_id: Option<String>,
+    origin_server_ts: Option<u64>,
     sender: String,
     content: serde_json::Value,
 }
@@ -347,7 +350,7 @@ async fn join_matrix_room(
 // ---------------------------------------------------------------------------
 
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -540,14 +543,6 @@ pub async fn run(
                     continue;
                 }
 
-                info!(
-                    sender = %event.sender,
-                    room_id = %room_id,
-                    event_id = %event_id,
-                    body_len = body.len(),
-                    "Matrix: received message"
-                );
-
                 // Resolve identity
                 let identity = resolve_channel_sender("matrix", &event.sender, &config);
                 let identity_id = identity
@@ -555,8 +550,19 @@ pub async fn run(
                     .map(|i| i.id.clone())
                     .unwrap_or_else(|| event.sender.clone());
                 let chat_key = format!("matrix-{}", identity_id);
+                let delivery_lag_ms = event.origin_server_ts.map(|ts| {
+                    telemetry::delivery_lag_ms_from_unix_seconds(ts / 1_000).unwrap_or(0)
+                });
+                telemetry::authorized_message(
+                    "matrix",
+                    &identity_id,
+                    &event.sender,
+                    body.len(),
+                    delivery_lag_ms,
+                );
 
                 // Dispatch in a separate task so we don't block the sync loop
+                let received_at = std::time::Instant::now();
                 let homeserver = homeserver.clone();
                 let auth_header = auth_header.clone();
                 let http = http.clone();
@@ -581,6 +587,7 @@ pub async fn run(
                         &router,
                         &command_handler,
                         &context_store,
+                        received_at,
                     )
                     .await;
                 });
@@ -603,21 +610,35 @@ async fn handle_message(
     identity_id: &str,
     chat_key: &str,
     body: &str,
-    config: &Arc<PolyConfig>,
+    config: &Arc<CalciforgeConfig>,
     router: &Arc<Router>,
     cmd_handler: &Arc<CommandHandler>,
     ctx_store: &ContextStore,
+    received_at: std::time::Instant,
 ) {
-    let send = |text: String| {
+    let send = |text: String, reply_kind: &'static str| {
         let homeserver = homeserver.to_string();
         let http = http.clone();
         let auth_header = auth_header.to_string();
         let room_id = room_id.to_string();
         async move {
-            if let Err(e) =
-                send_matrix_message(&homeserver, &http, &auth_header, &room_id, &text).await
-            {
-                warn!(error = %e, "Matrix: failed to send message");
+            let start = std::time::Instant::now();
+            let response_len = text.len();
+            match send_matrix_message(&homeserver, &http, &auth_header, &room_id, &text).await {
+                Ok(()) => telemetry::reply_sent(
+                    "matrix",
+                    &room_id,
+                    reply_kind,
+                    response_len,
+                    start.elapsed().as_millis() as u64,
+                ),
+                Err(e) => telemetry::reply_failed(
+                    "matrix",
+                    &room_id,
+                    reply_kind,
+                    start.elapsed().as_millis() as u64,
+                    e,
+                ),
             }
         }
     };
@@ -625,7 +646,7 @@ async fn handle_message(
     // --- Command fast-path ---
     if let Some(reply) = cmd_handler.handle(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled local command");
-        send(reply).await;
+        send(reply, "command").await;
         return;
     }
 
@@ -638,34 +659,34 @@ async fn handle_message(
         && !CommandHandler::is_model_command(body)
         && !CommandHandler::is_secure_command(body)
     {
-        send(cmd_handler.unknown_command(body)).await;
+        send(cmd_handler.unknown_command(body), "unknown_command").await;
         return;
     }
 
     if CommandHandler::is_status_command(body) {
         let reply = cmd_handler.cmd_status_for_identity(identity_id).await;
-        send(reply).await;
+        send(reply, "status").await;
         return;
     }
 
     if CommandHandler::is_switch_command(body) {
-        send(cmd_handler.handle_switch(body, identity_id)).await;
+        send(cmd_handler.handle_switch(body, identity_id), "switch").await;
         return;
     }
 
     if CommandHandler::is_model_command(body) {
-        send(cmd_handler.handle_model(body, identity_id)).await;
+        send(cmd_handler.handle_model(body, identity_id), "model").await;
         return;
     }
 
     if CommandHandler::is_sessions_command(body) {
         let reply = cmd_handler.handle_sessions(body, identity_id).await;
-        send(reply).await;
+        send(reply, "sessions").await;
         return;
     }
 
     if CommandHandler::is_default_command(body) {
-        send(cmd_handler.handle_default(identity_id)).await;
+        send(cmd_handler.handle_default(identity_id), "default").await;
         return;
     }
 
@@ -678,26 +699,30 @@ async fn handle_message(
         if CommandHandler::is_secure_set_command(body)
             && !crate::config::channel_allows_chat_secret_set(config, "matrix")
         {
-            send(CommandHandler::secure_set_disabled_reply("Matrix")).await;
+            send(
+                CommandHandler::secure_set_disabled_reply("Matrix"),
+                "secure_disabled",
+            )
+            .await;
             return;
         }
         let reply = cmd_handler.handle_secure(body, identity_id).await;
-        send(reply).await;
+        send(reply, "secure").await;
         return;
     }
 
     if body.trim().eq_ignore_ascii_case("!context clear") {
         ctx_store.clear(chat_key);
-        send("Conversation context cleared.".to_string()).await;
+        send("Conversation context cleared.".to_string(), "context_clear").await;
         return;
     }
 
     if CommandHandler::is_approve_command(body) || CommandHandler::is_deny_command(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handling async approval command");
         if let Some((ack, follow_up)) = cmd_handler.handle_async(body).await {
-            send(ack).await;
+            send(ack, "approval_ack").await;
             if let Some(resp) = follow_up {
-                send(resp).await;
+                send(resp, "approval_follow_up").await;
             }
         }
         return;
@@ -716,7 +741,7 @@ async fn handle_message(
         Some(a) => a.clone(),
         None => {
             warn!(agent_id = %agent_id, "Matrix: agent not found in config");
-            send("Agent not configured.".to_string()).await;
+            send("Agent not configured.".to_string(), "agent_not_configured").await;
             return;
         }
     };
@@ -730,15 +755,35 @@ async fn handle_message(
         .to_string();
 
     let augmented = ctx_store.augment_message(chat_key, &agent_id, body);
+    telemetry::agent_dispatch_started(
+        "matrix",
+        identity_id,
+        &agent_id,
+        received_at.elapsed().as_millis() as u64,
+    );
     let dispatch_start = std::time::Instant::now();
+    let model_override = cmd_handler.active_model_for_identity(identity_id);
 
     match router
-        .dispatch_with_sender(&augmented, &agent, config, Some(identity_id))
+        .dispatch_with_sender_and_model(
+            &augmented,
+            &agent,
+            config,
+            Some(identity_id),
+            model_override.as_deref(),
+        )
         .await
     {
         Ok(response) => {
             let latency_ms = dispatch_start.elapsed().as_millis() as u64;
             cmd_handler.record_dispatch(latency_ms);
+            telemetry::agent_dispatch_succeeded(
+                "matrix",
+                identity_id,
+                &agent_id,
+                latency_ms,
+                response.len(),
+            );
             debug!(
                 identity = %identity_id,
                 agent_id = %agent_id,
@@ -746,7 +791,7 @@ async fn handle_message(
                 "Matrix: got agent response"
             );
             ctx_store.push(chat_key, &sender_label, body, &agent_id, &response);
-            send(response).await;
+            send(response, "agent_response").await;
         }
         Err(e) => {
             // Clash approval flow
@@ -763,8 +808,8 @@ async fn handle_message(
                     .register_pending_approval(
                         crate::adapters::openclaw::PendingApprovalMeta {
                             request_id: req.request_id.clone(),
-                            nzc_endpoint: agent.endpoint.clone(),
-                            nzc_auth_token: agent.auth_token.clone().unwrap_or_default(),
+                            zeroclaw_endpoint: agent.endpoint.clone(),
+                            zeroclaw_auth_token: agent.auth_token.clone().unwrap_or_default(),
                             _summary: format!(
                                 "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
                                 req.command, req.reason, req.request_id
@@ -776,11 +821,11 @@ async fn handle_message(
                     "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
                     req.command, req.reason, req.request_id
                 );
-                send(notification).await;
+                send(notification, "approval_request").await;
                 return;
             }
             warn!(identity = %identity_id, error = %e, "Matrix: agent dispatch failed");
-            send(format!("Agent error: {}", e)).await;
+            send(format!("Agent error: {}", e), "agent_error").await;
         }
     }
 }
@@ -875,5 +920,269 @@ mod tests {
         assert!(!lookup.contains("event0"));
         assert!(!lookup.contains("event1"));
         assert!(lookup.contains("event2049"));
+    }
+
+    #[tokio::test]
+    async fn matrix_loop_dispatches_allowed_message_and_sends_agent_reply() {
+        use crate::config::{
+            AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig,
+            ContextConfig, Identity, RoutingRule,
+        };
+        use axum::{
+            extract::{Path, Query, State},
+            http::StatusCode,
+            routing::{get, post, put},
+            Json, Router as AxumRouter,
+        };
+        use serde_json::{json, Value};
+        use std::{
+            collections::HashMap,
+            io::Write,
+            net::SocketAddr,
+            os::unix::fs::OpenOptionsExt,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+        use tempfile::TempDir;
+        use tokio::{
+            net::TcpListener,
+            sync::{oneshot, Mutex},
+        };
+
+        #[derive(Clone)]
+        struct MockMatrixState {
+            sync_count: Arc<AtomicUsize>,
+            sent_reply: Arc<Mutex<Option<oneshot::Sender<String>>>>,
+        }
+
+        async fn whoami() -> Json<Value> {
+            Json(json!({
+                "user_id": "@calciforge:example.test",
+                "device_id": "DEVICE"
+            }))
+        }
+
+        async fn joined_members() -> Json<Value> {
+            Json(json!({ "joined": {} }))
+        }
+
+        async fn encryption_state() -> StatusCode {
+            StatusCode::NOT_FOUND
+        }
+
+        async fn sync(
+            State(state): State<MockMatrixState>,
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<Value> {
+            let count = state.sync_count.fetch_add(1, Ordering::SeqCst);
+            if count == 0 && !params.contains_key("since") {
+                return Json(json!({
+                    "next_batch": "s0",
+                    "rooms": {}
+                }));
+            }
+
+            if params.get("since").map(String::as_str) == Some("s0") {
+                return Json(json!({
+                    "next_batch": "s1",
+                    "rooms": {
+                        "join": {
+                            "!room:example.test": {
+                                "timeline": {
+                                    "events": [{
+                                        "type": "m.room.message",
+                                        "event_id": "$event1",
+                                        "sender": "@alice:example.test",
+                                        "content": {
+                                            "msgtype": "m.text",
+                                            "body": "hello calciforge"
+                                        }
+                                    }]
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
+
+            Json(json!({
+                "next_batch": "s2",
+                "rooms": {}
+            }))
+        }
+
+        async fn send_message(
+            State(state): State<MockMatrixState>,
+            Path((_room_id, _txn_id)): Path<(String, String)>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            if let Some(sender) = state.sent_reply.lock().await.take() {
+                let body = payload
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = sender.send(body);
+            }
+            Json(json!({ "event_id": "$reply1" }))
+        }
+
+        async fn join_room(Path(_room_id): Path<String>) -> Json<Value> {
+            Json(json!({ "room_id": "!room:example.test" }))
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let state = MockMatrixState {
+            sync_count: Arc::new(AtomicUsize::new(0)),
+            sent_reply: Arc::new(Mutex::new(Some(reply_tx))),
+        };
+        let app = AxumRouter::new()
+            .route("/_matrix/client/v3/account/whoami", get(whoami))
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/joined_members",
+                get(joined_members),
+            )
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/state/m.room.encryption",
+                get(encryption_state),
+            )
+            .route("/_matrix/client/v3/sync", get(sync))
+            .route("/_matrix/client/v3/join/:room_id", post(join_room))
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/send/m.room.message/:txn_id",
+                put(send_message),
+            )
+            .with_state(state);
+
+        struct MockServerGuard {
+            shutdown_tx: Option<oneshot::Sender<()>>,
+            server_handle: Option<tokio::task::JoinHandle<()>>,
+        }
+
+        impl Drop for MockServerGuard {
+            fn drop(&mut self) {
+                if let Some(shutdown_tx) = self.shutdown_tx.take() {
+                    let _ = shutdown_tx.send(());
+                }
+                if let Some(server_handle) = self.server_handle.take() {
+                    server_handle.abort();
+                }
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let _mock_server = MockServerGuard {
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+        };
+
+        let temp = TempDir::new().unwrap();
+        let token_path = temp.path().join("matrix-token");
+        std::fs::write(&token_path, "test-token\n").unwrap();
+
+        let agent_path = temp.path().join("mock-agent");
+        let mut script = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&agent_path)
+            .unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+printf 'mock-agent saw: %s\n' "$1"
+"#
+        )
+        .unwrap();
+        script.sync_all().unwrap();
+        drop(script);
+
+        let config = Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
+            identities: vec![Identity {
+                id: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                aliases: vec![ChannelAlias {
+                    channel: "matrix".to_string(),
+                    id: "@alice:example.test".to_string(),
+                }],
+                role: None,
+            }],
+            agents: vec![AgentConfig {
+                id: "mock".to_string(),
+                kind: "cli".to_string(),
+                endpoint: String::new(),
+                timeout_ms: Some(5_000),
+                model: None,
+                auth_token: None,
+                api_key: None,
+                api_key_file: None,
+                openclaw_agent_id: None,
+                reply_port: None,
+                reply_auth_token: None,
+                command: Some(agent_path.to_string_lossy().to_string()),
+                args: Some(vec!["{message}".to_string()]),
+                env: None,
+                registry: None,
+                aliases: vec![],
+            }],
+            routing: vec![RoutingRule {
+                identity: "alice".to_string(),
+                default_agent: "mock".to_string(),
+                allowed_agents: vec!["mock".to_string()],
+            }],
+            channels: vec![ChannelConfig {
+                kind: "matrix".to_string(),
+                enabled: true,
+                homeserver: Some(format!("http://{addr}")),
+                access_token_file: Some(token_path.to_string_lossy().to_string()),
+                room_id: Some("!room:example.test".to_string()),
+                allowed_users: vec!["@alice:example.test".to_string()],
+                ..Default::default()
+            }],
+            permissions: None,
+            memory: None,
+            context: ContextConfig::default(),
+            model_shortcuts: vec![],
+            alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
+            exec_models: vec![],
+            security: None,
+            proxy: None,
+            local_models: None,
+        });
+
+        let router = Arc::new(Router::new());
+        let command_handler = Arc::new(CommandHandler::with_state_dir(
+            config.clone(),
+            temp.path().join("state"),
+        ));
+        let context_store = ContextStore::new(20, 5);
+
+        let matrix_task = tokio::spawn(run(config, router, command_handler, context_store));
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx)
+            .await
+            .expect("Matrix mock should receive a reply")
+            .expect("reply sender should not be dropped");
+
+        matrix_task.abort();
+        match matrix_task.await {
+            Err(err) if err.is_cancelled() => {}
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => panic!("matrix task returned an error after abort: {err}"),
+            Err(err) => panic!("matrix task join failed after abort: {err}"),
+        }
+        assert_eq!(reply, "mock-agent saw: hello calciforge");
     }
 }

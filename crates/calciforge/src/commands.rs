@@ -16,10 +16,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
+
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
-use crate::adapters::openclaw::{NzcHttpAdapter, SharedPendingApprovals};
-use crate::config::PolyConfig;
+use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
+use crate::config::CalciforgeConfig;
 use crate::providers::alloy::AlloyManager;
 
 /// Default state directory: `~/.calciforge/state/`.
@@ -33,10 +35,25 @@ fn state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-agents.json")
 }
 
+/// Path to the active-model override state file within `state_dir`.
+fn active_model_state_file_path_for(state_dir: &Path) -> PathBuf {
+    state_dir.join("active-models.json")
+}
+
 /// Load persisted active-agent selections from a given state directory.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
 fn load_active_agents_from(state_dir: &Path) -> HashMap<String, String> {
     let path = state_file_path_for(state_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Load persisted active synthetic model selections from a given state directory.
+/// Returns an empty map if the file doesn't exist or can't be parsed.
+fn load_active_models_from(state_dir: &Path) -> HashMap<String, String> {
+    let path = active_model_state_file_path_for(state_dir);
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => HashMap::new(),
@@ -54,22 +71,37 @@ fn save_active_agents_to(state_dir: &Path, map: &HashMap<String, String>) {
     }
 }
 
+/// Persist the active synthetic model map to a given state directory.
+fn save_active_models_to(state_dir: &Path, map: &HashMap<String, String>) {
+    let path = active_model_state_file_path_for(state_dir);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
 /// In-memory command handler with simple counters and per-identity active-agent state.
 pub struct CommandHandler {
     start_time: Instant,
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     messages_routed: AtomicU64,
     total_latency_ms: AtomicU64,
     /// Per-identity active agent: identity_id → agent_id.
     /// Persisted to `state_dir/active-agents.json` and loaded on startup.
     active_agents: Mutex<HashMap<String, String>>,
+    /// Per-identity active synthetic model: identity_id → synthetic model id.
+    /// Persisted to `state_dir/active-models.json` and restored into the
+    /// [`AlloyManager`] once it is attached.
+    active_models: Mutex<HashMap<String, String>>,
     /// Directory for persisted state files.
     /// Defaults to `~/.calciforge/state/`; overridable for tests via
     /// [`CommandHandler::with_state_dir`].
     state_dir: PathBuf,
-    /// Pending Clash approvals: request_id → NZC endpoint + metadata.
-    /// Shared with any `NzcHttpAdapter` instances created for the same agent
-    /// so that `!approve` / `!deny` can signal the right NZC instance.
+    /// Pending Clash approvals: request_id → ZeroClaw endpoint + metadata.
+    /// Shared with any `ZeroClawHttpAdapter` instances created for the same agent
+    /// so that `!approve` / `!deny` can signal the right ZeroClaw instance.
     pub pending_approvals: SharedPendingApprovals,
     /// reqwest client reused for approve/deny HTTP calls.
     http_client: reqwest::Client,
@@ -85,7 +117,7 @@ impl CommandHandler {
     ///
     /// State is persisted to `~/.calciforge/state/`.  For test isolation, use
     /// [`CommandHandler::with_state_dir`] to supply a per-test temp directory.
-    pub fn new(config: Arc<PolyConfig>) -> Self {
+    pub fn new(config: Arc<CalciforgeConfig>) -> Self {
         Self::with_state_dir(config, default_state_dir())
     }
 
@@ -93,12 +125,19 @@ impl CommandHandler {
     ///
     /// Allows tests to inject a temp directory so that persisted state
     /// (`active-agents.json`) does not bleed between test runs.
-    pub fn with_state_dir(config: Arc<PolyConfig>, state_dir: PathBuf) -> Self {
+    pub fn with_state_dir(config: Arc<CalciforgeConfig>, state_dir: PathBuf) -> Self {
         let active_agents = load_active_agents_from(&state_dir);
         if !active_agents.is_empty() {
             tracing::info!(
                 agents = ?active_agents,
                 "loaded persisted active-agent selections"
+            );
+        }
+        let active_models = load_active_models_from(&state_dir);
+        if !active_models.is_empty() {
+            tracing::info!(
+                models = ?active_models,
+                "loaded persisted active-model selections"
             );
         }
         let http_client = reqwest::Client::builder()
@@ -111,6 +150,7 @@ impl CommandHandler {
             messages_routed: AtomicU64::new(0),
             total_latency_ms: AtomicU64::new(0),
             active_agents: Mutex::new(active_agents),
+            active_models: Mutex::new(active_models),
             state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
@@ -121,6 +161,31 @@ impl CommandHandler {
 
     /// Set the alloy manager for this command handler.
     pub fn with_alloy_manager(mut self, manager: AlloyManager) -> Self {
+        let mut active_models = self.active_models.lock().unwrap();
+        active_models.retain(|identity_id, model_id| {
+            if manager.is_synthetic_model(model_id) {
+                if let Err(err) = manager.set_active_for_identity(identity_id, model_id) {
+                    tracing::warn!(
+                        identity = %identity_id,
+                        model = %model_id,
+                        error = %err,
+                        "failed to restore persisted active-model selection"
+                    );
+                    false
+                } else {
+                    true
+                }
+            } else {
+                tracing::warn!(
+                    identity = %identity_id,
+                    model = %model_id,
+                    "dropping persisted active-model selection for unknown synthetic model"
+                );
+                false
+            }
+        });
+        save_active_models_to(&self.state_dir, &active_models);
+        drop(active_models);
         self.alloy_manager = Some(manager);
         self
     }
@@ -134,9 +199,16 @@ impl CommandHandler {
         self
     }
 
-    /// Get a reference to the alloy manager, if configured.
+    /// Get a reference to the synthetic model manager, if configured.
     pub fn alloy_manager(&self) -> Option<&AlloyManager> {
         self.alloy_manager.as_ref()
+    }
+
+    /// Return the active synthetic model override for an identity, if one was selected.
+    pub fn active_model_for_identity(&self, identity_id: &str) -> Option<String> {
+        self.alloy_manager
+            .as_ref()
+            .and_then(|manager| manager.active_for_identity(identity_id))
     }
 
     /// Record that a message was routed to an agent.
@@ -304,8 +376,8 @@ impl CommandHandler {
     pub fn secure_set_disabled_reply(channel_kind: &str) -> String {
         format!(
             "⚠️ `!secure set` is disabled for {channel_kind} by default because \
-             it sends the secret through chat history. Use `paste-server NAME` \
-             on the host, or set `allow_chat_secret_set = true` on this channel \
+             it sends the secret through chat history. Use `!secure input NAME` \
+             from chat, or set `allow_chat_secret_set = true` on this channel \
              only if you accept that retention tradeoff."
         )
     }
@@ -326,7 +398,7 @@ impl CommandHandler {
     ///
     /// Callers should send `ack` immediately, then send `follow_up` (if present)
     /// once it arrives — it carries the continuation agent response after the
-    /// approval/denial has been relayed to NZC and polled for a result.
+    /// approval/denial has been relayed to ZeroClaw and polled for a result.
     pub async fn handle_async(&self, text: &str) -> Option<(String, Option<String>)> {
         if Self::is_approve_command(text) {
             let (ack, follow_up) = self.handle_approve(text).await;
@@ -356,7 +428,7 @@ impl CommandHandler {
     /// Handle an `!approve [request_id]` command.
     ///
     /// If no `request_id` is provided and exactly one approval is pending,
-    /// auto-selects it.  Signals NZC to allow the blocked tool call, then
+    /// auto-selects it.  Signals ZeroClaw to allow the blocked tool call, then
     /// polls for the continuation result (up to 10 minutes).
     ///
     /// Returns `(reply_message, Option<final_agent_response>)`.
@@ -371,11 +443,11 @@ impl CommandHandler {
             Err(msg) => return (msg, None),
         };
 
-        // Signal NZC to approve.
-        match NzcHttpAdapter::send_approval_decision(
+        // Signal ZeroClaw to approve.
+        match ZeroClawHttpAdapter::send_approval_decision(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
             true,
             None,
@@ -392,10 +464,10 @@ impl CommandHandler {
         self.pending_approvals.lock().await.remove(&meta.request_id);
 
         // Poll for the continuation result.
-        let result = NzcHttpAdapter::poll_result(
+        let result = ZeroClawHttpAdapter::poll_result(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
         )
         .await;
@@ -415,7 +487,7 @@ impl CommandHandler {
     /// Handle a `!deny [request_id] [reason]` command.
     ///
     /// If no `request_id` is provided and exactly one approval is pending,
-    /// auto-selects it.  Signals NZC to deny the blocked tool call, then
+    /// auto-selects it.  Signals ZeroClaw to deny the blocked tool call, then
     /// polls for the continuation result.
     pub async fn handle_deny(&self, text: &str) -> (String, Option<String>) {
         let trimmed = text.trim();
@@ -442,11 +514,11 @@ impl CommandHandler {
             Err(msg) => return (msg, None),
         };
 
-        // Signal NZC to deny.
-        match NzcHttpAdapter::send_approval_decision(
+        // Signal ZeroClaw to deny.
+        match ZeroClawHttpAdapter::send_approval_decision(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
             false,
             reason,
@@ -463,10 +535,10 @@ impl CommandHandler {
         self.pending_approvals.lock().await.remove(&meta.request_id);
 
         // Poll for the continuation result.
-        let result = NzcHttpAdapter::poll_result(
+        let result = ZeroClawHttpAdapter::poll_result(
             &self.http_client,
-            &meta.nzc_endpoint,
-            &meta.nzc_auth_token,
+            &meta.zeroclaw_endpoint,
+            &meta.zeroclaw_auth_token,
             &meta.request_id,
         )
         .await;
@@ -538,8 +610,13 @@ impl CommandHandler {
         let active_agent = self
             .active_agent_for(identity_id)
             .unwrap_or_else(|| "none".to_string());
+        let active_model = self.active_model_for_identity(identity_id);
+        let active_model_info = active_model
+            .as_deref()
+            .map(|model| format!("\n  active model override: {model}"))
+            .unwrap_or_else(|| "\n  active model override: none".to_string());
 
-        // Try to get runtime status from the adapter (for NZC and others that support it)
+        // Try to get runtime status from the adapter (for ZeroClaw and others that support it)
         let runtime_info =
             if let Some(agent_cfg) = self.config.agents.iter().find(|a| a.id == active_agent) {
                 match crate::adapters::build_adapter(agent_cfg) {
@@ -601,7 +678,7 @@ impl CommandHandler {
         };
 
         format!(
-            "Calciforge status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
+            "Calciforge status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{active_model_info}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
         )
     }
 
@@ -877,12 +954,14 @@ impl CommandHandler {
         format!("✅ Switched to default agent: {}", default_agent_id)
     }
 
-    /// Handle `!secure <subcommand>`. Dispatches to `fnox` as a
-    /// subprocess; nothing about the secret value transits an agent's
-    /// context. Never echoes back values — responses are name-only.
+    /// Handle `!secure <subcommand>`. Secret values never transit an
+    /// agent's context. `set` is the legacy chat-retained path;
+    /// `input`/`bulk` mint short-lived paste URLs.
     ///
     /// Subcommands:
     ///   - `!secure set NAME=value`  — store a secret via chat (legacy/caution)
+    ///   - `!secure input NAME`      — create a one-shot paste URL
+    ///   - `!secure bulk LABEL`      — create a one-shot `.env` paste URL
     ///   - `!secure list`            — list stored secret names
     ///   - `!secure help`            — usage string
     ///
@@ -890,9 +969,7 @@ impl CommandHandler {
     /// this command's text passes through the chat transport
     /// (Telegram/Matrix/WhatsApp), which retains message history.
     /// For values where chat-transport exposure is unacceptable, use
-    /// `paste-server NAME` locally. A follow-up `!secure input NAME`
-    /// flow can wrap that server from chat without sending the value
-    /// through chat.
+    /// `!secure input NAME` or run `paste-server NAME` locally.
     pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
         // `!secure ...` — split off the subcommand word using
@@ -920,6 +997,8 @@ impl CommandHandler {
 
         match sub.as_str() {
             "set" => secure_set(rest).await,
+            "input" | "request" => secure_input(rest, false).await,
+            "bulk" => secure_input(rest, true).await,
             "list" => secure_list().await,
             "help" | "" => secure_help(),
             _ => format!(
@@ -944,8 +1023,8 @@ impl CommandHandler {
             "  !ping    — connectivity check (replies: pong)",
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
             "  !default — switch back to your default agent (requires auth)",
-            "  !model [alias|alloy] — show shortcuts/alloys or activate alloy (requires auth)",
-            "  !secure <list|help> — list fnox secret names; `set` is chat-retained legacy fallback",
+            "  !model [alias|synthetic] — show shortcuts/synthetic models or activate one (requires auth)",
+            "  !secure <input|bulk|list|help> — mint paste URLs or list secret names; `set` is legacy fallback",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -968,7 +1047,7 @@ impl CommandHandler {
                 }
             }
 
-            // Alloys section
+            // Synthetic models section
             if let Some(ref manager) = self.alloy_manager {
                 if !manager.is_empty() {
                     if !lines.is_empty() {
@@ -989,21 +1068,71 @@ impl CommandHandler {
                             constituents.join(", ")
                         ));
                     }
+                    let cascades = manager.list_cascades();
+                    if !cascades.is_empty() {
+                        lines.push(String::new());
+                        lines.push("Configured cascades:".to_string());
+                        for cascade in cascades {
+                            let models: Vec<String> = cascade
+                                .models
+                                .iter()
+                                .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
+                                .collect();
+                            lines.push(format!(
+                                "  {} — {}: {}",
+                                cascade.id,
+                                cascade.name,
+                                models.join(" → ")
+                            ));
+                        }
+                    }
+                    let dispatchers = manager.list_dispatchers();
+                    if !dispatchers.is_empty() {
+                        lines.push(String::new());
+                        lines.push("Configured dispatchers:".to_string());
+                        for dispatcher in dispatchers {
+                            let models: Vec<String> = dispatcher
+                                .models
+                                .iter()
+                                .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
+                                .collect();
+                            lines.push(format!(
+                                "  {} — {}: {}",
+                                dispatcher.id,
+                                dispatcher.name,
+                                models.join(", ")
+                            ));
+                        }
+                    }
+                    let exec_models = manager.list_exec_models();
+                    if !exec_models.is_empty() {
+                        lines.push(String::new());
+                        lines.push("Configured exec models:".to_string());
+                        for exec_model in exec_models {
+                            lines.push(format!(
+                                "  {} — {} ({} tokens)",
+                                exec_model.id, exec_model.name, exec_model.context_window
+                            ));
+                        }
+                    }
                 }
             }
 
             if lines.is_empty() {
-                return Some("No model shortcuts or alloys configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
+                return Some("No model shortcuts or synthetic models configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
             }
 
             lines.push("\nUsage:".to_string());
             lines.push("  !model <alias> — show model for alias".to_string());
             if self.alloy_manager.is_some() {
-                lines.push("  !model <alloy-id> — activate alloy for your identity".to_string());
+                lines.push(
+                    "  !model <synthetic-id> — activate alloy/cascade/dispatcher/exec model for your identity"
+                        .to_string(),
+                );
             }
             Some(lines.join("\n"))
         } else {
-            // Argument provided — check if it's a model shortcut or alloy selection
+            // Argument provided — check if it's a model shortcut or synthetic selection
             let arg = args[1].trim();
 
             // First check if it's a model shortcut (show-only)
@@ -1019,7 +1148,7 @@ impl CommandHandler {
                 ));
             }
 
-            // Return None to trigger post-auth handling for alloy selection
+            // Return None to trigger post-auth handling for synthetic selection
             None
         }
     }
@@ -1027,7 +1156,7 @@ impl CommandHandler {
     /// Handle a `!model <id>` command for an authenticated identity.
     ///
     /// Dispatch order:
-    /// 1. If the ID matches a configured alloy → activate it (existing behavior).
+    /// 1. If the ID matches a configured synthetic model → activate it.
     /// 2. If the ID matches a local model in `[local_models]` → trigger a switch
     ///    (async background task, returns immediately with status message).
     /// 3. If a `[[proxy.providers]]` entry has an `on_switch` hook for this model
@@ -1048,23 +1177,34 @@ impl CommandHandler {
 
         let model_id = args[0];
 
-        // 1. Alloy switch.
+        // 1. Synthetic model switch.
         if let Some(ref manager) = self.alloy_manager {
-            if let Some(alloy) = manager.get(model_id) {
+            if manager.is_synthetic_model(model_id) {
                 if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
-                    return format!("⚠️ Failed to activate alloy: {}", e);
+                    return format!("⚠️ Failed to activate model: {}", e);
                 }
-                let constituents: Vec<String> = alloy
-                    .definition()
-                    .constituents
-                    .iter()
-                    .map(|c| format!("{} (weight {})", c.model, c.weight))
-                    .collect();
+                {
+                    let mut active_models = self.active_models.lock().unwrap();
+                    active_models.insert(identity_id.to_string(), model_id.to_string());
+                    save_active_models_to(&self.state_dir, &active_models);
+                }
+                if let Some(alloy) = manager.get(model_id) {
+                    let constituents: Vec<String> = alloy
+                        .definition()
+                        .constituents
+                        .iter()
+                        .map(|c| format!("{} (weight {})", c.model, c.weight))
+                        .collect();
+                    return format!(
+                        "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
+                        model_id,
+                        alloy.definition().strategy,
+                        constituents.join(", ")
+                    );
+                }
                 return format!(
-                    "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
-                    model_id,
-                    alloy.definition().strategy,
-                    constituents.join(", ")
+                    "✅ Activated synthetic model '{}' for your identity.",
+                    model_id
                 );
             }
         }
@@ -1162,6 +1302,15 @@ impl CommandHandler {
             for a in mgr.list() {
                 available.push(format!("  {} (alloy)", a.id));
             }
+            for c in mgr.list_cascades() {
+                available.push(format!("  {} (cascade)", c.id));
+            }
+            for d in mgr.list_dispatchers() {
+                available.push(format!("  {} (dispatcher)", d.id));
+            }
+            for e in mgr.list_exec_models() {
+                available.push(format!("  {} (exec)", e.id));
+            }
         }
         if let Some(ref lm) = self.local_manager {
             for m in lm.models() {
@@ -1221,10 +1370,12 @@ impl CommandHandler {
 fn secure_help() -> String {
     [
         "!secure subcommands:",
+        "  !secure input NAME [desc] — create a one-shot localhost paste link",
+        "  !secure bulk LABEL [desc] — create a one-shot .env paste link",
         "  !secure list              — list stored secret names (not values)",
         "  !secure help              — show this help",
         "",
-        "Preferred input path:",
+        "Equivalent host-local commands:",
         "  paste-server NAME \"description\"",
         "  paste-server --bulk env-import \"bulk .env import\"",
         "",
@@ -1233,10 +1384,88 @@ fn secure_help() -> String {
         "  !secure set NAME value    — same, for mobile keyboards",
         "",
         "⚠️ `!secure set` passes through the chat transport, which retains",
-        "   history and may not be end-to-end encrypted. For values that",
-        "   must never touch chat, use the local paste UI or `fnox set NAME`.",
+        "   history and may not be end-to-end encrypted. `input`/`bulk` send",
+        "   only a short-lived URL; the value is entered in the browser.",
+        "",
+        "Calciforge and fnox can share the same fnox.toml/profile. Installing",
+        "fnox is still useful for manual `fnox set/list/tui` operations and as",
+        "the default local secret backend for paste-server.",
     ]
     .join("\n")
+}
+
+async fn secure_input(rest: &str, bulk: bool) -> String {
+    let mut parts = rest.split_whitespace();
+    let Some(name_or_label) = parts.next() else {
+        return if bulk {
+            "⚠️ Usage: `!secure bulk LABEL [description]`".to_string()
+        } else {
+            "⚠️ Usage: `!secure input NAME [description]`".to_string()
+        };
+    };
+    let description = parts.collect::<Vec<_>>().join(" ");
+
+    let mut command = tokio::process::Command::new("paste-server");
+    if bulk {
+        command.arg("--bulk");
+    }
+    command
+        .arg(name_or_label)
+        .arg(description)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(false);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return "⚠️ paste-server is not installed or not on the service PATH. Re-run the Calciforge installer or install the `paste-server` binary.".to_string();
+        }
+        Err(e) => return format!("⚠️ Failed to start paste-server: {e}"),
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return "⚠️ paste-server started without a URL stream".to_string();
+    };
+
+    let mut line = String::new();
+    let mut reader = BufReader::new(stdout);
+    let read_result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        reader.read_line(&mut line),
+    )
+    .await;
+    let url = match read_result {
+        Ok(Ok(n)) if n > 0 => line.trim().to_string(),
+        Ok(Ok(_)) => {
+            let _ = child.kill().await;
+            return "⚠️ paste-server exited before returning a URL".to_string();
+        }
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            return format!("⚠️ Failed reading paste-server URL: {e}");
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return "⚠️ paste-server did not return a URL within 3 seconds".to_string();
+        }
+    };
+
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+
+    let mode = if bulk {
+        "bulk .env paste"
+    } else {
+        "secret paste"
+    };
+    format!(
+        "🔐 One-shot {mode} link:\n{url}\n\n\
+         Open it from a browser that can reach the Calciforge host. The link expires quickly and stores through the configured local secret backend. \
+         For phone/off-network use, use a short-lived authenticated proxy/tunnel; do not expose this paste server directly to the open internet."
+    )
 }
 
 async fn secure_set(rest: &str) -> String {
@@ -1327,9 +1556,11 @@ async fn secure_list() -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentRegistry, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader,
-        RoutingRule,
+        AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CalciforgeConfig,
+        CalciforgeHeader, CascadeConfig, ChannelAlias, ChannelConfig, DispatcherConfig,
+        ExecModelConfig, Identity, RoutingRule, SyntheticModelConfig,
     };
+    use crate::providers::alloy::AlloyManager;
 
     fn make_handler() -> CommandHandler {
         let config = Arc::new(make_config());
@@ -1342,9 +1573,70 @@ mod tests {
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
     }
 
-    fn make_config() -> PolyConfig {
-        PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn synthetic_manager() -> AlloyManager {
+        AlloyManager::from_gateway_configs(
+            &[AlloyConfig {
+                id: "alloy-test".to_string(),
+                name: "Test Alloy".to_string(),
+                strategy: "round_robin".to_string(),
+                constituents: vec![
+                    AlloyConstituentConfig {
+                        model: "gpt-4".to_string(),
+                        weight: 1,
+                        context_window: 128_000,
+                    },
+                    AlloyConstituentConfig {
+                        model: "claude-3-5-sonnet".to_string(),
+                        weight: 1,
+                        context_window: 128_000,
+                    },
+                ],
+                min_context_window: None,
+            }],
+            &[CascadeConfig {
+                id: "cascade-test".to_string(),
+                name: Some("Test Cascade".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "gpt-4".to_string(),
+                    context_window: 128_000,
+                }],
+            }],
+            &[DispatcherConfig {
+                id: "dispatcher-test".to_string(),
+                name: Some("Test Dispatcher".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "gpt-4".to_string(),
+                    context_window: 128_000,
+                }],
+            }],
+            &[ExecModelConfig {
+                id: "codex/gpt-5.5".to_string(),
+                name: Some("Codex GPT-5.5".to_string()),
+                context_window: 262_144,
+                command: "codex".to_string(),
+                args: vec![
+                    "exec".to_string(),
+                    "-m".to_string(),
+                    "gpt-5.5".to_string(),
+                    "-".to_string(),
+                ],
+                env: std::collections::HashMap::new(),
+                timeout_seconds: Some(900),
+            }],
+        )
+        .expect("synthetic manager")
+    }
+
+    fn make_handler_with_synthetics() -> CommandHandler {
+        let config = Arc::new(make_config());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager())
+    }
+
+    fn make_config() -> CalciforgeConfig {
+        CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![
                 Identity {
                     id: "brian".to_string(),
@@ -1374,6 +1666,7 @@ mod tests {
                     model: None,
                     auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                     api_key: None,
+                    api_key_file: None,
                     openclaw_agent_id: None,
                     reply_port: None,
                     reply_auth_token: None,
@@ -1394,6 +1687,7 @@ mod tests {
                     model: None,
                     auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                     api_key: None,
+                    api_key_file: None,
                     openclaw_agent_id: None,
                     reply_port: None,
                     reply_auth_token: None,
@@ -1429,6 +1723,7 @@ mod tests {
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             security: None,
             proxy: None,
             local_models: None,
@@ -1594,6 +1889,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_model_command_lists_all_synthetic_model_classes() {
+        let h = make_handler_with_synthetics();
+        let reply = h.handle("!model").unwrap();
+        assert!(reply.contains("Configured alloys:"), "{reply}");
+        assert!(reply.contains("alloy-test"), "{reply}");
+        assert!(reply.contains("Configured cascades:"), "{reply}");
+        assert!(reply.contains("cascade-test"), "{reply}");
+        assert!(reply.contains("Configured dispatchers:"), "{reply}");
+        assert!(reply.contains("dispatcher-test"), "{reply}");
+        assert!(reply.contains("Configured exec models:"), "{reply}");
+        assert!(reply.contains("codex/gpt-5.5"), "{reply}");
+    }
+
+    #[test]
+    fn test_model_command_activation_becomes_dispatch_override() {
+        let h = make_handler_with_synthetics();
+        let reply = h.handle_model("!model dispatcher-test", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[test]
+    fn test_model_command_activation_persists_across_handlers() {
+        let config = Arc::new(make_config());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let state_dir = tmp.path().to_path_buf();
+
+        let h = CommandHandler::with_state_dir(config.clone(), state_dir.clone())
+            .with_alloy_manager(synthetic_manager());
+        let reply = h.handle_model("!model dispatcher-test", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+
+        let restored = CommandHandler::with_state_dir(config, state_dir)
+            .with_alloy_manager(synthetic_manager());
+        assert_eq!(
+            restored.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_status_shows_active_model_override() {
+        let h = make_handler_with_synthetics();
+        h.handle_model("!model dispatcher-test", "brian");
+        let reply = h.cmd_status_for_identity("brian").await;
+        assert!(
+            reply.contains("active model override: dispatcher-test"),
+            "status should show active model override: {}",
+            reply
+        );
+    }
+
     #[tokio::test]
     async fn test_status_shows_per_agent_model_summary() {
         let h = make_handler();
@@ -1613,8 +1964,8 @@ mod tests {
 
     #[test]
     fn test_agents_empty_config() {
-        let config = Arc::new(PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+        let config = Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![],
             agents: vec![],
             routing: vec![],
@@ -1626,6 +1977,7 @@ mod tests {
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             security: None,
             proxy: None,
             local_models: None,

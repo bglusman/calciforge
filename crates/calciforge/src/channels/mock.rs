@@ -29,7 +29,7 @@ use tracing::{debug, info};
 use crate::sync::Arc;
 
 use crate::{
-    commands::CommandHandler, config::PolyConfig, context::ContextStore,
+    commands::CommandHandler, config::CalciforgeConfig, context::ContextStore,
     router::Router as CalciforgeRouter,
 };
 
@@ -48,7 +48,7 @@ struct MockState {
     /// Context store
     context_store: ContextStore,
     /// Configuration
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
 }
 
 /// A mock message for logging
@@ -88,7 +88,7 @@ struct ApiResponse {
 
 /// Run the mock channel
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<CalciforgeRouter>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,

@@ -16,7 +16,7 @@
 //!
 //! | Adapter | Remote config via SSH? | What installer does |
 //! |---------|----------------------|---------------------|
-//! | `NzcNative` | ✅ | SSH in, read/backup/edit NZC config, health-check |
+//! | `ZeroClawNative` | ✅ | SSH in, read/backup/edit ZeroClaw config, health-check |
 //! | `OpenClawHttp` | ✅ | SSH in, read/backup/edit `openclaw.json`, health-check |
 //! | `OpenAiCompat` | ❌ | Record endpoint, health-check only |
 //! | `Webhook` | ❌ | Record endpoint, health-check only |

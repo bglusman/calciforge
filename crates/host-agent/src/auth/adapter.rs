@@ -1,9 +1,9 @@
 //! Agent adapter framework for mapping certificates to agent identities (P3-17)
 //!
 //! This module provides adapters for different agent types:
-//! - Librarian: Brian's primary agent
+//! - Librarian: primary operator agent
 //! - Lucien: Infrastructure guardian
-//! - Zeroclaw: NZC CLI agent
+//! - Zeroclaw: ZeroClaw CLI agent
 //! - ACPX: Anthropic Computer Protocol eXtended agents (Codex, Claude Code, etc.)
 
 use crate::config::AgentConfig;
@@ -49,7 +49,7 @@ mod tests {
             match s.to_lowercase().as_str() {
                 "librarian" => AgentType::Librarian,
                 "lucien" => AgentType::Lucien,
-                "zeroclaw" | "nzc" | "nonzeroclaw" => AgentType::Zeroclaw,
+                "zeroclaw" => AgentType::Zeroclaw,
                 "acp" | "acpx" | "acp_harness" | "claude-code" | "codex" => AgentType::AcpHarness,
                 other => AgentType::Custom(Box::leak(other.to_string().into_boxed_str())),
             }

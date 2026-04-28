@@ -14,7 +14,7 @@ scan_outbound = false
 # ============================================================================
 
 [[identities]]
-id = "brian"
+id = "operator"
 display_name = "Contributor"
 aliases = [
   { channel = "signal", id = "+15555550001" },
@@ -123,7 +123,7 @@ access = ["system"]
 # ============================================================================
 
 [[routing]]
-identity = "brian"
+identity = "operator"
 default_agent = "claude-code"
 allowed_agents = ["claude-code", "codex", "opencode", "local-acp"]
 
@@ -140,7 +140,7 @@ allowed_agents = ["codex", "opencode"]
 default = "deny"
 
 [[permissions.rules]]
-identity = "brian"
+identity = "operator"
 effect = "allow"
 capabilities = ["message", "command", "agent_switch", "calciforge_admin"]
 
@@ -161,7 +161,7 @@ enabled = true
 [[channels]]
 kind = "matrix"
 homeserver = "https://matrix-client.matrix.org"
-user_id = "@librarian-assistant:matrix.org"
+user_id = "@calciforge-bot:matrix.org"
 token_file = "~/.calciforge/secrets/matrix-token"
 refresh_token_file = "~/.calciforge/secrets/matrix-refresh-token"
 token_ttl_seconds = 14400

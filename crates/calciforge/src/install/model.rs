@@ -1,7 +1,7 @@
 //! Core data model for the Calciforge multi-target installer.
 //!
 //! The key design axis is **remote configurability**:
-//! - [`ClawKind::NzcNative`] and [`ClawKind::OpenClawHttp`] → installer
+//! - [`ClawKind::ZeroClawNative`] and [`ClawKind::OpenClawHttp`] → installer
 //!   knows the config format and can SSH in to make changes safely.
 //! - All other adapters → installer just registers the endpoint in Calciforge's
 //!   config and health-checks it; no SSH config management is performed.
@@ -16,9 +16,9 @@ use std::path::PathBuf;
 /// installer can manage its remote config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClawKind {
-    /// NonZeroClaw native webhook protocol.
-    /// Installer can SSH in and edit NZC's config.
-    NzcNative,
+    /// ZeroClaw native webhook protocol.
+    /// Installer can SSH in and edit ZeroClaw's config.
+    ZeroClawNative,
 
     /// OpenClaw OpenAI-compatible HTTP gateway.
     /// Installer can SSH in and safely edit `openclaw.json`.
@@ -43,17 +43,17 @@ pub enum ClawKind {
 impl ClawKind {
     /// Returns `true` if this adapter supports remote SSH config management.
     ///
-    /// Only [`ClawKind::NzcNative`] and [`ClawKind::OpenClawHttp`] do.
+    /// Only [`ClawKind::ZeroClawNative`] and [`ClawKind::OpenClawHttp`] do.
     /// All other adapters are registered in Calciforge's config and health-checked,
     /// but the installer never SSHes into them to edit their config files.
     pub fn is_remotely_configurable(&self) -> bool {
-        matches!(self, ClawKind::NzcNative | ClawKind::OpenClawHttp)
+        matches!(self, ClawKind::ZeroClawNative | ClawKind::OpenClawHttp)
     }
 
     /// Short label for display and TOML serialization.
     pub fn kind_label(&self) -> &'static str {
         match self {
-            ClawKind::NzcNative => "nzc",
+            ClawKind::ZeroClawNative => "zeroclaw-native",
             ClawKind::OpenClawHttp => "openclaw",
             ClawKind::OpenAiCompat { .. } => "openai-compat",
             ClawKind::Webhook { .. } => "webhook",
@@ -174,8 +174,8 @@ const OPENCLAW_COMPATIBLE_VERSIONS: &[&str] = &[
     "2026.1.0",
 ];
 
-/// Known-compatible NZC versions.
-const NZC_COMPATIBLE_VERSIONS: &[&str] = &["0.1.0", "0.2.0", "0.3.0", "0.4.0"];
+/// Known-compatible ZeroClaw versions.
+const ZEROCLAW_COMPATIBLE_VERSIONS: &[&str] = &["0.1.0", "0.2.0", "0.3.0", "0.4.0"];
 
 /// Compatibility verdict for a detected version string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,7 +204,7 @@ impl std::fmt::Display for VersionCompatibility {
 pub fn check_version_compatibility(adapter: &ClawKind, version: &str) -> VersionCompatibility {
     let compatible_list = match adapter {
         ClawKind::OpenClawHttp => OPENCLAW_COMPATIBLE_VERSIONS,
-        ClawKind::NzcNative => NZC_COMPATIBLE_VERSIONS,
+        ClawKind::ZeroClawNative => ZEROCLAW_COMPATIBLE_VERSIONS,
         // Non-SSH adapters: we don't manage their config, so version is informational only.
         _ => return VersionCompatibility::Compatible,
     };
@@ -247,8 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn remotely_configurable_only_nzc_and_openclaw() {
-        assert!(ClawKind::NzcNative.is_remotely_configurable());
+    fn remotely_configurable_only_zeroclaw_and_openclaw() {
+        assert!(ClawKind::ZeroClawNative.is_remotely_configurable());
         assert!(ClawKind::OpenClawHttp.is_remotely_configurable());
         assert!(!ClawKind::OpenAiCompat {
             endpoint: "http://localhost".into()
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn kind_label_roundtrip() {
-        assert_eq!(ClawKind::NzcNative.kind_label(), "nzc");
+        assert_eq!(ClawKind::ZeroClawNative.kind_label(), "zeroclaw-native");
         assert_eq!(ClawKind::OpenClawHttp.kind_label(), "openclaw");
         assert_eq!(
             ClawKind::OpenAiCompat {
@@ -295,14 +295,14 @@ mod tests {
 
     #[test]
     fn claw_target_needs_ssh_config() {
-        let nzc = ClawTarget {
-            name: "nzc".into(),
-            adapter: ClawKind::NzcNative,
+        let zeroclaw = ClawTarget {
+            name: "zeroclaw".into(),
+            adapter: ClawKind::ZeroClawNative,
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/key")),
             endpoint: "http://host:18799".into(),
         };
-        assert!(nzc.needs_ssh_config());
+        assert!(zeroclaw.needs_ssh_config());
 
         let openai = ClawTarget {
             name: "openai".into(),
@@ -361,13 +361,13 @@ mod tests {
     }
 
     #[test]
-    fn version_compat_known_nzc() {
+    fn version_compat_known_zeroclaw() {
         assert_eq!(
-            check_version_compatibility(&ClawKind::NzcNative, "0.1.0"),
+            check_version_compatibility(&ClawKind::ZeroClawNative, "0.1.0"),
             VersionCompatibility::Compatible
         );
         assert_eq!(
-            check_version_compatibility(&ClawKind::NzcNative, "99.0.0"),
+            check_version_compatibility(&ClawKind::ZeroClawNative, "99.0.0"),
             VersionCompatibility::Unknown
         );
     }
@@ -470,7 +470,7 @@ mod tests {
         fn backup_filename_never_equals_original() {
             let paths = &[
                 "/etc/openclaw.json",
-                "nzc.toml",
+                "zeroclaw.toml",
                 "/home/user/.config/thing.json",
             ];
             let timestamps: &[u64] = &[0, 1, 9999999999];
@@ -659,7 +659,10 @@ mod hegel_tests {
         let version = tc.draw(text().max_size(40));
 
         // Test all adapter types that have version lists.
-        for adapter in &[super::ClawKind::OpenClawHttp, super::ClawKind::NzcNative] {
+        for adapter in &[
+            super::ClawKind::OpenClawHttp,
+            super::ClawKind::ZeroClawNative,
+        ] {
             let result = super::check_version_compatibility(adapter, &version);
             assert!(
                 !matches!(result, super::VersionCompatibility::Incompatible { .. }),
@@ -681,7 +684,7 @@ mod hegel_tests {
         use hegel::generators as gs;
 
         let openclaw_versions = super::OPENCLAW_COMPATIBLE_VERSIONS;
-        let nzc_versions = super::NZC_COMPATIBLE_VERSIONS;
+        let zeroclaw_versions = super::ZEROCLAW_COMPATIBLE_VERSIONS;
 
         // Pick a random version from each list.
         let oc_idx = tc.draw(
@@ -689,10 +692,10 @@ mod hegel_tests {
                 .min_value(0)
                 .max_value(openclaw_versions.len() - 1),
         );
-        let nzc_idx = tc.draw(
+        let zeroclaw_idx = tc.draw(
             gs::integers::<usize>()
                 .min_value(0)
-                .max_value(nzc_versions.len() - 1),
+                .max_value(zeroclaw_versions.len() - 1),
         );
 
         let oc_ver = openclaw_versions[oc_idx];
@@ -704,13 +707,14 @@ mod hegel_tests {
             oc_ver
         );
 
-        let nzc_ver = nzc_versions[nzc_idx];
-        let result = super::check_version_compatibility(&super::ClawKind::NzcNative, nzc_ver);
+        let zeroclaw_ver = zeroclaw_versions[zeroclaw_idx];
+        let result =
+            super::check_version_compatibility(&super::ClawKind::ZeroClawNative, zeroclaw_ver);
         assert_eq!(
             result,
             super::VersionCompatibility::Compatible,
-            "known NZC version {:?} must be Compatible",
-            nzc_ver
+            "known ZeroClaw version {:?} must be Compatible",
+            zeroclaw_ver
         );
     }
 }

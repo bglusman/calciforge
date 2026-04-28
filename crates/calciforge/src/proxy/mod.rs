@@ -15,13 +15,14 @@ use tracing::info;
 
 use crate::sync::Arc;
 
-use crate::config::ProxyConfig;
+use crate::config::{ExecModelConfig, ProxyConfig};
 use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
 
 mod alloy_router;
 mod auth;
 mod backend;
+mod exec_gateway;
 mod gateway;
 mod handlers;
 mod openai;
@@ -59,11 +60,21 @@ pub struct ProxyState {
     pub voice: Option<crate::voice::VoiceConfig>,
 }
 
-/// Read an API key from a file path, stripping trailing whitespace.
-fn read_key_file(path: &std::path::Path) -> anyhow::Result<String> {
+/// Normalize an optional API key. Empty strings never enable auth.
+fn normalize_api_key(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Read an API key from a file path, stripping surrounding whitespace.
+fn read_key_file(path: &std::path::Path) -> anyhow::Result<Option<String>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading API key file {}", path.display()))?;
-    Ok(raw.trim_end().to_string())
+    Ok(normalize_api_key(&raw))
 }
 
 /// Resolve a provider's effective API key: file takes precedence over inline.
@@ -72,17 +83,29 @@ fn resolve_api_key(
     api_key_file: Option<&std::path::Path>,
 ) -> anyhow::Result<Option<String>> {
     if let Some(file) = api_key_file {
-        let key = read_key_file(file)?;
-        if !key.is_empty() {
-            return Ok(Some(key));
+        return read_key_file(file);
+    }
+    Ok(api_key.and_then(normalize_api_key))
+}
+
+/// Resolve all per-agent proxy API key files into in-memory keys before the
+/// config is shared with request handlers.
+fn resolve_proxy_agent_api_keys(config: &mut ProxyConfig) -> anyhow::Result<()> {
+    for agent in &mut config.agents {
+        if let Some(file) = agent.api_key_file.as_deref() {
+            agent.api_key = read_key_file(file)
+                .with_context(|| format!("reading API key file for proxy agent '{}'", agent.id))?;
+        } else {
+            agent.api_key = agent.api_key.as_deref().and_then(normalize_api_key);
         }
     }
-    Ok(api_key.map(|s| s.to_string()))
+    Ok(())
 }
 
 /// Start the model gateway HTTP server
 pub async fn start_proxy_server(
-    config: ProxyConfig,
+    mut config: ProxyConfig,
+    exec_models: Vec<ExecModelConfig>,
     alloy_manager: Arc<AlloyManager>,
     provider_registry: Arc<ProviderRegistry>,
     local_manager: Option<Arc<crate::local_model::LocalModelManager>>,
@@ -96,6 +119,12 @@ pub async fn start_proxy_server(
         .bind
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", config.bind, e))?;
+
+    // Resolve the gateway's client-facing API key before sharing config with
+    // handlers. `api_key_file` is preferred so deployments can avoid inline
+    // TOML secrets while still enforcing Authorization on chat completions.
+    config.api_key = resolve_api_key(config.api_key.as_deref(), config.api_key_file.as_deref())?;
+    resolve_proxy_agent_api_keys(&mut config)?;
 
     // Resolve the default backend API key (file takes precedence over inline).
     let default_api_key = resolve_api_key(
@@ -176,7 +205,7 @@ pub async fn start_proxy_server(
         .map_err(|e| anyhow::anyhow!("Failed to create gateway: {}", e))?;
 
     // Build named provider entries from [[proxy.providers]] and [[proxy.model_routes]].
-    let providers = routing::build_provider_entries(&config, config.timeout_seconds)?;
+    let providers = routing::build_provider_entries(&config, &exec_models, config.timeout_seconds)?;
     info!(providers = providers.len(), "Named providers loaded");
 
     let state = ProxyState {
@@ -215,4 +244,22 @@ pub async fn start_proxy_server(
         .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_api_key;
+
+    #[test]
+    fn resolve_api_key_ignores_empty_inline_key() {
+        assert_eq!(resolve_api_key(Some("  "), None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_api_key_trims_inline_key() {
+        assert_eq!(
+            resolve_api_key(Some(" test-key\n"), None).unwrap(),
+            Some("test-key".to_string())
+        );
+    }
 }

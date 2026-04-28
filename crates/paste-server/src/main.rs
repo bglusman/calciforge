@@ -33,9 +33,9 @@ async fn main() -> anyhow::Result<()> {
     let description = args.get(1).cloned().unwrap_or_default();
 
     // Demo escape hatch: PASTE_INSECURE_NO_ORIGIN=1 disables the
-    // localhost-Origin check so a phone on the LAN can submit. NOT
-    // safe for any deployment with real secrets — this is for showing
-    // the UI from another device on a trusted network.
+    // localhost-Origin check. NOT safe for deployments with real
+    // secrets; prefer the default localhost bind, or use a short-lived
+    // authenticated tunnel/proxy for remote devices.
     let insecure_no_origin = std::env::var("PASTE_INSECURE_NO_ORIGIN").as_deref() == Ok("1");
     let cfg = PasteConfig {
         require_localhost_origin: !insecure_no_origin,

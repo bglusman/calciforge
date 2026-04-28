@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-use super::{AdapterError, AgentAdapter};
+use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 const MESSAGE_PLACEHOLDER: &str = "{message}";
@@ -116,6 +116,7 @@ impl CodexCliAdapter {
     fn build_args(
         &self,
         message: &str,
+        model_override: Option<&str>,
         output_path: &Path,
     ) -> Result<(Vec<String>, Option<String>, OutputCapture), AdapterError> {
         let has_placeholder = Self::has_message_placeholder(&self.args);
@@ -135,10 +136,11 @@ impl CodexCliAdapter {
         let insert_at = Self::prompt_arg_index(&self.args, has_placeholder).unwrap_or(args.len());
         let mut generated = Vec::new();
 
-        if let Some(model) = &self.model {
+        let selected_model = model_override.or(self.model.as_deref());
+        if let Some(model) = selected_model {
             if !Self::has_arg(&args, "--model", "-m") {
                 generated.push("--model".to_string());
-                generated.push(model.clone());
+                generated.push(model.to_string());
             }
         }
 
@@ -175,8 +177,7 @@ fn default_codex_args() -> Vec<String> {
         "never".to_string(),
         "--sandbox".to_string(),
         "read-only".to_string(),
-        "--ask-for-approval".to_string(),
-        "never".to_string(),
+        "--ephemeral".to_string(),
         "--skip-git-repo-check".to_string(),
     ]
 }
@@ -184,6 +185,14 @@ fn default_codex_args() -> Vec<String> {
 #[async_trait]
 impl AgentAdapter for CodexCliAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
+    }
+
+    async fn dispatch_with_context(
+        &self,
+        ctx: DispatchContext<'_>,
+    ) -> Result<String, AdapterError> {
         tokio::fs::create_dir_all(&self.output_dir)
             .await
             .map_err(|e| {
@@ -191,10 +200,11 @@ impl AgentAdapter for CodexCliAdapter {
             })?;
 
         let output_path = self.output_path();
-        let (args, stdin_message, capture) = self.build_args(msg, &output_path)?;
+        let (args, stdin_message, capture) =
+            self.build_args(ctx.message, ctx.model_override, &output_path)?;
 
         info!(command = %self.command, args = ?args, "codex-cli dispatch");
-        debug!(msg = %msg, "codex-cli outbound message");
+        debug!(msg = %ctx.message, "codex-cli outbound message");
 
         let mut cmd = Command::new(&self.command);
         cmd.args(&args)
@@ -277,9 +287,12 @@ mod tests {
             CodexCliAdapter::new(None, None, Some("gpt-5.5".to_string()), None, Some(1_000));
         let output_path = PathBuf::from("/tmp/out.txt");
 
-        let (args, stdin_message, capture) = adapter.build_args("hello", &output_path).unwrap();
+        let (args, stdin_message, capture) =
+            adapter.build_args("hello", None, &output_path).unwrap();
 
         assert!(args.starts_with(&["exec".to_string()]));
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.5".to_string()));
         assert!(args.contains(&"--output-last-message".to_string()));
@@ -305,7 +318,7 @@ mod tests {
         );
 
         let (args, stdin_message, _) = adapter
-            .build_args("hello", &PathBuf::from("/tmp/out.txt"))
+            .build_args("hello", None, &PathBuf::from("/tmp/out.txt"))
             .unwrap();
 
         assert_eq!(args[0], "exec");
@@ -327,7 +340,7 @@ mod tests {
         );
 
         let (args, stdin_message, _) = adapter
-            .build_args("hello", &PathBuf::from("/tmp/out.txt"))
+            .build_args("hello", None, &PathBuf::from("/tmp/out.txt"))
             .unwrap();
 
         let stdin_pos = args.iter().position(|arg| arg == "-").unwrap();
@@ -340,6 +353,32 @@ mod tests {
         assert!(output_pos < stdin_pos);
         assert_eq!(args.iter().filter(|arg| arg.as_str() == "-").count(), 1);
         assert_eq!(stdin_message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn model_override_takes_precedence_over_configured_model() {
+        let adapter = CodexCliAdapter::new(
+            None,
+            Some(vec!["exec".to_string(), "-".to_string()]),
+            Some("gpt-5.5".to_string()),
+            None,
+            None,
+        );
+
+        let (args, _, _) = adapter
+            .build_args(
+                "hello",
+                Some("local-kimi-gpt55"),
+                &PathBuf::from("/tmp/out.txt"),
+            )
+            .unwrap();
+
+        let model_pos = args.iter().position(|arg| arg == "--model").unwrap();
+        assert_eq!(
+            args.get(model_pos + 1).map(String::as_str),
+            Some("local-kimi-gpt55")
+        );
+        assert!(!args.contains(&"gpt-5.5".to_string()));
     }
 
     #[test]
@@ -357,7 +396,7 @@ mod tests {
         );
 
         let err = adapter
-            .build_args("hello", &PathBuf::from("/tmp/out.txt"))
+            .build_args("hello", None, &PathBuf::from("/tmp/out.txt"))
             .unwrap_err();
         assert!(matches!(err, AdapterError::Protocol(msg) if msg.contains("cannot combine")));
     }
@@ -377,7 +416,7 @@ mod tests {
         );
 
         let (args, _, capture) = adapter
-            .build_args("hello", &PathBuf::from("/tmp/generated.txt"))
+            .build_args("hello", None, &PathBuf::from("/tmp/generated.txt"))
             .unwrap();
 
         assert!(!args.contains(&"--output-last-message".to_string()));

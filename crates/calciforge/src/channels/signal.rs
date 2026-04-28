@@ -51,9 +51,9 @@
 //! enabled = true
 //! # OpenClaw gateway endpoint — the running OpenClaw instance that owns the Signal session
 //! # and can forward messages via its /tools/invoke HTTP API.
-//! nzc_endpoint = "http://127.0.0.1:18789"
+//! zeroclaw_endpoint = "http://127.0.0.1:18789"
 //! # Bearer token for the OpenClaw gateway
-//! nzc_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+//! zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
 //! # Webhook path Calciforge registers (on the Calciforge gateway HTTP server)
 //! webhook_path = "/webhooks/signal"
 //! # HMAC secret for webhook signature verification (optional but recommended)
@@ -73,10 +73,12 @@ use tracing::{debug, info, warn};
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::PolyConfig,
+    config::CalciforgeConfig,
     context::ContextStore,
     router::Router,
 };
+
+use super::telemetry;
 
 use adversary_detector::middleware::ChannelScanner;
 use adversary_detector::verdict::ScanContext;
@@ -140,7 +142,7 @@ pub struct InboundSignalMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Outbound reply request (for the NZC /tools/invoke API)
+// Outbound reply request (for the ZeroClaw /tools/invoke API)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -168,7 +170,7 @@ struct ToolInvokeArgs {
 /// dispatches to the configured agent, and sends the reply back via the
 /// OpenClaw `/tools/invoke` API.
 pub struct SignalChannel {
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -178,7 +180,7 @@ pub struct SignalChannel {
 
 impl SignalChannel {
     pub fn new(
-        config: Arc<PolyConfig>,
+        config: Arc<CalciforgeConfig>,
         router: Arc<Router>,
         command_handler: Arc<CommandHandler>,
         context_store: ContextStore,
@@ -291,12 +293,12 @@ impl SignalChannel {
     /// Returns Ok(()) if the HTTP call was accepted (2xx), Err otherwise.
     pub async fn send_reply(
         &self,
-        nzc_endpoint: &str,
-        nzc_auth_token: Option<&str>,
+        zeroclaw_endpoint: &str,
+        zeroclaw_auth_token: Option<&str>,
         to: &str,
         text: &str,
     ) -> Result<()> {
-        let url = format!("{nzc_endpoint}/tools/invoke");
+        let url = format!("{zeroclaw_endpoint}/tools/invoke");
 
         let body = ToolInvokeRequest {
             tool: "message",
@@ -310,10 +312,12 @@ impl SignalChannel {
 
         let mut req = self.http_client.post(&url).json(&body);
 
-        if let Some(token) = nzc_auth_token {
+        if let Some(token) = zeroclaw_auth_token {
             req = req.bearer_auth(token);
         }
 
+        let start = std::time::Instant::now();
+        let response_len = text.len();
         let resp = req
             .send()
             .await
@@ -325,7 +329,13 @@ impl SignalChannel {
             anyhow::bail!("Signal: OpenClaw replied {status} for send to {to}: {body_text}");
         }
 
-        debug!(to = %to, "Signal: reply sent via OpenClaw");
+        telemetry::reply_sent(
+            "signal",
+            to,
+            "reply",
+            response_len,
+            start.elapsed().as_millis() as u64,
+        );
         Ok(())
     }
 
@@ -335,9 +345,12 @@ impl SignalChannel {
     pub async fn handle_message(
         self: Arc<Self>,
         msg: InboundSignalMessage,
-        nzc_endpoint: String,
-        nzc_auth_token: Option<String>,
+        zeroclaw_endpoint: String,
+        zeroclaw_auth_token: Option<String>,
     ) {
+        let received_at = std::time::Instant::now();
+        let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg._timestamp);
+
         // Clone owned strings up front so they can be moved into spawned tasks.
         let from: String = msg.from.clone();
         let text: String = msg.text.clone();
@@ -351,12 +364,7 @@ impl SignalChannel {
             }
         };
 
-        info!(
-            identity = %identity.id,
-            from = %from,
-            text_len = %text.len(),
-            "Signal: authorised message from identity"
-        );
+        telemetry::authorized_message("signal", &identity.id, &from, text.len(), delivery_lag_ms);
 
         // Context key: scoped per identity (phone is the key)
         let chat_key = format!("signal-{}", identity.id);
@@ -383,8 +391,8 @@ impl SignalChannel {
                             format!("🚫 Message blocked by security scanner: {reason_owned}");
                         if let Err(e) = channel
                             .send_reply(
-                                &nzc_endpoint,
-                                nzc_auth_token.as_deref(),
+                                &zeroclaw_endpoint,
+                                zeroclaw_auth_token.as_deref(),
                                 &from_owned,
                                 &reply,
                             )
@@ -414,8 +422,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -441,8 +449,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -465,8 +473,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -486,8 +494,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -507,8 +515,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -531,8 +539,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -552,8 +560,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         &reply,
                     )
@@ -573,8 +581,8 @@ impl SignalChannel {
             tokio::spawn(async move {
                 if let Err(e) = channel
                     .send_reply(
-                        &nzc_endpoint,
-                        nzc_auth_token.as_deref(),
+                        &zeroclaw_endpoint,
+                        zeroclaw_auth_token.as_deref(),
                         &from_owned,
                         "🧹 Conversation context cleared.",
                     )
@@ -605,8 +613,8 @@ impl SignalChannel {
                 tokio::spawn(async move {
                     let _ = channel
                         .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
+                            &zeroclaw_endpoint,
+                            zeroclaw_auth_token.as_deref(),
                             &from_owned,
                             "⚠️ Agent not configured.",
                         )
@@ -627,9 +635,13 @@ impl SignalChannel {
             .to_string();
 
         let identity_id = identity.id.clone();
+        let model_override = self.command_handler.active_model_for_identity(&identity_id);
 
         // Spawn agent dispatch — handler returns immediately
         tokio::spawn(async move {
+            let queue_wait_ms = received_at.elapsed().as_millis() as u64;
+            telemetry::agent_dispatch_started("signal", &identity_id, &agent_id, queue_wait_ms);
+
             let augmented = self
                 .context_store
                 .augment_message(&chat_key, &agent_id, &text);
@@ -637,12 +649,25 @@ impl SignalChannel {
             let dispatch_start = std::time::Instant::now();
             match self
                 .router
-                .dispatch_with_sender(&augmented, &agent, &self.config, Some(&identity_id))
+                .dispatch_with_sender_and_model(
+                    &augmented,
+                    &agent,
+                    &self.config,
+                    Some(&identity_id),
+                    model_override.as_deref(),
+                )
                 .await
             {
                 Ok(response) => {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                     self.command_handler.record_dispatch(latency_ms);
+                    telemetry::agent_dispatch_succeeded(
+                        "signal",
+                        &identity_id,
+                        &agent_id,
+                        latency_ms,
+                        response.len(),
+                    );
 
                     // Outbound scanning dropped — see docs/roadmap/outbound-sensitive-data-detection.md
                     let final_response = response;
@@ -665,8 +690,8 @@ impl SignalChannel {
 
                     if let Err(e) = self
                         .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
+                            &zeroclaw_endpoint,
+                            zeroclaw_auth_token.as_deref(),
                             &from,
                             &final_response,
                         )
@@ -683,8 +708,8 @@ impl SignalChannel {
                     warn!(identity = %identity_id, error = %e, "Signal: agent dispatch failed");
                     let _ = self
                         .send_reply(
-                            &nzc_endpoint,
-                            nzc_auth_token.as_deref(),
+                            &zeroclaw_endpoint,
+                            zeroclaw_auth_token.as_deref(),
                             &from,
                             &format!("⚠️ Agent error: {e}"),
                         )
@@ -708,7 +733,7 @@ impl SignalChannel {
 ///
 /// This function runs until the server errors or is cancelled.
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -731,13 +756,13 @@ pub async fn run(
         .parse()
         .context("invalid signal webhook_listen address")?;
 
-    let nzc_endpoint = signal_channel_cfg
-        .nzc_endpoint
+    let zeroclaw_endpoint = signal_channel_cfg
+        .zeroclaw_endpoint
         .as_deref()
         .unwrap_or("http://127.0.0.1:18789")
         .to_string();
 
-    let nzc_auth_token = signal_channel_cfg.nzc_auth_token.clone();
+    let zeroclaw_auth_token = signal_channel_cfg.zeroclaw_auth_token.clone();
     let webhook_path = signal_channel_cfg
         .webhook_path
         .as_deref()
@@ -749,7 +774,7 @@ pub async fn run(
     info!(
         listen = %listen_addr,
         path = %webhook_path,
-        nzc = %nzc_endpoint,
+        zeroclaw = %zeroclaw_endpoint,
         "Signal webhook channel starting"
     );
 
@@ -777,8 +802,8 @@ pub async fn run(
         };
 
         let channel = channel.clone();
-        let nzc_endpoint = nzc_endpoint.clone();
-        let nzc_auth_token = nzc_auth_token.clone();
+        let zeroclaw_endpoint = zeroclaw_endpoint.clone();
+        let zeroclaw_auth_token = zeroclaw_auth_token.clone();
         let webhook_path = webhook_path.clone();
         let webhook_secret = webhook_secret.clone();
         let allowed_numbers = allowed_numbers.clone();
@@ -899,10 +924,10 @@ pub async fn run(
             // Handle each message asynchronously
             for msg in messages {
                 let ch = channel.clone();
-                let nzc_ep = nzc_endpoint.clone();
-                let nzc_token = nzc_auth_token.clone();
+                let zeroclaw_ep = zeroclaw_endpoint.clone();
+                let zeroclaw_token = zeroclaw_auth_token.clone();
                 tokio::spawn(async move {
-                    ch.handle_message(msg, nzc_ep, nzc_token).await;
+                    ch.handle_message(msg, zeroclaw_ep, zeroclaw_token).await;
                 });
             }
         });

@@ -26,6 +26,13 @@ CLASH_DIR="$HOME/.clash"
 CLAUDE_DIR="$HOME/.claude"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
+LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
+LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
+ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
+ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
+LEGACY_SERVICE_PREFIX="${CALCIFORGE_LEGACY_SERVICE_PREFIX:-zeroclawed}"
+CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
+AGENTS_JSON="$CLASH_DIR/agents.json"
 
 # ── platform detection ────────────────────────────────────────────────────────
 # Drives choice of service manager (launchd vs systemd --user) and package
@@ -79,6 +86,147 @@ case "$PLATFORM" in
         ;;
 esac
 
+rotate_log_file() {
+    local file="$1" max_bytes="${2:-$LOG_MAX_BYTES}" backups="${3:-$LOG_BACKUPS}"
+    [[ -f "$file" ]] || return 0
+    local size
+    size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    (( size < max_bytes )) && return 0
+
+    local i
+    for ((i=backups; i>=1; i--)); do
+        if [[ -f "${file}.${i}" ]]; then
+            if (( i == backups )); then
+                rm -f "${file}.${i}"
+            else
+                mv -f "${file}.${i}" "${file}.$((i + 1))"
+            fi
+        fi
+    done
+    mv -f "$file" "${file}.1"
+    : > "$file"
+}
+
+write_log_rotator() {
+    mkdir -p "$BIN_DIR"
+    cat > "$BIN_DIR/calciforge-rotate-logs" <<'ROTATE'
+#!/usr/bin/env bash
+set -euo pipefail
+
+max_bytes="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
+backups="${CALCIFORGE_LOG_BACKUPS:-5}"
+
+rotate_one() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+
+    local size
+    size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    (( size < max_bytes )) && return 0
+
+    local i
+    for ((i=backups; i>=1; i--)); do
+        if [[ -f "${file}.${i}" ]]; then
+            if (( i == backups )); then
+                rm -f "${file}.${i}"
+            else
+                mv -f "${file}.${i}" "${file}.$((i + 1))"
+            fi
+        fi
+    done
+    mv -f "$file" "${file}.1"
+    : > "$file"
+}
+
+for dir in "$@"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r file; do
+        rotate_one "$file"
+    done < <(find "$dir" -maxdepth 1 -type f \( -name '*.log' -o -name '*.err' \) -print)
+done
+ROTATE
+    chmod 755 "$BIN_DIR/calciforge-rotate-logs"
+}
+
+install_log_rotation() {
+    write_log_rotator
+    mkdir -p "$LOG_DIR" "$SEC_LOG_DIR" "$ZC_LOG_DIR"
+
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        local rotate_plist="$PLIST_DIR/com.calciforge.log-rotate.plist"
+        mkdir -p "$PLIST_DIR"
+        cat > "$rotate_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>com.calciforge.log-rotate</string>
+    <key>ProgramArguments</key><array>
+        <string>${BIN_DIR}/calciforge-rotate-logs</string>
+        <string>${LOG_DIR}</string>
+        <string>${SEC_LOG_DIR}</string>
+        <string>${ZC_LOG_DIR}</string>
+        <string>${HOME}/Library/Logs/calciforge</string>
+    </array>
+    <key>StartInterval</key><integer>300</integer>
+    <key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
+        load_launch_agent "com.calciforge.log-rotate" "$rotate_plist" || \
+            warn "log rotation LaunchAgent did not load"
+        ok "Log rotation installed (launchd, ${LOG_MAX_BYTES} bytes, ${LOG_BACKUPS} backups)"
+    elif $IS_ROOT; then
+        local patterns="${LOG_DIR}/*.log ${LOG_DIR}/*.err"
+        if [[ "$SEC_LOG_DIR" != "$LOG_DIR" ]]; then
+            patterns="${patterns} ${SEC_LOG_DIR}/*.log ${SEC_LOG_DIR}/*.err"
+        fi
+        if [[ "$ZC_LOG_DIR" != "$LOG_DIR" && "$ZC_LOG_DIR" != "$SEC_LOG_DIR" ]]; then
+            patterns="${patterns} ${ZC_LOG_DIR}/*.log ${ZC_LOG_DIR}/*.err"
+        fi
+        cat > /etc/logrotate.d/calciforge <<EOF
+${patterns} {
+    size ${LOG_MAX_BYTES}
+    rotate ${LOG_BACKUPS}
+    missingok
+    notifempty
+    copytruncate
+    compress
+}
+EOF
+        ok "Log rotation installed (/etc/logrotate.d/calciforge)"
+    else
+        local rotate_service="$PLIST_DIR/calciforge-log-rotate.service"
+        local rotate_timer="$PLIST_DIR/calciforge-log-rotate.timer"
+        mkdir -p "$PLIST_DIR"
+        cat > "$rotate_service" <<EOF
+[Unit]
+Description=Rotate Calciforge logs
+
+[Service]
+Type=oneshot
+ExecStart=${BIN_DIR}/calciforge-rotate-logs ${LOG_DIR} ${SEC_LOG_DIR} ${ZC_LOG_DIR}
+EOF
+        cat > "$rotate_timer" <<EOF
+[Unit]
+Description=Rotate Calciforge logs periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=calciforge-log-rotate.service
+
+[Install]
+WantedBy=timers.target
+EOF
+        $SYSTEMCTL daemon-reload
+        $SYSTEMCTL enable --now calciforge-log-rotate.timer 2>&1 | tail -3 || \
+            warn "log rotation timer did not start — if running as non-root, run: loginctl enable-linger \$USER"
+        ok "Log rotation installed (systemd user timer, ${LOG_MAX_BYTES} bytes, ${LOG_BACKUPS} backups)"
+    fi
+}
+
 YES=false
 CONFIGURE_ONLY=false
 NODES_ONLY=false
@@ -98,6 +246,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.cargo/bin:$BIN_DIR:$PATH"
+SERVICE_PATH="$BIN_DIR:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
 
 # ── colours ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -107,6 +256,53 @@ die()  { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
 hdr()  { echo -e "\n${CYAN}━━ $* ━━${NC}"; }
 
 agent_enabled() { [[ ",$AGENTS," == *",$1,"* ]]; }
+
+run_build() {
+    local label="$1"
+    shift
+    local log
+    log="$(mktemp)"
+    echo "  Building ${label}..." >&2
+    set +e
+    "$@" >"$log" 2>&1
+    local rc=$?
+    set -e
+    grep -E "^error|error:|Compiling (clashd|security.proxy|calciforge.mcp|paste.server|calciforge)|Finished" "$log" >&2 || true
+    if [[ $rc -ne 0 ]]; then
+        tail -160 "$log" >&2
+        rm -f "$log"
+        die "Build failed for ${label}"
+    fi
+    rm -f "$log"
+}
+
+disable_legacy_local_service() {
+    local current="$1" legacy="$2"
+    [[ "$current" != "$legacy" ]] || return 0
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        local legacy_plist="$PLIST_DIR/com.calciforge.${legacy}.plist"
+        launchctl bootout "gui/$(id -u)" "$legacy_plist" 2>/dev/null || \
+            launchctl unload "$legacy_plist" 2>/dev/null || true
+        [[ -f "$legacy_plist" ]] && warn "Legacy LaunchAgent remains at $legacy_plist; remove it after verifying $current"
+    elif [[ -n "${SYSTEMCTL:-}" ]]; then
+        $SYSTEMCTL disable --now "${legacy}.service" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+load_launch_agent() {
+    local label="$1" plist="$2"
+    local domain="gui/$(id -u)"
+    launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || \
+        launchctl unload "$plist" >/dev/null 2>&1 || true
+    if ! launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1; then
+        if launchctl print "${domain}/${label}" >/dev/null 2>&1; then
+            launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
+        else
+            launchctl load "$plist"
+        fi
+    fi
+}
 
 # ── ask helper ────────────────────────────────────────────────────────────────
 # ask_install <name> <what>: returns 0 (yes) or 1 (no)
@@ -120,6 +316,67 @@ ask_install() {
 # ── install helpers ───────────────────────────────────────────────────────────
 require_brew() { command -v brew &>/dev/null || die "Homebrew not found — install from https://brew.sh"; }
 require_npm()  { command -v npm  &>/dev/null || die "npm not found — brew install node"; }
+
+fnox_release_asset() {
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "${os}:${arch}" in
+        Linux:x86_64|Linux:amd64) echo "fnox-x86_64-unknown-linux-gnu.tar.gz" ;;
+        Linux:aarch64|Linux:arm64) echo "fnox-aarch64-unknown-linux-gnu.tar.gz" ;;
+        Darwin:x86_64) echo "fnox-x86_64-apple-darwin.tar.gz" ;;
+        Darwin:arm64|Darwin:aarch64) echo "fnox-aarch64-apple-darwin.tar.gz" ;;
+        *) return 1 ;;
+    esac
+}
+
+install_fnox_release() {
+    local version="${FNOX_VERSION:-v1.23.0}"
+    local asset install_dir url tmp
+
+    asset="$(fnox_release_asset)" || return 1
+    url="https://github.com/jdx/fnox/releases/download/${version}/${asset}"
+
+    if [[ -w /usr/local/bin || "$IS_ROOT" == true ]]; then
+        install_dir="/usr/local/bin"
+    else
+        install_dir="$HOME/.local/bin"
+        mkdir -p "$install_dir"
+        export PATH="$install_dir:$PATH"
+    fi
+
+    tmp="$(mktemp -d)"
+    echo "  Installing fnox ${version} release..."
+    if ! curl -fsSL "$url" -o "$tmp/fnox.tar.gz" ||
+        ! tar -xzf "$tmp/fnox.tar.gz" -C "$tmp" ||
+        ! install -m 0755 "$tmp/fnox" "$install_dir/fnox"; then
+        rm -rf "$tmp"
+        return 1
+    fi
+    rm -rf "$tmp"
+}
+
+ensure_fnox_cargo_deps() {
+    [[ "$PLATFORM" == "Linux" ]] || return 0
+    command -v pkg-config &>/dev/null && pkg-config --exists libudev && return 0
+
+    if $IS_ROOT && command -v apt-get &>/dev/null; then
+        echo "  Installing fnox build prerequisites..."
+        if ! apt-get update -qq; then
+            warn "Failed to update apt package lists for fnox prerequisites"
+            return 1
+        fi
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libudev-dev >/dev/null; then
+            warn "Failed to install pkg-config/libudev-dev for fnox cargo fallback"
+            return 1
+        fi
+        return 0
+    fi
+
+    warn "fnox cargo fallback needs pkg-config and libudev-dev on Linux"
+    return 1
+}
 
 ensure_brew() {
     local pkg="$1" bin="${2:-$1}"
@@ -155,13 +412,14 @@ ensure_npm() {
     fi
 }
 
-# fnox — secret resolver (brew on macOS, cargo fallback on Linux / no-brew).
-# Uses a dedicated helper because fnox isn't on npm; cargo is the
-# cross-platform fallback (install.sh already requires it for source builds).
+# fnox — secret resolver (brew on macOS, release tarball on Linux, cargo last).
+# Uses a dedicated helper because fnox isn't on npm. Prefer prebuilt release
+# tarballs on Linux because compiling fnox can overwhelm small deployment VMs.
 ensure_fnox() {
     if command -v fnox &>/dev/null; then
         ok "fnox $(fnox --version 2>/dev/null | head -1 || echo '(installed)')"
-        return 0
+        ensure_fnox_config
+        return $?
     fi
     if [[ "$CONFIGURE_ONLY" == true ]]; then
         die "fnox not found — run without --configure-only to install"
@@ -171,29 +429,77 @@ ensure_fnox() {
             echo "  Installing fnox..."
             # Use PIPESTATUS to catch brew's real exit code — `| tail -3`
             # would otherwise bury a failure behind a successful `tail`.
+            set +e
             brew install fnox 2>&1 | tail -3
             local brew_rc=${PIPESTATUS[0]}
+            set -e
             if [[ $brew_rc -eq 0 ]]; then
                 ok "fnox installed"
-                return 0
+                ensure_fnox_config
+                return $?
             fi
             warn "brew install fnox failed (exit $brew_rc); falling back to cargo path"
         fi
     fi
+
+    if [[ "$PLATFORM" == "Linux" ]] && command -v curl &>/dev/null && command -v tar &>/dev/null; then
+        if ask_install fnox "from upstream release tarball"; then
+            if install_fnox_release; then
+                ok "fnox installed"
+                ensure_fnox_config
+                return $?
+            fi
+            warn "fnox release install failed; falling back to cargo path"
+        fi
+    fi
+
     local cargo_bin="$HOME/.cargo/bin/cargo"
     if [[ -x "$cargo_bin" ]] && ask_install fnox "via cargo install fnox (compiles from source, ~1–2 min)"; then
+        if ! ensure_fnox_cargo_deps; then
+            warn "Skipping cargo fnox fallback because prerequisites are unavailable"
+            return 1
+        fi
         echo "  Installing fnox via cargo..."
         # Same pattern as above — the grep|tail pipeline masks
         # `cargo install`'s exit code otherwise.
+        set +e
         "$cargo_bin" install fnox 2>&1 | grep -E "Installing|Installed|error" | tail -3
         local cargo_rc=${PIPESTATUS[0]}
+        set -e
         if [[ $cargo_rc -eq 0 ]]; then
             ok "fnox installed"
-            return 0
+            ensure_fnox_config
+            return $?
         fi
         warn "cargo install fnox failed (exit $cargo_rc) — see output above"
     fi
     warn "fnox not installed — secret lookup will skip the fnox layer (env → vaultwarden still works)"
+    return 1
+}
+
+ensure_fnox_config() {
+    local err_file
+    err_file="$(mktemp)"
+    if fnox list >/dev/null 2>"$err_file"; then
+        rm -f "$err_file"
+        ok "fnox config usable"
+        return 0
+    fi
+
+    if grep -qi "No configuration file found" "$err_file"; then
+        echo "  Initializing fnox global config..."
+        if fnox init --global --skip-wizard >/dev/null 2>"$err_file"; then
+            if fnox list >/dev/null 2>"$err_file"; then
+                rm -f "$err_file"
+                ok "fnox global config initialized"
+                return 0
+            fi
+        fi
+    fi
+
+    warn "fnox is installed but not usable from this environment"
+    sed 's/^/  fnox: /' "$err_file" | tail -5
+    rm -f "$err_file"
     return 1
 }
 
@@ -254,6 +560,9 @@ echo "  Mode:    $([ "$CONFIGURE_ONLY" = true ] && echo configure-only || echo i
 echo "  Yes:     $YES"
 echo ""
 
+if [[ "$NODES_ONLY" != true ]]; then
+install_log_rotation
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Build + install calciforge, clashd, security-proxy
 # ══════════════════════════════════════════════════════════════════════════════
@@ -264,13 +573,13 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
 
     # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
     # Build each crate separately so --features only applies to calciforge.
-    "$CARGO" build --release -p clashd -p security-proxy -p mcp-server 2>&1 \
-        | grep -E "^error|Compiling (clashd|security.proxy|calciforge.mcp)|Finished" || true
-    "$CARGO" build --release -p calciforge --features channel-matrix 2>&1 \
-        | grep -E "^error|Compiling calciforge|Finished" || true
+    run_build "support binaries" \
+        "$CARGO" build --release -p clashd -p security-proxy -p mcp-server -p paste-server
+    run_build "calciforge with Matrix channel support" \
+        "$CARGO" build --release -p calciforge --features channel-matrix
 
     mkdir -p "$BIN_DIR"
-    for bin in clashd calciforge security-proxy mcp-server; do
+    for bin in clashd calciforge security-proxy mcp-server paste-server; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
         # On Linux, overwriting a running binary fails with "Text file busy".
@@ -295,9 +604,7 @@ fi
 hdr "clashd policy engine"
 
 mkdir -p "$CLASH_DIR" "$LOG_DIR" "$PLIST_DIR"
-
-CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
-AGENTS_JSON="$CLASH_DIR/agents.json"
+disable_legacy_local_service "calciforge-clashd" "${LEGACY_SERVICE_PREFIX}-clashd"
 
 if [[ ! -f "$CLASHD_POLICY" ]]; then
     cp "$REPO_ROOT/crates/clashd/config/claude-code-policy.star" "$CLASHD_POLICY"
@@ -323,6 +630,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>CLASHD_PORT</key><string>${CLASHD_PORT}</string>
         <key>CLASHD_POLICY</key><string>${CLASHD_POLICY}</string>
         <key>CLASHD_AGENTS</key><string>${AGENTS_JSON}</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -330,8 +638,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>StandardErrorPath</key><string>${LOG_DIR}/clashd.err</string>
 </dict></plist>
 EOF
-    launchctl unload "$CLASHD_PLIST" 2>/dev/null || true
-    launchctl load "$CLASHD_PLIST"
+    load_launch_agent "com.calciforge.clashd" "$CLASHD_PLIST"
 else
     CLASHD_UNIT="$PLIST_DIR/calciforge-clashd.service"
     cat > "$CLASHD_UNIT" <<EOF
@@ -345,6 +652,7 @@ ExecStart=${BIN_DIR}/clashd
 Environment=CLASHD_PORT=${CLASHD_PORT}
 Environment=CLASHD_POLICY=${CLASHD_POLICY}
 Environment=CLASHD_AGENTS=${AGENTS_JSON}
+Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=5
 StandardOutput=append:${LOG_DIR}/clashd.log
@@ -369,6 +677,8 @@ curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null \
 hdr "security-proxy"
 
 mkdir -p "$SEC_LOG_DIR"
+disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-security-proxy"
+disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-proxy"
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
     SEC_PLIST="$PLIST_DIR/com.calciforge.security-proxy.plist"
@@ -382,6 +692,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -389,8 +700,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>StandardErrorPath</key><string>${SEC_LOG_DIR}/security-proxy.err</string>
 </dict></plist>
 EOF
-    launchctl unload "$SEC_PLIST" 2>/dev/null || true
-    launchctl load "$SEC_PLIST"
+    load_launch_agent "com.calciforge.security-proxy" "$SEC_PLIST"
 else
     SEC_UNIT="$PLIST_DIR/calciforge-security-proxy.service"
     cat > "$SEC_UNIT" <<EOF
@@ -403,6 +713,7 @@ Type=simple
 ExecStart=${BIN_DIR}/security-proxy
 Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
 Environment=AGENT_CONFIG=${AGENTS_JSON}
+Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=5
 StandardOutput=append:${SEC_LOG_DIR}/security-proxy.log
@@ -422,7 +733,17 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
     || warn "security-proxy not yet responding — check $SEC_LOG_DIR/security-proxy.err"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. calciforge — main agent gateway (channels + router + proxy)
+# 4. fnox — encrypted secret resolver (fallback between env and vaultwarden)
+# ══════════════════════════════════════════════════════════════════════════════
+# secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
+# not hard-required by the Rust resolver, but real channel/gateway deployments
+# need it configured before services start so service PATH and HOME match the
+# operator's interactive shell.
+hdr "fnox (secret resolver)"
+ensure_fnox || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
 # across reboots. Expects config at ~/.calciforge/config.toml; users must
@@ -430,9 +751,8 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
 # launchd/systemd will keep retrying).
 hdr "calciforge"
 
-ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
-ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
 mkdir -p "$ZC_LOG_DIR"
+disable_legacy_local_service "calciforge" "${LEGACY_SERVICE_PREFIX}"
 
 if [[ ! -f "$ZC_CONFIG" ]]; then
     warn "Config not found at $ZC_CONFIG — calciforge will fail to start until you create it"
@@ -454,7 +774,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     </array>
     <key>EnvironmentVariables</key><dict>
         <key>RUST_LOG</key><string>calciforge=info</string>
-        <key>PATH</key><string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -463,8 +783,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>StandardErrorPath</key><string>${ZC_LOG_DIR}/calciforge.err</string>
 </dict></plist>
 EOF
-    launchctl unload "$ZC_PLIST" 2>/dev/null || true
-    launchctl load "$ZC_PLIST" 2>&1 | tail -3
+    load_launch_agent "com.calciforge.calciforge" "$ZC_PLIST" 2>&1 | tail -3
 else
     ZC_UNIT="$PLIST_DIR/calciforge.service"
     cat > "$ZC_UNIT" <<EOF
@@ -477,6 +796,7 @@ Wants=calciforge-clashd.service calciforge-security-proxy.service
 Type=simple
 ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
 Environment=RUST_LOG=calciforge=info
+Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=30
 StandardOutput=append:${ZC_LOG_DIR}/calciforge.log
@@ -499,16 +819,6 @@ if pgrep -f "${BIN_DIR}/calciforge" > /dev/null; then
 else
     warn "calciforge did not start — check $ZC_LOG_DIR/calciforge.err"
 fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. fnox — encrypted secret resolver (fallback between env and vaultwarden)
-# ══════════════════════════════════════════════════════════════════════════════
-# secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
-# not hard-required (the resolver falls through if the binary is absent), but
-# installing it unlocks age/1Password/AWS SM/etc. secret backends without
-# extra config.
-hdr "fnox (secret resolver)"
-ensure_fnox || true
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Claude Code hook
@@ -666,6 +976,8 @@ if agent_enabled zeroclaw; then
     fi
 fi
 
+fi # !NODES_ONLY
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 10. Multi-node SSH deployment
 # ══════════════════════════════════════════════════════════════════════════════
@@ -676,52 +988,102 @@ if [[ -n "$NODES_FILE" ]]; then
     [[ -f "$NODES_FILE" ]] || die "Nodes file not found: $NODES_FILE"
     command -v python3 &>/dev/null || die "python3 required for node deployment"
 
-    # ── binary build cache: arch → path ──────────────────────────────────────
-    # Maps "x86_64-unknown-linux-musl" → /path/to/built/binary
-    declare -A BUILT=()
+    # ── binary build cache: arch+bin → path ──────────────────────────────────
+    # Use indexed arrays instead of associative arrays so the installer works
+    # with macOS' default Bash 3.2.
+    BUILT_KEYS=()
+    BUILT_VALUES=()
+
+    built_cache_get() {
+        local key="$1" i
+        for ((i=0; i<${#BUILT_KEYS[@]}; i++)); do
+            if [[ "${BUILT_KEYS[$i]}" == "$key" ]]; then
+                echo "${BUILT_VALUES[$i]}"
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    built_cache_put() {
+        local key="$1" value="$2" i
+        for ((i=0; i<${#BUILT_KEYS[@]}; i++)); do
+            if [[ "${BUILT_KEYS[$i]}" == "$key" ]]; then
+                BUILT_VALUES[$i]="$value"
+                return 0
+            fi
+        done
+        BUILT_KEYS+=("$key")
+        BUILT_VALUES+=("$value")
+    }
 
     build_for_arch() {
         local target="$1" bin="$2"
         local cache_key="${target}:${bin}"
-        [[ -n "${BUILT[$cache_key]+_}" ]] && { echo "${BUILT[$cache_key]}"; return; }
+        local cached
+        if cached="$(built_cache_get "$cache_key")"; then
+            echo "$cached"
+            return 0
+        fi
 
         local out_path="$REPO_ROOT/target/${target}/release/${bin}"
+        local cargo_args=(build --release -p "$bin" --target "$target")
+        if [[ "$bin" == "calciforge" ]]; then
+            cargo_args+=(--features channel-matrix)
+        fi
 
         if [[ "$target" == "aarch64-apple-darwin" ]]; then
             # Native — use already-built binary if present
             local native="$REPO_ROOT/target/release/${bin}"
             if [[ -f "$native" ]]; then
-                BUILT[$cache_key]="$native"
+                built_cache_put "$cache_key" "$native"
                 echo "$native"; return
             fi
         fi
 
         echo "  Building $bin for $target..." >&2
         if command -v cross &>/dev/null; then
-            cross build --release -p "$bin" --target "$target" 2>&1 | \
-                grep -E "^error|Finished" >&2 || true
+            run_build "$bin for $target" cross "${cargo_args[@]}"
         elif command -v cargo-zigbuild &>/dev/null; then
-            cargo zigbuild --release -p "$bin" --target "$target" 2>&1 | \
-                grep -E "^error|Finished" >&2 || true
+            run_build "$bin for $target" cargo zigbuild "${cargo_args[@]:1}"
+        elif command -v docker &>/dev/null && [[ "$target" == x86_64-unknown-linux-* ]]; then
+            local platform="linux/amd64"
+            local docker_target="$target"
+            if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
+                warn "Docker fallback builds GNU libc binaries; use arch=x86_64-unknown-linux-gnu for glibc Linux nodes" >&2
+                echo ""; return 1
+            fi
+            local host_uid host_gid
+            host_uid="$(id -u)"
+            host_gid="$(id -g)"
+            local docker_target_dir="target/docker-${target}"
+            run_build "$bin for $target via Docker" docker run --rm --platform "$platform" \
+                -v "$REPO_ROOT:/work" -w /work rust:1-bookworm bash -lc \
+                "export PATH=/usr/local/cargo/bin:\$PATH CARGO_TARGET_DIR='$docker_target_dir' && apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libssl-dev libudev-dev cmake protobuf-compiler clang >/dev/null && cargo build --release -p '$bin' --target '$docker_target' $([[ "$bin" == "calciforge" ]] && printf '%s' '--features channel-matrix') && chown -R '$host_uid:$host_gid' '$docker_target_dir'"
+            out_path="$REPO_ROOT/${docker_target_dir}/${target}/release/${bin}"
         else
             warn "No cross-compilation tool found (install 'cross' or 'cargo-zigbuild')" >&2
             echo ""; return 1
         fi
 
-        [[ -f "$out_path" ]] && BUILT[$cache_key]="$out_path" && echo "$out_path" || \
+        [[ -f "$out_path" ]] && built_cache_put "$cache_key" "$out_path" && echo "$out_path" || \
             { warn "Build failed for $target/$bin"; echo ""; return 1; }
     }
 
     # ── systemd unit generator ────────────────────────────────────────────────
     systemd_unit() {
         local bin="$1" install_dir="$2" env_pairs="$3"
-        local env_lines=""
+        local service_path="${4:-$SERVICE_PATH}"
+        local exec_args="${5:-}"
+        local wanted_by="${6:-$WANTED_BY_TARGET}"
+        local env_lines="Environment=\"PATH=${service_path}\"\n"
         while IFS='=' read -r k v; do
+            [[ -z "$k" ]] && continue
             env_lines+="Environment=\"${k}=${v}\"\n"
         done <<< "$env_pairs"
 
-        printf '[Unit]\nDescription=Calciforge %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s\n%sRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=%s\n' \
-            "$bin" "$install_dir" "$bin" "$(printf '%b' "$env_lines")" "$WANTED_BY_TARGET"
+        printf '[Unit]\nDescription=Calciforge %s\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=%s/%s%s\n%s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=%s\n' \
+            "$bin" "$install_dir" "$bin" "$exec_args" "$(printf '%b' "$env_lines")" "$wanted_by"
     }
 
     # ── launchd plist generator ───────────────────────────────────────────────
@@ -739,23 +1101,120 @@ if [[ -n "$NODES_FILE" ]]; then
             "$log_dir" "$bin" "$log_dir" "$bin"
     }
 
+    ensure_remote_fnox() {
+        local name="$1" ssh_target="$2" ssh_key="$3"
+        local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+        [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+
+        echo "  [$name] checking fnox..."
+        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' <<'REMOTE_FNOX'
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+if ! command -v fnox >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
+        brew install fnox >/dev/null
+    elif command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+        os="$(uname -s)"
+        arch="$(uname -m)"
+        case "${os}:${arch}" in
+            Linux:x86_64|Linux:amd64) asset="fnox-x86_64-unknown-linux-gnu.tar.gz" ;;
+            Linux:aarch64|Linux:arm64) asset="fnox-aarch64-unknown-linux-gnu.tar.gz" ;;
+            Darwin:x86_64) asset="fnox-x86_64-apple-darwin.tar.gz" ;;
+            Darwin:arm64|Darwin:aarch64) asset="fnox-aarch64-apple-darwin.tar.gz" ;;
+            *) asset="" ;;
+        esac
+        if [[ -n "$asset" ]]; then
+            tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+            version="${FNOX_VERSION:-v1.23.0}"
+            curl -fsSL "https://github.com/jdx/fnox/releases/download/${version}/${asset}" -o "$tmp/fnox.tar.gz"
+            tar -xzf "$tmp/fnox.tar.gz" -C "$tmp"
+            if [[ -w /usr/local/bin || "$(id -u)" -eq 0 ]]; then
+                install -m 0755 "$tmp/fnox" /usr/local/bin/fnox
+            else
+                mkdir -p "$HOME/.local/bin"
+                install -m 0755 "$tmp/fnox" "$HOME/.local/bin/fnox"
+            fi
+        elif command -v cargo >/dev/null 2>&1; then
+            cargo install fnox >/dev/null
+        else
+            echo "fnox missing and no supported release asset is available" >&2
+            exit 2
+        fi
+    elif command -v cargo >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1 && { ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists libudev; }; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libudev-dev >/dev/null
+        fi
+        cargo install fnox >/dev/null
+    else
+        echo "fnox missing and neither brew nor cargo is available" >&2
+        exit 2
+    fi
+fi
+if [[ -x "$HOME/.cargo/bin/fnox" && ! -e /usr/local/bin/fnox && -w /usr/local/bin ]]; then
+    ln -s "$HOME/.cargo/bin/fnox" /usr/local/bin/fnox 2>/dev/null || true
+fi
+if ! fnox list >/dev/null 2>&1; then
+    fnox init --global --skip-wizard >/dev/null
+fi
+fnox list >/dev/null
+REMOTE_FNOX
+        ok "  [$name] fnox ready"
+    }
+
     # ── deploy one service to one node ───────────────────────────────────────
     deploy_service() {
         local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" os="$6"
         local bin="$7" install_dir="$8" config_dir="$9"
 
-        local ssh_opts="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-        [[ -n "$ssh_key" ]] && ssh_opts+=" -i $ssh_key"
+        local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+        [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+        local rsync_ssh
+        printf -v rsync_ssh '%q ' ssh "${ssh_opts[@]}"
         local ssh_target="${user}@${host}"
+        local remote_home remote_service_path
+        remote_home=$(ssh "${ssh_opts[@]}" "$ssh_target" 'printf "%s" "$HOME"' 2>/dev/null || true)
+        if [[ -z "$remote_home" && "$user" == "root" ]]; then
+            remote_home="/root"
+        fi
+        remote_service_path="${install_dir}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+        if [[ -n "$remote_home" && "$remote_home" = /* ]]; then
+            remote_service_path="${install_dir}:${remote_home}/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+        fi
+        local remote_wanted_by="default.target"
+        [[ "$os" == "linux" && "$user" == "root" ]] && remote_wanted_by="multi-user.target"
 
         echo "  [$name] deploying $bin..."
+        local service_name="$bin"
+        local legacy_units=()
+        case "$bin" in
+            clashd)
+                service_name="calciforge-clashd"
+                legacy_units=("clashd" "${LEGACY_SERVICE_PREFIX}-clashd")
+                ;;
+            security-proxy)
+                service_name="calciforge-security-proxy"
+                legacy_units=("security-proxy" "${LEGACY_SERVICE_PREFIX}-security-proxy" "${LEGACY_SERVICE_PREFIX}-proxy")
+                ;;
+            calciforge)
+                service_name="calciforge"
+                legacy_units=("${LEGACY_SERVICE_PREFIX}")
+                ;;
+        esac
 
         # ── get binary ───────────────────────────────────────────────────────
         local bin_path
         bin_path=$(build_for_arch "$arch" "$bin") || {
-            # Cross-compile failed — try building on remote
-            warn "  [$name] cross-compile unavailable; attempting remote build..."
-            ssh $ssh_opts "$ssh_target" bash -s -- "$bin" "$install_dir" <<'REMOTE_BUILD'
+            if [[ "${CALCIFORGE_REMOTE_BUILD:-false}" != "true" ]]; then
+                warn "  [$name] no local/cross binary for $bin on $arch; set CALCIFORGE_REMOTE_BUILD=true to compile on the node"
+                return 1
+            fi
+            # Remote builds are opt-in. Small deployment VMs can become
+            # unreachable under Rust build load, so unattended installs should
+            # prefer cross/Docker-built artifacts copied from the operator host.
+            warn "  [$name] cross-compile unavailable; attempting opt-in remote build..."
+            ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$bin" "$install_dir" <<'REMOTE_BUILD'
 set -e
 BIN=$1; INSTALL_DIR=$2
 command -v cargo &>/dev/null || {
@@ -779,18 +1238,23 @@ REMOTE_BUILD
         }
 
         # ── rsync binary ─────────────────────────────────────────────────────
-        ssh $ssh_opts "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
-        rsync -az --checksum -e "ssh $ssh_opts" "$bin_path" "${ssh_target}:${install_dir}/${bin}"
-        ssh $ssh_opts "$ssh_target" "chmod +x ${install_dir}/${bin}"
+        ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
+        local remote_tmp="/tmp/calciforge-install-${bin}-$$"
+        if ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+            rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${remote_tmp}"
+        else
+            scp "${ssh_opts[@]}" "$bin_path" "${ssh_target}:${remote_tmp}"
+        fi
+        ssh "${ssh_opts[@]}" "$ssh_target" "install -m 0755 ${remote_tmp} ${install_dir}/${bin} && rm -f ${remote_tmp}"
 
         # ── rsync config files ────────────────────────────────────────────────
         if [[ "$bin" == "clashd" ]]; then
-            ssh $ssh_opts "$ssh_target" "mkdir -p $config_dir"
-            rsync -az -e "ssh $ssh_opts" \
+            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $config_dir"
+            rsync -az -e "$rsync_ssh" \
                 "$REPO_ROOT/crates/clashd/config/claude-code-policy.star" \
                 "${ssh_target}:${config_dir}/policy.star" 2>/dev/null || true
             # Write minimal agents.json if absent
-            ssh $ssh_opts "$ssh_target" \
+            ssh "${ssh_opts[@]}" "$ssh_target" \
                 "[[ -f ${config_dir}/agents.json ]] || echo '{\"agents\":[]}' > ${config_dir}/agents.json"
         fi
 
@@ -798,24 +1262,38 @@ REMOTE_BUILD
         local remote_log_dir
         if [[ "$os" == "linux" ]]; then
             remote_log_dir="/var/log/calciforge"
-            local env_pairs unit_content
+            local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="" ;;
             esac
-            unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")")
-            ssh $ssh_opts "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${bin}.service" <<< "$unit_content"
-            ssh $ssh_opts "$ssh_target" "systemctl daemon-reload && systemctl enable --now ${bin}" 2>&1 | tail -2
+            exec_args=""
+            if [[ "$bin" == "calciforge" ]]; then
+                exec_args=" --config ${config_dir}/config.toml"
+                ssh "${ssh_opts[@]}" "$ssh_target" \
+                    "[[ -f ${config_dir}/config.toml ]] || echo 'warning: ${config_dir}/config.toml not found; ${service_name} may fail to start' >&2"
+            fi
+            unit_content=$(systemd_unit "$bin" "$install_dir" "$(printf '%b' "$env_pairs")" "$remote_service_path" "$exec_args" "$remote_wanted_by")
+            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $remote_log_dir && cat > /etc/systemd/system/${service_name}.service" <<< "$unit_content"
+            local disable_script="set -e; systemctl daemon-reload;"
+            local legacy
+            for legacy in "${legacy_units[@]}"; do
+                [[ -n "$legacy" && "$legacy" != "$service_name" ]] || continue
+                disable_script+=" systemctl disable --now '${legacy}.service' >/dev/null 2>&1 || true;"
+            done
+            disable_script+=" systemctl enable --now '${service_name}.service'"
+            ssh "${ssh_opts[@]}" "$ssh_target" "$disable_script" 2>&1 | tail -2
         else
             remote_log_dir="\$HOME/Library/Logs/calciforge"
-            local plist_content label="com.calciforge.${bin}"
+            local plist_content label="com.calciforge.${service_name}"
             plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" \
-                "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}")
+                "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" \
+                "PATH=${remote_service_path}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
-            ssh $ssh_opts "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
-            ssh $ssh_opts "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
-            ssh $ssh_opts "$ssh_target" "launchctl unload ${plist_path} 2>/dev/null; launchctl load ${plist_path}"
+            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
+            ssh "${ssh_opts[@]}" "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
+            ssh "${ssh_opts[@]}" "$ssh_target" "launchctl unload ${plist_path} 2>/dev/null; launchctl load ${plist_path}"
         fi
 
         ok "  [$name] $bin deployed and started"
@@ -841,6 +1319,8 @@ for n in data.get("nodes", []):
 PYEOF
         echo ""
         echo "  Node: $name ($user@$host, $arch, $os)"
+        ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" || \
+            warn "  [$name] fnox not ready — secret resolution may fail on that node"
         IFS=',' read -ra svc_list <<< "$services"
         for svc in "${svc_list[@]}"; do
             deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \

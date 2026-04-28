@@ -238,11 +238,11 @@ impl FnoxClient {
     ///
     /// Defensive parse: fnox's CLI output format varies slightly by
     /// version (some versions emit a table, some emit `name value`
-    /// pairs). We extract the first whitespace-separated token from
-    /// each non-comment, non-empty line and treat it as a name.
-    /// Anything else on the line — values, descriptions, table
-    /// borders — is dropped. Callers that need richer info should
-    /// use `fnox list --output json` directly once we wire that up.
+    /// pairs, empty stores emit a sentence). We extract plausible
+    /// env-style secret names and drop human status text, values,
+    /// descriptions, and table borders. Callers that need richer info
+    /// should use structured fnox output directly once upstream exposes
+    /// it for this command.
     pub async fn list(&self) -> Result<Vec<String>, FnoxError> {
         debug!("fnox list");
         let output = self.run(&["list"]).await?;
@@ -255,17 +255,7 @@ impl FnoxClient {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let names = stdout
-            .lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    None
-                } else {
-                    trimmed.split_whitespace().next().map(String::from)
-                }
-            })
-            .collect();
+        let names = parse_fnox_list_names(&stdout);
         Ok(names)
     }
 
@@ -345,6 +335,44 @@ fn map_spawn_error(error: std::io::Error) -> FnoxError {
     } else {
         FnoxError::Io(error)
     }
+}
+
+fn parse_fnox_list_names(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("No secrets defined")
+                || trimmed.starts_with("No secrets found")
+                || trimmed.starts_with("Secret ")
+                || trimmed.starts_with("KEY ")
+                || trimmed.starts_with("Name ")
+                || trimmed
+                    .chars()
+                    .all(|c| c.is_whitespace() || !c.is_ascii_alphanumeric())
+            {
+                return None;
+            }
+
+            trimmed
+                .split(|c: char| c.is_whitespace() || c == '|' || c == '│' || c == ':')
+                .find(|part| is_secret_name_token(part))
+                .map(String::from)
+        })
+        .collect()
+}
+
+fn is_secret_name_token(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 #[cfg(test)]
@@ -608,6 +636,45 @@ OUT"#,
 
         let names = client.list().await.unwrap();
         assert_eq!(names, vec!["ONE_KEY", "TWO_KEY"]);
+    }
+
+    /// Given modern fnox's empty-store sentence,
+    /// when list is called,
+    /// then no bogus secret named "No" is returned.
+    #[tokio::test]
+    async fn list_empty_store_sentence_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(&dir, r#"echo "No secrets defined in profile 'default'""#);
+        let client = FnoxClient::with_binary(bin);
+
+        let names = client.list().await.unwrap();
+        assert!(
+            names.is_empty(),
+            "empty fnox output sentence must not become names: {names:?}"
+        );
+    }
+
+    /// Given table-shaped fnox output,
+    /// when list is called,
+    /// then headers and borders are ignored while env-style names are kept.
+    #[tokio::test]
+    async fn list_filters_table_headers_and_borders() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(
+            &dir,
+            r#"cat <<OUT
++------------+-------------+
+| Name       | Description |
++------------+-------------+
+| API_TOKEN  | redacted    |
+| DB_PASS    | redacted    |
++------------+-------------+
+OUT"#,
+        );
+        let client = FnoxClient::with_binary(bin);
+
+        let names = client.list().await.unwrap();
+        assert_eq!(names, vec!["API_TOKEN", "DB_PASS"]);
     }
 
     /// Given a real fake fnox that runs `--version` on `is_available`,

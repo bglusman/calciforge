@@ -477,6 +477,11 @@ impl SecurityProxy {
             let host_lower = host.to_lowercase();
             for name in &names {
                 if !self.is_destination_allowed(name, &host_lower) {
+                    tracing::warn!(
+                        secret = %name,
+                        destination_host = %host_lower,
+                        "secret substitution denied by destination allowlist"
+                    );
                     return Err(format!(
                         "secret {name:?} not allowed at destination {host:?}"
                     ));
@@ -488,9 +493,22 @@ impl SecurityProxy {
         for name in names {
             match secrets_client::vault::get_secret(&name).await {
                 Ok(value) => {
+                    tracing::debug!(
+                        secret = %name,
+                        destination_host = dest_host.unwrap_or("<unknown>"),
+                        "secret resolved for outbound substitution"
+                    );
                     resolved.insert(name, value);
                 }
-                Err(e) => return Err(format!("unresolvable secret ref {name:?}: {e}")),
+                Err(e) => {
+                    tracing::warn!(
+                        secret = %name,
+                        destination_host = dest_host.unwrap_or("<unknown>"),
+                        reason = "resolver_failed",
+                        "secret resolution failed for outbound substitution"
+                    );
+                    return Err(format!("unresolvable secret ref {name:?}: {e}"));
+                }
             }
         }
         crate::substitution::substitute(input, &resolved)

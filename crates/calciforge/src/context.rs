@@ -24,9 +24,9 @@
 //!
 //! ```text
 //! [Recent context:
-//! Brian: hello
+//! Operator: hello
 //! librarian: Hi there! How can I help?
-//! Brian: actually, can you help with this code?
+//! Operator: actually, can you help with this code?
 //! custodian: Sure! Let me take a look.]
 //!
 //! <current message>
@@ -44,7 +44,7 @@ use std::collections::{HashMap, VecDeque};
 pub struct Exchange {
     /// Monotonically increasing sequence number within this chat's buffer.
     pub seq: u64,
-    /// Human-readable sender label (e.g. "Brian").
+    /// Human-readable sender label (e.g. "Operator").
     pub sender_label: String,
     /// The user's message.
     pub prompt: String,

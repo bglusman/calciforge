@@ -41,7 +41,7 @@ use super::{
         VersionCompatibility,
     },
     ssh::{
-        detect_nzc_version, detect_openclaw_version, test_connectivity, MockSshClient,
+        detect_openclaw_version, detect_zeroclaw_version, test_connectivity, MockSshClient,
         RealSshClient, SshClient,
     },
 };
@@ -508,7 +508,7 @@ fn run_version_detection(claw: &ClawTarget, deps: &ExecutorDeps) -> Option<Strin
                 .ok()
                 .flatten()
         }
-        ClawKind::NzcNative => detect_nzc_version(deps.ssh.as_ref(), &claw.host, key)
+        ClawKind::ZeroClawNative => detect_zeroclaw_version(deps.ssh.as_ref(), &claw.host, key)
             .ok()
             .flatten(),
         _ => None,
@@ -617,7 +617,7 @@ fn attempt_rollback(
 fn remote_config_path(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawHttp => "~/.openclaw/openclaw.json".to_string(),
-        ClawKind::NzcNative => "~/.config/nzc/config.toml".to_string(),
+        ClawKind::ZeroClawNative => "~/.config/zeroclaw/config.toml".to_string(),
         _ => String::new(),
     }
 }
@@ -630,8 +630,8 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
              (hooks.enabled = true, hooks.token = <generated>)",
             claw.host
         ),
-        ClawKind::NzcNative => format!(
-            "Will register Calciforge as upstream router in NZC config on {}",
+        ClawKind::ZeroClawNative => format!(
+            "Will register Calciforge as upstream router in ZeroClaw config on {}",
             claw.host
         ),
         ClawKind::OpenAiCompat { endpoint } => format!(
@@ -655,8 +655,8 @@ fn describe_apply_changes(claw: &ClawTarget) -> String {
             "would patch openclaw.json on {} to add Calciforge hook entry",
             claw.host
         ),
-        ClawKind::NzcNative => format!(
-            "would patch NZC config on {} to register Calciforge upstream",
+        ClawKind::ZeroClawNative => format!(
+            "would patch ZeroClaw config on {} to register Calciforge upstream",
             claw.host
         ),
         _ => format!("would register '{}' in Calciforge config", claw.name),
@@ -670,8 +670,8 @@ fn describe_apply_changes(claw: &ClawTarget) -> String {
 /// `hooks.entries.calciforge`, serializes back to pretty JSON, writes via SSH,
 /// and verifies the written file parses correctly.
 ///
-/// For `NzcNative`: stub — adds a `[calciforge]` section to `config.toml`.
-/// The NZC config format is TOML and has its own migration path; full patching
+/// For `ZeroClawNative`: stub — adds a `[calciforge]` section to `config.toml`.
+/// The ZeroClaw config format is TOML and has its own migration path; full patching
 /// is deferred to a follow-on session.
 fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String> {
     let config_path = remote_config_path(claw);
@@ -686,10 +686,10 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
     let patched = match &claw.adapter {
         ClawKind::OpenClawHttp => patch_openclaw_config(&current, &claw.name, &claw.endpoint)
             .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
-        ClawKind::NzcNative => {
-            // NZC uses TOML — full patching deferred; use safe stub for now.
-            // TODO (follow-on): implement real TOML patching for NZC config.
-            patch_nzc_config_stub(&current, &claw.name)
+        ClawKind::ZeroClawNative => {
+            // ZeroClaw uses TOML — full patching deferred; use safe stub for now.
+            // TODO (follow-on): implement real TOML patching for ZeroClaw config.
+            patch_zeroclaw_config_stub(&current, &claw.name)
         }
         _ => {
             // Non-SSH adapters should never reach apply_remote_config.
@@ -827,11 +827,11 @@ fn generate_hook_token() -> String {
     format!("{:016x}{:016x}{:016x}", v1, v2, v3)
 }
 
-/// Stub patcher for NZC TOML config.
+/// Stub patcher for ZeroClaw TOML config.
 ///
 /// Appends a minimal `[calciforge]` section if not already present.
 /// Full TOML-aware patching is deferred to a follow-on session.
-fn patch_nzc_config_stub(content: &str, claw_name: &str) -> String {
+fn patch_zeroclaw_config_stub(content: &str, claw_name: &str) -> String {
     if content.contains("[calciforge]") {
         return content.to_owned();
     }
@@ -854,6 +854,7 @@ fn patch_nzc_config_stub(content: &str, claw_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::cli::parse_install_target;
     use super::*;
     use std::path::PathBuf;
 
@@ -924,6 +925,93 @@ mod tests {
             result.steps
         );
         // No rollback needed
+        assert!(matches!(
+            result.rollback_status,
+            Some(RollbackStatus::NotApplicable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_interactive_ephemeral_openclaw_install_runs_full_pipeline() {
+        let args = InstallArgs {
+            calciforge_host: Some("calciforge@ephemeral-runner.invalid".into()),
+            calciforge_key: Some(PathBuf::from("/tmp/calciforge-ephemeral/id_ed25519")),
+            claw_specs: vec![concat!(
+                "name=matrix-e2e-openclaw,",
+                "adapter=openclaw,",
+                "host=openclaw@ephemeral-runner.invalid,",
+                "key=/tmp/calciforge-ephemeral/openclaw_id_ed25519,",
+                "endpoint=http://127.0.0.1:18080/hooks/calciforge"
+            )
+            .to_string()],
+            dry_run: false,
+            skip_backup: false,
+            _yes: true,
+        };
+        let target = parse_install_target(&args).expect("ephemeral install config should parse");
+        assert_eq!(
+            target.calciforge.host,
+            "calciforge@ephemeral-runner.invalid"
+        );
+        assert_eq!(target.claws.len(), 1);
+        assert_eq!(target.claws[0].name, "matrix-e2e-openclaw");
+        assert!(matches!(target.claws[0].adapter, ClawKind::OpenClawHttp));
+
+        let ssh = MockSshClient::new();
+        ssh.push_success("OK\n");
+        ssh.push_success("");
+        ssh.push_success("EXISTS\n");
+        ssh.push_success("2026.3.13\n");
+        ssh.push_success(r#"{"version": "2026.3.13"}"#);
+        ssh.push_success("");
+        ssh.push_success(
+            r#"{"version":"2026.3.13","hooks":{"enabled":true,"entries":{"matrix-e2e-openclaw":{"enabled":true,"url":"http://127.0.0.1:18080/hooks/calciforge","token":"tok"}}}}"#,
+        );
+
+        let health = MockHealthChecker::new();
+        health.push_ok();
+        health.push_ok();
+
+        let summary = run_install_with_deps(target, &args, ExecutorDeps::mock(ssh, health)).await;
+        assert_eq!(summary.succeeded_count(), 1, "{summary:?}");
+        assert_eq!(summary.failed_count(), 0, "{summary:?}");
+        assert!(!summary.any_failed(), "{summary:?}");
+
+        let result = &summary.claw_results[0];
+        assert_eq!(result.name, "matrix-e2e-openclaw");
+        let executed_steps = result.steps.iter().map(|s| &s.step).collect::<Vec<_>>();
+        let expected_steps = vec![
+            &InstallStep::SshConnectivity,
+            &InstallStep::HealthCheckBaseline,
+            &InstallStep::Backup,
+            &InstallStep::VersionDetection,
+            &InstallStep::CompatibilityCheck,
+            &InstallStep::ProposedChanges,
+            &InstallStep::Apply,
+            &InstallStep::HealthCheckPostApply,
+        ];
+        for expected in &expected_steps {
+            assert!(
+                executed_steps.contains(expected),
+                "missing expected step {expected:?} in {executed_steps:?}"
+            );
+        }
+
+        let index_of = |step: &InstallStep| {
+            executed_steps
+                .iter()
+                .position(|executed| **executed == *step)
+                .expect("expected step should be present")
+        };
+        assert!(
+            index_of(&InstallStep::SshConnectivity) < index_of(&InstallStep::HealthCheckBaseline)
+        );
+        assert!(index_of(&InstallStep::HealthCheckBaseline) < index_of(&InstallStep::Backup));
+        assert!(
+            index_of(&InstallStep::VersionDetection) < index_of(&InstallStep::CompatibilityCheck)
+        );
+        assert!(index_of(&InstallStep::ProposedChanges) < index_of(&InstallStep::Apply));
+        assert!(index_of(&InstallStep::Apply) < index_of(&InstallStep::HealthCheckPostApply));
         assert!(matches!(
             result.rollback_status,
             Some(RollbackStatus::NotApplicable)
@@ -1175,21 +1263,21 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// patch_nzc_config_stub appends [calciforge] section.
+    /// patch_zeroclaw_config_stub appends [calciforge] section.
     #[test]
-    fn patch_nzc_config_stub_appends_section() {
+    fn patch_zeroclaw_config_stub_appends_section() {
         let input = "[agent]\nname = \"librarian\"\n";
-        let patched = patch_nzc_config_stub(input, "test-claw");
+        let patched = patch_zeroclaw_config_stub(input, "test-claw");
         assert!(patched.contains("[calciforge]"));
         assert!(patched.contains("registered = true"));
         assert!(patched.contains("test-claw"));
     }
 
-    /// patch_nzc_config_stub is idempotent.
+    /// patch_zeroclaw_config_stub is idempotent.
     #[test]
-    fn patch_nzc_config_stub_idempotent() {
+    fn patch_zeroclaw_config_stub_idempotent() {
         let input = "[agent]\nname = \"x\"\n[calciforge]\nregistered = true\n";
-        let patched = patch_nzc_config_stub(input, "claw");
+        let patched = patch_zeroclaw_config_stub(input, "claw");
         assert_eq!(
             patched, input,
             "should not re-add [calciforge] if already present"
@@ -1286,14 +1374,14 @@ mod tests {
     }
 
     #[test]
-    fn remote_config_path_nzc() {
+    fn remote_config_path_zeroclaw() {
         let claw = ClawTarget {
             name: "x".into(),
-            adapter: ClawKind::NzcNative,
+            adapter: ClawKind::ZeroClawNative,
             host: "h".into(),
             ssh_key: None,
             endpoint: "http://h".into(),
         };
-        assert_eq!(remote_config_path(&claw), "~/.config/nzc/config.toml");
+        assert_eq!(remote_config_path(&claw), "~/.config/zeroclaw/config.toml");
     }
 }

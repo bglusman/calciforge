@@ -28,7 +28,7 @@ export default async function beforeToolCall(context: HookContext): Promise<Hook
   const args = context.args;
   const agentId = context.session?.identity || "unknown";
 
-  console.log(`[zeroclawed-policy] Evaluating: ${toolName} for ${agentId}`);
+  console.log(`[calciforge-policy] Evaluating: ${toolName} for ${agentId}`);
 
   try {
     const controller = new AbortController();
@@ -64,7 +64,7 @@ export default async function beforeToolCall(context: HookContext): Promise<Hook
     return { block: false };
 
   } catch (error) {
-    console.error(`[zeroclawed-policy] Error: ${error}`);
+    console.error(`[calciforge-policy] Error: ${error}`);
     // Fail-safe: deny on error
     return { block: true, reason: "Policy enforcement unavailable" };
   }

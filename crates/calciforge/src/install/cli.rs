@@ -8,7 +8,7 @@
 //! Key=value pairs, comma-separated:
 //!
 //! ```text
-//! --claw name=foo,adapter=nzc,host=user@host,key=/path/id_rsa,endpoint=http://...
+//! --claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path/id_rsa,endpoint=http://...
 //! --claw name=bar,adapter=openclaw,host=user@host,key=/path/id_ed25519,endpoint=http://...
 //! --claw name=baz,adapter=openai-compat,endpoint=http://some-claw/v1
 //! --claw name=qux,adapter=webhook,endpoint=http://custom/hook,format=json
@@ -99,13 +99,13 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 ///
 /// # Required keys (all adapters)
 /// - `name` — friendly name
-/// - `adapter` — one of: `nzc`, `openclaw`, `openai-compat`, `webhook`, `cli`
+/// - `adapter` — one of: `zeroclaw-native`, `openclaw`, `openai-compat`, `webhook`, `cli`
 ///
 /// # Adapter-specific keys
 ///
 /// | Adapter | Required | Optional |
 /// |---------|----------|----------|
-/// | `nzc` | `host`, `endpoint` | `key` |
+/// | `zeroclaw-native` | `host`, `endpoint` | `key` |
 /// | `openclaw` | `host`, `endpoint` | `key` |
 /// | `openai-compat` | `endpoint` | — |
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
@@ -136,7 +136,7 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         ClawKind::OpenAiCompat { endpoint } => endpoint.clone(),
         ClawKind::Webhook { endpoint, .. } => endpoint.clone(),
         _ => {
-            // NzcNative / OpenClawHttp: endpoint explicitly provided.
+            // ZeroClawNative / OpenClawHttp: endpoint explicitly provided.
             kv.get("endpoint").cloned().with_context(|| {
                 format!(
                     "adapter '{}' requires 'endpoint=...' in spec: {}",
@@ -165,7 +165,7 @@ fn parse_adapter(
     spec: &str,
 ) -> Result<ClawKind> {
     match adapter_str {
-        "nzc" => Ok(ClawKind::NzcNative),
+        "zeroclaw-native" => Ok(ClawKind::ZeroClawNative),
         "openclaw" => Ok(ClawKind::OpenClawHttp),
         "openai-compat" => {
             let endpoint = require_key(kv, "endpoint", spec)?;
@@ -189,7 +189,7 @@ fn parse_adapter(
             Ok(ClawKind::Cli { command })
         }
         other => bail!(
-            "unknown adapter '{}' in spec: {} (valid: nzc, openclaw, openai-compat, webhook, cli)",
+            "unknown adapter '{}' in spec: {} (valid: zeroclaw-native, openclaw, openai-compat, webhook, cli)",
             other,
             spec
         ),
@@ -250,9 +250,9 @@ mod tests {
 
     #[test]
     fn parse_kv_simple() {
-        let kv = parse_kv_pairs("name=foo,adapter=nzc").unwrap();
+        let kv = parse_kv_pairs("name=foo,adapter=zeroclaw-native").unwrap();
         assert_eq!(kv["name"], "foo");
-        assert_eq!(kv["adapter"], "nzc");
+        assert_eq!(kv["adapter"], "zeroclaw-native");
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn parse_kv_missing_equals_errors() {
-        let result = parse_kv_pairs("name,adapter=nzc");
+        let result = parse_kv_pairs("name,adapter=zeroclaw-native");
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("key=value"), "got: {}", msg);
@@ -279,11 +279,11 @@ mod tests {
     // ── parse_claw_spec ──────────────────────────────────────────────────────
 
     #[test]
-    fn parse_nzc_claw() {
-        let spec = "name=librarian,adapter=nzc,host=user@10.0.0.20,key=/keys/id_ed25519,endpoint=http://10.0.0.20:18799";
+    fn parse_zeroclaw_claw() {
+        let spec = "name=librarian,adapter=zeroclaw-native,host=user@10.0.0.20,key=/keys/id_ed25519,endpoint=http://10.0.0.20:18799";
         let claw = parse_claw_spec(spec).unwrap();
         assert_eq!(claw.name, "librarian");
-        assert!(matches!(claw.adapter, ClawKind::NzcNative));
+        assert!(matches!(claw.adapter, ClawKind::ZeroClawNative));
         assert_eq!(claw.host, "user@10.0.0.20");
         assert_eq!(claw.ssh_key, Some(PathBuf::from("/keys/id_ed25519")));
         assert_eq!(claw.endpoint, "http://10.0.0.20:18799");
@@ -357,8 +357,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_nzc_missing_host_errors() {
-        let spec = "name=lib,adapter=nzc,endpoint=http://host:18799";
+    fn parse_zeroclaw_missing_host_errors() {
+        let spec = "name=lib,adapter=zeroclaw-native,endpoint=http://host:18799";
         let result = parse_claw_spec(spec);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -366,8 +366,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_nzc_missing_endpoint_errors() {
-        let spec = "name=lib,adapter=nzc,host=user@host";
+    fn parse_zeroclaw_missing_endpoint_errors() {
+        let spec = "name=lib,adapter=zeroclaw-native,host=user@host";
         let result = parse_claw_spec(spec);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn parse_missing_name_errors() {
-        let spec = "adapter=nzc,host=user@host,endpoint=http://x";
+        let spec = "adapter=zeroclaw-native,host=user@host,endpoint=http://x";
         let result = parse_claw_spec(spec);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -408,7 +408,7 @@ mod tests {
             calciforge_host: Some("admin@10.0.0.1".into()),
             calciforge_key: Some(PathBuf::from("/keys/id_rsa")),
             claw_specs: vec![
-                "name=lib,adapter=nzc,host=user@10.0.0.20,endpoint=http://10.0.0.20:18799".into(),
+                "name=lib,adapter=zeroclaw-native,host=user@10.0.0.20,endpoint=http://10.0.0.20:18799".into(),
             ],
             ..Default::default()
         };
@@ -554,10 +554,10 @@ mod tests {
                 format!("name={name},adapter=cli,command={command}")
             }
             3 => {
-                // nzc: requires host and endpoint
+                // zeroclaw: requires host and endpoint
                 let host = format!("user@192.168.1.{}", tc.draw(gs::integers::<u8>()));
                 let endpoint = format!("http://{name}.local:18799");
-                format!("name={name},adapter=nzc,host={host},endpoint={endpoint}")
+                format!("name={name},adapter=zeroclaw-native,host={host},endpoint={endpoint}")
             }
             _ => {
                 // openclaw: requires host and endpoint
@@ -584,7 +584,7 @@ mod tests {
             0 => "openai-compat",
             1 => "webhook",
             2 => "cli",
-            3 => "nzc",
+            3 => "zeroclaw-native",
             _ => "openclaw",
         };
         assert_eq!(
@@ -617,13 +617,16 @@ mod tests {
                     command
                 );
             }
-            ClawKind::NzcNative | ClawKind::OpenClawHttp => {
+            ClawKind::ZeroClawNative | ClawKind::OpenClawHttp => {
                 assert!(
                     claw.endpoint.contains(&name),
-                    "nzc/openclaw endpoint should contain name: endpoint={:?}",
+                    "zeroclaw/openclaw endpoint should contain name: endpoint={:?}",
                     claw.endpoint
                 );
-                assert!(!claw.host.is_empty(), "nzc/openclaw must have a host set");
+                assert!(
+                    !claw.host.is_empty(),
+                    "zeroclaw/openclaw must have a host set"
+                );
             }
         }
     }
@@ -702,7 +705,7 @@ mod tests {
             "key".to_string(),
         ];
         let safe_vals = vec![
-            "nzc".to_string(),
+            "zeroclaw-native".to_string(),
             "openclaw".to_string(),
             "http://host:18799".to_string(),
             "user@host".to_string(),

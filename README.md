@@ -12,6 +12,11 @@ live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 
 ## What Works Today
 
+This is usable for a solo operator, but still in active hardening. New
+installations should be smoke-tested against their real channel
+credentials, fnox store, gateway providers, and synthetic routes before
+being treated as daily-driver infrastructure.
+
 | Area | Status | Where to read more |
 |---|---:|---|
 | `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
@@ -19,8 +24,9 @@ live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 | Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
 | Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
-| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
+| `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
@@ -32,9 +38,8 @@ live on the docs site: **[calciforge.org](https://calciforge.org/)**.
 ```bash
 git clone https://github.com/bglusman/calciforge
 cd calciforge
-brew install fnox
-fnox init
 bash scripts/install.sh
+calciforge doctor
 ```
 
 After install, the default local pieces are:
@@ -46,12 +51,25 @@ After install, the default local pieces are:
 - `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
 - `paste-server` — short-lived local forms for adding secrets without putting values in chat history
 
+The installer attempts to install and initialize `fnox` automatically.
+Calciforge and the `fnox` CLI can share the same `fnox.toml` and
+profile, so using `fnox set/list/tui` manually is a valid way to manage
+the same store Calciforge resolves through. The paste UI currently
+stores through that configured local backend.
+
+Run `calciforge doctor` after editing config or moving services. It
+validates config, checks referenced secret files without printing
+values, flags stale active-agent/model state, detects suspicious
+self-routing into the local model gateway, and can probe configured
+agent endpoints. Use `--no-network` for a purely local check.
+
 Channel-based secret input is intentionally being de-emphasized. It
 may remain as a per-channel opt-in fallback for travel, low-stakes
-keys, or values you plan to rotate soon, but direct `fnox` input and
-the local web UI are the preferred paths. The risk varies by channel:
-self-hosted encrypted Matrix is the least bad, Signal is still a
-chat-history tradeoff, and Telegram is a poor place for raw secrets.
+keys, or values you plan to rotate soon. Prefer `!secure input NAME`,
+`!secure bulk LABEL`, `paste-server`, or direct `fnox` input. The risk
+varies by channel: self-hosted encrypted Matrix is the least bad,
+Signal is still a chat-history tradeoff, and Telegram is a poor place
+for raw secrets.
 
 Route Claude Code or another HTTP-speaking agent through the gateway:
 
@@ -94,6 +112,13 @@ strategy = "auto"
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
+
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5 subscription"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
 ```
 
 ## Architecture

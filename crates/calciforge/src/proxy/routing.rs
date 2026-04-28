@@ -1,18 +1,20 @@
 //! Multi-provider model routing for the proxy.
 //!
-//! Builds a priority-ordered `Vec<ProviderEntry>` from `[[proxy.providers]]` and
-//! `[[proxy.model_routes]]` config. The handler iterates entries in order and
-//! uses the first match, falling back to the default gateway.
+//! Builds a priority-ordered `Vec<ProviderEntry>` from explicit
+//! `[[proxy.model_routes]]`, first-class `[[exec_models]]`, and
+//! `[[proxy.providers]]` config. The handler iterates entries in order and uses
+//! the first match, falling back to the default gateway.
 
 use std::collections::HashMap;
 
 use anyhow::Context as _;
 use tracing::info;
 
-use crate::config::ProxyConfig;
+use crate::config::{ExecModelConfig, ProxyConfig};
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
+use super::exec_gateway::ExecGateway;
 use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
 
 /// A resolved provider entry: a set of model-name patterns and a ready gateway.
@@ -62,9 +64,11 @@ pub fn find_provider<'a>(providers: &'a [ProviderEntry], model: &str) -> Option<
 ///
 /// Priority order:
 /// 1. `[[proxy.model_routes]]` entries (explicit overrides, in declaration order)
-/// 2. `[[proxy.providers]]` models patterns (in provider × pattern order)
+/// 2. first-class `[[exec_models]]` entries (exact model IDs)
+/// 3. `[[proxy.providers]]` models patterns (in provider × pattern order)
 pub fn build_provider_entries(
     config: &ProxyConfig,
+    exec_models: &[ExecModelConfig],
     default_timeout: u64,
 ) -> anyhow::Result<Vec<ProviderEntry>> {
     // Build a map of provider_id → resolved gateway for efficient lookup.
@@ -72,13 +76,67 @@ pub fn build_provider_entries(
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
 
     for p in &config.providers {
+        if p.backend_type == "exec" {
+            let command = p
+                .command
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("exec provider '{}' requires command", p.id))?;
+            let timeout = p.timeout_seconds.unwrap_or(default_timeout);
+            let gw_cfg = GatewayConfig {
+                backend_type: GatewayType::Direct,
+                base_url: None,
+                api_key: None,
+                timeout_seconds: timeout,
+                extra_config: None,
+                headers: None,
+                retry_enabled: false,
+                max_retries: 0,
+                retry_base_delay_ms: 0,
+                retry_max_delay_ms: 0,
+            };
+            let gw = Arc::new(ExecGateway::new(
+                gw_cfg,
+                command,
+                p.args.clone(),
+                p.env.clone(),
+            ));
+            info!(id = %p.id, models = ?p.models, "Exec provider loaded");
+            provider_gateways.insert(p.id.clone(), gw);
+            provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+            continue;
+        }
+
+        if p.backend_type != "http" {
+            anyhow::bail!(
+                "provider '{}' has unsupported backend_type '{}'",
+                p.id,
+                p.backend_type
+            );
+        }
+        if p.url.trim().is_empty() {
+            anyhow::bail!(
+                "provider '{}' with backend_type 'http' requires non-empty url",
+                p.id
+            );
+        }
+
         // Resolve API key (file takes precedence).
         let api_key = if let Some(ref file) = p.api_key_file {
             let raw = std::fs::read_to_string(file)
                 .with_context(|| format!("reading API key file for provider '{}'", p.id))?;
-            raw.trim_end().to_string()
+            raw.trim().to_string()
         } else {
-            p.api_key.clone().unwrap_or_default()
+            p.api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let api_key = if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key)
         };
 
         let timeout = p.timeout_seconds.unwrap_or(default_timeout);
@@ -91,7 +149,7 @@ pub fn build_provider_entries(
         let backend_cfg = BackendConfig {
             backend_type: BackendType::Http,
             url: Some(p.url.clone()),
-            api_key: Some(api_key.clone()),
+            api_key: api_key.clone(),
             timeout_seconds: Some(timeout),
             headers: headers.clone(),
             ..Default::default()
@@ -103,7 +161,7 @@ pub fn build_provider_entries(
         let gw_cfg = GatewayConfig {
             backend_type: GatewayType::Direct,
             base_url: Some(p.url.clone()),
-            api_key: Some(api_key),
+            api_key,
             timeout_seconds: timeout,
             extra_config: None,
             headers,
@@ -141,7 +199,37 @@ pub fn build_provider_entries(
         }
     }
 
-    // 2. Provider model patterns (in declaration order).
+    // 2. First-class exec models. These are exact synthetic model IDs.
+    for model in exec_models {
+        let timeout = model.timeout_seconds.unwrap_or(default_timeout);
+        let gw_cfg = GatewayConfig {
+            backend_type: GatewayType::Direct,
+            base_url: None,
+            api_key: None,
+            timeout_seconds: timeout,
+            extra_config: None,
+            headers: None,
+            retry_enabled: false,
+            max_retries: 0,
+            retry_base_delay_ms: 0,
+            retry_max_delay_ms: 0,
+        };
+        let gw = Arc::new(ExecGateway::new(
+            gw_cfg,
+            model.command.clone(),
+            model.args.clone(),
+            model.env.clone(),
+        ));
+        info!(id = %model.id, "Exec synthetic model loaded");
+        entries.push(ProviderEntry {
+            id: format!("exec:{}", model.id),
+            patterns: vec![model.id.clone()],
+            gateway: gw,
+            on_switch: None,
+        });
+    }
+
+    // 3. Provider model patterns (in declaration order).
     for p in &config.providers {
         if p.models.is_empty() {
             continue;
@@ -157,4 +245,76 @@ pub fn build_provider_entries(
     }
 
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProxyProviderConfig;
+
+    fn provider(id: &str, backend_type: &str, url: &str) -> ProxyProviderConfig {
+        ProxyProviderConfig {
+            id: id.to_string(),
+            backend_type: backend_type.to_string(),
+            url: url.to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["test-model".to_string()],
+            timeout_seconds: None,
+            headers: HashMap::new(),
+            on_switch: None,
+            command: if backend_type == "exec" {
+                Some("/bin/echo".to_string())
+            } else {
+                None
+            },
+            args: Vec::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn http_provider_requires_non_empty_url() {
+        let config = ProxyConfig {
+            providers: vec![provider("missing-url", "http", "  ")],
+            ..Default::default()
+        };
+
+        let err = build_provider_entries(&config, &[], 30).unwrap_err();
+        assert!(err.to_string().contains("requires non-empty url"));
+    }
+
+    #[test]
+    fn exec_provider_may_omit_url() {
+        let config = ProxyConfig {
+            providers: vec![provider("exec-provider", "exec", "")],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, &[], 30).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn exec_models_become_exact_provider_entries() {
+        let config = ProxyConfig::default();
+        let entries = build_provider_entries(
+            &config,
+            &[ExecModelConfig {
+                id: "codex/gpt-5.5".to_string(),
+                name: None,
+                context_window: 262_144,
+                command: "/bin/echo".to_string(),
+                args: vec!["ok".to_string()],
+                env: HashMap::new(),
+                timeout_seconds: Some(10),
+            }],
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].patterns, vec!["codex/gpt-5.5"]);
+        assert!(find_provider(&entries, "codex/gpt-5.5").is_some());
+    }
 }

@@ -16,10 +16,10 @@ set -euo pipefail
 #   status    Show service status
 #
 # Examples:
-#   scripts/install-calciforge.sh install 192.168.1.127
-#   scripts/install-calciforge.sh install 192.168.1.127 192.168.1.49
-#   scripts/install-calciforge.sh deploy 192.168.1.127
-#   scripts/install-calciforge.sh verify 192.168.1.127
+#   scripts/install-calciforge.sh install gateway.example.internal
+#   scripts/install-calciforge.sh install gateway.example.internal worker.example.internal
+#   scripts/install-calciforge.sh deploy gateway.example.internal
+#   scripts/install-calciforge.sh verify gateway.example.internal
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="/opt/calciforge"
@@ -87,24 +87,24 @@ profile = "balanced"  # open | balanced | hardened | paranoid
 scan_outbound = false
 
 # ── Channels ────────────────────────────────────────────────────
-# WhatsApp channel (requires NZC/OpenClaw gateway with WA session)
+# WhatsApp channel (requires ZeroClaw/OpenClaw gateway with WA session)
 [[channels]]
 kind = "whatsapp"
 enabled = false
 scan_messages = false
-# nzc_endpoint = "http://127.0.0.1:18789"
-# nzc_auth_token = "YOUR_NZC_TOKEN"
+# zeroclaw_endpoint = "http://127.0.0.1:18789"
+# zeroclaw_auth_token = "YOUR_ZEROCLAW_TOKEN"
 # webhook_listen = "0.0.0.0:18795"
 # webhook_path = "/webhooks/whatsapp"
 # allowed_numbers = ["+15555550001"]
 
-# Signal channel (requires NZC/OpenClaw gateway with Signal session)
+# Signal channel (requires ZeroClaw/OpenClaw gateway with Signal session)
 [[channels]]
 kind = "signal"
 enabled = false
 scan_messages = false
-# nzc_endpoint = "http://127.0.0.1:18789"
-# nzc_auth_token = "YOUR_NZC_TOKEN"
+# zeroclaw_endpoint = "http://127.0.0.1:18789"
+# zeroclaw_auth_token = "YOUR_ZEROCLAW_TOKEN"
 # webhook_listen = "0.0.0.0:18796"
 # webhook_path = "/webhooks/signal"
 # allowed_numbers = ["+15555550001"]
@@ -128,8 +128,8 @@ scan_messages = false
 # ── Identities ─────────────────────────────────────────────────
 # Define users and their channel aliases
 # [[identities]]
-# id = "brian"
-# display_name = "Brian"
+# id = "operator"
+# display_name = "Operator"
 # aliases = [
 #     { channel = "whatsapp", id = "+15555550001" },
 #     { channel = "signal", id = "+15555550001" },
@@ -143,7 +143,7 @@ scan_messages = false
 
 # ── Routing ────────────────────────────────────────────────────
 # [[routing]]
-# identity = "brian"
+# identity = "operator"
 # default_agent = "main"
 DEFAULT_CONFIG
 }
@@ -285,17 +285,17 @@ Actions:
   help      Show this help
 
 Examples:
-  scripts/install-calciforge.sh install 192.168.1.127
-  scripts/install-calciforge.sh deploy 192.168.1.127
-  scripts/install-calciforge.sh verify 192.168.1.127
+  scripts/install-calciforge.sh install gateway.example.internal
+  scripts/install-calciforge.sh deploy gateway.example.internal
+  scripts/install-calciforge.sh verify gateway.example.internal
   scripts/install-calciforge.sh status
 
   # Use targets.txt
-  echo "192.168.1.127" > scripts/targets.txt
+  echo "gateway.example.internal" > scripts/targets.txt
   scripts/install-calciforge.sh install
 
   # Set custom SSH key
-  SSH_KEY=~/.ssh/id_ed25519_librarian scripts/install-calciforge.sh install 192.168.1.127
+  SSH_KEY=~/.ssh/id_ed25519_calciforge scripts/install-calciforge.sh install gateway.example.internal
 
 Channel Scanning Configuration:
   The install script generates a default config.toml with scan_messages = false

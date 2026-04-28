@@ -196,8 +196,11 @@ gateway covers seven overlapping concerns; you can adopt any subset.
 ### Secret management
 
 Your agent never holds the actual API key. The gateway resolves
-through [fnox](https://github.com/jdx/fnox) and substitutes at the
-request boundary.
+through the configured local secret backend and substitutes at the
+request boundary. In the default deployment that backend is
+[fnox](https://github.com/jdx/fnox); Calciforge and the `fnox` CLI can
+share the same `fnox.toml` and profile, so manual `fnox set/list/tui`
+operations manage the same store.
 
 ```toml
 # fnox.toml — the secret store the gateway resolves through
@@ -212,6 +215,10 @@ browser form and keeps the value out of Telegram, Matrix, WhatsApp,
 and other chat history:
 
 ```bash
+!secure input OPENAI_API_KEY OpenAI API key
+!secure bulk env-import bulk .env import
+
+# Equivalent host-local commands:
 paste-server OPENAI_API_KEY "OpenAI API key"
 # prints http://127.0.0.1:PORT/paste/<token>
 
@@ -222,6 +229,10 @@ paste-server --bulk env-import "bulk .env import"
 The URLs expire after five minutes and are single-use. The bulk URL
 accepts a whole `.env`-shaped paste and returns per-key results
 (stored / already-exists / illegal-name / malformed).
+
+The paste server binds to localhost by default. Remote/phone use should
+go through an explicit short-lived authenticated tunnel or proxy; do
+not expose the paste server directly to the open internet.
 
 ### Outbound traffic gating
 
@@ -292,6 +303,13 @@ The synthetic-model vocabulary is:
 - **Dispatcher** — choose by request shape, such as "smallest
   sufficient model." This is the size-routing primitive for mixing
   small local models with larger remote models.
+- **Exec model** — expose a local binary or wrapper script as a model
+  gateway model, typically for subscription-backed CLIs where the CLI
+  owns OAuth/session state.
+
+Synthetic models may compose other synthetic models as a DAG. Calciforge
+flattens the selected plan at request time and rejects cycles during
+initialization.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -364,6 +382,13 @@ id = "qwen3-35b"
 hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
 display_name = "Qwen 35B local"
 
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5 subscription"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
+
 [[dispatchers]]
 id = "smart-local"
 name = "Use local until the prompt outgrows it"
@@ -375,6 +400,10 @@ context_window = 32768
 [[dispatchers.models]]
 model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
+
+[[dispatchers.models]]
+model = "codex/gpt-5.5"
+context_window = 262144
 ```
 
 The full gateway reference is
@@ -438,8 +467,8 @@ allowed_users = ["@alice:example.com"]
 [[channels]]
 kind = "whatsapp"
 enabled = true
-nzc_endpoint = "http://127.0.0.1:18789"
-nzc_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
+zeroclaw_endpoint = "http://127.0.0.1:18789"
+zeroclaw_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
 allowed_numbers = ["+15555550100"]
 ```
 
@@ -462,7 +491,6 @@ wrappers.
 ```bash
 git clone https://github.com/bglusman/calciforge
 cd calciforge
-brew install fnox && fnox init
 bash scripts/install.sh
 ```
 
@@ -470,6 +498,18 @@ Three services land as launchd agents:
 - `clashd` on `:9001` — a `clash`-backed policy sidecar
 - `security-proxy` on `:8888` — substitution + scanning + injection
 - `calciforge` — channel router (needs onboarding for an LLM provider)
+
+After editing config or moving an agent, run:
+
+```bash
+calciforge doctor
+```
+
+`doctor` validates the config, checks referenced secret files without
+printing values, catches stale active-agent/model state, warns when an
+agent appears to point back into the local model gateway by accident,
+and can probe configured endpoints. Use `calciforge doctor --no-network`
+when you want a local-only check.
 
 Route Claude Code through the gateway:
 
@@ -482,15 +522,15 @@ export HTTPS_PROXY=http://localhost:8888
 
 ## Status
 
-Solo-operator mature, multi-user team mode in progress. Mac-tested,
-Linux-ready (CI runs Ubuntu, daily-use is macOS + a Proxmox CT for
-headless deployment).
+Solo-operator usable and actively hardening, multi-user team mode in
+progress. Mac-tested, Linux-ready (CI runs Ubuntu, daily-use includes
+macOS and a headless Linux service host). Treat new deployments as
+operator-reviewed until their channel credentials, fnox store, model
+gateway providers, and synthetic model routes pass smoke tests.
 
 The list of what works today and what's still in flight lives in the
 [README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
-Internal reviews and planning notes live under
-[`research/`](https://github.com/bglusman/calciforge/tree/main/research);
-public roadmap ideas live in
+Public roadmap ideas live in
 [`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
 
 <footer>

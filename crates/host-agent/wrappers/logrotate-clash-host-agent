@@ -1,6 +1,6 @@
 # /etc/logrotate.d/clash-host-agent
 #
-# Log rotation for PolyClaw host-agent audit and application logs.
+# Log rotation for Calciforge host-agent audit and application logs.
 # Installed by: crates/host-agent/install.sh (install_logrotate())
 #
 # Rotation policy:

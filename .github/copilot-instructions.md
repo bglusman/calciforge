@@ -44,6 +44,7 @@ These are real regressions caught here before. Look for the pattern, not the lit
 2. **`resolve_and_substitute(url, None)`** for URL substitution — defeats the per-secret destination allowlist for URL-embedded secrets. Always extract `dest_host` from the pre-substitution URL.
 3. **URL with bearer/short-lived token logged at `info!`/`warn!`** — drop to `debug!`, or log only the host/path without the token.
 4. **`fnox set <name> <value>` with value as argv** — leaks via `ps`/`procfs`. Use stdin mode (`set <name> -` + write value to stdin).
+5. **Exec-backed model prompts in argv or shared temp paths** — prompt text can include secrets and is often visible through process listings or permissive temp files. Prefer stdin, securely-created temp files, restrictive directory permissions, and best-effort cleanup.
 
 ## Style of feedback
 

@@ -1,6 +1,6 @@
 # /etc/sudoers.d/clash-agent
 #
-# PolyClaw host-agent sudoers fragment — WRAPPER-ONLY policy
+# Calciforge host-agent sudoers fragment — WRAPPER-ONLY policy
 #
 # IMPORTANT: This file restricts clash-agent to the three wrapper scripts
 # only.  Do NOT grant broad /sbin/zfs, /usr/sbin/pct, or /usr/bin/git access;

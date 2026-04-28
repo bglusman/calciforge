@@ -1,22 +1,22 @@
 {
   "nodes": [
     {
-      "name": "proxmox-node1",
-      "host": "192.168.1.10",
-      "user": "admin",
+      "name": "linux-gateway",
+      "host": "gateway.example.internal",
+      "user": "root",
       "ssh_key": "~/.ssh/id_ed25519",
-      "arch": "x86_64-unknown-linux-musl",
+      "arch": "x86_64-unknown-linux-gnu",
       "os": "linux",
       "services": ["clashd", "security-proxy"],
       "install_dir": "/usr/local/bin",
       "config_dir": "/etc/calciforge"
     },
     {
-      "name": "proxmox-node2",
-      "host": "192.168.1.11",
-      "user": "admin",
+      "name": "linux-worker",
+      "host": "worker.example.internal",
+      "user": "root",
       "ssh_key": "~/.ssh/id_ed25519",
-      "arch": "x86_64-unknown-linux-musl",
+      "arch": "x86_64-unknown-linux-gnu",
       "os": "linux",
       "services": ["clashd", "security-proxy", "calciforge"],
       "install_dir": "/usr/local/bin",
@@ -24,8 +24,8 @@
     },
     {
       "name": "mac-satellite",
-      "host": "192.168.1.20",
-      "user": "admin",
+      "host": "mac.example.internal",
+      "user": "operator",
       "ssh_key": "~/.ssh/id_ed25519",
       "arch": "aarch64-apple-darwin",
       "os": "macos",

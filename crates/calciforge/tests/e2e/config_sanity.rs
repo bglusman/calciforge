@@ -64,8 +64,8 @@ fn test_unknown_adapter_kind_fails() {
         "openclaw-http",
         "openclaw-channel",
         "openclaw-native",
-        "nzc-http",
-        "nzc-native",
+        "zeroclaw-http",
+        "zeroclaw-native",
     ];
 
     let invalid_kinds = vec![
@@ -104,8 +104,8 @@ fn is_valid_adapter_kind(kind: &str) -> bool {
             | "openclaw-http"
             | "openclaw-channel"
             | "openclaw-native"
-            | "nzc-http"
-            | "nzc-native"
+            | "zeroclaw-http"
+            | "zeroclaw-native"
     )
 }
 
@@ -139,12 +139,12 @@ command = "/bin/cat"
 }
 
 #[test]
-fn test_nzc_native_without_command() {
-    // nzc-native adapter should work without command (uses webhook pattern)
+fn test_zeroclaw_native_without_command() {
+    // zeroclaw-native adapter should work without command (uses webhook pattern)
     let config = r#"
 [[agents]]
-id = "nzc-agent"
-kind = "nzc-native"
+id = "zeroclaw-agent"
+kind = "zeroclaw-native"
 endpoint = "http://127.0.0.1:19300"
 token = "test-token"
 timeout_ms = 30000
@@ -161,14 +161,17 @@ timeout_ms = 30000
         .first()
         .unwrap();
 
-    assert_eq!(agent.get("kind").unwrap().as_str().unwrap(), "nzc-native");
+    assert_eq!(
+        agent.get("kind").unwrap().as_str().unwrap(),
+        "zeroclaw-native"
+    );
     assert!(
         agent.get("command").is_none(),
-        "nzc-native should not require command"
+        "zeroclaw-native should not require command"
     );
     assert!(
         agent.get("endpoint").is_some(),
-        "nzc-native should have endpoint"
+        "zeroclaw-native should have endpoint"
     );
 }
 

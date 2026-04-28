@@ -5,6 +5,8 @@ Calciforge supports Codex in two practical ways:
 1. direct Codex CLI dispatch with `kind = "codex-cli"`.
 2. OpenClaw as an upstream agent or model gateway, using OpenClaw's
    Codex-aware model prefixes.
+3. an executable-backed `[[exec_models]]` model-gateway entry when an
+   OpenAI-compatible client needs to call a local subscription CLI.
 
 Use direct `codex-cli` when Calciforge should call the official Codex
 CLI under the same Unix account that owns `~/.codex` credentials. Use
@@ -39,7 +41,7 @@ allowed_agents = ["codex"]
 By default the adapter runs:
 
 ```bash
-codex exec --color never --sandbox read-only --ask-for-approval never --skip-git-repo-check -
+codex exec --color never --sandbox read-only --ephemeral --skip-git-repo-check -
 ```
 
 The prompt is sent on stdin and Calciforge captures Codex's
@@ -59,7 +61,7 @@ args = [
   "exec",
   "--color", "never",
   "--sandbox", "workspace-write",
-  "--ask-for-approval", "never",
+  "--ephemeral",
   "--skip-git-repo-check",
   "-",
 ]
@@ -116,11 +118,37 @@ use.
 
 ## Model gateway expectations
 
-Calciforge's OpenAI-compatible model gateway forwards HTTP requests to
-OpenAI-compatible providers. A Codex or Claude subscription is not
-automatically an OpenAI-compatible upstream exposed by Calciforge.
+Calciforge's OpenAI-compatible model gateway can forward HTTP requests to
+OpenAI-compatible providers, or it can expose trusted local CLI wrappers as
+`[[exec_models]]`.
 
-For subscription-backed model access, put the subscription-owning CLI or
-OpenClaw provider behind a Calciforge agent. For deterministic gateway
-tests, use a mock OpenAI-compatible provider or replay fixture rather
-than a live LLM.
+Use an exec model when the subscription-owning CLI should remain a black
+box and Calciforge only needs to render a prompt, invoke the process, and
+wrap the final text as a chat completion:
+
+```toml
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+
+[[exec_models]]
+id = "claude/sonnet"
+name = "Claude subscription CLI"
+context_window = 200000
+command = "/etc/calciforge/exec-models/claude-print.sh"
+timeout_seconds = 900
+
+[exec_models.env]
+CALCIFORGE_CLAUDE_MODEL = "sonnet"
+```
+
+The example wrappers in `scripts/exec-models/` are intentionally conservative
+starting points. CLI flags, installed versions, and vendor subscription terms
+can change, so validate the exact wrapper under the Unix account running
+Calciforge before exposing it to agents. Prefer wrappers that accept prompts on
+stdin; if a vendor CLI only accepts prompts as argv, treat that wrapper as a
+local process-listing leakage risk and expose it only on trusted single-user
+hosts.
+
+For deterministic gateway tests, use a mock OpenAI-compatible provider or
+replay fixture rather than a live LLM.

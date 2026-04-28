@@ -56,7 +56,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], defau
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 # Telegram
-teloxide = { version = "0.13", features = ["macros", "ctrlc_handler"] }
+teloxide = { version = "0.13", default-features = false, features = ["macros", "ctrlc_handler", "rustls"] }
 
 # Error handling
 anyhow = "1"
@@ -98,6 +98,9 @@ rand = "0.9"
 # UUID generation for API responses
 uuid = { version = "1", features = ["v4"] }
 
+# Secure temporary files for exec-backed model output handoff.
+tempfile = "3"
+
 # Retry logic (Helicone-style)
 backon = "0.4"
 
@@ -115,7 +118,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-tempfile = "3"
 futures-util = "0.3"
 loom = { version = "0.7", features = ["checkpoint"] }
 mockito = "1.5"

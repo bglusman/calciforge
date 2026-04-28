@@ -37,7 +37,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-use super::{AdapterError, AgentAdapter};
+use super::{AdapterError, AgentAdapter, DispatchContext};
 
 // ---------------------------------------------------------------------------
 // Adapter
@@ -49,12 +49,15 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_ARG_CHARS: usize = 300;
 /// Placeholder string in args that gets replaced with the message.
 const MESSAGE_PLACEHOLDER: &str = "{message}";
+/// Placeholder string in args/env that gets replaced with the active model.
+const MODEL_PLACEHOLDER: &str = "{model}";
 
 /// CLI adapter — spawns a binary and reads its stdout as the response.
 pub struct CliAdapter {
     command: String,
     args: Vec<String>,
     env: HashMap<String, String>,
+    model: Option<String>,
     timeout: Duration,
     /// Maximum character length for the message substituted into args.
     /// When the message (after context augmentation) exceeds this limit, the
@@ -71,20 +74,45 @@ impl CliAdapter {
     /// - `timeout_ms` — per-invocation timeout (`None` → 30 000 ms)
     /// - `max_arg_chars` — max chars allowed in a single arg (`None` → 300);
     ///   messages longer than this have their context preamble stripped
+    #[allow(dead_code)]
     pub fn new(
         command: String,
         args: Option<Vec<String>>,
         env: HashMap<String, String>,
         timeout_ms: Option<u64>,
     ) -> Self {
-        Self::with_max_arg_chars(command, args, env, timeout_ms, None)
+        Self::with_model(command, args, env, None, timeout_ms)
+    }
+
+    /// Like [`new`] but with an agent-level default model.
+    pub fn with_model(
+        command: String,
+        args: Option<Vec<String>>,
+        env: HashMap<String, String>,
+        model: Option<String>,
+        timeout_ms: Option<u64>,
+    ) -> Self {
+        Self::with_model_and_max_arg_chars(command, args, env, model, timeout_ms, None)
     }
 
     /// Like [`new`] but with an explicit `max_arg_chars` override.
+    #[allow(dead_code)]
     pub fn with_max_arg_chars(
         command: String,
         args: Option<Vec<String>>,
         env: HashMap<String, String>,
+        timeout_ms: Option<u64>,
+        max_arg_chars: Option<usize>,
+    ) -> Self {
+        Self::with_model_and_max_arg_chars(command, args, env, None, timeout_ms, max_arg_chars)
+    }
+
+    /// Like [`with_model`] but with an explicit `max_arg_chars` override.
+    pub fn with_model_and_max_arg_chars(
+        command: String,
+        args: Option<Vec<String>>,
+        env: HashMap<String, String>,
+        model: Option<String>,
         timeout_ms: Option<u64>,
         max_arg_chars: Option<usize>,
     ) -> Self {
@@ -96,6 +124,7 @@ impl CliAdapter {
             command,
             args,
             env,
+            model,
             timeout,
             max_arg_chars,
         }
@@ -147,26 +176,57 @@ impl CliAdapter {
     }
 
     /// Substitute `{message}` in each arg string.
-    fn build_args(&self, msg: &str) -> Vec<String> {
+    fn selected_model<'a>(&'a self, model_override: Option<&'a str>) -> Option<&'a str> {
+        model_override.or(self.model.as_deref())
+    }
+
+    fn build_args(&self, msg: &str, model_override: Option<&str>) -> Vec<String> {
         let effective = self.effective_message(msg);
+        let model = self.selected_model(model_override).unwrap_or("");
         self.args
             .iter()
-            .map(|a| a.replace(MESSAGE_PLACEHOLDER, effective))
+            .map(|a| {
+                a.replace(MESSAGE_PLACEHOLDER, effective)
+                    .replace(MODEL_PLACEHOLDER, model)
+            })
             .collect()
+    }
+
+    fn build_env(&self, model_override: Option<&str>) -> HashMap<String, String> {
+        let model = self.selected_model(model_override).unwrap_or("");
+        let mut env: HashMap<String, String> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.replace(MODEL_PLACEHOLDER, model)))
+            .collect();
+        if !model.is_empty() {
+            env.insert("CALCIFORGE_MODEL".to_string(), model.to_string());
+            env.insert("CALCIFORGE_MODEL_OVERRIDE".to_string(), model.to_string());
+        }
+        env
     }
 }
 
 #[async_trait]
 impl AgentAdapter for CliAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        let args = self.build_args(msg);
+        self.dispatch_with_context(DispatchContext::message_only(msg))
+            .await
+    }
+
+    async fn dispatch_with_context(
+        &self,
+        ctx: DispatchContext<'_>,
+    ) -> Result<String, AdapterError> {
+        let args = self.build_args(ctx.message, ctx.model_override);
+        let env = self.build_env(ctx.model_override);
 
         info!(
             command = %self.command,
             args = ?args,
             "cli dispatch"
         );
-        debug!(msg = %msg, "outbound message");
+        debug!(msg = %ctx.message, "outbound message");
 
         let mut cmd = Command::new(&self.command);
         cmd.args(&args)
@@ -174,7 +234,7 @@ impl AgentAdapter for CliAdapter {
             .stderr(Stdio::piped());
 
         // Set env vars from config
-        for (k, v) in &self.env {
+        for (k, v) in &env {
             cmd.env(k, v);
         }
 
@@ -277,7 +337,7 @@ mod tests {
             "/usr/local/bin/ironclaw",
             Some(vec!["run", "-m", "{message}"]),
         );
-        let args = adapter.build_args("hello world");
+        let args = adapter.build_args("hello world", None);
         assert_eq!(args, vec!["run", "-m", "hello world"]);
     }
 
@@ -293,14 +353,51 @@ mod tests {
             HashMap::new(),
             Some(5000),
         );
-        let args = adapter.build_args("ping");
+        let args = adapter.build_args("ping", None);
         assert_eq!(args, vec!["ping", "--input", "ping"]);
+    }
+
+    #[test]
+    fn test_build_args_substitutes_model_override() {
+        let adapter = CliAdapter::with_model(
+            "/bin/echo".to_string(),
+            Some(vec![
+                "--model".to_string(),
+                "{model}".to_string(),
+                "{message}".to_string(),
+            ]),
+            HashMap::new(),
+            Some("configured-model".to_string()),
+            Some(5000),
+        );
+        let args = adapter.build_args("ping", Some("override-model"));
+        assert_eq!(args, vec!["--model", "override-model", "ping"]);
+    }
+
+    #[test]
+    fn test_build_env_exposes_model_override() {
+        let adapter = CliAdapter::with_model(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::from([("DOWNSTREAM_MODEL".to_string(), "{model}".to_string())]),
+            Some("configured-model".to_string()),
+            Some(5000),
+        );
+        let env = adapter.build_env(Some("override-model"));
+        assert_eq!(
+            env.get("DOWNSTREAM_MODEL").map(String::as_str),
+            Some("override-model")
+        );
+        assert_eq!(
+            env.get("CALCIFORGE_MODEL_OVERRIDE").map(String::as_str),
+            Some("override-model")
+        );
     }
 
     #[test]
     fn test_build_args_no_placeholder_passes_through() {
         let adapter = make_adapter("/bin/echo", Some(vec!["--version"]));
-        let args = adapter.build_args("ignored message");
+        let args = adapter.build_args("ignored message", None);
         // When no placeholder, args are unchanged
         assert_eq!(args, vec!["--version"]);
     }
@@ -309,7 +406,7 @@ mod tests {
     fn test_default_args_when_none() {
         let adapter = CliAdapter::new("/bin/echo".to_string(), None, HashMap::new(), None);
         // Default: ["-m", "{message}"]
-        let args = adapter.build_args("test");
+        let args = adapter.build_args("test", None);
         assert_eq!(args, vec!["-m", "test"]);
     }
 
@@ -392,7 +489,7 @@ mod tests {
             Some(50), // small limit to force stripping
         );
         let augmented = "[Recent context:\nBrian: hi\nlibrarian: hello\n]\n\nwhat is 2+2?";
-        let args = adapter.build_args(augmented);
+        let args = adapter.build_args(augmented, None);
         assert_eq!(args, vec!["run", "-m", "what is 2+2?"]);
     }
 

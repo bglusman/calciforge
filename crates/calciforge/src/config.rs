@@ -1,7 +1,8 @@
-//! PolyConfig — TOML configuration loading and schema types.
+//! CalciforgeConfig — TOML configuration loading and schema types.
 //!
-//! Reads from `~/.calciforge/config.toml`. Supports the full config schema
-//! as defined in the spec (Section 3).
+//! Reads from `~/.calciforge/config.toml` or, for service installs, falls back
+//! to `/etc/calciforge/config.toml`. Supports the full config schema as defined
+//! in the spec (Section 3).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,8 +17,8 @@ pub mod validator;
 
 /// Top-level Calciforge configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PolyConfig {
-    pub calciforge: PolyHeader,
+pub struct CalciforgeConfig {
+    pub calciforge: CalciforgeHeader,
 
     #[serde(default)]
     pub identities: Vec<Identity>,
@@ -64,6 +65,13 @@ pub struct PolyConfig {
     /// then uses larger eligible models as fallbacks.
     #[serde(default)]
     pub dispatchers: Vec<DispatcherConfig>,
+
+    /// `[[exec_models]]` — executable-backed synthetic models.
+    /// These expose subscription-authenticated CLIs such as `codex exec` or
+    /// `claude -p` through the OpenAI-compatible model gateway without copying
+    /// their OAuth/session credentials into provider API keys.
+    #[serde(default)]
+    pub exec_models: Vec<ExecModelConfig>,
 
     /// `[security]` — adversary detector profile and settings.
     /// Defaults to balanced if not specified in config.
@@ -161,6 +169,32 @@ pub struct DispatcherConfig {
     pub models: Vec<SyntheticModelConfig>,
 }
 
+/// Executable-backed synthetic model definition (`[[exec_models]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExecModelConfig {
+    /// Synthetic model id requested by agents, such as `codex/gpt-5.5`.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Declared context window (tokens) for fit checks.
+    pub context_window: u32,
+    /// Binary or script path to execute.
+    pub command: String,
+    /// Argument template. Supports `{model}` and `{output_file}` placeholders.
+    /// `{prompt}` / `{message}` are legacy aliases that are replaced with an
+    /// empty string and cause Calciforge to write the rendered transcript to
+    /// stdin, avoiding prompt leakage through process argv.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables passed only to this process.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Request timeout in seconds. Defaults to `[proxy].timeout_seconds`.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
 /// One target inside a cascade or dispatcher.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SyntheticModelConfig {
@@ -171,7 +205,7 @@ pub struct SyntheticModelConfig {
 
 /// `[calciforge]` header section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PolyHeader {
+pub struct CalciforgeHeader {
     pub version: u32,
 }
 
@@ -211,6 +245,10 @@ pub struct AgentConfig {
     pub auth_token: Option<String>,
     /// Per-agent API key / Bearer token. Overrides global `CALCIFORGE_AGENT_TOKEN`.
     pub api_key: Option<String>,
+    /// Path to a file containing the per-agent API key. Prefer this over
+    /// inline `api_key` for local gateway/self-routing agents.
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
     /// OpenClaw agent lane id for kind = "openclaw-channel" (defaults to this agent id).
     #[serde(default)]
     pub openclaw_agent_id: Option<String>,
@@ -228,7 +266,7 @@ pub struct AgentConfig {
     pub env: Option<HashMap<String, String>>,
     /// Optional registry metadata (ignored at runtime, used for !agents output).
     pub registry: Option<AgentRegistry>,
-    /// Optional aliases for this agent (e.g. `["native", "nzc"]`).
+    /// Optional aliases for this agent (e.g. `["native", "zeroclaw"]`).
     /// When resolving `!switch <name>`, both `id` and any alias are matched.
     #[serde(default)]
     pub aliases: Vec<String>,
@@ -261,8 +299,8 @@ pub struct RoutingRule {
 /// Supports `kind = "telegram"`, `kind = "matrix"`, `kind = "whatsapp"`, and `kind = "signal"`.
 /// For Telegram: set `bot_token_file`.
 /// For Matrix: set `homeserver`, `access_token_file`, `room_id`, and optionally `allowed_users`.
-/// For WhatsApp: set `nzc_endpoint`, `nzc_auth_token`, `webhook_listen`, and `allowed_numbers`.
-/// For Signal: set `nzc_endpoint`, `nzc_auth_token`, `webhook_listen`, and `allowed_numbers` (same fields as WhatsApp).
+/// For WhatsApp: set `zeroclaw_endpoint`, `zeroclaw_auth_token`, `webhook_listen`, and `allowed_numbers`.
+/// For Signal: set `zeroclaw_endpoint`, `zeroclaw_auth_token`, `webhook_listen`, and `allowed_numbers` (same fields as WhatsApp).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelConfig {
     pub kind: String,
@@ -282,22 +320,22 @@ pub struct ChannelConfig {
     /// Matrix room ID the bot should join and listen in, e.g. `"!abc123:matrix.org"`.
     pub room_id: Option<String>,
 
-    /// List of Matrix user IDs allowed to send commands, e.g. `["@brian:matrix.org"]`.
+    /// List of Matrix user IDs allowed to send commands, e.g. `["@operator:matrix.org"]`.
     /// If empty, all room members can interact (not recommended).
     #[serde(default)]
     pub allowed_users: Vec<String>,
 
     // --- WhatsApp/Signal-specific fields (shared) ---
-    /// NZC (NonZeroClaw) / OpenClaw gateway endpoint that owns the WA Web or Signal session.
-    /// Calciforge will POST reply messages to `{nzc_endpoint}/tools/invoke`.
+    /// ZeroClaw / OpenClaw gateway endpoint that owns the WA Web or Signal session.
+    /// Calciforge will POST reply messages to `{zeroclaw_endpoint}/tools/invoke`.
     /// Example: `"http://127.0.0.1:18789"` (local OpenClaw) or
-    ///          `"http://10.0.0.10:18789"` (remote Lucien/NZC instance).
-    pub nzc_endpoint: Option<String>,
+    ///          `"http://10.0.0.10:18789"` (remote Lucien/ZeroClaw instance).
+    pub zeroclaw_endpoint: Option<String>,
 
-    /// Bearer token for the NZC / OpenClaw gateway.
-    pub nzc_auth_token: Option<String>,
+    /// Bearer token for the ZeroClaw / OpenClaw gateway.
+    pub zeroclaw_auth_token: Option<String>,
 
-    /// HTTP address to listen on for incoming webhook POSTs from NZC.
+    /// HTTP address to listen on for incoming webhook POSTs from ZeroClaw.
     /// Defaults to `"0.0.0.0:18795"`.
     pub webhook_listen: Option<String>,
 
@@ -338,7 +376,7 @@ pub struct ChannelConfig {
 /// The option is stored per channel instance. If multiple enabled entries
 /// share the same kind, this helper fails closed because the current channel
 /// handlers only pass a kind string into the gate.
-pub fn channel_allows_chat_secret_set(config: &PolyConfig, kind: &str) -> bool {
+pub fn channel_allows_chat_secret_set(config: &CalciforgeConfig, kind: &str) -> bool {
     let mut matches = config
         .channels
         .iter()
@@ -549,6 +587,11 @@ pub struct ProxyAgentConfig {
     #[serde(default)]
     pub api_key: Option<String>,
 
+    /// Path to file containing this agent's API key. Prefer this over
+    /// inline `api_key` for local deployments.
+    #[serde(default)]
+    pub api_key_file: Option<PathBuf>,
+
     /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier")
     /// If empty and default_policy is "allow_all", all models are allowed
     #[serde(default)]
@@ -654,7 +697,14 @@ pub struct ProxyProviderConfig {
     /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
     pub id: String,
 
+    /// Provider backend kind. "http" forwards to an OpenAI-compatible API;
+    /// "exec" runs a local authenticated CLI and wraps its output as a
+    /// chat-completion response.
+    #[serde(default = "default_proxy_provider_backend")]
+    pub backend_type: String,
+
     /// Base URL for this provider's OpenAI-compatible API.
+    #[serde(default)]
     pub url: String,
 
     /// API key for this provider (inline). Prefer `api_key_file`.
@@ -685,6 +735,27 @@ pub struct ProxyProviderConfig {
     /// CALCIFORGE_PREV_MODEL_ID.
     #[serde(default)]
     pub on_switch: Option<String>,
+
+    /// Command for `backend_type = "exec"` providers.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Argument template for `backend_type = "exec"` providers.
+    ///
+    /// Placeholders:
+    /// - `{prompt}` / `{message}`: stdin marker; replaced with an empty string
+    /// - `{model}`: requested model after provider routing
+    /// - `{output_file}`: temp file path for CLIs such as `codex exec`
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Extra environment variables for `backend_type = "exec"` providers.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+fn default_proxy_provider_backend() -> String {
+    "http".to_string()
 }
 
 /// Explicit model-name → provider routing entry (`[[proxy.model_routes]]`).
@@ -853,11 +924,11 @@ impl Default for ContextConfig {
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Load the PolyConfig from an explicit path.
+/// Load the CalciforgeConfig from an explicit path.
 ///
 /// Validates the configuration before returning it, catching common errors
 /// like duplicate IDs, invalid references, and malformed settings.
-pub fn load_config_from(path: &PathBuf) -> Result<PolyConfig> {
+pub fn load_config_from(path: &PathBuf) -> Result<CalciforgeConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading config file: {}", path.display()))?;
 
@@ -866,7 +937,7 @@ pub fn load_config_from(path: &PathBuf) -> Result<PolyConfig> {
         .with_context(|| format!("validating TOML syntax: {}", path.display()))?;
 
     // Parse the config
-    let config: PolyConfig =
+    let config: CalciforgeConfig =
         toml::from_str(&raw).with_context(|| format!("parsing config file: {}", path.display()))?;
 
     // Run semantic validation
@@ -888,10 +959,23 @@ pub fn load_config_from(path: &PathBuf) -> Result<PolyConfig> {
     Ok(config)
 }
 
-/// Returns the canonical config file path: `~/.calciforge/config.toml`.
+/// Returns the preferred config file path.
+///
+/// Prefer the user config for local/dev runs, but fall back to the system path
+/// used by service installs so diagnostic commands work after installation.
 pub fn config_path() -> Result<PathBuf> {
     let home = home::home_dir().context("could not determine home directory")?;
-    Ok(home.join(".calciforge").join("config.toml"))
+    let user_config = home.join(".calciforge").join("config.toml");
+    if user_config.exists() {
+        return Ok(user_config);
+    }
+
+    let system_config = PathBuf::from("/etc/calciforge/config.toml");
+    if system_config.exists() {
+        return Ok(system_config);
+    }
+
+    Ok(user_config)
 }
 
 /// Expand a `~`-prefixed path using the home directory.
@@ -981,7 +1065,7 @@ post_write_hook = "none"
 
     #[test]
     fn test_parse_sample_config() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         assert_eq!(cfg.calciforge.version, 2);
         assert_eq!(cfg.identities.len(), 2);
         assert_eq!(cfg.identities[0].id, "brian");
@@ -1000,7 +1084,7 @@ post_write_hook = "none"
 
     #[test]
     fn proxy_token_estimator_defaults_to_auto() {
-        let cfg: PolyConfig = toml::from_str(
+        let cfg: CalciforgeConfig = toml::from_str(
             r#"
 [calciforge]
 version = 2
@@ -1018,7 +1102,7 @@ enabled = true
 
     #[test]
     fn proxy_token_estimator_parses_explicit_strategy() {
-        let cfg: PolyConfig = toml::from_str(
+        let cfg: CalciforgeConfig = toml::from_str(
             r#"
 [calciforge]
 version = 2
@@ -1041,8 +1125,39 @@ safety_margin = 1.02
     }
 
     #[test]
+    fn exec_model_config_parses() {
+        let cfg: CalciforgeConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[exec_models]]
+id = "codex/gpt-5.5"
+name = "Codex GPT-5.5"
+context_window = 262144
+command = "/etc/calciforge/exec-models/codex-exec.sh"
+args = ["-"]
+timeout_seconds = 900
+
+[exec_models.env]
+CALCIFORGE_CODEX_MODEL = "gpt-5.5"
+"#,
+        )
+        .expect("parse exec model config");
+
+        let model = cfg.exec_models.first().expect("exec model");
+        assert_eq!(model.id, "codex/gpt-5.5");
+        assert_eq!(model.context_window, 262_144);
+        assert_eq!(model.args, vec!["-"]);
+        assert_eq!(
+            model.env.get("CALCIFORGE_CODEX_MODEL").map(String::as_str),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
     fn chat_secret_set_is_per_channel_opt_in() {
-        let cfg: PolyConfig = toml::from_str(
+        let cfg: CalciforgeConfig = toml::from_str(
             r#"
 [calciforge]
 version = 2
@@ -1066,7 +1181,7 @@ allow_chat_secret_set = true
 
     #[test]
     fn chat_secret_set_fails_closed_for_duplicate_channel_kind() {
-        let cfg: PolyConfig = toml::from_str(
+        let cfg: CalciforgeConfig = toml::from_str(
             r#"
 [calciforge]
 version = 2
@@ -1088,7 +1203,7 @@ enabled = true
 
     #[test]
     fn test_identity_aliases() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let brian = &cfg.identities[0];
         assert_eq!(brian.aliases.len(), 1);
         assert_eq!(brian.aliases[0].channel, "telegram");
@@ -1097,7 +1212,7 @@ enabled = true
 
     #[test]
     fn test_routing_allowed_agents() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         // brian's routing has no allowed_agents (defaults to empty)
         assert!(cfg.routing[0].allowed_agents.is_empty());
         // david's routing specifies allowed_agents
@@ -1113,7 +1228,7 @@ enabled = true
 
     #[test]
     fn test_version_field() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         assert_eq!(cfg.calciforge.version, 2, "must be version 2");
     }
 
@@ -1123,7 +1238,7 @@ enabled = true
 [calciforge]
 version = 2
 "#;
-        let cfg: PolyConfig = toml::from_str(minimal).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(minimal).expect("parse failed");
         assert!(cfg.identities.is_empty());
         assert!(cfg.agents.is_empty());
         assert!(cfg.routing.is_empty());
@@ -1134,7 +1249,7 @@ version = 2
 
     #[test]
     fn test_zeroclaw_agent_parses() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let zc = cfg
             .agents
             .iter()
@@ -1153,7 +1268,7 @@ version = 2
 
     #[test]
     fn test_cli_agent_parses() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let ic = cfg
             .agents
             .iter()
@@ -1178,7 +1293,7 @@ version = 2
         // as a Vec<Agent> field. The production config's [agents.id.registry] dotted
         // table syntax is valid TOML but is silently ignored by the toml crate when
         // deserializing array-of-tables — it's documentation only.
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let lib = cfg
             .agents
             .iter()
@@ -1194,7 +1309,7 @@ version = 2
 
     #[test]
     fn test_memory_config_parses() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let mem = cfg.memory.as_ref().expect("memory section should parse");
         assert_eq!(mem.pre_read_hook.as_deref(), Some("none"));
         assert_eq!(mem.post_write_hook.as_deref(), Some("none"));
@@ -1202,7 +1317,7 @@ version = 2
 
     #[test]
     fn test_context_config_defaults_when_omitted() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         // SAMPLE_CONFIG has no [context] section — defaults must kick in
         assert_eq!(cfg.context.buffer_size, 20);
         assert_eq!(cfg.context.inject_depth, 5);
@@ -1218,7 +1333,7 @@ version = 2
 buffer_size = 10
 inject_depth = 3
 "#;
-        let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("parse failed");
         assert_eq!(cfg.context.buffer_size, 10);
         assert_eq!(cfg.context.inject_depth, 3);
     }
@@ -1233,7 +1348,7 @@ version = 2
 [context]
 inject_depth = 0
 "#;
-        let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("parse failed");
         assert_eq!(
             cfg.context.buffer_size, 20,
             "buffer_size should default to 20"
@@ -1246,7 +1361,7 @@ inject_depth = 0
 
     #[test]
     fn test_agent_aliases_parse() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let lib = cfg
             .agents
             .iter()
@@ -1257,7 +1372,7 @@ inject_depth = 0
 
     #[test]
     fn test_agent_aliases_default_empty() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         // zeroclaw agent has no aliases field — should default to empty
         let zc = cfg
             .agents
@@ -1272,7 +1387,7 @@ inject_depth = 0
 
     #[test]
     fn test_acp_agent_parses() {
-        let cfg: PolyConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(SAMPLE_CONFIG).expect("parse failed");
         let cc = cfg
             .agents
             .iter()
@@ -1302,10 +1417,35 @@ endpoint = "http://10.0.0.60:18790"
 api_key = "REPLACE_WITH_AUTH_TOKEN"
 timeout_ms = 60000
 "#;
-        let cfg: PolyConfig = toml::from_str(raw).expect("parse failed");
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("parse failed");
         let agent = &cfg.agents[0];
         assert_eq!(agent.api_key.as_deref(), Some("REPLACE_WITH_AUTH_TOKEN"));
         assert!(agent.auth_token.is_none());
+    }
+
+    #[test]
+    fn test_agent_api_key_file_field() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openclaw-http"
+endpoint = "http://127.0.0.1:18083"
+api_key_file = "/etc/calciforge/secrets/gateway-token"
+model = "local-kimi-gpt55"
+timeout_ms = 60000
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("parse failed");
+        let agent = &cfg.agents[0];
+        assert_eq!(
+            agent.api_key_file.as_deref(),
+            Some(std::path::Path::new(
+                "/etc/calciforge/secrets/gateway-token"
+            ))
+        );
+        assert!(agent.api_key.is_none());
     }
 
     #[test]
@@ -1331,7 +1471,7 @@ model = "claude-haiku-4-6"
 context_window = 200000
 weight = 20
 "#;
-        let err = toml::from_str::<PolyConfig>(raw)
+        let err = toml::from_str::<CalciforgeConfig>(raw)
             .expect_err("missing context_window should fail to deserialize");
         let msg = err.to_string();
         assert!(

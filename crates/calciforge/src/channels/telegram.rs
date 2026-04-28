@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use teloxide::{
     prelude::*,
-    types::{Me, ParseMode},
+    types::{ChatId, Me, ParseMode},
 };
 use tracing::{debug, info, warn};
 
@@ -15,14 +15,16 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
     commands::CommandHandler,
-    config::{expand_tilde, PolyConfig},
+    config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
     router::Router,
 };
 
+use super::telemetry;
+
 /// Run the Telegram bot until shutdown.
 pub async fn run(
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -101,12 +103,14 @@ pub async fn run(
 fn handle_message_nonblocking(
     bot: Bot,
     msg: Message,
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
 ) {
+    let received_at = std::time::Instant::now();
     let chat_id = msg.chat.id;
+    let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg.date.timestamp() as u64);
 
     // Extract text (ignore non-text messages like photos, stickers, etc.)
     let text = match msg.text() {
@@ -137,11 +141,12 @@ fn handle_message_nonblocking(
         }
     };
 
-    info!(
-        identity = %identity.id,
-        sender_id = %sender_id,
-        text_len = %text.len(),
-        "authorized message from identity"
+    telemetry::authorized_message(
+        "telegram",
+        &identity.id,
+        &sender_id.to_string(),
+        text.len(),
+        delivery_lag_ms,
     );
 
     // Context key: scoped to (chat_id, identity_id) so each identity has isolated
@@ -156,11 +161,17 @@ fn handle_message_nonblocking(
     // Pre-auth-safe commands — no identity context needed.
     if let Some(reply) = command_handler.handle(&text) {
         debug!(chat_id = %chat_id, cmd = %text.trim(), "handled local pre-auth command");
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "command",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send command reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "command").await;
         });
         return;
     }
@@ -177,11 +188,17 @@ fn handle_message_nonblocking(
         && !CommandHandler::is_secure_command(&text)
     {
         let reply = command_handler.unknown_command(&text);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "unknown_command",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send unknown-command reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "unknown_command").await;
         });
         return;
     }
@@ -194,10 +211,17 @@ fn handle_message_nonblocking(
         let identity_id = identity.id.clone();
         let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             let reply = command_handler2.cmd_status_for_identity(&identity_id).await;
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send status reply");
-            }
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "status",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            send_plain_reply(bot2, chat_id, reply, "status").await;
         });
         return;
     }
@@ -205,12 +229,19 @@ fn handle_message_nonblocking(
     // !switch — requires identity context; handled post-auth.
     if CommandHandler::is_switch_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !switch command");
+        let command_start = std::time::Instant::now();
         let reply = command_handler.handle_switch(&text, &identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "switch",
+            received_at.elapsed().as_millis() as u64,
+            command_start.elapsed().as_millis() as u64,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send switch reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "switch").await;
         });
         return;
     }
@@ -218,12 +249,19 @@ fn handle_message_nonblocking(
     // !model — requires identity context for alloy selection; handled post-auth.
     if CommandHandler::is_model_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !model command");
+        let command_start = std::time::Instant::now();
         let reply = command_handler.handle_model(&text, &identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "model",
+            received_at.elapsed().as_millis() as u64,
+            command_start.elapsed().as_millis() as u64,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send model reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "model").await;
         });
         return;
     }
@@ -235,10 +273,17 @@ fn handle_message_nonblocking(
         let identity_id = identity.id.clone();
         let command_handler2 = command_handler.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             let reply = command_handler2.handle_sessions(&text, &identity_id).await;
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send sessions reply");
-            }
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "sessions",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            send_plain_reply(bot2, chat_id, reply, "sessions").await;
         });
         return;
     }
@@ -246,12 +291,19 @@ fn handle_message_nonblocking(
     // !default — switch back to configured default agent; requires identity context.
     if CommandHandler::is_default_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !default command");
+        let command_start = std::time::Instant::now();
         let reply = command_handler.handle_default(&identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "default",
+            received_at.elapsed().as_millis() as u64,
+            command_start.elapsed().as_millis() as u64,
+            reply.len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send default reply");
-            }
+            send_plain_reply(bot2, chat_id, reply, "default").await;
         });
         return;
     }
@@ -271,11 +323,17 @@ fn handle_message_nonblocking(
             && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
         {
             let reply = CommandHandler::secure_set_disabled_reply("Telegram");
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity.id,
+                "secure_disabled",
+                received_at.elapsed().as_millis() as u64,
+                0,
+                reply.len(),
+            );
             let bot2 = bot.clone();
             tokio::spawn(async move {
-                if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                    warn!(chat_id = %chat_id, error = %e, "failed to send !secure disabled reply");
-                }
+                send_plain_reply(bot2, chat_id, reply, "secure_disabled").await;
             });
             return;
         }
@@ -284,12 +342,19 @@ fn handle_message_nonblocking(
         let bot2 = bot.clone();
         let text_for_handler = text.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             let reply = cmd_handler
                 .handle_secure(&text_for_handler, &identity_id)
                 .await;
-            if let Err(e) = bot2.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
-            }
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "secure",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            send_plain_reply(bot2, chat_id, reply, "secure").await;
         });
         return;
     }
@@ -297,14 +362,23 @@ fn handle_message_nonblocking(
     // !context clear — clear the conversation buffer for this chat.
     if text.trim().eq_ignore_ascii_case("!context clear") {
         context_store.clear(&chat_key);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "context_clear",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            "🧹 Conversation context cleared.".len(),
+        );
         let bot2 = bot.clone();
         tokio::spawn(async move {
-            if let Err(e) = bot2
-                .send_message(chat_id, "🧹 Conversation context cleared.")
-                .await
-            {
-                warn!(chat_id = %chat_id, error = %e, "failed to send context-clear reply");
-            }
+            send_plain_reply(
+                bot2,
+                chat_id,
+                "🧹 Conversation context cleared.",
+                "context_clear",
+            )
+            .await;
         });
         return;
     }
@@ -316,17 +390,19 @@ fn handle_message_nonblocking(
         let text_owned = text.clone();
         let bot2 = bot.clone();
         tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
             if let Some((ack, follow_up)) = cmd.handle_async(&text_owned).await {
-                let _ = bot2.send_message(chat_id, &ack).await;
+                telemetry::command_reply_ready(
+                    "telegram",
+                    &identity.id,
+                    "approval",
+                    received_at.elapsed().as_millis() as u64,
+                    command_start.elapsed().as_millis() as u64,
+                    ack.len() + follow_up.as_ref().map(|s| s.len()).unwrap_or(0),
+                );
+                send_plain_reply(bot2.clone(), chat_id, ack, "approval_ack").await;
                 if let Some(resp) = follow_up {
-                    // Try MarkdownV2 for the continuation agent response; fall back to plain.
-                    let send_result = bot2
-                        .send_message(chat_id, &resp)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await;
-                    if send_result.is_err() {
-                        let _ = bot2.send_message(chat_id, &resp).await;
-                    }
+                    send_markdown_reply(bot2, chat_id, resp, "approval_follow_up").await;
                 }
             }
         });
@@ -352,7 +428,13 @@ fn handle_message_nonblocking(
             warn!(agent_id = %agent_id, "agent not found in config");
             let bot2 = bot.clone();
             tokio::spawn(async move {
-                let _ = bot2.send_message(chat_id, "⚠️ Agent not configured.").await;
+                send_plain_reply(
+                    bot2,
+                    chat_id,
+                    "⚠️ Agent not configured.",
+                    "agent_not_configured",
+                )
+                .await;
             });
             return;
         }
@@ -367,10 +449,13 @@ fn handle_message_nonblocking(
         .and_then(|i| i.display_name.as_deref())
         .unwrap_or(&identity.id)
         .to_string();
+    let model_override = command_handler.active_model_for_identity(&identity.id);
 
     // Spawn the agent dispatch — handler returns immediately.
     // All slow I/O (context augment, HTTP, reply send) happens in the task.
     tokio::spawn(async move {
+        let queue_wait_ms = received_at.elapsed().as_millis() as u64;
+        telemetry::agent_dispatch_started("telegram", &identity.id, &agent_id, queue_wait_ms);
         // Augment message with conversation context (unseen exchanges for this agent).
         let augmented_text = context_store.augment_message(&chat_key, &agent_id, &text);
 
@@ -387,12 +472,25 @@ fn handle_message_nonblocking(
 
         let dispatch_start = std::time::Instant::now();
         match router
-            .dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id))
+            .dispatch_with_sender_and_model(
+                &augmented_text,
+                &agent,
+                &config,
+                Some(&identity.id),
+                model_override.as_deref(),
+            )
             .await
         {
             Ok(response) => {
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                 command_handler.record_dispatch(latency_ms);
+                telemetry::agent_dispatch_succeeded(
+                    "telegram",
+                    &identity.id,
+                    &agent_id,
+                    latency_ms,
+                    response.len(),
+                );
                 debug!(
                     identity = %identity.id,
                     agent_id = %agent_id,
@@ -404,13 +502,7 @@ fn handle_message_nonblocking(
                 context_store.push(&chat_key, &sender_label, &text, &agent_id, &response);
 
                 // Send response — try MarkdownV2 first, fall back to plain text.
-                let send_result = bot
-                    .send_message(chat_id, &response)
-                    .parse_mode(ParseMode::MarkdownV2)
-                    .await;
-                if send_result.is_err() {
-                    let _ = bot.send_message(chat_id, &response).await;
-                }
+                send_markdown_reply(bot, chat_id, response, "agent_response").await;
             }
             Err(e) => {
                 // ── Clash approval flow ─────────────────────────────────────
@@ -428,8 +520,8 @@ fn handle_message_nonblocking(
                     command_handler.register_pending_approval(
                         crate::adapters::openclaw::PendingApprovalMeta {
                             request_id: req.request_id.clone(),
-                            nzc_endpoint: agent.endpoint.clone(),
-                            nzc_auth_token: agent
+                            zeroclaw_endpoint: agent.endpoint.clone(),
+                            zeroclaw_auth_token: agent
                                 .auth_token
                                 .clone()
                                 .unwrap_or_default(),
@@ -445,17 +537,81 @@ fn handle_message_nonblocking(
                         "🔒 Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
                         req.command, req.reason, req.request_id
                     );
-                    let _ = bot.send_message(chat_id, &notification).await;
+                    send_plain_reply(bot, chat_id, notification, "approval_request").await;
                     return; // Don't send an error — we already notified.
                 }
                 // ─────────────────────────────────────────────────────────────
                 warn!(identity = %identity.id, error = %e, "agent dispatch failed");
-                let _ = bot
-                    .send_message(chat_id, format!("⚠️ Agent error: {}", e))
-                    .await;
+                send_plain_reply(
+                    bot,
+                    chat_id,
+                    format!("⚠️ Agent error: {}", e),
+                    "agent_error",
+                )
+                .await;
             }
         }
     });
+}
+
+async fn send_plain_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: impl Into<String>,
+    reply_kind: &'static str,
+) {
+    let reply = reply.into();
+    let response_len = reply.len();
+    let start = std::time::Instant::now();
+    match bot.send_message(chat_id, reply).await {
+        Ok(_) => telemetry::reply_sent(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            response_len,
+            start.elapsed().as_millis() as u64,
+        ),
+        Err(e) => telemetry::reply_failed(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            start.elapsed().as_millis() as u64,
+            e,
+        ),
+    }
+}
+
+async fn send_markdown_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: impl Into<String>,
+    reply_kind: &'static str,
+) {
+    let reply = reply.into();
+    let response_len = reply.len();
+    let start = std::time::Instant::now();
+    let send_result = bot
+        .send_message(chat_id, &reply)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await;
+    match send_result {
+        Ok(_) => telemetry::reply_sent(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            response_len,
+            start.elapsed().as_millis() as u64,
+        ),
+        Err(markdown_error) => {
+            debug!(
+                chat_id = %chat_id,
+                reply_kind,
+                error = %markdown_error,
+                "Telegram MarkdownV2 send failed; retrying as plain text"
+            );
+            send_plain_reply(bot, chat_id, reply, reply_kind).await;
+        }
+    }
 }
 
 /// Handle a single incoming Telegram message (async, awaits agent response).
@@ -477,7 +633,7 @@ fn handle_message_nonblocking(
 async fn handle_message(
     bot: Bot,
     msg: Message,
-    config: Arc<PolyConfig>,
+    config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
@@ -523,7 +679,7 @@ async fn handle_message(
 
     // Context key: scoped to (chat_id, identity_id) so each identity has isolated
     // conversation history even within the same Telegram chat.
-    // This prevents context bleed when Brian switches between identities (e.g. Max → IronClaw).
+    // This prevents context bleed when an operator switches between identities.
     let chat_key = format!("{}-{}", chat_id.0, identity.id);
 
     // Pre-auth-safe commands — no identity context needed, intercept before any await.
@@ -646,6 +802,7 @@ async fn handle_message(
         .and_then(|i| i.display_name.as_deref())
         .unwrap_or(&identity.id)
         .to_string();
+    let model_override = command_handler.active_model_for_identity(&identity.id);
 
     // Augment message with conversation context (unseen exchanges for this agent).
     let augmented_text = context_store.augment_message(&chat_key, &agent_id, &text);
@@ -664,7 +821,13 @@ async fn handle_message(
     // Dispatch to agent
     let dispatch_start = std::time::Instant::now();
     match router
-        .dispatch_with_sender(&augmented_text, &agent, &config, Some(&identity.id))
+        .dispatch_with_sender_and_model(
+            &augmented_text,
+            &agent,
+            &config,
+            Some(&identity.id),
+            model_override.as_deref(),
+        )
         .await
     {
         Ok(response) => {
@@ -706,19 +869,20 @@ async fn handle_message(
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, ChannelAlias, ChannelConfig, Identity, PolyConfig, PolyHeader, RoutingRule,
+        AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig, Identity,
+        RoutingRule,
     };
 
     /// Create a CommandHandler backed by a temp state directory so tests are
     /// isolated from `~/.calciforge/state/active-agents.json` on disk.
-    fn make_handler(config: Arc<PolyConfig>) -> CommandHandler {
+    fn make_handler(config: Arc<CalciforgeConfig>) -> CommandHandler {
         let tmp = tempfile::tempdir().expect("tempdir for telegram test state isolation");
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
     }
 
-    fn make_test_config() -> PolyConfig {
-        PolyConfig {
-            calciforge: PolyHeader { version: 2 },
+    fn make_test_config() -> CalciforgeConfig {
+        CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
             identities: vec![Identity {
                 id: "brian".to_string(),
                 display_name: Some("Brian".to_string()),
@@ -736,6 +900,7 @@ mod tests {
                 model: None,
                 auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
                 api_key: None,
+                api_key_file: None,
                 openclaw_agent_id: None,
                 reply_port: None,
                 reply_auth_token: None,
@@ -763,6 +928,7 @@ mod tests {
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
+            exec_models: vec![],
             security: None,
             proxy: None,
             local_models: None,
