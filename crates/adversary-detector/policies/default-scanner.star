@@ -75,7 +75,7 @@ def scan(input):
         review_reason = review_reason or "HTML metadata attribute contains instruction-like or secret-related language"
 
     if regex_match(
-        r"(?ix)display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*(0(\s*px)?|[01](\.\d+)?px)|opacity\s*:\s*0(\.0+)?|color\s*:\s*(white|\#fff(fff)?)|color\s*:\s*rgba?\s*\(\s*255\s*,\s*255\s*,\s*255|position\s*:\s*(absolute|fixed)[^;]{0,120}(left|right|top|bottom)\s*:\s*-?[0-9]{4,}",
+        r"(?ix)display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*(0(\s*px)?|[01](\.\d+)?px)|opacity\s*:\s*0(\.0+)?|color\s*:\s*(white|\#fff(fff)?)|color\s*:\s*rgba?\s*\(\s*255\s*,\s*255\s*,\s*255|position\s*:\s*(absolute|fixed)[^>]{0,160}(left|right|top|bottom)\s*:\s*-?[0-9]{4,}",
         content,
     ):
         review_reason = review_reason or "CSS content-hiding pattern detected"
