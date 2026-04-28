@@ -49,7 +49,7 @@ detector.mark_override(url, &digest).await;
 
 | Layer | What it detects | Mechanism |
 |-------|----------------|-----------|
-| **Default — Starlark** | Zero-width chars, unicode tags, CSS hiding, base64 blobs, prompt injection phrases, PII harvesting, exfiltration signals | Built-in editable Starlark policy with cached Rust regex helper |
+| **Default — Starlark** | Zero-width chars, unicode tags, CSS hiding, suspicious base64-decoded text, prompt injection phrases, PII harvesting, exfiltration signals | Built-in editable Starlark policy with cached Rust regex/base64 helpers |
 | **Custom Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
 | **Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
 
@@ -89,7 +89,9 @@ disabled, the call stack is bounded, and parsed policies are cached by file
 metadata so normal scans avoid repeated parsing. Policies receive `url`,
 `content`, `context`, `discussion_ratio_threshold`, and
 `min_signals_for_ratio`; they can call `regex_match(pattern, content)` for
-cached Rust-regex matching. See
+cached Rust-regex matching and
+`base64_decoded_regex_match(pattern, content)` for bounded inspection of
+base64-encoded text tokens. See
 `crates/adversary-detector/policies/default-scanner.star` for the default
 policy, `examples/security-scanner.star` for a minimal starter policy, and
 `examples/scanner-policies/` for reusable destination, command, and
@@ -101,6 +103,22 @@ To measure local policy overhead on your hardware:
 cargo run -p adversary-detector --example starlark-latency -- \
   builtin:calciforge/default-scanner.star 1000
 ```
+
+To run and extend the red-team fixture suite:
+
+```sh
+cargo run -p adversary-detector --example red-team
+```
+
+Fixtures live in `examples/red-team/adversary-fixtures.json`. Pull requests
+that add bypasses, false positives, encoded payloads, foreign-language cases,
+or GTFOBins/LOLBins-style tool-circumvention examples are welcome. Fixtures may
+document known gaps by expecting `clean`; hardening PRs should update the
+expectation when policy behavior changes.
+
+See `examples/red-team/README.md` for fixture families inspired by GTFOBins,
+Agents of Chaos, adversarial-poetry jailbreaks, and Agent Arena-style hidden
+web-content attacks.
 
 The remote service contract is:
 

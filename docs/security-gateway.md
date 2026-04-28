@@ -69,24 +69,29 @@ Calciforge's security checks are an ordered pipeline:
    and exfiltration checks in editable policy code.
 2. `starlark` — in-process operator policy. This is the low-latency path for
    site-specific rules that do not need network calls. Policies can call
-   `regex_match(pattern, content)` for Rust-regex-backed matching.
+   `regex_match(pattern, content)` and
+   `base64_decoded_regex_match(pattern, content)` for bounded Rust-backed
+   matching.
 3. `remote_http` — optional custom policy service. This is where operators can
    add an LLM classifier, heavyweight DLP checks, or organization-specific
    threat modeling that belongs outside the proxy process.
 
-The remote LLM check is best treated as defense in depth: a focused classifier
-prompt with binary-ish `clean/review/unsafe` output can catch manipulation
-patterns that simple regexes miss, but it adds latency and still asks one model
-to defend another model. For that reason, Calciforge keeps the local Starlark
-policy as the default, makes the LLM pass explicit, and lets operators choose
-whether remote scanner outages fail open or fail closed.
+Calciforge intentionally has both local and remote adversary detectors. The
+local Starlark policy is for deterministic prefiltering: hidden DOM/text,
+encoding, obvious exfiltration language, and concrete tool-policy bypass
+patterns. The remote HTTP/LLM check is for semantic adjudication: foreign
+language, poetry or other style-shift attacks, fictional framing, coercion,
+multi-step decomposition, and intent that would be brittle or overbroad as
+regex. The remote pass adds latency and still asks one model to defend another
+model, so Calciforge keeps Starlark as the default and makes the LLM pass
+explicitly configurable.
 
 No remote service is required for the default gateway. The localhost HTTP hop is
 small, but an LLM classifier call is not; enable it only when the extra security
 pass is worth the added latency.
 
 On a local release build, the built-in Starlark default scanner measured about
-`150µs` per warm scan for ordinary small content. Treat that as a sanity check,
+`299µs` per warm scan for ordinary small content. Treat that as a sanity check,
 not a universal latency guarantee: large bodies, cold starts, extra configured
 policies, proxy I/O, and remote LLM checks dominate real end-to-end latency.
 
@@ -189,9 +194,11 @@ def scan(input):
 ```
 
 Starlark policies receive `url`, `content`, `context`,
-`discussion_ratio_threshold`, and `min_signals_for_ratio`. They also have a
-`regex_match(pattern, content)` helper backed by Rust's `regex` crate with
-compiled-pattern caching. See
+`discussion_ratio_threshold`, and `min_signals_for_ratio`. They also have
+helpers backed by Rust's `regex` crate with compiled-pattern caching:
+`regex_match(pattern, content)` for direct matching and
+`base64_decoded_regex_match(pattern, content)` for bounded inspection of
+base64-encoded text tokens. See
 `crates/adversary-detector/policies/default-scanner.star` for the default
 policy, `examples/security-scanner.star` for a minimal starter policy, and
 `examples/scanner-policies/` for reusable examples covering destination
@@ -267,9 +274,34 @@ Starter Starlark policies live under `examples/scanner-policies/`:
 Copy these into `/etc/calciforge/scanner-policies/`, edit the constants at the
 top of each file, then add one or more `starlark` checks to `config.toml`.
 
-## 🧪 Testing
+## Testing
 
 Integration tests are located in `crates/security-proxy/tests/`. They verify:
 - Interception of adversarial content.
 - Blocking of unsafe responses.
 - Successful credential injection for known providers.
+
+The scanner also has a contributor-friendly red-team fixture suite:
+
+```sh
+cargo run -p adversary-detector --example red-team
+```
+
+Fixtures live in `examples/red-team/adversary-fixtures.json`. Add cases there
+when you find a bypass or false positive. Useful categories include encoded
+payloads, foreign-language prompt injection, Unicode obfuscation, benign
+security research, and GTFOBins/LOLBins-style instructions where a legitimate
+tool is used to bypass a higher-level policy. Some fixtures can intentionally
+document current gaps by expecting `clean`; hardening work should update the
+fixture expectation in the same PR that improves the policy.
+
+Good sources for new fixture families include:
+
+- [GTFOBins](https://gtfobins.org/) and LOLBAS-style tool-policy bypasses.
+- Agent-governance threat taxonomies such as `Agents of Chaos`.
+- Adversarial-poetry and other style-shift jailbreak research.
+- [Agent Arena](https://wiz.jock.pl/experiments/agent-arena/) hidden web-content
+  cases: comments, hidden DOM nodes, microtext, ARIA, data attributes, alt text,
+  off-screen content, and zero-width text.
+- scurl-style sanitized-fetch middleware; see the
+  [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.md).

@@ -67,14 +67,26 @@ def scan(input):
     if regex_match(r"[\u{E0000}-\u{E007F}]", content):
         return verdict("unsafe", "Unicode tag characters (U+E0000 range) detected")
 
+    if regex_match(r"(?is)<!--.{0,200}(ignore|disregard|override|system prompt|secret|exfiltrate).{0,200}-->", content):
+        return verdict("review", "HTML comment contains instruction-like or secret-related language")
+
+    if regex_match(r"(?is)<[^>]+\b(data-[a-z0-9_-]+|aria-label|alt|title)\s*=\s*['\"][^'\"]{0,300}(ignore|disregard|override|system prompt|secret|exfiltrate)[^'\"]{0,300}['\"]", content):
+        return verdict("review", "HTML metadata attribute contains instruction-like or secret-related language")
+
     if regex_match(
-        r"(?ix)display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(\s*px)?|opacity\s*:\s*0|color\s*:\s*(white|\#fff(fff)?)|color\s*:\s*rgba?\s*\(\s*255\s*,\s*255\s*,\s*255",
+        r"(?ix)display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*(0(\s*px)?|[01](\.\d+)?px)|opacity\s*:\s*0(\.0+)?|color\s*:\s*(white|\#fff(fff)?)|color\s*:\s*rgba?\s*\(\s*255\s*,\s*255\s*,\s*255|position\s*:\s*(absolute|fixed)[^;]{0,120}(left|right|top|bottom)\s*:\s*-?[0-9]{4,}",
         content,
     ):
         return verdict("review", "CSS content-hiding pattern detected")
 
     if regex_match(r"[A-Za-z0-9+/\-_]{500,}={0,2}", content):
         return verdict("review", "large base64 blob detected (possible hidden payload)")
+
+    if base64_decoded_regex_match(
+        r"(?i)ignore previous instructions|disregard previous instructions|new system prompt|send\s+to\s+https?://|POST\s+to\s+https?://|exfiltrate|api[-_\s]?key|secret[-_\s]?key",
+        content,
+    ):
+        return verdict("review", "base64-decoded content matched adversarial language")
 
     injection_count = count_matches(lower, INJECTION_PHRASES)
     discussion_count = count_matches(lower, DISCUSSION_CONTEXT)
@@ -88,6 +100,12 @@ def scan(input):
                 "injection phrases found but discussion context detected (%s injection, %s discussion signals)" % (injection_count, discussion_count),
             )
         return verdict("unsafe", "prompt injection phrases detected (%s match(es))" % injection_count)
+
+    if regex_match(
+        r"(?ix)(if|when).{0,80}(blocked|denied|not allowed|fails).{0,160}(python|perl|ruby|node|powershell|bash|sh)\s+(-c|/c|<<|script|macro)|sudo\s+tcpdump\b.{0,160}\s-z\s+['\"]?|base64\s+[^|]{0,120}\|\s*base64\s+(-d|--decode)",
+        content,
+    ):
+        return verdict("review", "tool-policy bypass pattern detected")
 
     if regex_match(
         r"(?ix)(send|give|provide|share|reveal|disclose|tell\s+me|what\s+is)\s+(me\s+)?(your|the)?\s*(password|api[-_\s]?key|secret[-_\s]?key|auth[-_\s]?token|access[-_\s]?token|credential|private[-_\s]?key|ssh[-_\s]?key|bearer[-_\s]?token|two[-_\s]?factor|2fa|otp|recovery[-_\s]?code)",

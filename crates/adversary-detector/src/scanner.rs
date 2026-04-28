@@ -3,6 +3,7 @@
 use crate::extract_host;
 
 use crate::verdict::{ScanContext, ScanVerdict};
+use base64::{engine::general_purpose, Engine as _};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,8 @@ use std::{
 
 const BUILTIN_DEFAULT_SCANNER_PATH: &str = "builtin:calciforge/default-scanner.star";
 const BUILTIN_DEFAULT_SCANNER_SOURCE: &str = include_str!("../policies/default-scanner.star");
+const BASE64_DECODE_MAX_CANDIDATES: usize = 32;
+const BASE64_DECODE_MAX_CHARS: usize = 8192;
 const STARLARK_REGEX_CACHE_MAX_ENTRIES: usize = 256;
 
 /// A configured scanner check in the adversary pipeline.
@@ -156,6 +159,9 @@ impl ScannerConfig {
 static STARLARK_REGEX_CACHE: Lazy<Mutex<HashMap<String, Result<Regex, String>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+static BASE64_CANDIDATE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[A-Za-z0-9+/_-]{16,}={0,2}").expect("base64 candidate regex"));
+
 fn starlark_regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
     if let Some(cached) = STARLARK_REGEX_CACHE
         .lock()
@@ -186,6 +192,44 @@ fn starlark_regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
     Ok(regex.is_match(content))
 }
 
+fn starlark_base64_decoded_regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
+    for candidate in BASE64_CANDIDATE_RE
+        .find_iter(content)
+        .take(BASE64_DECODE_MAX_CANDIDATES)
+    {
+        let encoded = candidate.as_str();
+        if encoded.len() > BASE64_DECODE_MAX_CHARS {
+            continue;
+        }
+        for decoded in decode_base64_candidate(encoded) {
+            if let Ok(decoded) = String::from_utf8(decoded) {
+                if starlark_regex_match(pattern, &decoded)? {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn decode_base64_candidate(encoded: &str) -> Vec<Vec<u8>> {
+    let mut padded = encoded.to_string();
+    let remainder = padded.len() % 4;
+    if remainder != 0 {
+        padded.extend(std::iter::repeat_n('=', 4 - remainder));
+    }
+
+    let mut decoded = Vec::with_capacity(2);
+    for engine in [general_purpose::STANDARD, general_purpose::URL_SAFE] {
+        if let Ok(bytes) = engine.decode(&padded) {
+            if !decoded.contains(&bytes) {
+                decoded.push(bytes);
+            }
+        }
+    }
+    decoded
+}
+
 static SCANNER_GLOBALS: Lazy<Globals> = Lazy::new(|| {
     GlobalsBuilder::standard()
         .with(scanner_policy_globals)
@@ -197,6 +241,12 @@ fn scanner_policy_globals(builder: &mut GlobalsBuilder) {
     /// Return true when `content` matches a Rust regex `pattern`.
     fn regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
         starlark_regex_match(pattern, content)
+    }
+
+    /// Return true when a base64 token in `content` decodes to text matching
+    /// Rust regex `pattern`.
+    fn base64_decoded_regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
+        starlark_base64_decoded_regex_match(pattern, content)
     }
 }
 

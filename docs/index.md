@@ -261,12 +261,13 @@ during the channel-integration cut and is on the
 The scanner pipeline is configurable. The default policy now runs through
 `builtin:calciforge/default-scanner.star`, so the rule set can be copied,
 edited, replaced, or ordered alongside other Starlark checks. Starlark
-policies can call `regex_match(pattern, content)` for Rust-regex-backed
-matching without a sidecar service. Optional remote HTTP scanners can host
-heavier DLP or LLM classifier passes, and the example LLM classifier ships
-with an editable default prompt. The built-in default measured about `150µs`
-per warm scan in a local release build; remote LLM checks are explicit because
-they add materially more latency.
+policies can call `regex_match(pattern, content)` and bounded
+`base64_decoded_regex_match(pattern, content)` helpers for Rust-backed matching
+without a sidecar service. Optional remote HTTP scanners can host heavier DLP
+or LLM classifier passes, and the example LLM classifier ships with an editable
+default prompt. The built-in default measured about `299µs` per warm scan in a
+local release build; remote LLM checks are explicit because they add materially
+more latency.
 
 ### Inbound traffic gating and tool policy
 
