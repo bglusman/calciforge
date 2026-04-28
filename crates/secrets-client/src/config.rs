@@ -1,12 +1,9 @@
 //! Retry configuration for the secrets client.
 //!
-//! After the dead-OneCLI cleanup (PR that renamed onecli-client →
-//! secrets-client), only `RetryConfig` survives — the rest of the
-//! types here (SecretsConfig, SecretsServiceConfig, VaultConfig,
-//! ProviderConfig) were tied to the dead HTTP client + binary.
-//! `RetryConfig` survives because calciforge/proxy/retry.rs still
-//! imports it. If/when that import goes away, this whole module can
-//! collapse.
+//! Only `RetryConfig` lives here now. The broader service config types were
+//! tied to an older HTTP credential-proxy design and have been removed.
+//! `RetryConfig` remains because calciforge/proxy/retry.rs still imports it.
+//! If that import goes away, this module can collapse.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

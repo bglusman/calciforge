@@ -4,20 +4,20 @@
 
 ### Claw-Code Integration
 - [ ] Install claw-code on 210 via deploy script
-- [ ] Configure OneCLI proxy for claw-code credentials
-- [ ] Create wrapper script: `claw-wrapped` → routes through OneCLI + clash
-- [ ] Test end-to-end: Telegram → calciforge → claw-code → OneCLI → provider
+- [ ] Configure Calciforge security proxy for claw-code credentials
+- [ ] Create wrapper script: `claw-wrapped` → routes through Calciforge security proxy
+- [ ] Test end-to-end: Telegram → calciforge → claw-code → security proxy → provider
 - [ ] Document claw-code integration in `docs/claw-code-setup.md`
 
 ### ZeroClaw (zeroclawlabs) Integration  
 - [ ] Install zeroclawlabs on 210 via deploy script (`--with-zeroclaw`)
-- [ ] Configure zeroclawlabs gateway URL to use OneCLI proxy
-- [ ] Create wrapper script: `zeroclaw-wrapped` → routes through OneCLI + clash
-- [ ] Test: Telegram → calciforge → zeroclaw → OneCLI → provider
+- [ ] Configure zeroclawlabs gateway URL to use Calciforge security proxy
+- [ ] Create wrapper script: `zeroclaw-wrapped` → routes through Calciforge security proxy
+- [ ] Test: Telegram → calciforge → zeroclaw → security proxy → provider
 - [ ] Document zeroclaw integration
 
-### OneCLI + Clash Adapter Layer
-- [ ] Build `secrets-client` credential proxy service
+### Security Proxy + Agent Wrapper Layer
+- [ ] Finish fnox-backed secret discovery and substitution across wrappers
 - [ ] Configure clash policy for agent tool restrictions
 - [ ] Create unified wrapper generation in `calciforge install`
 - [ ] Test policy enforcement: block dangerous tools, allow safe ones
@@ -107,5 +107,5 @@
 
 **Integration architecture:**
 ```
-User DM → calciforge → [OneCLI proxy] → [clash policy] → claw-code/zeroclaw → Provider
+User DM → calciforge → [security proxy] → [clash policy] → claw-code/zeroclaw → Provider
 ```

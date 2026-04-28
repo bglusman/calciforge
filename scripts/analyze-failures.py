@@ -82,13 +82,13 @@ def analyze(log_path: str) -> None:
             print(f"**{test}**")
             
             if category == "404 errors":
-                print("- **Likely cause**: Path routing bug in OneCLI proxy")
+                print("- **Likely cause**: Path routing bug in the Calciforge proxy")
                 print("  - Check that `/proxy/{provider}/path` strips prefix correctly")
                 print("  - Check that `target_url` construction doesn't add double slashes")
                 
             elif category == "401 auth errors":
                 print("- **Likely cause**: Credential injection failed")
-                print("  - Check OneCLI vault lookup for the provider")
+                print("  - Check fnox/env/vault lookup for the provider")
                 print("  - Verify the credential exists in VaultWarden")
                 print("  - Check auth header format (Bearer vs X-Subscription-Token)")
                 

@@ -13,10 +13,8 @@
 //! - [`secret_reference_token`] — helper for stable `{secret:NAME}`
 //!   references used by agent-facing tooling
 //!
-//! Renamed from `onecli-client` after the migration away from the
-//! OneCLI binary as a credential proxy. The HTTP client + binary
-//! that lived here previously have been deleted (zero external
-//! callers); this crate is now a focused secrets-resolution library.
+//! This crate is a focused secrets-resolution library. It does not expose an
+//! HTTP credential proxy or print secret values.
 
 pub mod config;
 pub mod fnox_client;
