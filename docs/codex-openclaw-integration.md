@@ -30,6 +30,7 @@ id = "codex"
 kind = "codex-cli"
 model = "gpt-5.5"
 timeout_ms = 600000
+env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 aliases = ["gpt", "openai"]
 
 [[routing]]
@@ -65,6 +66,7 @@ args = [
   "--skip-git-repo-check",
   "-",
 ]
+env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 Keep chat-facing Codex agents conservative. `read-only` is the safer

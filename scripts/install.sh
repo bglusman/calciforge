@@ -865,12 +865,7 @@ run_calciforge_doctor() {
     local mode="${1:-local}"
     if [[ -f "$ZC_CONFIG" && -x "$BIN_DIR/calciforge" ]]; then
         hdr "calciforge doctor (${mode})"
-        HTTP_PROXY="$SECURITY_PROXY_URL" \
-        HTTPS_PROXY="$SECURITY_PROXY_URL" \
-        http_proxy="$SECURITY_PROXY_URL" \
-        https_proxy="$SECURITY_PROXY_URL" \
-        NO_PROXY="$SECURITY_PROXY_NO_PROXY" \
-        no_proxy="$SECURITY_PROXY_NO_PROXY" \
+        env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
             "$BIN_DIR/calciforge" --config "$ZC_CONFIG" doctor --no-network \
             || warn "calciforge doctor reported issues; see output above"
     else
@@ -922,12 +917,6 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>RUST_LOG</key><string>calciforge=info</string>
         <key>CALCIFORGE_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
-        <key>HTTP_PROXY</key><string>${SECURITY_PROXY_URL}</string>
-        <key>HTTPS_PROXY</key><string>${SECURITY_PROXY_URL}</string>
-        <key>http_proxy</key><string>${SECURITY_PROXY_URL}</string>
-        <key>https_proxy</key><string>${SECURITY_PROXY_URL}</string>
-        <key>NO_PROXY</key><string>${SECURITY_PROXY_NO_PROXY}</string>
-        <key>no_proxy</key><string>${SECURITY_PROXY_NO_PROXY}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
@@ -952,12 +941,6 @@ ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
 Environment=RUST_LOG=calciforge=info
 Environment=CALCIFORGE_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
-Environment=HTTP_PROXY=${SECURITY_PROXY_URL}
-Environment=HTTPS_PROXY=${SECURITY_PROXY_URL}
-Environment=http_proxy=${SECURITY_PROXY_URL}
-Environment=https_proxy=${SECURITY_PROXY_URL}
-Environment=NO_PROXY=${SECURITY_PROXY_NO_PROXY}
-Environment=no_proxy=${SECURITY_PROXY_NO_PROXY}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=30
@@ -1453,7 +1436,7 @@ REMOTE_BUILD
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
-                calciforge)     env_pairs="$(proxy_env_pairs)" ;;
+                calciforge)     env_pairs="" ;;
             esac
             exec_args=""
             if [[ "$bin" == "calciforge" ]]; then
@@ -1478,16 +1461,6 @@ REMOTE_BUILD
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${service_name}"
             local launchd_env=("CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" "PATH=${remote_service_path}")
-            if [[ "$bin" == "calciforge" ]]; then
-                launchd_env+=(
-                    "HTTP_PROXY=${SECURITY_PROXY_URL}"
-                    "HTTPS_PROXY=${SECURITY_PROXY_URL}"
-                    "http_proxy=${SECURITY_PROXY_URL}"
-                    "https_proxy=${SECURITY_PROXY_URL}"
-                    "NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
-                    "no_proxy=${SECURITY_PROXY_NO_PROXY}"
-                )
-            fi
             plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" "${launchd_env[@]}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
             ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
@@ -1545,7 +1518,7 @@ agent_enabled zeroclaw && (zeroclaw status 2>/dev/null | grep -q "running" \
 agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
     && echo "  ✓ dirac" || echo "  ✗ dirac (run: npm install -g dirac-cli)")
 echo ""
-echo "Calciforge service proxy:"
+echo "Agent subprocess proxy:"
 echo "  HTTP_PROXY=${SECURITY_PROXY_URL}"
 echo "  HTTPS_PROXY=${SECURITY_PROXY_URL}"
 echo "  NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
@@ -1553,8 +1526,8 @@ if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     echo "  Remote scanner=${REMOTE_SCANNER_URL} (fail_closed=${REMOTE_SCANNER_FAIL_CLOSED})"
 fi
 echo ""
-echo "For manually started external agent daemons, set the same proxy environment"
-echo "before launch. Installer-managed Calciforge subprocess agents inherit it."
+echo "Set this environment on manually started external agent daemons or"
+echo "per-agent subprocess configuration. Do not set it on the Calciforge service."
 echo ""
 echo "Logs:"
 echo "  clashd:         $LOG_DIR/"

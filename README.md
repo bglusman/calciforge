@@ -64,9 +64,10 @@ local services when a config file is present. Run `calciforge doctor`
 again after editing config or moving services. It
 validates config, checks referenced secret files without printing
 values, flags stale active-agent/model state, detects suspicious
-self-routing into the local model gateway, checks whether subprocess
-agents inherit a complete proxy environment, warns about externally
-managed agent daemons whose outbound proxy environment cannot be proven,
+self-routing into the local model gateway, warns if the Calciforge
+service itself has ambient proxy env, checks whether subprocess agents
+define explicit proxy env, warns about externally managed agent daemons
+whose outbound proxy environment cannot be proven,
 validates configured scanner policy files and rule syntax, and can probe
 configured agent endpoints. Use `--no-network` for a purely local check.
 
@@ -74,7 +75,10 @@ Channel-based secret input is intentionally being de-emphasized because
 chat transports can retain plaintext values. Prefer the local paste UI
 or direct `fnox` input for new secrets.
 
-Route Claude Code or another HTTP-speaking agent through the gateway:
+Route Claude Code or another HTTP-speaking agent process through the gateway.
+The installer and examples bias toward setting this on managed subprocess
+agents directly; for external daemons, set it on the agent process or its
+service manager, not on the Calciforge daemon:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8888
@@ -98,6 +102,7 @@ id = "codex"
 kind = "codex-cli"
 model = "gpt-5.5"
 timeout_ms = 600000
+env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 
 [[routing]]
 identity = "owner"
