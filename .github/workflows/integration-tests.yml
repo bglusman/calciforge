@@ -43,45 +43,27 @@ jobs:
           # Skip tests that require running services in CI
           SKIP_LIVE_TESTS: 1
 
-  test-secrets:
-    name: OneCLI Proxy Tests
+  docker-gateway-smoke:
+    name: Docker Gateway Smoke
     runs-on: ubuntu-latest
     needs: test
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build OneCLI
-        run: cargo build -p secrets-client --release
-
-      - name: Start OneCLI service
-        run: |
-          cargo run -p secrets-client --release &
-          SECRETS_PID=$!
-          echo "SECRETS_PID=$SECRETS_PID" >> $GITHUB_ENV
-          for i in {1..30}; do
-            if curl -s http://127.0.0.1:8081/health > /dev/null; then
-              echo "OneCLI is ready"
-              break
-            fi
-            sleep 1
-          done
-
-      - name: Run OneCLI proxy tests
-        run: cargo test -p calciforge test_proxy_ -- --nocapture
+      - name: Run Docker smoke stack
+        run: bash scripts/manual-docker-test.sh
         env:
-          SECRETS_URL: http://127.0.0.1:8081
+          CALCIFORGE_STAGING_ARTIFACT_DIR: staging-artifacts/docker-smoke
 
-      - name: Stop OneCLI service
+      - name: Upload Docker smoke artifacts
         if: always()
-        run: |
-          if [ -n "$SECRETS_PID" ]; then
-            kill $SECRETS_PID || true
-          fi
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-smoke-artifacts
+          path: staging-artifacts/docker-smoke
+          if-no-files-found: ignore
 
   lint:
     name: Lint and Format

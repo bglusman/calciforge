@@ -32,7 +32,7 @@ harness = true
 [dependencies]
 axum = "0.7"
 
-# OneCLI client integration
+# Secret resolution helpers
 secrets-client = { path = "../secrets-client" }
 
 # Async runtime

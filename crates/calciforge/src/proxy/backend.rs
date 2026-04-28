@@ -1,9 +1,9 @@
 //! Unified backend interface for the model gateway
 //!
-//! Provides a trait-based abstraction for different OneCLI integration methods:
-//! - Embedded (spawns subprocess)
-//! - Library (uses OneCLI as library)
-//! - HTTP (HTTP to OneCLI server)
+//! Provides a trait-based abstraction for different model-provider methods:
+//! - Embedded (reserved for future in-process or subprocess backends)
+//! - Library (reserved for future in-process provider libraries)
+//! - HTTP (OpenAI-compatible HTTP providers)
 //! - Helicone (HTTP to Helicone AI Gateway)
 //! - Mock (for testing)
 
@@ -21,10 +21,10 @@ use super::helicone_router;
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum BackendError {
-    #[error("OneCLI execution failed: {0}")]
+    #[error("embedded backend execution failed: {0}")]
     ExecutionFailed(String),
 
-    #[error("OneCLI not found or not executable")]
+    #[error("secrets backend not found or not executable")]
     SecretsNotFound,
 
     #[error("HTTP request failed: {0}")]
@@ -40,7 +40,7 @@ pub enum BackendError {
     NotAvailable(String),
 }
 
-/// Unified backend trait for OneCLI integration
+/// Unified backend trait for model-gateway providers.
 #[async_trait::async_trait]
 #[allow(dead_code)]
 pub trait SecretsBackend: Send + Sync {
@@ -64,11 +64,11 @@ pub trait SecretsBackend: Send + Sync {
 /// Backend types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendType {
-    /// Spawn OneCLI as subprocess
+    /// Reserved for future subprocess-backed providers.
     Embedded,
-    /// Use OneCLI as library
+    /// Reserved for future library-backed providers.
     Library,
-    /// HTTP to OneCLI server
+    /// HTTP to an OpenAI-compatible provider.
     Http,
     /// HTTP to Helicone AI Gateway
     Helicone,
@@ -343,14 +343,14 @@ impl SecretsBackend for EmbeddedBackend {
         _tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
         _tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        // TODO: Implement actual OneCLI subprocess execution
+        // TODO: Implement subprocess-backed provider execution.
         Err(BackendError::NotAvailable(
             "Embedded backend not yet implemented".to_string(),
         ))
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        // TODO: Implement actual OneCLI subprocess execution
+        // TODO: Implement subprocess-backed provider execution.
         Err(BackendError::NotAvailable(
             "Embedded backend not yet implemented".to_string(),
         ))
@@ -595,14 +595,14 @@ impl SecretsBackend for LibraryBackend {
         _tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
         _tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        // TODO: Implement actual OneCLI library integration
+        // TODO: Implement library-backed provider integration.
         Err(BackendError::NotAvailable(
             "Library backend not yet implemented".to_string(),
         ))
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        // TODO: Implement actual OneCLI library integration
+        // TODO: Implement library-backed provider integration.
         Err(BackendError::NotAvailable(
             "Library backend not yet implemented".to_string(),
         ))

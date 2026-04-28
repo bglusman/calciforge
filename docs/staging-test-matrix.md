@@ -29,7 +29,7 @@ Scope:
 
 Notes:
 
-- Uses `scripts/docker-compose.yml` stack (`vaultwarden`, `secrets`, `mock-llm`, `calciforge`).
+- Uses `scripts/docker-compose.yml` stack (`mock-llm`, `calciforge`).
 - Best for quick reproduction, not final release confidence.
 
 ### Tier 2 — GitHub Actions PR Gates (minutes)
@@ -44,7 +44,7 @@ Current fit:
 - Real Matrix DM E2E with disposable Synapse (`scripts/matrix-real-e2e.py`).
 - Synthetic model gateway E2E for alloys, cascades, dispatchers, and exec-backed
   model leaves (`scripts/model-gateway-synthetic-e2e.py`).
-- OneCLI proxy and installer-adjacent smoke coverage.
+- Docker model-gateway smoke and installer-adjacent coverage.
 - Workspace build/tests with selected live-style tests skipped in CI (`SKIP_LIVE_TESTS=1`).
 
 Scope:

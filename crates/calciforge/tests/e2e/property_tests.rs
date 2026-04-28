@@ -6,7 +6,7 @@
 use proptest::prelude::*;
 
 // Property: URL reconstruction after parsing should be lossless.
-// Catches path-stripping bugs like the one we found in OneCLI.
+// Catches path-stripping bugs in provider proxy routes.
 proptest! {
     #[test]
     fn test_url_reconstruction_lossless(
