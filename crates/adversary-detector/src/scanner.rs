@@ -23,6 +23,7 @@ use std::{
 
 const BUILTIN_DEFAULT_SCANNER_PATH: &str = "builtin:calciforge/default-scanner.star";
 const BUILTIN_DEFAULT_SCANNER_SOURCE: &str = include_str!("../policies/default-scanner.star");
+const STARLARK_REGEX_CACHE_MAX_ENTRIES: usize = 256;
 
 /// A configured scanner check in the adversary pipeline.
 ///
@@ -155,6 +156,36 @@ impl ScannerConfig {
 static STARLARK_REGEX_CACHE: Lazy<Mutex<HashMap<String, Result<Regex, String>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+fn starlark_regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
+    if let Some(cached) = STARLARK_REGEX_CACHE
+        .lock()
+        .map_err(|_| anyhow::anyhow!("starlark regex cache lock poisoned"))?
+        .get(pattern)
+        .cloned()
+    {
+        let regex = cached.map_err(|err| anyhow::anyhow!("invalid regex '{pattern}': {err}"))?;
+        return Ok(regex.is_match(content));
+    }
+
+    let compiled = Regex::new(pattern).map_err(|err| err.to_string());
+    let cached = {
+        let mut cache = STARLARK_REGEX_CACHE
+            .lock()
+            .map_err(|_| anyhow::anyhow!("starlark regex cache lock poisoned"))?;
+        if let Some(cached) = cache.get(pattern).cloned() {
+            cached
+        } else {
+            if cache.len() < STARLARK_REGEX_CACHE_MAX_ENTRIES {
+                cache.insert(pattern.to_string(), compiled.clone());
+            }
+            compiled
+        }
+    };
+
+    let regex = cached.map_err(|err| anyhow::anyhow!("invalid regex '{pattern}': {err}"))?;
+    Ok(regex.is_match(content))
+}
+
 static SCANNER_GLOBALS: Lazy<Globals> = Lazy::new(|| {
     GlobalsBuilder::standard()
         .with(scanner_policy_globals)
@@ -165,21 +196,7 @@ static SCANNER_GLOBALS: Lazy<Globals> = Lazy::new(|| {
 fn scanner_policy_globals(builder: &mut GlobalsBuilder) {
     /// Return true when `content` matches a Rust regex `pattern`.
     fn regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
-        let regex = {
-            let mut cache = STARLARK_REGEX_CACHE
-                .lock()
-                .map_err(|_| anyhow::anyhow!("starlark regex cache lock poisoned"))?;
-            if let Some(cached) = cache.get(pattern).cloned() {
-                cached
-            } else {
-                let compiled = Regex::new(pattern).map_err(|err| err.to_string());
-                cache.insert(pattern.to_string(), compiled.clone());
-                compiled
-            }
-        }
-        .map_err(|err| anyhow::anyhow!("invalid regex '{pattern}': {err}"))?;
-
-        Ok(regex.is_match(content))
+        starlark_regex_match(pattern, content)
     }
 }
 
@@ -851,6 +868,22 @@ def scan(input):
             v,
             ScanVerdict::Review { reason } if reason == "custom regex helper matched API key language"
         ));
+    }
+
+    #[test]
+    fn test_starlark_regex_cache_is_bounded() {
+        STARLARK_REGEX_CACHE.lock().expect("regex cache").clear();
+
+        for idx in 0..(STARLARK_REGEX_CACHE_MAX_ENTRIES + 32) {
+            let pattern = format!("bounded-cache-pattern-{idx}");
+            starlark_regex_match(&pattern, "bounded-cache-pattern-1").expect("regex match");
+        }
+
+        let cache_len = STARLARK_REGEX_CACHE.lock().expect("regex cache").len();
+        assert!(
+            cache_len <= STARLARK_REGEX_CACHE_MAX_ENTRIES,
+            "regex cache exceeded bound: {cache_len}"
+        );
     }
 
     #[tokio::test]
