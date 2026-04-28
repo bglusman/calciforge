@@ -25,6 +25,7 @@ pub mod acpx;
 pub mod cli;
 pub mod codex_cli;
 pub mod dirac_cli;
+pub mod openai_compat;
 pub mod openclaw;
 pub mod openclaw_channel;
 #[cfg(test)]
@@ -37,6 +38,7 @@ pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
 pub use dirac_cli::DiracCliAdapter;
+pub use openai_compat::OpenAiCompatAdapter;
 pub use openclaw::ZeroClawHttpAdapter;
 pub use openclaw_channel::OpenClawChannelAdapter;
 pub use zeroclaw::ZeroClawAdapter;
@@ -192,6 +194,7 @@ pub fn agent_supports_native_commands(agent: &AgentConfig) -> bool {
 /// | `kind`             | Protocol            | Session continuity | Native commands |
 /// |--------------------|---------------------|--------------------|-----------------|
 /// | `openclaw-channel` | `/calciforge/inbound` + callback | ✅ native sessionKey | ✅ plugin channel |
+/// | `openai-compat`    | `/v1/chat/completions` | provider-specific | n/a |
 /// | `zeroclaw-http`    | `/webhook`          | ❌ stateless        | ✅ |
 /// | `zeroclaw-native`  | `/webhook` + history | ✅ in-process ring buffer | ✅ |
 /// | `zeroclaw`         | `/webhook`          | per-ZeroClaw-config | n/a |
@@ -223,6 +226,21 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 openclaw_agent_id,
                 agent.reply_port,
                 agent.reply_auth_token.clone(),
+                agent.timeout_ms,
+            )))
+        }
+        "openai-compat" => {
+            if agent.endpoint.trim().is_empty() {
+                return Err(format!(
+                    "agent '{}': kind='openai-compat' requires endpoint",
+                    agent.id
+                ));
+            }
+            let token = agent_token()?;
+            Ok(Box::new(OpenAiCompatAdapter::new(
+                agent.endpoint.clone(),
+                token,
+                agent.model.clone(),
                 agent.timeout_ms,
             )))
         }
@@ -707,6 +725,31 @@ mod tests {
 
         let adapter = build_adapter(&agent).expect("should build");
         assert_eq!(adapter.kind(), "openclaw-channel");
+    }
+
+    #[test]
+    fn test_build_openai_compat_adapter() {
+        let agent = AgentConfig {
+            id: "gateway".to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint: "http://127.0.0.1:8083".to_string(),
+            timeout_ms: None,
+            model: Some("local-kimi-gpt55".to_string()),
+            auth_token: None,
+            api_key: Some("gateway-token".to_string()),
+            api_key_file: None,
+            openclaw_agent_id: None,
+            reply_port: None,
+            reply_auth_token: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+
+        let adapter = build_adapter(&agent).expect("should build openai-compat adapter");
+        assert_eq!(adapter.kind(), "openai-compat");
     }
 
     // ── New adapter factory tests ────────────────────────────────────────────

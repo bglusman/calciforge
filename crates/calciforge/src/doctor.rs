@@ -907,6 +907,13 @@ async fn check_agent_wiring(
                 }
             }
 
+            if agent.kind == "openai-compat" && agent.model.is_none() {
+                report.warn(format!(
+                    "agent '{}' uses openai-compat without a configured model; dispatch will require an active !model override",
+                    agent.id
+                ));
+            }
+
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
             }
@@ -926,6 +933,7 @@ fn is_known_agent_kind(kind: &str) -> bool {
     matches!(
         kind,
         "openclaw-channel"
+            | "openai-compat"
             | "zeroclaw-http"
             | "zeroclaw-native"
             | "zeroclaw"
@@ -940,7 +948,7 @@ fn is_known_agent_kind(kind: &str) -> bool {
 fn is_http_agent(agent: &AgentConfig) -> bool {
     matches!(
         agent.kind.as_str(),
-        "openclaw-channel" | "zeroclaw-http" | "zeroclaw-native" | "zeroclaw"
+        "openclaw-channel" | "openai-compat" | "zeroclaw-http" | "zeroclaw-native" | "zeroclaw"
     )
 }
 

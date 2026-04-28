@@ -74,7 +74,7 @@ proptest! {
     ) {
         let valid_kinds = [
             "cli", "codex-cli", "acp", "acpx", "zeroclaw",
-            "openclaw-channel",
+            "openclaw-channel", "openai-compat",
             "zeroclaw-http", "zeroclaw-native",
         ];
 
@@ -86,7 +86,7 @@ proptest! {
         let actually_valid = matches!(
             kind.as_str(),
             "cli" | "codex-cli" | "acp" | "acpx" | "zeroclaw"
-                | "openclaw-channel"
+                | "openclaw-channel" | "openai-compat"
                 | "zeroclaw-http" | "zeroclaw-native"
         );
 

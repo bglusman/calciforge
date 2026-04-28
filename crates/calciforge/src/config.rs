@@ -230,6 +230,7 @@ pub struct ChannelAlias {
 ///
 /// Common fields used by subprocess and HTTP adapter kinds include:
 /// - `"openclaw-channel"`: uses `endpoint`, `api_key` / `auth_token`, `model`
+/// - `"openai-compat"`: uses `endpoint`, `api_key` / `auth_token`, `model`
 /// - `"zeroclaw"`:      uses `endpoint`, `api_key` (required)
 /// - `"cli"`:           uses `command`, `args`, `env`, `timeout_ms`
 /// - `"codex-cli"`:     uses `command`(optional), `args`, `env`, `model`, `timeout_ms`
@@ -240,7 +241,7 @@ pub struct ChannelAlias {
 pub struct AgentConfig {
     pub id: String,
     pub kind: String,
-    /// Base URL for HTTP agents (openclaw-channel, zeroclaw).
+    /// Base URL for HTTP agents (openclaw-channel, openai-compat, zeroclaw).
     #[serde(default)]
     pub endpoint: String,
     pub timeout_ms: Option<u64>,

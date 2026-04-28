@@ -105,7 +105,7 @@ def analyze(log_path: str) -> None:
             elif category == "unknown adapter kind":
                 print("- **Likely cause**: Invalid adapter kind in config")
                 print("  - Check adapter kind is one of:")
-                print("    openclaw-channel, zeroclaw, zeroclaw-http, zeroclaw-native,")
+                print("    openclaw-channel, openai-compat, zeroclaw, zeroclaw-http, zeroclaw-native,")
                 print("    cli, codex-cli, dirac-cli, acp, acpx")
                 
             elif category == "compilation errors":

@@ -62,6 +62,7 @@ fn test_unknown_adapter_kind_fails() {
         "acpx",
         "zeroclaw",
         "openclaw-channel",
+        "openai-compat",
         "zeroclaw-http",
         "zeroclaw-native",
     ];
@@ -100,6 +101,7 @@ fn is_valid_adapter_kind(kind: &str) -> bool {
             | "acpx"
             | "zeroclaw"
             | "openclaw-channel"
+            | "openai-compat"
             | "zeroclaw-http"
             | "zeroclaw-native"
     )

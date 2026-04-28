@@ -106,6 +106,29 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
+            "openai-compat" => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' uses openai-compat but has no endpoint",
+                        agent.id
+                    ));
+                }
+                if agent.model.is_none() {
+                    result.add_warning(format!(
+                        "Agent '{}' uses openai-compat without a configured model; dispatch will require an active !model override",
+                        agent.id
+                    ));
+                }
+                if agent.api_key.is_none()
+                    && agent.api_key_file.is_none()
+                    && agent.auth_token.is_none()
+                {
+                    result.add_warning(format!(
+                        "Agent '{}' uses openai-compat without api_key/api_key_file/auth_token; only unauthenticated local endpoints should do this",
+                        agent.id
+                    ));
+                }
+            }
             "openclaw-http" => {
                 result.add_error(format!(
                     "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
@@ -536,6 +559,28 @@ reply_auth_token = "test-reply-token"
         assert!(
             result.is_valid(),
             "openclaw-channel should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_agent_validates() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8083"
+api_key = "test-gateway-token"
+model = "local-kimi-gpt55"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "openai-compat should validate; errors: {:?}",
             result.errors
         );
     }
