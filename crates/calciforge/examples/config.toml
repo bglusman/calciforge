@@ -20,7 +20,7 @@ scan_outbound = false
 #
 # [[security.scanner_checks]]
 # kind = "starlark"
-# path = "/etc/calciforge/scanner.star"
+# path = "/etc/calciforge/scanner-policies/credential-language.star"
 # fail_closed = true
 # max_callstack = 64
 

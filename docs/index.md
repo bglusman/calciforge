@@ -262,7 +262,9 @@ The scanner pipeline is configurable: built-in structural and semantic
 checks run locally by default, declarative regex/keyword/size rules cover
 simple operator policies, Starlark policies add low-latency branching
 logic, and optional remote HTTP scanners can host heavier DLP or LLM
-classifier passes.
+classifier passes. Editable starter Starlark policies ship for
+destination allowlists, destructive command patterns, and
+credential-language review.
 
 ### Inbound traffic gating and tool policy
 

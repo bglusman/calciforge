@@ -49,7 +49,7 @@
 - [ ] Config per-channel: `scan_inbound`, `scan_outbound`, `on_unsafe`
 - [x] Add low-latency declarative scanner checks: regexes, keyword lists,
       and size limits
-- [ ] Build a starter library of editable Starlark scanner policies for common
+- [x] Build a starter library of editable Starlark scanner policies for common
       operator concerns such as allowed destinations, command denylists, and
       high-risk credential language
 - [ ] Evaluate sandboxed WebAssembly scanner checks for arbitrary in-process
