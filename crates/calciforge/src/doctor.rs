@@ -124,6 +124,7 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_secret_files(&config, &mut report);
     check_secret_tooling(&mut report);
     check_proxy_environment(&mut report);
+    check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
     check_agent_wiring(&config, no_network, &mut report).await;
     check_persisted_state(&config, &mut report);
 
@@ -162,7 +163,7 @@ fn check_secret_tooling(report: &mut DoctorReport) {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct ProxyEnvironment {
     http: Option<String>,
     https: Option<String>,
@@ -223,6 +224,76 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
     } else {
         report.warn("NO_PROXY does not include localhost/127.0.0.1; local health calls may loop through security-proxy");
     }
+}
+
+fn check_agent_proxy_coverage(
+    config: &CalciforgeConfig,
+    env: &ProxyEnvironment,
+    report: &mut DoctorReport,
+) {
+    let subprocess_agents = config
+        .agents
+        .iter()
+        .filter(|agent| is_subprocess_agent(agent))
+        .collect::<Vec<_>>();
+    let subprocess_count = subprocess_agents.len();
+    let proxy_bind = config
+        .proxy
+        .as_ref()
+        .filter(|proxy| proxy.enabled)
+        .map(|proxy| proxy.bind.as_str());
+    let external_count = config
+        .agents
+        .iter()
+        .filter(|agent| is_external_agent_daemon(agent, proxy_bind))
+        .count();
+
+    if subprocess_count > 0 {
+        if has_http_and_https_proxy(env) {
+            let override_count = subprocess_agents
+                .iter()
+                .filter(|agent| has_agent_proxy_env_override(agent))
+                .count();
+            let clearing_count = subprocess_agents
+                .iter()
+                .filter(|agent| clears_agent_proxy_env(agent))
+                .count();
+
+            if clearing_count > 0 {
+                report.warn(format!(
+                    "{clearing_count} subprocess agent(s) set empty proxy env values; CLI/exec agents may bypass security-proxy"
+                ));
+            } else if override_count > 0 {
+                report.warn(format!(
+                    "{override_count} subprocess agent(s) define agent-level proxy env overrides; verify they still route through security-proxy"
+                ));
+            } else {
+                report.ok(format!(
+                    "{subprocess_count} subprocess agent(s) will inherit HTTP_PROXY/HTTPS_PROXY from Calciforge"
+                ));
+            }
+        } else {
+            report.warn(format!(
+                "{subprocess_count} subprocess agent(s) configured, but Calciforge lacks complete HTTP_PROXY/HTTPS_PROXY; CLI/exec agents may bypass security-proxy"
+            ));
+        }
+    }
+
+    if external_count > 0 {
+        report.warn(format!(
+            "{external_count} externally managed HTTP/native agent endpoint(s) configured; doctor cannot verify their process proxy environment"
+        ));
+    }
+}
+
+fn has_http_and_https_proxy(env: &ProxyEnvironment) -> bool {
+    env.http
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && env
+            .https
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn display_proxy_value(value: &str) -> String {
@@ -439,6 +510,7 @@ fn is_known_agent_kind(kind: &str) -> bool {
             | "zeroclaw"
             | "cli"
             | "codex-cli"
+            | "dirac-cli"
             | "acp"
             | "acpx"
     )
@@ -454,6 +526,39 @@ fn is_http_agent(agent: &AgentConfig) -> bool {
             | "zeroclaw-native"
             | "zeroclaw"
     )
+}
+
+fn is_subprocess_agent(agent: &AgentConfig) -> bool {
+    matches!(
+        agent.kind.as_str(),
+        "cli" | "codex-cli" | "dirac-cli" | "acp" | "acpx"
+    )
+}
+
+fn has_agent_proxy_env_override(agent: &AgentConfig) -> bool {
+    agent
+        .env
+        .as_ref()
+        .is_some_and(|env| env.keys().any(|key| is_proxy_env_key(key)))
+}
+
+fn clears_agent_proxy_env(agent: &AgentConfig) -> bool {
+    agent.env.as_ref().is_some_and(|env| {
+        env.iter()
+            .any(|(key, value)| is_proxy_env_key(key) && value.trim().is_empty())
+    })
+}
+
+fn is_proxy_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "HTTP_PROXY" | "http_proxy" | "HTTPS_PROXY" | "https_proxy"
+    )
+}
+
+fn is_external_agent_daemon(agent: &AgentConfig, proxy_bind: Option<&str>) -> bool {
+    is_http_agent(agent)
+        && !proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind))
 }
 
 async fn check_endpoint_reachable(agent: &AgentConfig, report: &mut DoctorReport) {
@@ -764,6 +869,194 @@ mod tests {
                 "http", "redacted", "redacted", "proxy.example:8080"
             )
         );
+    }
+
+    #[test]
+    fn subprocess_agent_proxy_coverage_warns_without_complete_proxy_env() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "codex".to_string(),
+            kind: "codex-cli".to_string(),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: None,
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("CLI/exec agents may bypass security-proxy")
+        }));
+    }
+
+    #[test]
+    fn subprocess_agent_proxy_coverage_accepts_complete_proxy_env() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "dirac".to_string(),
+            kind: "dirac-cli".to_string(),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding
+                    .message
+                    .contains("will inherit HTTP_PROXY/HTTPS_PROXY")
+        }));
+    }
+
+    #[test]
+    fn subprocess_agent_proxy_coverage_warns_when_agent_env_overrides_proxy() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "codex".to_string(),
+            kind: "codex-cli".to_string(),
+            env: Some(HashMap::from([(
+                "HTTPS_PROXY".to_string(),
+                "http://127.0.0.1:9999".to_string(),
+            )])),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding.message.contains("agent-level proxy env overrides")
+        }));
+    }
+
+    #[test]
+    fn subprocess_agent_proxy_coverage_warns_when_agent_env_clears_proxy() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "codex".to_string(),
+            kind: "codex-cli".to_string(),
+            env: Some(HashMap::from([("HTTP_PROXY".to_string(), String::new())])),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding.message.contains("set empty proxy env values")
+        }));
+    }
+
+    #[test]
+    fn external_agent_proxy_coverage_warns_that_daemon_env_is_unverified() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "openclaw".to_string(),
+            kind: "openclaw-native".to_string(),
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("doctor cannot verify their process proxy environment")
+        }));
+    }
+
+    #[test]
+    fn disabled_proxy_bind_does_not_hide_external_daemon_warning() {
+        let mut config = base_config();
+        if let Some(proxy) = &mut config.proxy {
+            proxy.enabled = false;
+        }
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("doctor cannot verify their process proxy environment")
+        }));
+    }
+
+    #[test]
+    fn local_model_gateway_agent_does_not_count_as_external_daemon() {
+        let config = base_config();
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+            &mut report,
+        );
+
+        assert!(!report.findings.iter().any(|finding| finding
+            .message
+            .contains("doctor cannot verify their process proxy environment")));
     }
 
     #[cfg(unix)]

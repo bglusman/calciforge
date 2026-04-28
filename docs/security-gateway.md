@@ -46,6 +46,9 @@ export NO_PROXY=localhost,127.0.0.1,::1
 
 Use service-manager environment blocks for persistent daemons, and validate by
 checking `security-proxy` logs while the agent makes a known outbound request.
+`calciforge doctor` reports whether Calciforge itself has a complete proxy
+environment for subprocess agents and warns when configured HTTP/native agent
+daemons need separate validation.
 
 ## ⚙️ Configuration
 
