@@ -26,6 +26,7 @@ services:
       retries: 20
 
   calciforge:
+    image: calciforge-smoke:latest
     build:
       context: ..
       dockerfile: crates/calciforge/Dockerfile
@@ -42,6 +43,26 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18792/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  security-proxy:
+    image: calciforge-smoke:latest
+    container_name: test-security-proxy
+    entrypoint: ["/usr/local/bin/security-proxy"]
+    environment:
+      - RUST_LOG=security_proxy=debug,adversary_detector=debug
+      - SECURITY_PROXY_BIND=0.0.0.0
+      - SECURITY_PROXY_PORT=8888
+      - AGENT_CONFIG=/tmp/nonexistent-agents.json
+    ports:
+      - "18888:8888"
+    depends_on:
+      mock-llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8888/health"]
       interval: 5s
       timeout: 3s
       retries: 20

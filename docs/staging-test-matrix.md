@@ -131,7 +131,8 @@ Rationale: keep speed benefits without hiding stateful bugs.
 
 ## Immediate Next Steps
 
-1. Add failure-injection cases to the nightly Docker smoke stack.
+1. Add more failure-injection cases to the nightly Docker smoke stack beyond
+   the default security-proxy scanner-block assertion.
 2. Add release-candidate soak mode with longer runtime and retained latency
    histograms.
 3. Add explicit security assertions for approval/audit invariants and outbound
