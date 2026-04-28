@@ -94,7 +94,9 @@ The Starlark policy must define `scan(input)` and return `"clean"`, `"review"`,
 `"unsafe"`, or a dict with `verdict` and optional `reason`. `load()` is
 disabled, the call stack is bounded, and parsed policies are cached by file
 metadata so normal scans avoid repeated parsing. See
-`examples/security-scanner.star` for a starter policy.
+`examples/security-scanner.star` for a minimal starter policy and
+`examples/scanner-policies/` for reusable destination, command, and
+credential-language policies.
 
 To measure local policy overhead on your hardware:
 

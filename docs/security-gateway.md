@@ -189,7 +189,9 @@ def scan(input):
     return "clean"
 ```
 
-See `examples/security-scanner.star` for a complete starter policy.
+See `examples/security-scanner.star` for a minimal starter policy and
+`examples/scanner-policies/` for reusable examples covering destination
+allowlists, destructive command patterns, and credential-language review.
 
 Remote checks receive the same content that would otherwise be allowed or
 blocked by the local scanner:
@@ -245,6 +247,17 @@ and memory controls are needed. Declarative checks such as regexes, keyword
 lists, and size limits should be preferred for simple rules. Use Starlark when
 a rule needs conditionals or context-specific branching, and `remote_http` when
 the rule needs networked services or heavyweight dependencies.
+
+Starter Starlark policies live under `examples/scanner-policies/`:
+
+| Policy | Purpose |
+|--------|---------|
+| `allowed-destinations.star` | Review or block credential-shaped content sent outside an allowed destination list. |
+| `command-denylist.star` | Block destructive shell-command patterns and review network download commands. |
+| `credential-language.star` | Review or block credential disclosure, forwarding, and exfiltration language. |
+
+Copy these into `/etc/calciforge/scanner-policies/`, edit the constants at the
+top of each file, then add one or more `starlark` checks to `config.toml`.
 
 ## 🧪 Testing
 
