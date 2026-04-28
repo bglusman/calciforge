@@ -1469,7 +1469,10 @@ REMOTE_BUILD
                 [[ -n "$legacy" && "$legacy" != "$service_name" ]] || continue
                 disable_script+=" systemctl disable --now '${legacy}.service' >/dev/null 2>&1 || true;"
             done
-            disable_script+=" systemctl enable --now '${service_name}.service'"
+            # Mirror enable_restart_service(): remote upgrades also need an
+            # explicit restart so already-running units load the new binary.
+            disable_script+=" systemctl enable '${service_name}.service';"
+            disable_script+=" systemctl restart '${service_name}.service'"
             ssh "${ssh_opts[@]}" "$ssh_target" "$disable_script" 2>&1 | tail -2
         else
             remote_log_dir="\$HOME/Library/Logs/calciforge"
