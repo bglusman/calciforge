@@ -14,8 +14,6 @@ struct Fixture {
     layer: FixtureLayer,
     #[serde(default)]
     expect_local: Option<FixtureVerdict>,
-    #[serde(default)]
-    expect_remote: Option<FixtureVerdict>,
 }
 
 impl Fixture {
@@ -108,8 +106,8 @@ async fn main() {
         };
         let marker = if ok { "ok" } else { "FAIL" };
         println!(
-            "{marker}: {} layer={:?} expected_local={:?} expected_remote={:?} actual={}",
-            fixture.name, fixture.layer, expected, fixture.expect_remote, actual
+            "{marker}: {} layer={:?} expected_local={:?} actual={}",
+            fixture.name, fixture.layer, expected, actual
         );
         if !ok {
             failures += 1;

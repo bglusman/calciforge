@@ -80,13 +80,24 @@ def scanner_api_key() -> str:
 def scanner_prompt() -> str:
     prompt_file = os.environ.get("REMOTE_SCANNER_PROMPT_FILE", "").strip()
     if prompt_file:
+        expanded_prompt_file = os.path.expanduser(prompt_file)
         try:
-            with open(os.path.expanduser(prompt_file), "r", encoding="utf-8") as f:
+            with open(expanded_prompt_file, "r", encoding="utf-8") as f:
                 prompt = f.read().strip()
                 if prompt:
                     return prompt
-        except OSError:
-            pass
+            print(
+                f"warning: REMOTE_SCANNER_PROMPT_FILE {expanded_prompt_file!r} is empty; "
+                "falling back to REMOTE_SCANNER_PROMPT/default prompt",
+                file=sys.stderr,
+            )
+        except OSError as exc:
+            print(
+                f"warning: failed to read REMOTE_SCANNER_PROMPT_FILE "
+                f"{expanded_prompt_file!r}: {exc}; "
+                "falling back to REMOTE_SCANNER_PROMPT/default prompt",
+                file=sys.stderr,
+            )
 
     direct = os.environ.get("REMOTE_SCANNER_PROMPT", "").strip()
     if direct:

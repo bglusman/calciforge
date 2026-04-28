@@ -70,7 +70,7 @@ use adversary_detector::{ScannerCheckConfig, ScannerConfig};
 let config = ScannerConfig {
     checks: vec![
         ScannerCheckConfig::Starlark {
-            path: "/etc/calciforge/default-scanner.star".into(),
+            path: "/etc/calciforge/scanner-policies/default-scanner.star".into(),
             fail_closed: true,
             max_callstack: 64,
         },
