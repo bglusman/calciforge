@@ -145,7 +145,11 @@ unbounded resource use, and related agent-governance failures.
 
 ### Discussion Context Heuristic
 
-Content that is *about* prompt injection (security research, blog posts, CVE analysis) is downgraded from `Unsafe` → `Review`. The heuristic uses a configurable ratio of `discussion_signals / injection_signals`.
+Content that is *about* prompt injection (security research, blog posts, CVE
+analysis) is downgraded from `Unsafe` → `Review`. The heuristic uses a
+configurable ratio of `discussion_signals / injection_signals`; by default it
+can apply even when there is a single injection signal, because lone terms like
+`ignore previous instructions` are often quoted in research or incident writeups.
 
 
 
