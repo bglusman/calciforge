@@ -25,7 +25,7 @@
 //! command = "/usr/local/bin/ironclaw"
 //! args = ["run", "-m", "{message}"]
 //! timeout_ms = 30000
-//! env = { LLM_BACKEND = "openai_compatible", LLM_BASE_URL = "...", LLM_MODEL = "kimi-k2.5" }
+//! env = { LLM_BACKEND = "openai_compatible", LLM_BASE_URL = "...", LLM_MODEL = "kimi-k2.5", HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888" }
 //! ```
 
 use std::collections::HashMap;

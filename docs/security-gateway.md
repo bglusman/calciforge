@@ -1,10 +1,16 @@
 # Security Gateway Architecture
 
-The `security-gateway` is the mandatory network enforcement point for all Calciforge agent traffic. It replaces opt-in sidecar scanning with a fail-closed transparent proxy.
+The `security-gateway` is the mandatory network enforcement point for agent
+tool and provider traffic. It replaces opt-in sidecar scanning with a
+fail-closed proxy boundary.
 
 ## 🛡️ Traffic Flow
 
-All outbound HTTP/HTTPS traffic from an agent is routed through the gateway.
+Outbound HTTP/HTTPS traffic from protected agents is routed through the
+gateway. Calciforge's own provider calls, health checks, and LAN control-plane
+traffic should not use ambient `HTTP_PROXY`/`HTTPS_PROXY`; proxying Calciforge
+itself can send model-gateway requests and internal webhooks through the
+security proxy unnecessarily.
 
 **Outbound Pipeline:**
 1. **Exfiltration Scan**: Outgoing request bodies are analyzed by the `adversary-detector` for secrets, PII, or adversarial patterns.
@@ -25,16 +31,18 @@ The gateway can be enforced at three tiers:
 | 2 | **Enforced** | OS | `iptables` redirect of ports 80/443 to gateway. |
 | 3 | **Isolated** | Net | Network namespaces restricting all traffic to the gateway. |
 
-The unified installer configures the Calciforge service with
-`HTTP_PROXY`/`HTTPS_PROXY` pointing at `security-proxy`. CLI and exec-backed
-agents launched as Calciforge subprocesses inherit that environment.
+The unified installer starts `security-proxy`, but it does not put
+`HTTP_PROXY`/`HTTPS_PROXY` on the Calciforge service itself. CLI and
+exec-backed agents must receive proxy environment explicitly through agent
+configuration or wrapper scripts. The shipped examples bias toward this
+protected default by setting proxy env on subprocess agents directly.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
-manager must also be launched with the same proxy environment, or enforced with
-an OS/network tier. Registering Calciforge webhooks lets those agents talk back
-to Calciforge, but it does not by itself prove their outbound HTTP is going
-through `security-proxy`.
+manager must be launched with the proxy environment in that service manager, or
+enforced with an OS/network tier. Registering Calciforge webhooks lets those
+agents talk back to Calciforge, but it does not by itself prove their outbound
+HTTP is going through `security-proxy`.
 
 For a manually started daemon:
 
@@ -46,9 +54,9 @@ export NO_PROXY=localhost,127.0.0.1,::1
 
 Use service-manager environment blocks for persistent daemons, and validate by
 checking `security-proxy` logs while the agent makes a known outbound request.
-`calciforge doctor` reports whether Calciforge itself has a complete proxy
-environment for subprocess agents and warns when configured HTTP/native agent
-daemons need separate validation.
+`calciforge doctor` warns if the Calciforge daemon itself has ambient proxy
+environment, verifies explicit proxy env on configured subprocess agents, and
+warns when configured HTTP/native agent daemons need separate validation.
 
 ## ⚙️ Configuration
 
