@@ -51,22 +51,31 @@ detector.mark_override(url, &digest).await;
 |-------|----------------|-----------|
 | **Layer 1 — Structural** | Zero-width chars, unicode tags, CSS hiding, base64 blobs | Regex patterns |
 | **Layer 2 — Semantic** | Prompt injection phrases, PII harvesting, exfiltration signals | Aho-Corasick + regex, with discussion-context heuristic |
-| **Layer 3 — Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
-| **Layer 4 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
+| **Layer 3 — Declarative** | Operator regexes, keyword lists, and size limits (optional) | Config-only rules |
+| **Layer 4 — Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
+| **Layer 5 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
 
-By default, layer 1 and 2 run locally. Starlark checks are optional low-latency
-extension points for deployment-specific policy. Remote checks are optional
-extension points for heavyweight policy or LLM-based classification. Both
-custom check types can be configured best-effort (`fail_closed = false`) or
-fail-closed (`fail_closed = true`) if unavailable.
+By default, layer 1 and 2 run locally. Declarative checks are the simplest
+low-latency extension point for common operator rules. Starlark checks cover
+deployment-specific policy that needs branching logic. Remote checks cover
+heavyweight policy or LLM-based classification. Starlark and remote checks can
+be configured best-effort (`fail_closed = false`) or fail-closed
+(`fail_closed = true`) if unavailable.
 
 ```rust
-use adversary_detector::{ScannerCheckConfig, ScannerConfig};
+use adversary_detector::{RuleVerdict, ScannerCheckConfig, ScannerConfig};
 
 let config = ScannerConfig {
     checks: vec![
         ScannerCheckConfig::Structural,
         ScannerCheckConfig::Semantic,
+        ScannerCheckConfig::Keywords {
+            terms: vec!["wire".into(), "urgent".into()],
+            case_sensitive: false,
+            match_all: true,
+            verdict: RuleVerdict::Review,
+            reason: Some("review urgent wire language".into()),
+        },
         ScannerCheckConfig::Starlark {
             path: "/etc/calciforge/scanner.star".into(),
             fail_closed: true,

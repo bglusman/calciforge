@@ -47,8 +47,8 @@
 - [ ] Filter/group chat messages from untrusted participants
 - [ ] Prevent injection attacks, content policy violations
 - [ ] Config per-channel: `scan_inbound`, `scan_outbound`, `on_unsafe`
-- [ ] Add low-latency declarative scanner checks: regexes, keyword lists,
-      host/body-field rules, and size limits
+- [x] Add low-latency declarative scanner checks: regexes, keyword lists,
+      and size limits
 - [ ] Build a starter library of editable Starlark scanner policies for common
       operator concerns such as allowed destinations, command denylists, and
       high-risk credential language

@@ -68,5 +68,5 @@ pub use digest::{sha256_hex, ContentDigest, DigestStore};
 pub use middleware::{ChannelScanner, HookOutcome, InterceptedToolSet, ToolHook, ToolResult};
 pub use profiles::{RateLimitConfig, SecurityConfig, SecurityProfile};
 pub use proxy::{AdversaryDetector, AdversaryFetchResult};
-pub use scanner::{AdversaryScanner, ScannerCheck, ScannerCheckConfig, ScannerConfig};
+pub use scanner::{AdversaryScanner, RuleVerdict, ScannerCheck, ScannerCheckConfig, ScannerConfig};
 pub use verdict::{ScanContext, ScanVerdict};

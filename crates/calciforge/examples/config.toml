@@ -12,6 +12,13 @@ scan_outbound = false
 # Optional scanner pipeline extension. Empty scanner_checks uses the local
 # structural + semantic defaults.
 # [[security.scanner_checks]]
+# kind = "keywords"
+# terms = ["wire", "urgent"]
+# match_all = true
+# verdict = "review"
+# reason = "review urgent wire language"
+#
+# [[security.scanner_checks]]
 # kind = "starlark"
 # path = "/etc/calciforge/scanner.star"
 # fail_closed = true

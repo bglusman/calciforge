@@ -189,6 +189,11 @@ mod tests {
                     fail_closed: true,
                     max_callstack: 32,
                 },
+                ScannerCheckConfig::MaxSize {
+                    bytes: 1_048_576,
+                    verdict: adversary_detector::RuleVerdict::Review,
+                    reason: Some("review unusually large content".into()),
+                },
             ],
             secret_destination_allowlist: HashMap::from([
                 ("MY_KEY".into(), vec!["api.example.com".into()]),

@@ -259,9 +259,10 @@ during the channel-integration cut and is on the
 [roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
 
 The scanner pipeline is configurable: built-in structural and semantic
-checks run locally by default, Starlark policies add low-latency
-operator-specific rules, and optional remote HTTP scanners can host
-heavier DLP or LLM classifier passes.
+checks run locally by default, declarative regex/keyword/size rules cover
+simple operator policies, Starlark policies add low-latency branching
+logic, and optional remote HTTP scanners can host heavier DLP or LLM
+classifier passes.
 
 ### Inbound traffic gating and tool policy
 

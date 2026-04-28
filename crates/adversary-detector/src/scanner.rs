@@ -4,6 +4,7 @@ use crate::extract_host;
 
 use crate::patterns::*;
 use crate::verdict::{ScanContext, ScanVerdict};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use starlark::{
     collections::SmallMap,
@@ -59,11 +60,81 @@ pub enum ScannerCheckConfig {
         #[serde(default = "ScannerCheckConfig::default_starlark_max_callstack")]
         max_callstack: usize,
     },
+    /// Match content with a configured regular expression.
+    Regex {
+        /// Rust `regex` pattern to evaluate against the full content body.
+        pattern: String,
+        /// If `true`, prepend case-insensitive matching to the pattern.
+        #[serde(default)]
+        case_insensitive: bool,
+        /// Verdict emitted when the pattern matches. Defaults to `unsafe`.
+        #[serde(default)]
+        verdict: RuleVerdict,
+        /// Optional operator-facing reason for the verdict.
+        reason: Option<String>,
+    },
+    /// Match content against an operator-owned keyword list.
+    Keywords {
+        /// Terms to search for.
+        terms: Vec<String>,
+        /// Match terms case-sensitively. Defaults to case-insensitive.
+        #[serde(default)]
+        case_sensitive: bool,
+        /// Require every term to match instead of any term.
+        #[serde(default)]
+        match_all: bool,
+        /// Verdict emitted when the keyword rule matches. Defaults to `unsafe`.
+        #[serde(default)]
+        verdict: RuleVerdict,
+        /// Optional operator-facing reason for the verdict.
+        reason: Option<String>,
+    },
+    /// Emit a verdict when content exceeds a configured byte size.
+    MaxSize {
+        /// Maximum allowed content body size in bytes.
+        bytes: usize,
+        /// Verdict emitted when content is too large. Defaults to `unsafe`.
+        #[serde(default)]
+        verdict: RuleVerdict,
+        /// Optional operator-facing reason for the verdict.
+        reason: Option<String>,
+    },
 }
 
 impl ScannerCheckConfig {
     fn default_starlark_max_callstack() -> usize {
         64
+    }
+}
+
+/// Verdict emitted by declarative scanner rules.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleVerdict {
+    /// Allow the content. Useful when composing advisory rules in custom code.
+    Clean,
+    /// Ask the caller to review the content before use.
+    Review,
+    /// Block the content.
+    #[default]
+    Unsafe,
+}
+
+impl RuleVerdict {
+    fn to_scan_verdict(
+        &self,
+        reason: Option<&str>,
+        fallback: impl FnOnce() -> String,
+    ) -> ScanVerdict {
+        match self {
+            RuleVerdict::Clean => ScanVerdict::Clean,
+            RuleVerdict::Review => ScanVerdict::Review {
+                reason: reason.map(str::to_string).unwrap_or_else(fallback),
+            },
+            RuleVerdict::Unsafe => ScanVerdict::Unsafe {
+                reason: reason.map(str::to_string).unwrap_or_else(fallback),
+            },
+        }
     }
 }
 
@@ -194,6 +265,7 @@ pub trait ScannerCheck: Send + Sync {
 pub struct AdversaryScanner {
     config: ScannerConfig,
     client: reqwest::Client,
+    regex_cache: Arc<Mutex<HashMap<String, Result<Regex, String>>>>,
     starlark_cache: Arc<Mutex<StarlarkPolicyCache>>,
 }
 
@@ -206,6 +278,7 @@ impl AdversaryScanner {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("reqwest client"),
+            regex_cache: Arc::new(Mutex::new(HashMap::new())),
             starlark_cache: Arc::new(Mutex::new(StarlarkPolicyCache::default())),
         }
     }
@@ -239,6 +312,37 @@ impl AdversaryScanner {
                     fail_closed,
                     max_callstack,
                 } => self.starlark_check(&path, url, content, ctx, fail_closed, max_callstack),
+                ScannerCheckConfig::Regex {
+                    pattern,
+                    case_insensitive,
+                    verdict,
+                    reason,
+                } => self.regex_check(
+                    &pattern,
+                    content,
+                    case_insensitive,
+                    verdict,
+                    reason.as_deref(),
+                ),
+                ScannerCheckConfig::Keywords {
+                    terms,
+                    case_sensitive,
+                    match_all,
+                    verdict,
+                    reason,
+                } => self.keyword_check(
+                    &terms,
+                    content,
+                    case_sensitive,
+                    match_all,
+                    verdict,
+                    reason.as_deref(),
+                ),
+                ScannerCheckConfig::MaxSize {
+                    bytes,
+                    verdict,
+                    reason,
+                } => self.max_size_check(content, bytes, verdict, reason.as_deref()),
             };
 
             if let Some(next) = next {
@@ -274,6 +378,107 @@ impl AdversaryScanner {
             });
         }
         None
+    }
+
+    fn regex_check(
+        &self,
+        pattern: &str,
+        content: &str,
+        case_insensitive: bool,
+        verdict: RuleVerdict,
+        reason: Option<&str>,
+    ) -> Option<ScanVerdict> {
+        let pattern = if case_insensitive {
+            format!("(?i:{pattern})")
+        } else {
+            pattern.to_string()
+        };
+        let Ok(regex) = self.load_regex(&pattern) else {
+            return Some(ScanVerdict::Unsafe {
+                reason: "configured regex scanner check failed to compile".into(),
+            });
+        };
+
+        regex.is_match(content).then(|| {
+            verdict.to_scan_verdict(reason, || {
+                "configured regex scanner check matched content".into()
+            })
+        })
+    }
+
+    fn load_regex(&self, pattern: &str) -> Result<Regex, String> {
+        if let Some(cached) = self
+            .regex_cache
+            .lock()
+            .map_err(|_| "regex scanner cache lock poisoned".to_string())?
+            .get(pattern)
+            .cloned()
+        {
+            return cached;
+        }
+
+        let compiled = Regex::new(pattern).map_err(|err| err.to_string());
+        self.regex_cache
+            .lock()
+            .map_err(|_| "regex scanner cache lock poisoned".to_string())?
+            .insert(pattern.to_string(), compiled.clone());
+        compiled
+    }
+
+    fn keyword_check(
+        &self,
+        terms: &[String],
+        content: &str,
+        case_sensitive: bool,
+        match_all: bool,
+        verdict: RuleVerdict,
+        reason: Option<&str>,
+    ) -> Option<ScanVerdict> {
+        if terms.is_empty() {
+            return None;
+        }
+
+        let content = if case_sensitive {
+            content.to_string()
+        } else {
+            content.to_lowercase()
+        };
+        let matches = |term: &String| {
+            if case_sensitive {
+                content.contains(term)
+            } else {
+                content.contains(&term.to_lowercase())
+            }
+        };
+
+        let matched = if match_all {
+            terms.iter().all(matches)
+        } else {
+            terms.iter().any(matches)
+        };
+
+        matched.then(|| {
+            verdict.to_scan_verdict(reason, || {
+                "configured keyword scanner check matched content".into()
+            })
+        })
+    }
+
+    fn max_size_check(
+        &self,
+        content: &str,
+        bytes: usize,
+        verdict: RuleVerdict,
+        reason: Option<&str>,
+    ) -> Option<ScanVerdict> {
+        (content.len() > bytes).then(|| {
+            verdict.to_scan_verdict(reason, || {
+                format!(
+                    "content exceeded configured scanner size limit ({actual} > {bytes} bytes)",
+                    actual = content.len()
+                )
+            })
+        })
     }
 
     fn layer2_semantic(&self, content: &str) -> ScanVerdict {
@@ -946,6 +1151,111 @@ def scan(input):
         assert!(matches!(
             second,
             ScanVerdict::Unsafe { reason } if reason == "second policy"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_regex_check_can_review_custom_content() {
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Regex {
+                pattern: r"\bwire\s+transfer\b".into(),
+                case_insensitive: true,
+                verdict: RuleVerdict::Review,
+                reason: Some("review wire-transfer language".into()),
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan(
+                "https://example.com",
+                "Please initiate a Wire Transfer",
+                ScanContext::Api,
+            )
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Review { reason } if reason == "review wire-transfer language"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_regex_check_fails_closed() {
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Regex {
+                pattern: "(".into(),
+                case_insensitive: false,
+                verdict: RuleVerdict::Review,
+                reason: None,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "ordinary content", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason.contains("regex scanner check failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_keywords_check_supports_match_all() {
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Keywords {
+                terms: vec!["wire".into(), "urgent".into()],
+                case_sensitive: false,
+                match_all: true,
+                verdict: RuleVerdict::Unsafe,
+                reason: Some("urgent wire language blocked".into()),
+            }],
+            ..Default::default()
+        });
+
+        let clean = s
+            .scan("https://example.com", "wire this later", ScanContext::Api)
+            .await;
+        assert_eq!(clean, ScanVerdict::Clean);
+
+        let unsafe_verdict = s
+            .scan(
+                "https://example.com",
+                "URGENT: wire this now",
+                ScanContext::Api,
+            )
+            .await;
+
+        assert!(matches!(
+            unsafe_verdict,
+            ScanVerdict::Unsafe { reason } if reason == "urgent wire language blocked"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_max_size_check_blocks_large_content() {
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::MaxSize {
+                bytes: 10,
+                verdict: RuleVerdict::Unsafe,
+                reason: None,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan(
+                "https://example.com",
+                "this content is too large",
+                ScanContext::WebFetch,
+            )
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason.contains("exceeded configured scanner size limit")
         ));
     }
 
