@@ -6,8 +6,9 @@ description = "Calciforge — Adversarial content detection and scanning"
 license = "MIT"
 
 [dependencies]
+anyhow = "1"
+base64 = "0.22"
 regex = "1"
-aho-corasick = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

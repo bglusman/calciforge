@@ -427,9 +427,9 @@ pub struct SecuritySectionConfig {
     /// Enable outbound message scanning
     #[serde(default = "default_scan_outbound")]
     pub scan_outbound: bool,
-    /// Ordered scanner checks. Empty uses the profile default
-    /// structural+semantic local checks. Add `remote_http` entries to call
-    /// custom policy services or an LLM classifier.
+    /// Ordered scanner checks. Empty uses the profile default built-in
+    /// Starlark scanner policy. Add `remote_http` entries to call custom
+    /// policy services or an LLM classifier.
     #[serde(default)]
     pub scanner_checks: Vec<adversary_detector::ScannerCheckConfig>,
 }
@@ -1146,12 +1146,6 @@ profile = "hardened"
 scan_outbound = true
 
 [[security.scanner_checks]]
-kind = "structural"
-
-[[security.scanner_checks]]
-kind = "semantic"
-
-[[security.scanner_checks]]
 kind = "remote_http"
 url = "http://127.0.0.1:9801"
 fail_closed = true
@@ -1161,13 +1155,6 @@ kind = "starlark"
 path = "/etc/calciforge/scanner.star"
 fail_closed = true
 max_callstack = 32
-
-[[security.scanner_checks]]
-kind = "keywords"
-terms = ["wire", "urgent"]
-match_all = true
-verdict = "review"
-reason = "review urgent wire language"
 "#,
         )
         .expect("parse security scanner checks");
@@ -1175,30 +1162,20 @@ reason = "review urgent wire language"
         let security = cfg.security.expect("security section");
         assert_eq!(security.profile, "hardened");
         assert!(security.scan_outbound);
-        assert_eq!(security.scanner_checks.len(), 5);
+        assert_eq!(security.scanner_checks.len(), 2);
         assert_eq!(
-            security.scanner_checks[2],
+            security.scanner_checks[0],
             adversary_detector::ScannerCheckConfig::RemoteHttp {
                 url: "http://127.0.0.1:9801".into(),
                 fail_closed: true,
             }
         );
         assert_eq!(
-            security.scanner_checks[3],
+            security.scanner_checks[1],
             adversary_detector::ScannerCheckConfig::Starlark {
                 path: "/etc/calciforge/scanner.star".into(),
                 fail_closed: true,
                 max_callstack: 32,
-            }
-        );
-        assert_eq!(
-            security.scanner_checks[4],
-            adversary_detector::ScannerCheckConfig::Keywords {
-                terms: vec!["wire".into(), "urgent".into()],
-                case_sensitive: false,
-                match_all: true,
-                verdict: adversary_detector::RuleVerdict::Review,
-                reason: Some("review urgent wire language".into()),
             }
         );
     }

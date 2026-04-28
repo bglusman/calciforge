@@ -193,6 +193,60 @@ raw API keys or trusting the agent's own restraint.</p>
 Calciforge sits between your AI agents and the rest of the world. The
 gateway covers seven overlapping concerns; you can adopt any subset.
 
+### Security gateway
+
+The core product is the security gateway: a local network enforcement
+point that agents use through `HTTP_PROXY` and `HTTPS_PROXY`. Instead of
+hoping each agent remembers the right rules, Calciforge puts the rules
+at the request boundary where secrets, destinations, model routes, and
+tool permissions can be checked before traffic leaves the machine.
+
+The gateway protects in three places:
+
+- **Before outbound requests** — substitute `{% raw %}{{secret:NAME}}{% endraw %}`
+  only at approved destinations, scan request bodies for exfiltration
+  language, and fail closed when a referenced secret cannot be resolved.
+- **Before inbound content reaches the model** — scan fetched pages,
+  search results, email bodies, command output, and other tool results
+  for prompt-injection and hidden-instruction patterns.
+- **Before tools execute** — ask the `clashd` policy sidecar whether a
+  command, file write, network call, or other agent action should be
+  allowed, denied, or sent for review.
+
+The default adversary detector is intentionally editable. Calciforge
+ships a built-in Starlark policy for deterministic checks such as
+zero-width text, hidden DOM, base64-encoded English instructions,
+credential-harvest phrasing, exfiltration language, and concrete
+tool-policy bypass patterns. Operators can copy that policy into
+`/etc/calciforge/scanner-policies/default-scanner.star`, edit it, add
+more Starlark checks, or attach a remote HTTP scanner for heavier DLP
+and LLM-based semantic review.
+
+```toml
+[[security.scanner_checks]]
+kind = "starlark"
+path = "/etc/calciforge/scanner-policies/default-scanner.star"
+fail_closed = true
+max_callstack = 64
+
+[[security.scanner_checks]]
+kind = "remote_http"
+url = "http://127.0.0.1:9801"
+fail_closed = true
+```
+
+Starlark policy files can call `regex_match(pattern, content)` and
+`base64_decoded_regex_match(pattern, content)` for bounded Rust-backed
+matching. Remote scanners use a simple `/scan` HTTP contract; the
+included example wraps an OpenAI-compatible classifier with an editable
+prompt for foreign-language, poetry/style-shift, fictional-framing, and
+multi-step manipulation cases that are too semantic for local regexes.
+
+See the [security gateway docs](security-gateway.md) for configuration
+details and the
+[red-team fixtures](https://github.com/bglusman/calciforge/tree/main/examples/red-team)
+for the contributor-friendly suite used to harden detection over time.
+
 ### Secret management
 
 Your agent never holds the actual API key. The gateway resolves
@@ -258,13 +312,16 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 during the channel-integration cut and is on the
 [roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
 
-The scanner pipeline is configurable: built-in structural and semantic
-checks run locally by default, declarative regex/keyword/size rules cover
-simple operator policies, Starlark policies add low-latency branching
-logic, and optional remote HTTP scanners can host heavier DLP or LLM
-classifier passes. Editable starter Starlark policies ship for
-destination allowlists, destructive command patterns, and
-credential-language review.
+The scanner pipeline is configurable. The default policy now runs through
+`builtin:calciforge/default-scanner.star`, so the rule set can be copied,
+edited, replaced, or ordered alongside other Starlark checks. Starlark
+policies can call `regex_match(pattern, content)` and bounded
+`base64_decoded_regex_match(pattern, content)` helpers for Rust-backed matching
+without a sidecar service. Optional remote HTTP scanners can host heavier DLP
+or LLM classifier passes, and the example LLM classifier ships with an editable
+default prompt. The built-in default measured about `299µs` per warm scan in a
+local release build; remote LLM checks are explicit because they add materially
+more latency.
 
 ### Inbound traffic gating and tool policy
 
@@ -416,6 +473,28 @@ Named cascades, dispatchers, and token-window fit checks are captured
 in
 [`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
 
+### Subscription-backed agents and models
+
+Calciforge can call local CLIs such as Codex, Claude Code, OpenClaw,
+and other scriptable agents in two different ways. Use a direct agent
+adapter when the CLI should keep its own agent identity and workflow;
+use an `[[exec_models]]` entry when the CLI should appear as a model
+behind the OpenAI-compatible gateway.
+
+That distinction matters for subscriptions and OAuth. The vendor CLI
+can own its local browser login, refresh tokens, project state, and
+provider-specific flags while Calciforge only sees a configured command,
+stdin prompt, stdout answer, timeout, and context-window declaration.
+The example wrappers are intentionally small because provider CLIs and
+terms change; operators should validate the installed CLI version and
+subscription terms before making an exec model part of their default
+route.
+
+Read the [agent adapter notes](agent-adapters.md) and
+[Codex/OpenClaw integration guide](codex-openclaw-integration.md) for
+direct `codex-cli`, `openclaw-native`, `openclaw-http`, `cli`, `acpx`,
+and exec-model examples.
+
 ### Agent-facing tools (MCP and CLI)
 
 A built-in MCP server and small CLI expose secret *names* to agents
@@ -486,7 +565,9 @@ A separate authenticated daemon (`host-agent`) handles ZFS / systemd
 / PCT / git / exec calls behind mTLS. Agents never get a shell
 directly; they call the daemon, which validates the operation
 shape against allowlist rules and runs through narrow sudoers
-wrappers.
+wrappers. The host side relies on Unix permissions for enforcement and
+writes structured audit records suitable for append-only logs and
+rotation.
 
 ---
 

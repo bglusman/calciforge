@@ -1,8 +1,8 @@
 //! Calciforge — Adversary external content scanning module.
 //!
 //! Provides injection-resistant scanning of external content before it reaches
-//! the model context. Configurable defense: structural → semantic → optional
-//! Starlark policy → optional HTTP service.
+//! the model context. Configurable defense: default Starlark scanner policy →
+//! optional operator Starlark policy → optional HTTP service.
 //!
 //! # Architecture
 //!
@@ -37,7 +37,6 @@
 pub mod audit;
 pub mod digest;
 pub mod middleware;
-pub mod patterns;
 pub mod profiles;
 pub mod proxy;
 pub mod scanner;
@@ -68,5 +67,5 @@ pub use digest::{sha256_hex, ContentDigest, DigestStore};
 pub use middleware::{ChannelScanner, HookOutcome, InterceptedToolSet, ToolHook, ToolResult};
 pub use profiles::{RateLimitConfig, SecurityConfig, SecurityProfile};
 pub use proxy::{AdversaryDetector, AdversaryFetchResult};
-pub use scanner::{AdversaryScanner, RuleVerdict, ScannerCheck, ScannerCheckConfig, ScannerConfig};
+pub use scanner::{AdversaryScanner, ScannerCheck, ScannerCheckConfig, ScannerConfig};
 pub use verdict::{ScanContext, ScanVerdict};

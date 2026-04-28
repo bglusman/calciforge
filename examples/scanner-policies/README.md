@@ -5,6 +5,15 @@ loaded through `[[security.scanner_checks]] kind = "starlark"`.
 
 They run in-process with `load()` disabled and a bounded call stack. Treat them
 as configuration-layer policy: keep rules small, explicit, and easy to audit.
+Policies can call `regex_match(pattern, content)`, which uses Rust's `regex`
+engine with compiled-pattern caching, and
+`base64_decoded_regex_match(pattern, content)` for bounded inspection of
+base64-encoded text tokens.
+
+Calciforge's built-in default scanner also runs as Starlark:
+`builtin:calciforge/default-scanner.star`. Copy
+`crates/adversary-detector/policies/default-scanner.star` if you want to edit
+or replace the default scanner policy.
 
 ## Policies
 

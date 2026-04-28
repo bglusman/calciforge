@@ -56,6 +56,7 @@ use tokio::time::timeout;
 use tracing::debug;
 
 const DEFAULT_FNOX_TIMEOUT: Duration = Duration::from_secs(10);
+const FNOX_ETXTBSY_ATTEMPTS: u32 = 6;
 
 /// Errors from `FnoxClient` operations. Variants are intentionally
 /// narrow so callers can pattern-match instead of substring-matching
@@ -266,7 +267,7 @@ impl FnoxClient {
         // tools like rustup/npm/cargo all retry through. Bound the
         // retry tightly so a real "fnox is permanently busy" still
         // surfaces.
-        for attempt in 0..3 {
+        for attempt in 0..FNOX_ETXTBSY_ATTEMPTS {
             let mut command = Command::new(&self.binary);
             command
                 .args(args)
@@ -281,9 +282,10 @@ impl FnoxClient {
                     })?;
             match result {
                 Ok(output) => return Ok(output),
-                Err(e) if is_text_file_busy(&e) && attempt < 2 => {
-                    // 5ms, 25ms backoff — covers most kernel
-                    // bookkeeping windows without dragging tests.
+                Err(e) if is_text_file_busy(&e) && attempt + 1 < FNOX_ETXTBSY_ATTEMPTS => {
+                    // Short exponential backoff for Linux ETXTBSY.
+                    // CI can occasionally hold a just-written test
+                    // executable busy longer than a single scheduler tick.
                     text_file_busy_backoff(attempt).await;
                     continue;
                 }
@@ -294,7 +296,7 @@ impl FnoxClient {
     }
 
     async fn spawn_set_child(&self, name: &str) -> Result<tokio::process::Child, FnoxError> {
-        for attempt in 0..3 {
+        for attempt in 0..FNOX_ETXTBSY_ATTEMPTS {
             let mut command = Command::new(&self.binary);
             command
                 .args(["set", name, "-"])
@@ -305,7 +307,7 @@ impl FnoxClient {
 
             match command.spawn() {
                 Ok(child) => return Ok(child),
-                Err(e) if is_text_file_busy(&e) && attempt < 2 => {
+                Err(e) if is_text_file_busy(&e) && attempt + 1 < FNOX_ETXTBSY_ATTEMPTS => {
                     text_file_busy_backoff(attempt).await;
                     continue;
                 }
@@ -317,7 +319,7 @@ impl FnoxClient {
 }
 
 async fn text_file_busy_backoff(attempt: u32) {
-    tokio::time::sleep(Duration::from_millis(5 * 5u64.pow(attempt))).await;
+    tokio::time::sleep(Duration::from_millis(10 * 2u64.pow(attempt))).await;
 }
 
 /// Linux returns errno 26 (`ETXTBSY`) when a process tries to execve

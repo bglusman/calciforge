@@ -57,35 +57,43 @@ The gateway is configured via `GatewayConfig`:
 - `scan_inbound`: Toggle injection detection.
 - `inject_credentials`: Toggle automatic API key injection.
 - `bypass_domains`: List of domains that skip scanning (e.g., internal services).
-- `scanner_checks`: Ordered adversary-detector checks. Empty means the default
-  local structural and semantic checks.
+- `scanner_checks`: Ordered adversary-detector checks. Empty means the built-in
+  default Starlark scanner policy.
 
 ## Scanner Extension Points
 
 Calciforge's security checks are an ordered pipeline:
 
-1. `structural` — local hidden-payload checks such as zero-width characters,
-   Unicode tags, CSS hiding, and large base64 blobs.
-2. `semantic` — local prompt-injection, PII-harvest, and exfiltration-pattern
-   checks.
-3. `regex`, `keywords`, and `max_size` — declarative low-latency checks for
-   common operator rules that should not require custom code.
-4. `starlark` — optional in-process operator policy. This is the low-latency
-   path for site-specific rules that do not need network calls.
-5. `remote_http` — optional custom policy service. This is where operators can
+1. Built-in default Starlark policy — runs when `scanner_checks` is empty.
+   It implements the default hidden-payload, prompt-injection, PII-harvest,
+   and exfiltration checks in editable policy code.
+2. `starlark` — in-process operator policy. This is the low-latency path for
+   site-specific rules that do not need network calls. Policies can call
+   `regex_match(pattern, content)` and
+   `base64_decoded_regex_match(pattern, content)` for bounded Rust-backed
+   matching.
+3. `remote_http` — optional custom policy service. This is where operators can
    add an LLM classifier, heavyweight DLP checks, or organization-specific
    threat modeling that belongs outside the proxy process.
 
-The remote LLM check is best treated as defense in depth: a focused classifier
-prompt with binary-ish `clean/review/unsafe` output can catch manipulation
-patterns that simple regexes miss, but it adds latency and still asks one model
-to defend another model. For that reason, Calciforge keeps the local structural
-and semantic checks as the default, makes the LLM pass explicit, and lets
-operators choose whether remote scanner outages fail open or fail closed.
+Calciforge intentionally has both local and remote adversary detectors. The
+local Starlark policy is for deterministic prefiltering: hidden DOM/text,
+encoding, obvious exfiltration language, and concrete tool-policy bypass
+patterns. The remote HTTP/LLM check is for semantic adjudication: foreign
+language, poetry or other style-shift attacks, fictional framing, coercion,
+multi-step decomposition, and intent that would be brittle or overbroad as
+regex. The remote pass adds latency and still asks one model to defend another
+model, so Calciforge keeps Starlark as the default and makes the LLM pass
+explicitly configurable.
 
 No remote service is required for the default gateway. The localhost HTTP hop is
 small, but an LLM classifier call is not; enable it only when the extra security
 pass is worth the added latency.
+
+On a local release build, the built-in Starlark default scanner measured about
+`299µs` per warm scan for ordinary small content. Treat that as a sanity check,
+not a universal latency guarantee: large bodies, cold starts, extra configured
+policies, proxy I/O, and remote LLM checks dominate real end-to-end latency.
 
 The example prompt covers more than classic prompt injection: credential
 exfiltration, malicious tool-use instructions, false authority claims, identity
@@ -117,6 +125,7 @@ service:
 ```sh
 CALCIFORGE_REMOTE_SCANNER_ENABLED=1 \
 REMOTE_SCANNER_API_KEY_FILE=~/.calciforge/secrets/remote-scanner-api-key \
+REMOTE_SCANNER_PROMPT_FILE=~/.calciforge/remote-llm-scanner-prompt.txt \
 bash scripts/install.sh
 ```
 
@@ -124,7 +133,10 @@ When enabled, the installer starts `remote-llm-scanner` on
 `127.0.0.1:9801` and sets `SECURITY_PROXY_REMOTE_SCANNER_URL` plus
 `CALCIFORGE_REMOTE_SCANNER_URL` for the managed services. The API key can be
 provided through `REMOTE_SCANNER_API_KEY_FILE` or `REMOTE_SCANNER_API_KEY`; the
-file path is preferred so service definitions do not contain the key.
+file path is preferred so service definitions do not contain the key. The
+classifier prompt is also editable: set `REMOTE_SCANNER_PROMPT_FILE` to a text
+file or `REMOTE_SCANNER_PROMPT` to an inline override. The installer seeds a
+default prompt file when it manages the example service.
 
 Or configure checks directly in `config.toml`:
 
@@ -133,31 +145,19 @@ Or configure checks directly in `config.toml`:
 profile = "balanced"
 scan_outbound = true
 
+# Empty scanner_checks uses the built-in Starlark default:
+# builtin:calciforge/default-scanner.star
+#
+# To customize it, copy
+# crates/adversary-detector/policies/default-scanner.star to
+# /etc/calciforge/scanner-policies/default-scanner.star, edit it, then
+# configure it explicitly:
+#
 [[security.scanner_checks]]
-kind = "structural"
-
-[[security.scanner_checks]]
-kind = "semantic"
-
-[[security.scanner_checks]]
-kind = "keywords"
-terms = ["wire", "urgent"]
-match_all = true
-verdict = "review"
-reason = "review urgent wire language"
-
-[[security.scanner_checks]]
-kind = "regex"
-pattern = "\\bcredential dump\\b"
-case_insensitive = true
-verdict = "unsafe"
-reason = "credential-dump language blocked"
-
-[[security.scanner_checks]]
-kind = "max_size"
-bytes = 1048576
-verdict = "review"
-reason = "review unusually large content"
+kind = "starlark"
+path = "/etc/calciforge/scanner-policies/default-scanner.star"
+fail_closed = true
+max_callstack = 64
 
 [[security.scanner_checks]]
 kind = "starlark"
@@ -171,9 +171,12 @@ url = "http://127.0.0.1:9801"
 fail_closed = true
 ```
 
-Declarative checks are evaluated in order with the rest of the scanner
-pipeline. `verdict` accepts `clean`, `review`, or `unsafe`; omitted verdicts
-default to `unsafe`.
+Checks are evaluated in order. A `clean` result continues to the next check.
+A `review` result is retained while later checks continue, so a later
+`unsafe` result can still block; `unsafe` stops the pipeline immediately.
+`fail_closed` controls scanner errors or outages only: with `false`, an
+unavailable optional check is skipped; successful `review` or `unsafe`
+verdicts still enforce.
 
 Starlark checks run in-process with `load()` disabled and a bounded call stack.
 The policy file must define `scan(input)` and return `"clean"`, `"review"`,
@@ -192,12 +195,18 @@ def scan(input):
     return "clean"
 ```
 
-See `examples/security-scanner.star` for a minimal starter policy and
+Starlark policies receive `url`, `content`, `context`,
+`discussion_ratio_threshold`, and `min_signals_for_ratio`. They also have
+helpers backed by Rust's `regex` crate with compiled-pattern caching:
+`regex_match(pattern, content)` for direct matching and
+`base64_decoded_regex_match(pattern, content)` for bounded inspection of
+base64-encoded text tokens. See
+`crates/adversary-detector/policies/default-scanner.star` for the default
+policy, `examples/security-scanner.star` for a minimal starter policy, and
 `examples/scanner-policies/` for reusable examples covering destination
 allowlists, destructive command patterns, and credential-language review.
-`calciforge doctor --no-network` validates Starlark policy files, regex
-syntax, keyword/max-size rule shape, and remote scanner URL syntax without
-calling remote scanner services.
+`calciforge doctor --no-network` validates Starlark policy files and remote
+scanner URL syntax without calling remote scanner services.
 
 Remote checks receive the same content that would otherwise be allowed or
 blocked by the local scanner:
@@ -222,6 +231,7 @@ uses an OpenAI-compatible model with a strict security-classifier prompt:
 REMOTE_SCANNER_API_KEY=... \
 REMOTE_SCANNER_API_BASE=https://api.openai.com/v1 \
 REMOTE_SCANNER_MODEL=gpt-5.4-mini \
+REMOTE_SCANNER_PROMPT_FILE=./scripts/remote-llm-scanner-prompt.txt \
 ./scripts/remote-llm-scanner.py
 ```
 
@@ -246,13 +256,14 @@ Scanner code is operator-owned configuration-layer policy, so the sandbox is
 not about treating the operator as hostile. It is about reliability and
 blast-radius reduction: accidental recursion, dependency behavior, or unexpected
 file and network access should not weaken the gateway. Starlark is the default
-custom in-process layer because it is already used by Calciforge policy code,
-has no ambient filesystem or network access in this integration, and is simple
-to audit. WebAssembly remains a possible future plugin layer when stronger fuel
-and memory controls are needed. Declarative checks such as regexes, keyword
-lists, and size limits should be preferred for simple rules. Use Starlark when
-a rule needs conditionals or context-specific branching, and `remote_http` when
-the rule needs networked services or heavyweight dependencies.
+in-process scanner layer because it is already used by Calciforge policy code,
+has no ambient filesystem or network access in this integration, supports
+editable branching logic, and can use cached Rust regexes through
+`regex_match()`. WebAssembly remains a possible future plugin layer when
+stronger fuel and memory controls are needed. Use Starlark for local rules,
+including regexes, keyword lists, size limits, allowed-language checks, or
+context-specific branching; use `remote_http` when the rule needs networked
+services or heavyweight dependencies.
 
 Starter Starlark policies live under `examples/scanner-policies/`:
 
@@ -265,9 +276,34 @@ Starter Starlark policies live under `examples/scanner-policies/`:
 Copy these into `/etc/calciforge/scanner-policies/`, edit the constants at the
 top of each file, then add one or more `starlark` checks to `config.toml`.
 
-## 🧪 Testing
+## Testing
 
 Integration tests are located in `crates/security-proxy/tests/`. They verify:
 - Interception of adversarial content.
 - Blocking of unsafe responses.
 - Successful credential injection for known providers.
+
+The scanner also has a contributor-friendly red-team fixture suite:
+
+```sh
+cargo run -p adversary-detector --example red-team
+```
+
+Fixtures live in `examples/red-team/adversary-fixtures.json`. Add cases there
+when you find a bypass or false positive. Useful categories include encoded
+payloads, foreign-language prompt injection, Unicode obfuscation, benign
+security research, and GTFOBins/LOLBins-style instructions where a legitimate
+tool is used to bypass a higher-level policy. Some fixtures can intentionally
+document current gaps by expecting `clean`; hardening work should update the
+fixture expectation in the same PR that improves the policy.
+
+Good sources for new fixture families include:
+
+- [GTFOBins](https://gtfobins.org/) and LOLBAS-style tool-policy bypasses.
+- Agent-governance threat taxonomies such as `Agents of Chaos`.
+- Adversarial-poetry and other style-shift jailbreak research.
+- [Agent Arena](https://wiz.jock.pl/experiments/agent-arena/) hidden web-content
+  cases: comments, hidden DOM nodes, microtext, ARIA, data attributes, alt text,
+  off-screen content, and zero-width text.
+- scurl-style sanitized-fetch middleware; see the
+  [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.md).

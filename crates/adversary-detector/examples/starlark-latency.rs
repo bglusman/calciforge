@@ -5,7 +5,7 @@ use std::time::Instant;
 async fn main() {
     let policy = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "examples/security-scanner.star".to_string());
+        .unwrap_or_else(|| "builtin:calciforge/default-scanner.star".to_string());
     let iterations: u32 = std::env::args()
         .nth(2)
         .and_then(|value| value.parse().ok())

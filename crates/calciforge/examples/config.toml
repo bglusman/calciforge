@@ -9,14 +9,17 @@ version = 1
 profile = "balanced"  # open | balanced | hardened | paranoid
 scan_outbound = false
 
-# Optional scanner pipeline extension. Empty scanner_checks uses the local
-# structural + semantic defaults.
+# Optional scanner pipeline extension. Empty scanner_checks uses the built-in
+# Starlark default: builtin:calciforge/default-scanner.star.
+#
+# To customize the default, copy
+# crates/adversary-detector/policies/default-scanner.star to
+# /etc/calciforge/scanner-policies/default-scanner.star, edit it, then enable:
 # [[security.scanner_checks]]
-# kind = "keywords"
-# terms = ["wire", "urgent"]
-# match_all = true
-# verdict = "review"
-# reason = "review urgent wire language"
+# kind = "starlark"
+# path = "/etc/calciforge/scanner-policies/default-scanner.star"
+# fail_closed = true
+# max_callstack = 64
 #
 # [[security.scanner_checks]]
 # kind = "starlark"
