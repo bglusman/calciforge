@@ -515,7 +515,8 @@ checks referenced secret files without printing values, catches stale
 active-agent/model state, warns when an agent appears to point back into
 the local model gateway by accident, checks subprocess proxy inheritance,
 warns about externally managed agent daemons whose proxy environment is
-unverified, and can probe configured endpoints.
+unverified, validates configured scanner policy files and rule syntax,
+and can probe configured endpoints.
 Use `calciforge doctor --no-network` when you want a local-only check.
 
 Route Claude Code through the gateway:

@@ -7,6 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use adversary_detector::{
+    AdversaryScanner, RuleVerdict, ScanContext, ScanVerdict, ScannerCheckConfig, ScannerConfig,
+};
 use anyhow::Result;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -123,6 +126,7 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
 
     check_secret_files(&config, &mut report);
     check_secret_tooling(&mut report);
+    check_scanner_config(&config, no_network, &mut report).await;
     check_proxy_environment(&mut report);
     check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
     check_agent_wiring(&config, no_network, &mut report).await;
@@ -433,6 +437,246 @@ fn check_secret_files(config: &CalciforgeConfig, report: &mut DoctorReport) {
     }
 }
 
+async fn check_scanner_config(
+    config: &CalciforgeConfig,
+    no_network: bool,
+    report: &mut DoctorReport,
+) {
+    let Some(security) = &config.security else {
+        report.ok("security scanner uses profile defaults");
+        return;
+    };
+
+    if security.scanner_checks.is_empty() {
+        report.ok(format!(
+            "security scanner profile '{}' uses default local checks",
+            security.profile
+        ));
+        return;
+    }
+
+    report.ok(format!(
+        "security scanner profile '{}' has {} configured check(s)",
+        security.profile,
+        security.scanner_checks.len()
+    ));
+
+    for (idx, check) in security.scanner_checks.iter().enumerate() {
+        match check {
+            ScannerCheckConfig::Structural => {
+                report.ok(format!("scanner check #{idx} structural enabled"));
+            }
+            ScannerCheckConfig::Semantic => {
+                report.ok(format!("scanner check #{idx} semantic enabled"));
+            }
+            ScannerCheckConfig::RemoteHttp { url, fail_closed } => {
+                check_remote_scanner_url(idx, url, *fail_closed, no_network, report);
+            }
+            ScannerCheckConfig::Starlark {
+                path,
+                fail_closed,
+                max_callstack,
+            } => {
+                check_starlark_scanner_policy(idx, path, *fail_closed, *max_callstack, report)
+                    .await;
+            }
+            ScannerCheckConfig::Regex {
+                pattern,
+                case_insensitive,
+                verdict,
+                reason,
+            } => {
+                check_regex_scanner_rule(
+                    idx,
+                    pattern,
+                    *case_insensitive,
+                    verdict.clone(),
+                    reason.as_deref(),
+                    report,
+                )
+                .await;
+            }
+            ScannerCheckConfig::Keywords {
+                terms, match_all, ..
+            } => {
+                if terms.is_empty() {
+                    report.warn(format!("scanner check #{idx} keyword rule has no terms"));
+                } else {
+                    report.ok(format!(
+                        "scanner check #{idx} keyword rule has {} term(s), match_all={match_all}",
+                        terms.len()
+                    ));
+                }
+            }
+            ScannerCheckConfig::MaxSize { bytes, .. } => {
+                if *bytes == 0 {
+                    report.warn(format!(
+                        "scanner check #{idx} max_size is 0 bytes and will match any non-empty body"
+                    ));
+                } else {
+                    report.ok(format!(
+                        "scanner check #{idx} max_size limit is {bytes} bytes"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn check_remote_scanner_url(
+    idx: usize,
+    url: &str,
+    fail_closed: bool,
+    no_network: bool,
+    report: &mut DoctorReport,
+) {
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            report.error(format!(
+                "scanner check #{idx} remote_http URL is invalid: {err}"
+            ));
+            return;
+        }
+    };
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        report.error(format!(
+            "scanner check #{idx} remote_http URL must use http or https"
+        ));
+        return;
+    }
+
+    if parsed.host_str().is_none() {
+        report.error(format!("scanner check #{idx} remote_http URL has no host"));
+        return;
+    }
+
+    if no_network {
+        report.ok(format!(
+            "scanner check #{idx} remote_http URL parses; reachability skipped by --no-network"
+        ));
+    } else {
+        report.ok(format!(
+            "scanner check #{idx} remote_http URL parses; fail_closed={fail_closed}"
+        ));
+    }
+}
+
+async fn check_starlark_scanner_policy(
+    idx: usize,
+    path: &str,
+    fail_closed: bool,
+    max_callstack: usize,
+    report: &mut DoctorReport,
+) {
+    let expanded = config::expand_tilde(path);
+    match std::fs::metadata(&expanded) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            report.error(format!(
+                "scanner check #{idx} starlark policy is not a regular file"
+            ));
+            return;
+        }
+        Err(err) => {
+            report.error(format!(
+                "scanner check #{idx} starlark policy is not readable: {err}"
+            ));
+            return;
+        }
+    }
+
+    let scanner = AdversaryScanner::new(ScannerConfig {
+        checks: vec![ScannerCheckConfig::Starlark {
+            path: expanded.to_string_lossy().into_owned(),
+            fail_closed: true,
+            max_callstack,
+        }],
+        ..Default::default()
+    });
+    let verdict = scanner
+        .scan(
+            "https://calciforge.local/doctor",
+            "calciforge doctor scanner policy validation probe",
+            ScanContext::Api,
+        )
+        .await;
+
+    match verdict {
+        ScanVerdict::Unsafe { reason }
+            if reason.contains("starlark security check failed")
+                || reason.contains("policy must define scan(input)") =>
+        {
+            report.error(format!(
+                "scanner check #{idx} starlark policy failed validation: {reason}"
+            ));
+        }
+        ScanVerdict::Unsafe { reason } => {
+            report.warn(format!(
+                "scanner check #{idx} starlark policy loaded, but blocks the doctor probe: {reason}"
+            ));
+        }
+        ScanVerdict::Review { reason } => {
+            report.warn(format!(
+                "scanner check #{idx} starlark policy loaded, but reviews the doctor probe: {reason}"
+            ));
+        }
+        ScanVerdict::Clean => {
+            report.ok(format!(
+                "scanner check #{idx} starlark policy loads; configured fail_closed={fail_closed}"
+            ));
+        }
+    }
+}
+
+async fn check_regex_scanner_rule(
+    idx: usize,
+    pattern: &str,
+    case_insensitive: bool,
+    verdict: RuleVerdict,
+    reason: Option<&str>,
+    report: &mut DoctorReport,
+) {
+    let scanner = AdversaryScanner::new(ScannerConfig {
+        checks: vec![ScannerCheckConfig::Regex {
+            pattern: pattern.to_string(),
+            case_insensitive,
+            verdict,
+            reason: reason.map(str::to_string),
+        }],
+        ..Default::default()
+    });
+    let verdict = scanner
+        .scan(
+            "https://calciforge.local/doctor",
+            "calciforge doctor regex validation probe",
+            ScanContext::Api,
+        )
+        .await;
+
+    match verdict {
+        ScanVerdict::Unsafe { reason }
+            if reason.contains("regex scanner check failed to compile") =>
+        {
+            report.error(format!("scanner check #{idx} regex failed to compile"));
+        }
+        ScanVerdict::Unsafe { reason } => {
+            report.warn(format!(
+                "scanner check #{idx} regex compiles, but matches the doctor probe: {reason}"
+            ));
+        }
+        ScanVerdict::Review { reason } => {
+            report.warn(format!(
+                "scanner check #{idx} regex compiles, but reviews the doctor probe: {reason}"
+            ));
+        }
+        ScanVerdict::Clean => {
+            report.ok(format!("scanner check #{idx} regex compiles"));
+        }
+    }
+}
+
 fn check_readable_file(report: &mut DoctorReport, label: &str, owner: &str, path: &str) {
     let expanded = config::expand_tilde(path);
     match std::fs::metadata(&expanded) {
@@ -694,7 +938,9 @@ fn synthetic_model_ids(config: &CalciforgeConfig) -> HashSet<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CalciforgeHeader, ProxyConfig, RoutingRule, SyntheticModelConfig};
+    use crate::config::{
+        CalciforgeHeader, ProxyConfig, RoutingRule, SecuritySectionConfig, SyntheticModelConfig,
+    };
 
     fn base_config() -> CalciforgeConfig {
         CalciforgeConfig {
@@ -1057,6 +1303,100 @@ mod tests {
         assert!(!report.findings.iter().any(|finding| finding
             .message
             .contains("doctor cannot verify their process proxy environment")));
+    }
+
+    #[test]
+    fn scanner_config_validates_local_policy_rules() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let policy = tmp.path().join("scanner.star");
+        std::fs::write(&policy, "def scan(input):\n    return \"clean\"\n").unwrap();
+
+        let mut config = base_config();
+        config.security = Some(SecuritySectionConfig {
+            profile: "hardened".to_string(),
+            scan_outbound: true,
+            scanner_checks: vec![
+                ScannerCheckConfig::Starlark {
+                    path: policy.to_string_lossy().into_owned(),
+                    fail_closed: true,
+                    max_callstack: 32,
+                },
+                ScannerCheckConfig::Regex {
+                    pattern: "wire money".to_string(),
+                    case_insensitive: true,
+                    verdict: adversary_detector::RuleVerdict::Review,
+                    reason: None,
+                },
+            ],
+        });
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(check_scanner_config(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok && finding.message.contains("starlark policy loads")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok && finding.message.contains("regex compiles")
+        }));
+    }
+
+    #[test]
+    fn scanner_config_reports_bad_starlark_and_regex_rules() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let policy = tmp.path().join("scanner.star");
+        std::fs::write(&policy, "BROKEN = True\n").unwrap();
+
+        let mut config = base_config();
+        config.security = Some(SecuritySectionConfig {
+            profile: "hardened".to_string(),
+            scan_outbound: true,
+            scanner_checks: vec![
+                ScannerCheckConfig::Starlark {
+                    path: policy.to_string_lossy().into_owned(),
+                    fail_closed: true,
+                    max_callstack: 32,
+                },
+                ScannerCheckConfig::Regex {
+                    pattern: "(".to_string(),
+                    case_insensitive: false,
+                    verdict: adversary_detector::RuleVerdict::Unsafe,
+                    reason: None,
+                },
+                ScannerCheckConfig::RemoteHttp {
+                    url: "file:///tmp/scanner".to_string(),
+                    fail_closed: true,
+                },
+            ],
+        });
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(check_scanner_config(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding
+                    .message
+                    .contains("starlark policy failed validation")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("regex failed to compile")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding
+                    .message
+                    .contains("remote_http URL must use http or https")
+        }));
     }
 
     #[cfg(unix)]

@@ -195,6 +195,9 @@ def scan(input):
 See `examples/security-scanner.star` for a minimal starter policy and
 `examples/scanner-policies/` for reusable examples covering destination
 allowlists, destructive command patterns, and credential-language review.
+`calciforge doctor --no-network` validates Starlark policy files, regex
+syntax, keyword/max-size rule shape, and remote scanner URL syntax without
+calling remote scanner services.
 
 Remote checks receive the same content that would otherwise be allowed or
 blocked by the local scanner:
