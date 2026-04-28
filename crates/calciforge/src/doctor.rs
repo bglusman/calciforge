@@ -443,13 +443,13 @@ async fn check_scanner_config(
     report: &mut DoctorReport,
 ) {
     let Some(security) = &config.security else {
-        report.ok("security scanner uses profile defaults");
+        report.ok("security scanner uses profile default built-in Starlark policy");
         return;
     };
 
     if security.scanner_checks.is_empty() {
         report.ok(format!(
-            "security scanner profile '{}' uses default local checks",
+            "security scanner profile '{}' uses default built-in Starlark policy",
             security.profile
         ));
         return;

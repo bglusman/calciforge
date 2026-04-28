@@ -29,7 +29,7 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-/// Peek at a URL (structural + semantic checks)
+/// Peek at a URL (default scanner policy)
 async fn peek(Json(req): Json<PeekRequest>) -> impl IntoResponse {
     info!("Peek request for: {}", req.url);
     Json(json!({

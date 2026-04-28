@@ -52,7 +52,7 @@ pub struct GatewayConfig {
     /// Log all traffic (even allowed) for audit
     pub audit_log: bool,
     /// Ordered adversary scanner checks for inbound and outbound proxy
-    /// scanning. Empty uses the adversary-detector default local checks.
+    /// scanning. Empty uses the adversary-detector built-in Starlark default.
     #[serde(default)]
     pub scanner_checks: Vec<ScannerCheckConfig>,
     /// Per-secret destination allowlist. Keys are secret names (the

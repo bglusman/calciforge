@@ -57,21 +57,23 @@ The gateway is configured via `GatewayConfig`:
 - `scan_inbound`: Toggle injection detection.
 - `inject_credentials`: Toggle automatic API key injection.
 - `bypass_domains`: List of domains that skip scanning (e.g., internal services).
-- `scanner_checks`: Ordered adversary-detector checks. Empty means the default
-  local structural and semantic checks.
+- `scanner_checks`: Ordered adversary-detector checks. Empty means the built-in
+  default Starlark scanner policy.
 
 ## Scanner Extension Points
 
 Calciforge's security checks are an ordered pipeline:
 
-1. `structural` — local hidden-payload checks such as zero-width characters,
-   Unicode tags, CSS hiding, and large base64 blobs.
-2. `semantic` — local prompt-injection, PII-harvest, and exfiltration-pattern
-   checks.
+1. Built-in default Starlark policy — runs when `scanner_checks` is empty.
+   It implements the default hidden-payload, prompt-injection, PII-harvest,
+   and exfiltration checks in editable policy code.
+2. `starlark` — in-process operator policy. This is the low-latency path for
+   site-specific rules that do not need network calls. Policies can call
+   `regex_match(pattern, content)` for Rust-regex-backed matching.
 3. `regex`, `keywords`, and `max_size` — declarative low-latency checks for
    common operator rules that should not require custom code.
-4. `starlark` — optional in-process operator policy. This is the low-latency
-   path for site-specific rules that do not need network calls.
+4. `structural` and `semantic` — explicit Rust built-ins retained for
+   compatibility and for operators who want the older split pipeline.
 5. `remote_http` — optional custom policy service. This is where operators can
    add an LLM classifier, heavyweight DLP checks, or organization-specific
    threat modeling that belongs outside the proxy process.
@@ -79,13 +81,18 @@ Calciforge's security checks are an ordered pipeline:
 The remote LLM check is best treated as defense in depth: a focused classifier
 prompt with binary-ish `clean/review/unsafe` output can catch manipulation
 patterns that simple regexes miss, but it adds latency and still asks one model
-to defend another model. For that reason, Calciforge keeps the local structural
-and semantic checks as the default, makes the LLM pass explicit, and lets
-operators choose whether remote scanner outages fail open or fail closed.
+to defend another model. For that reason, Calciforge keeps the local Starlark
+policy as the default, makes the LLM pass explicit, and lets operators choose
+whether remote scanner outages fail open or fail closed.
 
 No remote service is required for the default gateway. The localhost HTTP hop is
 small, but an LLM classifier call is not; enable it only when the extra security
 pass is worth the added latency.
+
+On a local release build, the built-in Starlark default scanner measured about
+`150µs` per warm scan for ordinary small content. Treat that as a sanity check,
+not a universal latency guarantee: large bodies, cold starts, extra configured
+policies, proxy I/O, and remote LLM checks dominate real end-to-end latency.
 
 The example prompt covers more than classic prompt injection: credential
 exfiltration, malicious tool-use instructions, false authority claims, identity
@@ -133,11 +140,19 @@ Or configure checks directly in `config.toml`:
 profile = "balanced"
 scan_outbound = true
 
+# Empty scanner_checks uses the built-in Starlark default:
+# builtin:calciforge/default-scanner.star
+#
+# To customize it, copy
+# crates/adversary-detector/policies/default-scanner.star to
+# /etc/calciforge/scanner-policies/default-scanner.star, edit it, then
+# configure it explicitly:
+#
 [[security.scanner_checks]]
-kind = "structural"
-
-[[security.scanner_checks]]
-kind = "semantic"
+kind = "starlark"
+path = "/etc/calciforge/scanner-policies/default-scanner.star"
+fail_closed = true
+max_callstack = 64
 
 [[security.scanner_checks]]
 kind = "keywords"
@@ -192,7 +207,12 @@ def scan(input):
     return "clean"
 ```
 
-See `examples/security-scanner.star` for a minimal starter policy and
+Starlark policies receive `url`, `content`, `context`,
+`discussion_ratio_threshold`, and `min_signals_for_ratio`. They also have a
+`regex_match(pattern, content)` helper backed by Rust's `regex` crate with
+compiled-pattern caching. See
+`crates/adversary-detector/policies/default-scanner.star` for the default
+policy, `examples/security-scanner.star` for a minimal starter policy, and
 `examples/scanner-policies/` for reusable examples covering destination
 allowlists, destructive command patterns, and credential-language review.
 `calciforge doctor --no-network` validates Starlark policy files, regex
@@ -246,13 +266,15 @@ Scanner code is operator-owned configuration-layer policy, so the sandbox is
 not about treating the operator as hostile. It is about reliability and
 blast-radius reduction: accidental recursion, dependency behavior, or unexpected
 file and network access should not weaken the gateway. Starlark is the default
-custom in-process layer because it is already used by Calciforge policy code,
-has no ambient filesystem or network access in this integration, and is simple
-to audit. WebAssembly remains a possible future plugin layer when stronger fuel
-and memory controls are needed. Declarative checks such as regexes, keyword
-lists, and size limits should be preferred for simple rules. Use Starlark when
-a rule needs conditionals or context-specific branching, and `remote_http` when
-the rule needs networked services or heavyweight dependencies.
+in-process scanner layer because it is already used by Calciforge policy code,
+has no ambient filesystem or network access in this integration, supports
+editable branching logic, and can use cached Rust regexes through
+`regex_match()`. WebAssembly remains a possible future plugin layer when
+stronger fuel and memory controls are needed. Declarative checks such as
+regexes, keyword lists, and size limits are still available for very simple
+rules. Use Starlark when a rule needs conditionals or context-specific
+branching, and `remote_http` when the rule needs networked services or
+heavyweight dependencies.
 
 Starter Starlark policies live under `examples/scanner-policies/`:
 

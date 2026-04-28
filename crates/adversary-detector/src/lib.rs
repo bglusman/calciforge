@@ -1,8 +1,8 @@
 //! Calciforge — Adversary external content scanning module.
 //!
 //! Provides injection-resistant scanning of external content before it reaches
-//! the model context. Configurable defense: structural → semantic → optional
-//! Starlark policy → optional HTTP service.
+//! the model context. Configurable defense: default Starlark scanner policy →
+//! optional declarative/Starlark policy → optional HTTP service.
 //!
 //! # Architecture
 //!

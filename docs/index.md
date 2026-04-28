@@ -258,13 +258,17 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 during the channel-integration cut and is on the
 [roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
 
-The scanner pipeline is configurable: built-in structural and semantic
-checks run locally by default, declarative regex/keyword/size rules cover
-simple operator policies, Starlark policies add low-latency branching
-logic, and optional remote HTTP scanners can host heavier DLP or LLM
-classifier passes. Editable starter Starlark policies ship for
-destination allowlists, destructive command patterns, and
-credential-language review.
+The scanner pipeline is configurable. The default structural and semantic
+rules now run through a built-in Starlark policy
+(`builtin:calciforge/default-scanner.star`), so the rule set can be copied,
+edited, replaced, or ordered alongside declarative regex/keyword/size
+checks. Starlark policies can also call `regex_match(pattern, content)` for
+Rust-regex-backed matching without a sidecar service. Optional remote HTTP
+scanners can host heavier DLP or LLM classifier passes. Editable starter
+Starlark policies ship for destination allowlists, destructive command
+patterns, and credential-language review. The built-in default measured about
+`150µs` per warm scan in a local release build; remote LLM checks are explicit
+because they add materially more latency.
 
 ### Inbound traffic gating and tool policy
 

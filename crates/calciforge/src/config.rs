@@ -427,9 +427,9 @@ pub struct SecuritySectionConfig {
     /// Enable outbound message scanning
     #[serde(default = "default_scan_outbound")]
     pub scan_outbound: bool,
-    /// Ordered scanner checks. Empty uses the profile default
-    /// structural+semantic local checks. Add `remote_http` entries to call
-    /// custom policy services or an LLM classifier.
+    /// Ordered scanner checks. Empty uses the profile default built-in
+    /// Starlark scanner policy. Add `remote_http` entries to call custom
+    /// policy services or an LLM classifier.
     #[serde(default)]
     pub scanner_checks: Vec<adversary_detector::ScannerCheckConfig>,
 }

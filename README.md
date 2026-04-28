@@ -27,8 +27,8 @@ being treated as daily-driver infrastructure.
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
-| Inbound prompt-injection scanning and outbound exfiltration-pattern scanning | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
-| Configurable scanner checks with regex, keyword, size, Starlark, and remote HTTP extension points | Working | [Security gateway](docs/security-gateway.md) |
+| Inbound prompt-injection scanning and outbound exfiltration-pattern scanning via editable default Starlark policy | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
+| Configurable scanner checks with Starlark `regex_match`, regex, keyword, size, and remote HTTP extension points | Working | [Security gateway](docs/security-gateway.md) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
 | Slack/Discord team ChatOps and Castle-to-Castle federation | Roadmap | [Team ChatOps sketch](docs/roadmap/team-chatops-slack-discord.md) |

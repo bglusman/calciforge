@@ -49,37 +49,37 @@ detector.mark_override(url, &digest).await;
 
 | Layer | What it detects | Mechanism |
 |-------|----------------|-----------|
-| **Layer 1 — Structural** | Zero-width chars, unicode tags, CSS hiding, base64 blobs | Regex patterns |
-| **Layer 2 — Semantic** | Prompt injection phrases, PII harvesting, exfiltration signals | Aho-Corasick + regex, with discussion-context heuristic |
-| **Layer 3 — Declarative** | Operator regexes, keyword lists, and size limits (optional) | Config-only rules |
-| **Layer 4 — Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
-| **Layer 5 — Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
+| **Default — Starlark** | Zero-width chars, unicode tags, CSS hiding, base64 blobs, prompt injection phrases, PII harvesting, exfiltration signals | Built-in editable Starlark policy with cached Rust regex helper |
+| **Declarative** | Operator regexes, keyword lists, and size limits (optional) | Config-only rules |
+| **Custom Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
+| **Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
 
-By default, layer 1 and 2 run locally. Declarative checks are the simplest
-low-latency extension point for common operator rules. Starlark checks cover
-deployment-specific policy that needs branching logic. Remote checks cover
-heavyweight policy or LLM-based classification. Starlark and remote checks can
-be configured best-effort (`fail_closed = false`) or fail-closed
-(`fail_closed = true`) if unavailable.
+By default, the former structural and semantic checks run through the built-in
+Starlark policy `builtin:calciforge/default-scanner.star`. Copy
+`crates/adversary-detector/policies/default-scanner.star` into your config
+directory when you want to edit or replace the default rules. Declarative checks
+are the simplest low-latency extension point for common operator rules. Starlark
+checks cover deployment-specific policy that needs branching logic. Remote
+checks cover heavyweight policy or LLM-based classification. Starlark and
+remote checks can be configured best-effort (`fail_closed = false`) or
+fail-closed (`fail_closed = true`) if unavailable.
 
 ```rust
 use adversary_detector::{RuleVerdict, ScannerCheckConfig, ScannerConfig};
 
 let config = ScannerConfig {
     checks: vec![
-        ScannerCheckConfig::Structural,
-        ScannerCheckConfig::Semantic,
+        ScannerCheckConfig::Starlark {
+            path: "/etc/calciforge/default-scanner.star".into(),
+            fail_closed: true,
+            max_callstack: 64,
+        },
         ScannerCheckConfig::Keywords {
             terms: vec!["wire".into(), "urgent".into()],
             case_sensitive: false,
             match_all: true,
             verdict: RuleVerdict::Review,
             reason: Some("review urgent wire language".into()),
-        },
-        ScannerCheckConfig::Starlark {
-            path: "/etc/calciforge/scanner.star".into(),
-            fail_closed: true,
-            max_callstack: 64,
         },
         ScannerCheckConfig::RemoteHttp {
             url: "http://127.0.0.1:9801".into(),
@@ -93,8 +93,12 @@ let config = ScannerConfig {
 The Starlark policy must define `scan(input)` and return `"clean"`, `"review"`,
 `"unsafe"`, or a dict with `verdict` and optional `reason`. `load()` is
 disabled, the call stack is bounded, and parsed policies are cached by file
-metadata so normal scans avoid repeated parsing. See
-`examples/security-scanner.star` for a minimal starter policy and
+metadata so normal scans avoid repeated parsing. Policies receive `url`,
+`content`, `context`, `discussion_ratio_threshold`, and
+`min_signals_for_ratio`; they can call `regex_match(pattern, content)` for
+cached Rust-regex matching. See
+`crates/adversary-detector/policies/default-scanner.star` for the default
+policy, `examples/security-scanner.star` for a minimal starter policy, and
 `examples/scanner-policies/` for reusable destination, command, and
 credential-language policies.
 
@@ -102,7 +106,7 @@ To measure local policy overhead on your hardware:
 
 ```sh
 cargo run -p adversary-detector --example starlark-latency -- \
-  examples/security-scanner.star 1000
+  builtin:calciforge/default-scanner.star 1000
 ```
 
 The remote service contract is:

@@ -4,12 +4,14 @@ use crate::extract_host;
 
 use crate::patterns::*;
 use crate::verdict::{ScanContext, ScanVerdict};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use starlark::{
     collections::SmallMap,
-    environment::{Globals, Module},
+    environment::{Globals, GlobalsBuilder, Module},
     eval::Evaluator,
+    starlark_module,
     syntax::{AstModule, Dialect},
     values::{dict::Dict, Value as StarlarkValue},
 };
@@ -19,6 +21,9 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
+
+const BUILTIN_DEFAULT_SCANNER_PATH: &str = "builtin:calciforge/default-scanner.star";
+const BUILTIN_DEFAULT_SCANNER_SOURCE: &str = include_str!("../policies/default-scanner.star");
 
 /// A configured scanner check in the adversary pipeline.
 ///
@@ -187,9 +192,13 @@ pub struct ScannerConfig {
 }
 
 impl ScannerConfig {
-    /// Default local checks used when `checks` is empty.
+    /// Default scanner policy used when `checks` is empty.
     pub fn default_checks() -> Vec<ScannerCheckConfig> {
-        vec![ScannerCheckConfig::Structural, ScannerCheckConfig::Semantic]
+        vec![ScannerCheckConfig::Starlark {
+            path: BUILTIN_DEFAULT_SCANNER_PATH.into(),
+            fail_closed: true,
+            max_callstack: ScannerCheckConfig::default_starlark_max_callstack(),
+        }]
     }
 
     fn configured_checks(&self) -> Vec<ScannerCheckConfig> {
@@ -247,6 +256,37 @@ impl ScannerConfig {
     }
 }
 
+static STARLARK_REGEX_CACHE: Lazy<Mutex<HashMap<String, Result<Regex, String>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static SCANNER_GLOBALS: Lazy<Globals> = Lazy::new(|| {
+    GlobalsBuilder::standard()
+        .with(scanner_policy_globals)
+        .build()
+});
+
+#[starlark_module]
+fn scanner_policy_globals(builder: &mut GlobalsBuilder) {
+    /// Return true when `content` matches a Rust regex `pattern`.
+    fn regex_match(pattern: &str, content: &str) -> anyhow::Result<bool> {
+        let regex = {
+            let mut cache = STARLARK_REGEX_CACHE
+                .lock()
+                .map_err(|_| anyhow::anyhow!("starlark regex cache lock poisoned"))?;
+            if let Some(cached) = cache.get(pattern).cloned() {
+                cached
+            } else {
+                let compiled = Regex::new(pattern).map_err(|err| err.to_string());
+                cache.insert(pattern.to_string(), compiled.clone());
+                compiled
+            }
+        }
+        .map_err(|err| anyhow::anyhow!("invalid regex '{pattern}': {err}"))?;
+
+        Ok(regex.is_match(content))
+    }
+}
+
 /// A single adversary scanning check.
 ///
 /// Returning `None` means "no finding"; returning a verdict participates in the
@@ -290,9 +330,9 @@ impl AdversaryScanner {
 
     /// Scan `content` (fetched from `url`) in the given `context`.
     ///
-    /// Runs the configured pipeline. By default this is structural → semantic,
-    /// plus the legacy `service_url` HTTP check when configured. Remote checks
-    /// can be best-effort or fail-closed depending on their config.
+    /// Runs the configured pipeline. By default this is the built-in Starlark
+    /// scanner policy, plus the legacy `service_url` HTTP check when configured.
+    /// Remote checks can be best-effort or fail-closed depending on their config.
     pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> ScanVerdict {
         let mut verdict = ScanVerdict::Clean;
 
@@ -582,8 +622,18 @@ impl AdversaryScanner {
         fail_closed: bool,
         max_callstack: usize,
     ) -> Option<ScanVerdict> {
-        match evaluate_starlark_check(&self.starlark_cache, path, url, content, ctx, max_callstack)
-        {
+        match evaluate_starlark_check(
+            &self.starlark_cache,
+            StarlarkScanInput {
+                path,
+                url,
+                content,
+                ctx,
+                max_callstack,
+                discussion_ratio_threshold: self.config.discussion_ratio_threshold,
+                min_signals_for_ratio: self.config.min_signals_for_ratio,
+            },
+        ) {
             Ok(verdict) => Some(verdict),
             Err(err) if fail_closed => Some(ScanVerdict::Unsafe {
                 reason: format!("starlark security check failed: {err}"),
@@ -622,31 +672,39 @@ impl CachedStarlarkPolicy {
     }
 }
 
-fn evaluate_starlark_check(
-    cache: &Arc<Mutex<StarlarkPolicyCache>>,
-    path: &str,
-    url: &str,
-    content: &str,
+struct StarlarkScanInput<'a> {
+    path: &'a str,
+    url: &'a str,
+    content: &'a str,
     ctx: ScanContext,
     max_callstack: usize,
+    discussion_ratio_threshold: f64,
+    min_signals_for_ratio: usize,
+}
+
+fn evaluate_starlark_check(
+    cache: &Arc<Mutex<StarlarkPolicyCache>>,
+    input: StarlarkScanInput<'_>,
 ) -> Result<ScanVerdict, String> {
-    let path = expand_tilde(path);
+    let path = expand_tilde(input.path);
     let ast = load_starlark_ast(cache, &path)?;
-    let globals = Globals::standard();
+    let globals = &*SCANNER_GLOBALS;
     let module = Module::new();
     let mut eval = Evaluator::new(&module);
-    eval.set_max_callstack_size(max_callstack.max(1))
+    eval.set_max_callstack_size(input.max_callstack.max(1))
         .map_err(|err| format!("failed to set callstack limit: {err}"))?;
 
     let _ = eval
-        .eval_module(ast, &globals)
+        .eval_module(ast, globals)
         .map_err(|err| format!("module evaluation error: {err}"))?;
 
     let heap = module.heap();
     let input = serde_json::json!({
-        "url": url,
-        "content": content,
-        "context": ctx.as_str(),
+        "url": input.url,
+        "content": input.content,
+        "context": input.ctx.as_str(),
+        "discussion_ratio_threshold": input.discussion_ratio_threshold,
+        "min_signals_for_ratio": input.min_signals_for_ratio,
     });
     let input_val = json_to_starlark(&input, heap);
     let scan_fn = module
@@ -663,6 +721,16 @@ fn load_starlark_ast(
     cache: &Arc<Mutex<StarlarkPolicyCache>>,
     path: &PathBuf,
 ) -> Result<AstModule, String> {
+    if path == &PathBuf::from(BUILTIN_DEFAULT_SCANNER_PATH) {
+        return load_starlark_source(
+            cache,
+            path,
+            BUILTIN_DEFAULT_SCANNER_SOURCE,
+            None,
+            BUILTIN_DEFAULT_SCANNER_SOURCE.len() as u64,
+        );
+    }
+
     let metadata = std::fs::metadata(path)
         .map_err(|err| format!("failed to stat {}: {err}", path.display()))?;
     let modified = metadata.modified().ok();
@@ -681,12 +749,37 @@ fn load_starlark_ast(
 
     let source = std::fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    load_starlark_source(cache, path, &source, modified, len)
+}
+
+fn load_starlark_source(
+    cache: &Arc<Mutex<StarlarkPolicyCache>>,
+    path: &PathBuf,
+    source: &str,
+    modified: Option<SystemTime>,
+    len: u64,
+) -> Result<AstModule, String> {
+    if let Some(ast) = cache
+        .lock()
+        .map_err(|_| "starlark policy cache lock poisoned".to_string())?
+        .modules
+        .get(path)
+        .filter(|cached| cached.matches(modified, len))
+        .map(|cached| cached.ast.clone())
+    {
+        return Ok(ast);
+    }
+
     let dialect = Dialect {
         enable_load: false,
         ..Dialect::Standard
     };
-    let ast = AstModule::parse(path.to_string_lossy().as_ref(), source, &dialect)
-        .map_err(|err| format!("parse error: {err}"))?;
+    let ast = AstModule::parse(
+        path.to_string_lossy().as_ref(),
+        source.to_string(),
+        &dialect,
+    )
+    .map_err(|err| format!("parse error: {err}"))?;
 
     cache
         .lock()
@@ -914,7 +1007,8 @@ mod tests {
         let v = s
             .scan("https://example.com", content, ScanContext::WebFetch)
             .await;
-        // Layer 2 should still catch it even though layer 3 is unreachable
+        // The default local policy should still catch it even though the
+        // legacy remote service is unreachable.
         assert!(v.is_unsafe());
     }
 
@@ -1043,6 +1137,39 @@ def scan(input):
         assert!(matches!(
             v,
             ScanVerdict::Review { reason } if reason == "manual review for reports"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_starlark_policy_can_use_regex_helper() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let policy = temp_dir.path().join("scanner.star");
+        std::fs::write(
+            &policy,
+            r#"
+def scan(input):
+    if regex_match(r"(?i)\bapi[-_\s]?key\b", input["content"]):
+        return {"verdict": "review", "reason": "custom regex helper matched API key language"}
+    return "clean"
+"#,
+        )
+        .expect("write policy");
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "share the API key", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Review { reason } if reason == "custom regex helper matched API key language"
         ));
     }
 
@@ -1260,11 +1387,15 @@ def scan(input):
     }
 
     #[test]
-    fn test_configured_checks_preserve_default_pipeline() {
+    fn test_configured_checks_use_builtin_starlark_policy_by_default() {
         let config = ScannerConfig::default();
         assert_eq!(
             config.configured_checks(),
-            vec![ScannerCheckConfig::Structural, ScannerCheckConfig::Semantic]
+            vec![ScannerCheckConfig::Starlark {
+                path: BUILTIN_DEFAULT_SCANNER_PATH.into(),
+                fail_closed: true,
+                max_callstack: 64,
+            }]
         );
     }
 
@@ -1278,8 +1409,11 @@ def scan(input):
         assert_eq!(
             config.configured_checks(),
             vec![
-                ScannerCheckConfig::Structural,
-                ScannerCheckConfig::Semantic,
+                ScannerCheckConfig::Starlark {
+                    path: BUILTIN_DEFAULT_SCANNER_PATH.into(),
+                    fail_closed: true,
+                    max_callstack: 64,
+                },
                 ScannerCheckConfig::RemoteHttp {
                     url: "http://scanner.example".into(),
                     fail_closed: false,
