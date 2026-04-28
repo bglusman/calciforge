@@ -201,7 +201,7 @@ def wait_for_bot_join(
 def write_agent(path: Path, prefix: str) -> None:
     path.write_text(
         "#!/bin/sh\n"
-        f"printf '{prefix}: %s\\n' \"$1\"\n",
+        f"printf '{prefix} model=%s: %s\\n' \"${{CALCIFORGE_MODEL_OVERRIDE:-none}}\" \"$1\"\n",
         encoding="utf-8",
     )
     path.chmod(0o755)
@@ -245,6 +245,18 @@ timeout_ms = 5000
 identity = "alice"
 default_agent = "real-matrix-agent"
 allowed_agents = ["real-matrix-agent", "backup-agent"]
+
+[[dispatchers]]
+id = "dispatcher-matrix"
+name = "Matrix E2E Dispatcher"
+
+[[dispatchers.models]]
+model = "mock-small"
+context_window = 128000
+
+[[model_shortcuts]]
+alias = "matrix-dispatcher"
+model = "dispatcher-matrix"
 
 [context]
 buffer_size = 20
@@ -327,12 +339,38 @@ def start_calciforge(config_path: Path, home_dir: Path) -> tuple[subprocess.Pope
 
 def send_message(base_url: str, alice_token: str, room_id: str, body: str) -> None:
     txn_id = f"calciforge-e2e-{uuid.uuid4().hex}"
-    http_json(
-        "PUT",
-        f"{base_url}/_matrix/client/v3/rooms/{encoded(room_id)}/send/m.room.message/{txn_id}",
-        {"msgtype": "m.text", "body": body},
-        token=alice_token,
-    )
+    url = f"{base_url}/_matrix/client/v3/rooms/{encoded(room_id)}/send/m.room.message/{txn_id}"
+    for attempt in range(12):
+        try:
+            http_json(
+                "PUT",
+                url,
+                {"msgtype": "m.text", "body": body},
+                token=alice_token,
+            )
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429:
+                raise
+            delay = min(1.0 + (attempt * 0.25), 4.0)
+            data = exc.read()
+            body_retry_after_ms = None
+            if data:
+                try:
+                    body_retry_after_ms = json.loads(data.decode("utf-8")).get("retry_after_ms")
+                except (ValueError, TypeError):
+                    pass
+            if body_retry_after_ms is not None:
+                delay = max(float(body_retry_after_ms) / 1000.0, 0.5)
+            else:
+                retry_after = exc.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        delay = max(float(retry_after), 0.5)
+                    except ValueError:
+                        pass
+            time.sleep(delay)
+    raise TimeoutError("Matrix homeserver kept rate-limiting message sends")
 
 
 def wait_for_reply(
@@ -518,7 +556,7 @@ def main() -> int:
             ("!agents", "backup-agent"),
             ("!status", "active agent: real-matrix-agent"),
             ("!metrics", "messages routed: 0"),
-            ("!model", "No model shortcuts or synthetic models configured."),
+            ("!model", "Configured dispatchers:"),
             ("!sessions real-matrix-agent", "does not support session listing"),
         ]
         for body, expected in command_cases:
@@ -536,6 +574,30 @@ def main() -> int:
             alice_token,
             room_id,
             bot_user_id,
+            "!model dispatcher-matrix",
+            "Activated synthetic model 'dispatcher-matrix'",
+        )
+        send_and_expect(
+            base_url,
+            alice_token,
+            room_id,
+            bot_user_id,
+            "!status",
+            "active model override: dispatcher-matrix",
+        )
+        send_and_expect(
+            base_url,
+            alice_token,
+            room_id,
+            bot_user_id,
+            "after model switch",
+            "real-matrix-agent saw model=dispatcher-matrix: after model switch",
+        )
+        send_and_expect(
+            base_url,
+            alice_token,
+            room_id,
+            bot_user_id,
             "!switch backup-agent",
             "Your messages will now route to backup-agent",
         )
@@ -545,7 +607,7 @@ def main() -> int:
             room_id,
             bot_user_id,
             "after switch",
-            "backup-matrix-agent saw: after switch",
+            "backup-matrix-agent saw model=dispatcher-matrix:",
         )
         send_and_expect(
             base_url,
@@ -561,7 +623,7 @@ def main() -> int:
             room_id,
             bot_user_id,
             EXPECTED_PROMPT,
-            EXPECTED_PROMPT,
+            "real-matrix-agent saw model=dispatcher-matrix:",
         )
         print("real Matrix E2E passed")
         return 0
