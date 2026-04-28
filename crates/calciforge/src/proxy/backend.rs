@@ -422,6 +422,22 @@ impl HttpBackend {
     }
 }
 
+fn is_kimi_model(model: &str) -> bool {
+    let model = model.trim_start_matches("kimi/");
+    model.starts_with("kimi-")
+}
+
+fn apply_kimi_compat(model: &str, request_body: &mut serde_json::Value) {
+    if is_kimi_model(model) && request_body.get("thinking").is_none() {
+        // Kimi K2.5/K2.6 enable thinking by default. In tool-call conversations
+        // the API then requires every prior assistant tool-call message to carry
+        // reasoning_content. Many OpenAI-compatible clients do not preserve that
+        // provider-specific field, so disable thinking unless a future config
+        // path explicitly opts back in.
+        request_body["thinking"] = serde_json::json!({ "type": "disabled" });
+    }
+}
+
 #[async_trait::async_trait]
 impl SecretsBackend for HttpBackend {
     async fn chat_completion(
@@ -443,6 +459,7 @@ impl SecretsBackend for HttpBackend {
             "messages": messages,
             "stream": false,
         });
+        apply_kimi_compat(&model, &mut request_body);
 
         // Add tools if present
         if let Some(tools) = tools {
@@ -593,5 +610,49 @@ impl SecretsBackend for LibraryBackend {
 
     fn backend_type(&self) -> BackendType {
         BackendType::Library
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kimi_compat_disables_thinking_for_known_kimi_models() {
+        let mut body = serde_json::json!({
+            "model": "kimi-k2.6",
+            "messages": [],
+            "stream": false
+        });
+
+        apply_kimi_compat("kimi-k2.6", &mut body);
+
+        assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
+    }
+
+    #[test]
+    fn kimi_compat_handles_prefixed_kimi_models() {
+        let mut body = serde_json::json!({
+            "model": "kimi/kimi-for-coding",
+            "messages": [],
+            "stream": false
+        });
+
+        apply_kimi_compat("kimi/kimi-for-coding", &mut body);
+
+        assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
+    }
+
+    #[test]
+    fn kimi_compat_does_not_affect_non_kimi_models() {
+        let mut body = serde_json::json!({
+            "model": "codex/gpt-5.5",
+            "messages": [],
+            "stream": false
+        });
+
+        apply_kimi_compat("codex/gpt-5.5", &mut body);
+
+        assert!(body.get("thinking").is_none());
     }
 }
