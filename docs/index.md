@@ -513,14 +513,18 @@ The installer runs `calciforge doctor --no-network` after local service
 installation when a config file exists. `doctor` validates the config,
 checks referenced secret files without printing values, catches stale
 active-agent/model state, warns when an agent appears to point back into
-the local model gateway by accident, and can probe configured endpoints.
+the local model gateway by accident, checks subprocess proxy inheritance,
+warns about externally managed agent daemons whose proxy environment is
+unverified, and can probe configured endpoints.
 Use `calciforge doctor --no-network` when you want a local-only check.
 
 Route Claude Code through the gateway:
 
 ```bash
 # ~/.zshrc
-export HTTPS_PROXY=http://localhost:8888
+export HTTP_PROXY=http://127.0.0.1:8888
+export HTTPS_PROXY=http://127.0.0.1:8888
+export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
 ---

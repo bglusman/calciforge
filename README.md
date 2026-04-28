@@ -63,8 +63,11 @@ local services when a config file is present. Run `calciforge doctor`
 again after editing config or moving services. It
 validates config, checks referenced secret files without printing
 values, flags stale active-agent/model state, detects suspicious
-self-routing into the local model gateway, and can probe configured
-agent endpoints. Use `--no-network` for a purely local check.
+self-routing into the local model gateway, checks whether subprocess
+agents inherit a complete proxy environment, warns about externally
+managed agent daemons whose outbound proxy environment cannot be proven,
+and can probe configured agent endpoints. Use `--no-network` for a
+purely local check.
 
 Channel-based secret input is intentionally being de-emphasized because
 chat transports can retain plaintext values. Prefer the local paste UI
@@ -73,7 +76,9 @@ or direct `fnox` input for new secrets.
 Route Claude Code or another HTTP-speaking agent through the gateway:
 
 ```bash
-export HTTPS_PROXY=http://localhost:8888
+export HTTP_PROXY=http://127.0.0.1:8888
+export HTTPS_PROXY=http://127.0.0.1:8888
+export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
 ## Tiny Config Sketch
