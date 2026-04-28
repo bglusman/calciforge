@@ -66,8 +66,8 @@ values, flags stale active-agent/model state, detects suspicious
 self-routing into the local model gateway, checks whether subprocess
 agents inherit a complete proxy environment, warns about externally
 managed agent daemons whose outbound proxy environment cannot be proven,
-and can probe configured agent endpoints. Use `--no-network` for a
-purely local check.
+validates configured scanner policy files and rule syntax, and can probe
+configured agent endpoints. Use `--no-network` for a purely local check.
 
 Channel-based secret input is intentionally being de-emphasized because
 chat transports can retain plaintext values. Prefer the local paste UI
