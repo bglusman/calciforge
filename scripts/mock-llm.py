@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mock LLM server for integration testing."""
 import json
+import time
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -18,6 +19,7 @@ def chat():
     response = {
         'id': 'mock-' + str(hash(str(data))),
         'object': 'chat.completion',
+        'created': int(time.time()),
         'model': data.get('model', 'gpt-4'),
         'choices': [{
             'index': 0,
@@ -34,7 +36,12 @@ def chat():
                 }] if has_tools else None
             },
             'finish_reason': 'tool_calls' if has_tools else 'stop'
-        }]
+        }],
+        'usage': {
+            'prompt_tokens': 1,
+            'completion_tokens': 1,
+            'total_tokens': 2,
+        },
     }
     return jsonify(response)
 

@@ -1,135 +1,143 @@
 #!/usr/bin/env bash
-# Manual Docker stack test - reproduces the bugs we found today
-# Run this first to verify the Docker stack can reproduce issues
+# Local/staging Docker smoke test for Calciforge's model gateway.
+#
+# Produces a JSONL summary at:
+#   ${CALCIFORGE_STAGING_ARTIFACT_DIR:-.tmp/staging-smoke}/summary.jsonl
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COMPOSE_FILE="$ROOT/scripts/docker-compose.yml"
+ARTIFACT_DIR="${CALCIFORGE_STAGING_ARTIFACT_DIR:-$ROOT/.tmp/staging-smoke}"
+SUMMARY="$ARTIFACT_DIR/summary.jsonl"
+LOG_FILE="$ARTIFACT_DIR/docker-compose.log"
 
-echo "=== Building and starting Docker stack ==="
-docker compose -f scripts/docker-compose.yml down -v 2>/dev/null || true
-docker compose -f scripts/docker-compose.yml up --build -d
+mkdir -p "$ARTIFACT_DIR"
+: > "$SUMMARY"
 
-echo ""
-echo "=== Waiting for services ==="
-sleep 10
+compose_cmd() {
+    if docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+    else
+        echo "docker compose or docker-compose is required" >&2
+        return 127
+    fi
+}
 
-# Health check function
-check_health() {
-    local url=$1
-    local name=$2
-    local max_attempts=${3:-30}
-    
-    for i in $(seq 1 $max_attempts); do
-        if curl -sf "$url" > /dev/null 2>&1; then
-            echo "✅ $name is healthy"
+json_line() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json
+import sys
+
+print(json.dumps({"check": sys.argv[1], "status": sys.argv[2], "detail": sys.argv[3]}))
+PY
+}
+
+record() {
+    local check="$1"
+    local status="$2"
+    local detail="$3"
+
+    json_line "$check" "$status" "$detail" >> "$SUMMARY"
+    printf '%-32s %-6s %s\n' "$check" "$status" "$detail"
+}
+
+failures=0
+
+run_check() {
+    local check="$1"
+    shift
+
+    local output
+    if output="$("$@" 2>&1)"; then
+        record "$check" "pass" "$output"
+    else
+        failures=$((failures + 1))
+        record "$check" "fail" "$output"
+    fi
+}
+
+wait_for_health() {
+    local url="$1"
+    local name="$2"
+    local attempts="${3:-60}"
+
+    for i in $(seq 1 "$attempts"); do
+        if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+            echo "$name healthy"
             return 0
         fi
-        echo "⏳ Waiting for $name... ($i/$max_attempts)"
         sleep 2
     done
-    echo "❌ $name failed to start"
-    docker compose -f scripts/docker-compose.yml logs "$name"
+
+    echo "$name did not become healthy at $url"
     return 1
 }
 
-check_health "http://localhost:8000/health" "mock-llm"
-check_health "http://localhost:8081/health" "secrets" 
-check_health "http://localhost:18792/health" "calciforge"
+cleanup() {
+    compose_cmd -f "$COMPOSE_FILE" logs > "$LOG_FILE" 2>&1 || true
+    compose_cmd -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
-echo ""
-echo "=== TEST 1: Path routing (Bug #2) ==="
-echo "Testing: /proxy/openai/v1/models should NOT return 404"
+cd "$ROOT"
 
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "Authorization: Bearer test-token" \
-    "http://localhost:8081/proxy/openai/v1/models" || echo "000")
+echo "Starting Calciforge Docker smoke stack"
+compose_cmd -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+compose_cmd -f "$COMPOSE_FILE" up --build -d
 
-if [ "$STATUS" = "404" ]; then
-    echo "❌ BUG REPRODUCED: Got 404 - path routing is broken"
-    echo "   Expected: 200 or 401"
-    echo "   Actual: 404"
-elif [ "$STATUS" = "000" ]; then
-    echo "⚠️  Connection failed - OneCLI not responding"
-else
-    echo "✅ Path routing works (got $STATUS)"
-fi
+run_check "mock-llm health" wait_for_health "http://127.0.0.1:8000/health" "mock-llm"
+run_check "calciforge health" wait_for_health "http://127.0.0.1:18792/health" "calciforge"
 
-echo ""
-echo "=== TEST 2: Tool call passthrough (Bug #7) ==="
-echo "Testing: Request with tools array should return tool_calls"
+run_check "model list" bash -c '
+    set -euo pipefail
+    body="$(curl -fsS --max-time 10 http://127.0.0.1:18792/v1/models)"
+    printf "%s" "$body" | grep -q "\"gpt-4\""
+    echo "gpt-4 present"
+'
 
-# Reset mock LLM
-curl -sf -X POST "http://localhost:8000/reset" > /dev/null 2>&1 || true
-
-# Send request with tools
-RESPONSE=$(curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer test-token" \
-    -d '{
-        "model": "gpt-4",
-        "messages": [{"role": "user", "content": "What is the weather?"}],
-        "tools": [{
+run_check "tool call passthrough" bash -c '
+    set -euo pipefail
+    curl -fsS --max-time 10 -X POST http://127.0.0.1:8000/reset >/dev/null
+    body="$(curl -fsS --max-time 20 \
+        -H "Content-Type: application/json" \
+        -d '"'"'{
+          "model": "gpt-4",
+          "messages": [{"role": "user", "content": "What is the weather?"}],
+          "tools": [{
             "type": "function",
             "function": {
-                "name": "web_search",
-                "description": "Search the web",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+              "name": "web_search",
+              "description": "Search the web",
+              "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}}
+              }
             }
-        }]
-    }' \
-    "http://localhost:8081/proxy/openai/v1/chat/completions" 2>/dev/null || echo "{}")
+          }]
+        }'"'"' \
+        http://127.0.0.1:18792/v1/chat/completions)"
+    printf "%s" "$body" | grep -q "\"tool_calls\""
+    echo "tool_calls returned"
+'
 
-if echo "$RESPONSE" | grep -q '"tool_calls"'; then
-    echo "✅ Tool calls present in response"
-else
-    echo "❌ BUG: tool_calls missing from response"
-    echo "   Response: $(echo "$RESPONSE" | head -100)"
+run_check "upstream request preserved" bash -c '
+    set -euo pipefail
+    body="$(curl -fsS --max-time 10 http://127.0.0.1:8000/last-request)"
+    printf "%s" "$body" | grep -q "\"tools\""
+    printf "%s" "$body" | grep -q "\"messages\""
+    echo "mock backend received tools and messages"
+'
+
+run_check "doctor no-network" compose_cmd -f "$COMPOSE_FILE" exec -T calciforge \
+    calciforge --config /root/.calciforge/config.toml doctor --no-network
+
+echo "Summary written to $SUMMARY"
+echo "Logs will be written to $LOG_FILE during cleanup"
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures Docker smoke check(s) failed" >&2
+    exit 1
 fi
-
-# Check what the mock LLM received
-RECEIVED=$(curl -sf "http://localhost:8000/last-request" 2>/dev/null || echo "{}")
-if echo "$RECEIVED" | grep -q '"tools"'; then
-    echo "✅ Mock LLM received tools array"
-else
-    echo "❌ BUG: Mock LLM did not receive tools array"
-    echo "   Received: $(echo "$RECEIVED" | head -100)"
-fi
-
-echo ""
-echo "=== TEST 3: Config validation (Bugs #4, #5, #6) ==="
-echo "Checking Calciforge logs for config errors..."
-
-LOGS=$(docker compose -f scripts/docker-compose.yml logs calciforge 2>&1 | head -50)
-
-if echo "$LOGS" | grep -qi "unknown.*kind"; then
-    echo "✅ Config validation caught unknown adapter kind"
-else
-    echo "⚠️  May not have caught unknown adapter kind (check logs)"
-fi
-
-if echo "$LOGS" | grep -qi "api_key"; then
-    echo "✅ Config validation caught missing api_key"
-else
-    echo "⚠️  May not have caught missing api_key (check logs)"
-fi
-
-echo ""
-echo "=== TEST 4: Full stack integration ==="
-echo "Sending message through Calciforge..."
-
-# This would require a more complex setup with actual channels
-# For now, we just verify Calciforge started with the test config
-echo "ℹ️  Full message flow test requires channel setup (Telegram/WhatsApp mock)"
-echo "   Calciforge started: $(curl -sf http://localhost:18792/health && echo 'YES' || echo 'NO')"
-
-echo ""
-echo "=== Summary ==="
-echo "Check the outputs above. If bugs are reproduced, the Docker stack works."
-echo "If all tests pass, the fixes are working."
-echo ""
-echo "To inspect services:"
-echo "  docker compose -f scripts/docker-compose.yml logs [service]"
-echo ""
-echo "To stop:"
-echo "  docker compose -f scripts/docker-compose.yml down"
