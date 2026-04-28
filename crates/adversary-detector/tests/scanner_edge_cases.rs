@@ -54,7 +54,10 @@ async fn test_css_hiding_with_injection_inside() {
     let v = s
         .scan("https://example.com", content, ScanContext::WebFetch)
         .await;
-    assert!(!v.is_clean(), "hidden exfiltration should not be clean");
+    assert!(
+        v.is_unsafe(),
+        "hidden exfiltration should keep the stricter unsafe verdict"
+    );
 }
 
 #[tokio::test]

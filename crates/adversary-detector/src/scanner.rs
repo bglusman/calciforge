@@ -679,8 +679,10 @@ mod tests {
         let v = s
             .scan("https://example.com", content, ScanContext::WebFetch)
             .await;
-        // CSS hiding is review; injection phrase inside hidden div is still caught by layer1 first
-        assert!(!v.is_clean());
+        assert!(
+            v.is_unsafe(),
+            "hidden prompt injection should keep the stricter unsafe verdict"
+        );
     }
 
     #[tokio::test]
