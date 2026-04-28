@@ -113,9 +113,9 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                         agent.id
                     ));
                 }
-                if agent.model.is_none() {
-                    result.add_warning(format!(
-                        "Agent '{}' uses openai-compat without a configured model; dispatch will require an active !model override",
+                if agent.model.is_none() && agent.allow_model_override != Some(true) {
+                    result.add_error(format!(
+                        "Agent '{}' uses openai-compat without a configured model; set model or allow_model_override = true to forward !model overrides",
                         agent.id
                     ));
                 }
@@ -581,6 +581,56 @@ model = "local-kimi-gpt55"
         assert!(
             result.is_valid(),
             "openai-compat should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_without_model_requires_override_opt_in() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8083"
+api_key = "test-gateway-token"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "openai-compat without model or allow_model_override must fail"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("allow_model_override")),
+            "error should mention allow_model_override; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_without_model_validates_when_override_is_explicit() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8083"
+api_key = "test-gateway-token"
+allow_model_override = true
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "openai-compat with explicit model override should validate; errors: {:?}",
             result.errors
         );
     }

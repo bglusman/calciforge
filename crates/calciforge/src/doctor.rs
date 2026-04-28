@@ -907,9 +907,12 @@ async fn check_agent_wiring(
                 }
             }
 
-            if agent.kind == "openai-compat" && agent.model.is_none() {
-                report.warn(format!(
-                    "agent '{}' uses openai-compat without a configured model; dispatch will require an active !model override",
+            if agent.kind == "openai-compat"
+                && agent.model.is_none()
+                && agent.allow_model_override != Some(true)
+            {
+                report.error(format!(
+                    "agent '{}' uses openai-compat without a configured model; set model or allow_model_override = true to forward !model overrides",
                     agent.id
                 ));
             }
@@ -1208,6 +1211,31 @@ mod tests {
             finding.severity == Severity::Error
                 && finding.message.contains("openclaw-http")
                 && finding.message.contains("openclaw-channel")
+        }));
+    }
+
+    #[test]
+    fn rejects_openai_compat_without_model_or_override_opt_in() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "gateway".to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint: "http://127.0.0.1:8083".to_string(),
+            api_key: Some("test-token".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("openai-compat")
+                && finding.message.contains("allow_model_override")
         }));
     }
 
