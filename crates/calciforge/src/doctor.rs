@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use adversary_detector::{
-    AdversaryScanner, RuleVerdict, ScanContext, ScanVerdict, ScannerCheckConfig, ScannerConfig,
+    AdversaryScanner, ScanContext, ScanVerdict, ScannerCheckConfig, ScannerConfig,
 };
 use anyhow::Result;
 use tokio::net::TcpStream;
@@ -463,12 +463,6 @@ async fn check_scanner_config(
 
     for (idx, check) in security.scanner_checks.iter().enumerate() {
         match check {
-            ScannerCheckConfig::Structural => {
-                report.ok(format!("scanner check #{idx} structural enabled"));
-            }
-            ScannerCheckConfig::Semantic => {
-                report.ok(format!("scanner check #{idx} semantic enabled"));
-            }
             ScannerCheckConfig::RemoteHttp { url, fail_closed } => {
                 check_remote_scanner_url(idx, url, *fail_closed, no_network, report);
             }
@@ -479,45 +473,6 @@ async fn check_scanner_config(
             } => {
                 check_starlark_scanner_policy(idx, path, *fail_closed, *max_callstack, report)
                     .await;
-            }
-            ScannerCheckConfig::Regex {
-                pattern,
-                case_insensitive,
-                verdict,
-                reason,
-            } => {
-                check_regex_scanner_rule(
-                    idx,
-                    pattern,
-                    *case_insensitive,
-                    verdict.clone(),
-                    reason.as_deref(),
-                    report,
-                )
-                .await;
-            }
-            ScannerCheckConfig::Keywords {
-                terms, match_all, ..
-            } => {
-                if terms.is_empty() {
-                    report.warn(format!("scanner check #{idx} keyword rule has no terms"));
-                } else {
-                    report.ok(format!(
-                        "scanner check #{idx} keyword rule has {} term(s), match_all={match_all}",
-                        terms.len()
-                    ));
-                }
-            }
-            ScannerCheckConfig::MaxSize { bytes, .. } => {
-                if *bytes == 0 {
-                    report.warn(format!(
-                        "scanner check #{idx} max_size is 0 bytes and will match any non-empty body"
-                    ));
-                } else {
-                    report.ok(format!(
-                        "scanner check #{idx} max_size limit is {bytes} bytes"
-                    ));
-                }
             }
         }
     }
@@ -626,53 +581,6 @@ async fn check_starlark_scanner_policy(
             report.ok(format!(
                 "scanner check #{idx} starlark policy loads; configured fail_closed={fail_closed}"
             ));
-        }
-    }
-}
-
-async fn check_regex_scanner_rule(
-    idx: usize,
-    pattern: &str,
-    case_insensitive: bool,
-    verdict: RuleVerdict,
-    reason: Option<&str>,
-    report: &mut DoctorReport,
-) {
-    let scanner = AdversaryScanner::new(ScannerConfig {
-        checks: vec![ScannerCheckConfig::Regex {
-            pattern: pattern.to_string(),
-            case_insensitive,
-            verdict,
-            reason: reason.map(str::to_string),
-        }],
-        ..Default::default()
-    });
-    let verdict = scanner
-        .scan(
-            "https://calciforge.local/doctor",
-            "calciforge doctor regex validation probe",
-            ScanContext::Api,
-        )
-        .await;
-
-    match verdict {
-        ScanVerdict::Unsafe { reason }
-            if reason.contains("regex scanner check failed to compile") =>
-        {
-            report.error(format!("scanner check #{idx} regex failed to compile"));
-        }
-        ScanVerdict::Unsafe { reason } => {
-            report.warn(format!(
-                "scanner check #{idx} regex compiles, but matches the doctor probe: {reason}"
-            ));
-        }
-        ScanVerdict::Review { reason } => {
-            report.warn(format!(
-                "scanner check #{idx} regex compiles, but reviews the doctor probe: {reason}"
-            ));
-        }
-        ScanVerdict::Clean => {
-            report.ok(format!("scanner check #{idx} regex compiles"));
         }
     }
 }
@@ -1315,19 +1223,11 @@ mod tests {
         config.security = Some(SecuritySectionConfig {
             profile: "hardened".to_string(),
             scan_outbound: true,
-            scanner_checks: vec![
-                ScannerCheckConfig::Starlark {
-                    path: policy.to_string_lossy().into_owned(),
-                    fail_closed: true,
-                    max_callstack: 32,
-                },
-                ScannerCheckConfig::Regex {
-                    pattern: "wire money".to_string(),
-                    case_insensitive: true,
-                    verdict: adversary_detector::RuleVerdict::Review,
-                    reason: None,
-                },
-            ],
+            scanner_checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 32,
+            }],
         });
         let mut report = DoctorReport::default();
 
@@ -1340,13 +1240,10 @@ mod tests {
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Ok && finding.message.contains("starlark policy loads")
         }));
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Ok && finding.message.contains("regex compiles")
-        }));
     }
 
     #[test]
-    fn scanner_config_reports_bad_starlark_and_regex_rules() {
+    fn scanner_config_reports_bad_starlark_and_remote_rules() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let policy = tmp.path().join("scanner.star");
         std::fs::write(&policy, "BROKEN = True\n").unwrap();
@@ -1360,12 +1257,6 @@ mod tests {
                     path: policy.to_string_lossy().into_owned(),
                     fail_closed: true,
                     max_callstack: 32,
-                },
-                ScannerCheckConfig::Regex {
-                    pattern: "(".to_string(),
-                    case_insensitive: false,
-                    verdict: adversary_detector::RuleVerdict::Unsafe,
-                    reason: None,
                 },
                 ScannerCheckConfig::RemoteHttp {
                     url: "file:///tmp/scanner".to_string(),
@@ -1386,10 +1277,6 @@ mod tests {
                 && finding
                     .message
                     .contains("starlark policy failed validation")
-        }));
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Error
-                && finding.message.contains("regex failed to compile")
         }));
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Error

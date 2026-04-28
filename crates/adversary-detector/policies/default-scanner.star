@@ -1,7 +1,7 @@
 # Default Calciforge scanner policy.
 #
-# This policy intentionally mirrors the former Rust structural + semantic
-# defaults while keeping the rule text editable. It runs in-process through
+# This policy defines Calciforge's default scanner checks while keeping the
+# rule text editable. It runs in-process through
 # adversary-detector's Starlark evaluator with `load()` disabled.
 
 INJECTION_PHRASES = [

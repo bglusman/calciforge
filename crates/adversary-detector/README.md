@@ -50,22 +50,22 @@ detector.mark_override(url, &digest).await;
 | Layer | What it detects | Mechanism |
 |-------|----------------|-----------|
 | **Default — Starlark** | Zero-width chars, unicode tags, CSS hiding, base64 blobs, prompt injection phrases, PII harvesting, exfiltration signals | Built-in editable Starlark policy with cached Rust regex helper |
-| **Declarative** | Operator regexes, keyword lists, and size limits (optional) | Config-only rules |
 | **Custom Starlark** | Site-specific policy (optional) | In-process Starlark `scan(input)` |
 | **Remote** | Deeper analysis via shared HTTP service (optional) | HTTP POST to adversary service |
 
-By default, the former structural and semantic checks run through the built-in
-Starlark policy `builtin:calciforge/default-scanner.star`. Copy
+By default, Calciforge runs the built-in Starlark policy
+`builtin:calciforge/default-scanner.star`. Copy
 `crates/adversary-detector/policies/default-scanner.star` into your config
-directory when you want to edit or replace the default rules. Declarative checks
-are the simplest low-latency extension point for common operator rules. Starlark
-checks cover deployment-specific policy that needs branching logic. Remote
+directory when you want to edit or replace the default rules. Starlark checks
+cover deployment-specific policy, including regexes, keyword lists, size
+limits, allowed-language checks, and branching logic. Remote
 checks cover heavyweight policy or LLM-based classification. Starlark and
 remote checks can be configured best-effort (`fail_closed = false`) or
-fail-closed (`fail_closed = true`) if unavailable.
+fail-closed (`fail_closed = true`) if unavailable. A `clean` result continues
+to the next configured check; `review` and `unsafe` stop the pipeline.
 
 ```rust
-use adversary_detector::{RuleVerdict, ScannerCheckConfig, ScannerConfig};
+use adversary_detector::{ScannerCheckConfig, ScannerConfig};
 
 let config = ScannerConfig {
     checks: vec![
@@ -73,13 +73,6 @@ let config = ScannerConfig {
             path: "/etc/calciforge/default-scanner.star".into(),
             fail_closed: true,
             max_callstack: 64,
-        },
-        ScannerCheckConfig::Keywords {
-            terms: vec!["wire".into(), "urgent".into()],
-            case_sensitive: false,
-            match_all: true,
-            verdict: RuleVerdict::Review,
-            reason: Some("review urgent wire language".into()),
         },
         ScannerCheckConfig::RemoteHttp {
             url: "http://127.0.0.1:9801".into(),
@@ -190,9 +183,8 @@ let detector = AdversaryDetector::from_config(config.scanner, logger, rate_limit
 ## Modules
 
 - **`proxy`** — Transparent HTTP proxy with digest caching and human overrides
-- **`scanner`** — Three-layer content inspection pipeline
+- **`scanner`** — Configurable Starlark/remote content inspection pipeline
 - **`middleware`** — Intercepts tool results before they reach the model
-- **`patterns`** — Compiled regex and Aho-Corasick pattern sets
 - **`digest`** — Persistent URL+hash → verdict store
 - **`verdict`** — Verdict types and scan context
 - **`profiles`** — Named security presets (open/balanced/hardened/paranoid)

@@ -70,11 +70,7 @@ Calciforge's security checks are an ordered pipeline:
 2. `starlark` — in-process operator policy. This is the low-latency path for
    site-specific rules that do not need network calls. Policies can call
    `regex_match(pattern, content)` for Rust-regex-backed matching.
-3. `regex`, `keywords`, and `max_size` — declarative low-latency checks for
-   common operator rules that should not require custom code.
-4. `structural` and `semantic` — explicit Rust built-ins retained for
-   compatibility and for operators who want the older split pipeline.
-5. `remote_http` — optional custom policy service. This is where operators can
+3. `remote_http` — optional custom policy service. This is where operators can
    add an LLM classifier, heavyweight DLP checks, or organization-specific
    threat modeling that belongs outside the proxy process.
 
@@ -124,6 +120,7 @@ service:
 ```sh
 CALCIFORGE_REMOTE_SCANNER_ENABLED=1 \
 REMOTE_SCANNER_API_KEY_FILE=~/.calciforge/secrets/remote-scanner-api-key \
+REMOTE_SCANNER_PROMPT_FILE=~/.calciforge/remote-llm-scanner-prompt.txt \
 bash scripts/install.sh
 ```
 
@@ -131,7 +128,10 @@ When enabled, the installer starts `remote-llm-scanner` on
 `127.0.0.1:9801` and sets `SECURITY_PROXY_REMOTE_SCANNER_URL` plus
 `CALCIFORGE_REMOTE_SCANNER_URL` for the managed services. The API key can be
 provided through `REMOTE_SCANNER_API_KEY_FILE` or `REMOTE_SCANNER_API_KEY`; the
-file path is preferred so service definitions do not contain the key.
+file path is preferred so service definitions do not contain the key. The
+classifier prompt is also editable: set `REMOTE_SCANNER_PROMPT_FILE` to a text
+file or `REMOTE_SCANNER_PROMPT` to an inline override. The installer seeds a
+default prompt file when it manages the example service.
 
 Or configure checks directly in `config.toml`:
 
@@ -155,26 +155,6 @@ fail_closed = true
 max_callstack = 64
 
 [[security.scanner_checks]]
-kind = "keywords"
-terms = ["wire", "urgent"]
-match_all = true
-verdict = "review"
-reason = "review urgent wire language"
-
-[[security.scanner_checks]]
-kind = "regex"
-pattern = "\\bcredential dump\\b"
-case_insensitive = true
-verdict = "unsafe"
-reason = "credential-dump language blocked"
-
-[[security.scanner_checks]]
-kind = "max_size"
-bytes = 1048576
-verdict = "review"
-reason = "review unusually large content"
-
-[[security.scanner_checks]]
 kind = "starlark"
 path = "/etc/calciforge/scanner.star"
 fail_closed = true
@@ -186,9 +166,10 @@ url = "http://127.0.0.1:9801"
 fail_closed = true
 ```
 
-Declarative checks are evaluated in order with the rest of the scanner
-pipeline. `verdict` accepts `clean`, `review`, or `unsafe`; omitted verdicts
-default to `unsafe`.
+Checks are evaluated in order. A `clean` result continues to the next check;
+`review` and `unsafe` stop the pipeline immediately. `fail_closed` controls
+scanner errors or outages only: with `false`, an unavailable optional check is
+skipped; successful `review` or `unsafe` verdicts still enforce.
 
 Starlark checks run in-process with `load()` disabled and a bounded call stack.
 The policy file must define `scan(input)` and return `"clean"`, `"review"`,
@@ -215,9 +196,8 @@ compiled-pattern caching. See
 policy, `examples/security-scanner.star` for a minimal starter policy, and
 `examples/scanner-policies/` for reusable examples covering destination
 allowlists, destructive command patterns, and credential-language review.
-`calciforge doctor --no-network` validates Starlark policy files, regex
-syntax, keyword/max-size rule shape, and remote scanner URL syntax without
-calling remote scanner services.
+`calciforge doctor --no-network` validates Starlark policy files and remote
+scanner URL syntax without calling remote scanner services.
 
 Remote checks receive the same content that would otherwise be allowed or
 blocked by the local scanner:
@@ -242,6 +222,7 @@ uses an OpenAI-compatible model with a strict security-classifier prompt:
 REMOTE_SCANNER_API_KEY=... \
 REMOTE_SCANNER_API_BASE=https://api.openai.com/v1 \
 REMOTE_SCANNER_MODEL=gpt-5.4-mini \
+REMOTE_SCANNER_PROMPT_FILE=./scripts/remote-llm-scanner-prompt.txt \
 ./scripts/remote-llm-scanner.py
 ```
 
@@ -270,11 +251,10 @@ in-process scanner layer because it is already used by Calciforge policy code,
 has no ambient filesystem or network access in this integration, supports
 editable branching logic, and can use cached Rust regexes through
 `regex_match()`. WebAssembly remains a possible future plugin layer when
-stronger fuel and memory controls are needed. Declarative checks such as
-regexes, keyword lists, and size limits are still available for very simple
-rules. Use Starlark when a rule needs conditionals or context-specific
-branching, and `remote_http` when the rule needs networked services or
-heavyweight dependencies.
+stronger fuel and memory controls are needed. Use Starlark for local rules,
+including regexes, keyword lists, size limits, allowed-language checks, or
+context-specific branching; use `remote_http` when the rule needs networked
+services or heavyweight dependencies.
 
 Starter Starlark policies live under `examples/scanner-policies/`:
 

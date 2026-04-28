@@ -178,8 +178,6 @@ mod tests {
             bypass_domains: vec!["a.example".into(), "b.example".into()],
             audit_log: false,
             scanner_checks: vec![
-                ScannerCheckConfig::Structural,
-                ScannerCheckConfig::Semantic,
                 ScannerCheckConfig::RemoteHttp {
                     url: "http://127.0.0.1:9801".into(),
                     fail_closed: true,
@@ -188,11 +186,6 @@ mod tests {
                     path: "/etc/calciforge/scanner.star".into(),
                     fail_closed: true,
                     max_callstack: 32,
-                },
-                ScannerCheckConfig::MaxSize {
-                    bytes: 1_048_576,
-                    verdict: adversary_detector::RuleVerdict::Review,
-                    reason: Some("review unusually large content".into()),
                 },
             ],
             secret_destination_allowlist: HashMap::from([

@@ -11,7 +11,7 @@ engine with compiled-pattern caching.
 Calciforge's built-in default scanner also runs as Starlark:
 `builtin:calciforge/default-scanner.star`. Copy
 `crates/adversary-detector/policies/default-scanner.star` if you want to edit
-or replace the default structural/semantic rule set.
+or replace the default scanner policy.
 
 ## Policies
 

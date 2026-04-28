@@ -35,6 +35,7 @@ REMOTE_SCANNER_FAIL_CLOSED="${REMOTE_SCANNER_FAIL_CLOSED:-true}"
 REMOTE_SCANNER_API_KEY_FILE="${REMOTE_SCANNER_API_KEY_FILE:-$HOME/.calciforge/secrets/remote-scanner-api-key}"
 REMOTE_SCANNER_API_BASE="${REMOTE_SCANNER_API_BASE:-https://api.openai.com/v1}"
 REMOTE_SCANNER_MODEL="${REMOTE_SCANNER_MODEL:-gpt-5.4-mini}"
+REMOTE_SCANNER_PROMPT_FILE="${REMOTE_SCANNER_PROMPT_FILE:-$HOME/.calciforge/remote-llm-scanner-prompt.txt}"
 LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
 ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
@@ -698,7 +699,7 @@ curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null \
 # ══════════════════════════════════════════════════════════════════════════════
 if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     hdr "remote LLM scanner"
-    mkdir -p "$SEC_LOG_DIR" "$(dirname "$REMOTE_SCANNER_API_KEY_FILE")"
+    mkdir -p "$SEC_LOG_DIR" "$(dirname "$REMOTE_SCANNER_API_KEY_FILE")" "$(dirname "$REMOTE_SCANNER_PROMPT_FILE")"
 
     if [[ -f "$REPO_ROOT/scripts/remote-llm-scanner.py" ]]; then
         install -m 755 "$REPO_ROOT/scripts/remote-llm-scanner.py" "$BIN_DIR/remote-llm-scanner"
@@ -709,6 +710,11 @@ if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     fi
 
     if [[ -n "$REMOTE_SCANNER_URL" ]]; then
+        if [[ ! -s "$REMOTE_SCANNER_PROMPT_FILE" && -f "$REPO_ROOT/scripts/remote-llm-scanner-prompt.txt" ]]; then
+            install -m 600 "$REPO_ROOT/scripts/remote-llm-scanner-prompt.txt" "$REMOTE_SCANNER_PROMPT_FILE"
+            ok "Seeded remote scanner prompt → $REMOTE_SCANNER_PROMPT_FILE"
+        fi
+
         if [[ ! -s "$REMOTE_SCANNER_API_KEY_FILE" && -z "${REMOTE_SCANNER_API_KEY:-}" ]]; then
             warn "remote scanner API key not configured; write it to $REMOTE_SCANNER_API_KEY_FILE or set REMOTE_SCANNER_API_KEY"
         fi
@@ -727,6 +733,7 @@ if [[ -n "$REMOTE_SCANNER_URL" ]]; then
         <key>REMOTE_SCANNER_API_KEY_FILE</key><string>${REMOTE_SCANNER_API_KEY_FILE}</string>
         <key>REMOTE_SCANNER_API_BASE</key><string>${REMOTE_SCANNER_API_BASE}</string>
         <key>REMOTE_SCANNER_MODEL</key><string>${REMOTE_SCANNER_MODEL}</string>
+        <key>REMOTE_SCANNER_PROMPT_FILE</key><string>${REMOTE_SCANNER_PROMPT_FILE}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
@@ -750,6 +757,7 @@ Environment=REMOTE_SCANNER_PORT=${REMOTE_SCANNER_PORT}
 Environment=REMOTE_SCANNER_API_KEY_FILE=${REMOTE_SCANNER_API_KEY_FILE}
 Environment=REMOTE_SCANNER_API_BASE=${REMOTE_SCANNER_API_BASE}
 Environment=REMOTE_SCANNER_MODEL=${REMOTE_SCANNER_MODEL}
+Environment=REMOTE_SCANNER_PROMPT_FILE=${REMOTE_SCANNER_PROMPT_FILE}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=5
