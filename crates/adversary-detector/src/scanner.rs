@@ -1,18 +1,86 @@
-//! Core adversary scanner: three-layer content inspection pipeline.
+//! Core adversary scanner: configurable content inspection pipeline.
 
 use crate::extract_host;
 
 use crate::patterns::*;
 use crate::verdict::{ScanContext, ScanVerdict};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use starlark::{
+    collections::SmallMap,
+    environment::{Globals, Module},
+    eval::Evaluator,
+    syntax::{AstModule, Dialect},
+    values::{dict::Dict, Value as StarlarkValue},
+};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
+
+/// A configured scanner check in the adversary pipeline.
+///
+/// The built-in checks are deliberately small and composable. Operators can add
+/// arbitrary policy with local Starlark or by running their own service and
+/// adding a `remote_http` check; Rust integrations can implement
+/// [`ScannerCheck`] directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScannerCheckConfig {
+    /// Structural checks for hidden payloads such as zero-width characters,
+    /// Unicode tag characters, CSS hiding, and large base64 blobs.
+    Structural,
+    /// Local semantic checks for prompt-injection phrases, PII harvesting, and
+    /// exfiltration language.
+    Semantic,
+    /// Call an external HTTP scanner compatible with the adversary-detector
+    /// `/scan` response shape.
+    RemoteHttp {
+        /// Base URL of the remote scanner service.
+        url: String,
+        /// If `true`, remote-service errors become `Unsafe` verdicts. Defaults
+        /// to `false` for backwards compatibility with the legacy optional
+        /// layer-3 service.
+        #[serde(default)]
+        fail_closed: bool,
+    },
+    /// Run an operator-owned Starlark policy file in-process.
+    ///
+    /// The file must define `scan(input)` and return `"clean"`, `"review"`,
+    /// `"unsafe"`, or a dict with `verdict` and optional `reason`.
+    Starlark {
+        /// Path to the `.star` scanner policy file.
+        path: String,
+        /// If `true`, load/evaluation errors become `Unsafe` verdicts.
+        #[serde(default)]
+        fail_closed: bool,
+        /// Maximum Starlark call stack size. Defaults to 64.
+        #[serde(default = "ScannerCheckConfig::default_starlark_max_callstack")]
+        max_callstack: usize,
+    },
+}
+
+impl ScannerCheckConfig {
+    fn default_starlark_max_callstack() -> usize {
+        64
+    }
+}
 
 /// Configuration for the adversary scanner and transparent proxy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScannerConfig {
     /// Optional URL of the shared Calciforge adversary HTTP service.
     /// If `None` or unreachable, layers 1+2 run locally only.
+    ///
+    /// Deprecated in favor of [`ScannerCheckConfig::RemoteHttp`]. Kept so old
+    /// configs continue to work; when set, it appends a best-effort remote HTTP
+    /// check after the configured pipeline.
     pub service_url: Option<String>,
+    /// Ordered scanner checks to run. Empty means the default local pipeline:
+    /// structural checks followed by semantic checks.
+    #[serde(default)]
+    pub checks: Vec<ScannerCheckConfig>,
     /// Ratio threshold: if discussion_signals / injection_signals > this,
     /// downgrade Unsafe → Review. Default: 0.3
     #[serde(default = "ScannerConfig::default_discussion_ratio")]
@@ -48,6 +116,39 @@ pub struct ScannerConfig {
 }
 
 impl ScannerConfig {
+    /// Default local checks used when `checks` is empty.
+    pub fn default_checks() -> Vec<ScannerCheckConfig> {
+        vec![ScannerCheckConfig::Structural, ScannerCheckConfig::Semantic]
+    }
+
+    fn configured_checks(&self) -> Vec<ScannerCheckConfig> {
+        let mut checks = if self.checks.is_empty() {
+            Self::default_checks()
+        } else {
+            self.checks.clone()
+        };
+
+        if let Some(url) = &self.service_url {
+            let already_configured = checks.iter().any(|check| {
+                matches!(
+                    check,
+                    ScannerCheckConfig::RemoteHttp {
+                        url: configured,
+                        ..
+                    } if configured == url
+                )
+            });
+            if !already_configured {
+                checks.push(ScannerCheckConfig::RemoteHttp {
+                    url: url.clone(),
+                    fail_closed: false,
+                });
+            }
+        }
+
+        checks
+    }
+
     fn default_discussion_ratio() -> f64 {
         0.3
     }
@@ -75,10 +176,25 @@ impl ScannerConfig {
     }
 }
 
+/// A single adversary scanning check.
+///
+/// Returning `None` means "no finding"; returning a verdict participates in the
+/// stricter-wins merge (`Unsafe > Review > Clean`). External crates can
+/// implement this trait to host custom policy in-process.
+#[async_trait::async_trait]
+pub trait ScannerCheck: Send + Sync {
+    /// Stable operator-facing name for logs and diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Run the check against content in context.
+    async fn check(&self, url: &str, content: &str, ctx: ScanContext) -> Option<ScanVerdict>;
+}
+
 /// The adversary scanner — runs all layers and returns a verdict.
 pub struct AdversaryScanner {
     config: ScannerConfig,
     client: reqwest::Client,
+    starlark_cache: Arc<Mutex<StarlarkPolicyCache>>,
 }
 
 impl AdversaryScanner {
@@ -90,6 +206,7 @@ impl AdversaryScanner {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("reqwest client"),
+            starlark_cache: Arc::new(Mutex::new(StarlarkPolicyCache::default())),
         }
     }
 
@@ -100,24 +217,39 @@ impl AdversaryScanner {
 
     /// Scan `content` (fetched from `url`) in the given `context`.
     ///
-    /// Runs layers 1 → 2 locally. Optionally calls the shared HTTP service (layer 3).
-    /// If the HTTP service is unreachable, layers 1+2 results stand — scanning is
-    /// **never** skipped due to service unavailability.
+    /// Runs the configured pipeline. By default this is structural → semantic,
+    /// plus the legacy `service_url` HTTP check when configured. Remote checks
+    /// can be best-effort or fail-closed depending on their config.
     pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> ScanVerdict {
-        // Layer 1: structural
-        if let Some(v) = self.layer1_structural(content) {
-            return v;
-        }
-        // Layer 2: semantic
-        let layer2 = self.layer2_semantic(content);
-        // Layer 3: HTTP service (optional, non-blocking on failure)
-        if let Some(ref svc_url) = self.config.service_url {
-            if let Some(v) = self.layer3_http(svc_url, url, content, ctx).await {
-                // HTTP service wins if stricter
-                return Self::merge(layer2, v);
+        let mut verdict = ScanVerdict::Clean;
+
+        for check in self.config.configured_checks() {
+            let next = match check {
+                ScannerCheckConfig::Structural => self.layer1_structural(content),
+                ScannerCheckConfig::Semantic => Some(self.layer2_semantic(content)),
+                ScannerCheckConfig::RemoteHttp {
+                    url: svc_url,
+                    fail_closed,
+                } => {
+                    self.remote_http_check(&svc_url, url, content, ctx, fail_closed)
+                        .await
+                }
+                ScannerCheckConfig::Starlark {
+                    path,
+                    fail_closed,
+                    max_callstack,
+                } => self.starlark_check(&path, url, content, ctx, fail_closed, max_callstack),
+            };
+
+            if let Some(next) = next {
+                verdict = Self::merge(verdict, next);
+                if verdict.is_unsafe() {
+                    return verdict;
+                }
             }
         }
-        layer2
+
+        verdict
     }
 
     fn layer1_structural(&self, content: &str) -> Option<ScanVerdict> {
@@ -183,12 +315,13 @@ impl AdversaryScanner {
         ScanVerdict::Clean
     }
 
-    async fn layer3_http(
+    async fn remote_http_check(
         &self,
         svc_url: &str,
         url: &str,
         content: &str,
         ctx: ScanContext,
+        fail_closed: bool,
     ) -> Option<ScanVerdict> {
         #[derive(Serialize)]
         struct Req<'a> {
@@ -209,8 +342,20 @@ impl AdversaryScanner {
             context: ctx.as_str(),
         };
 
-        let resp = self.client.post(&endpoint).json(&body).send().await.ok()?;
-        let data: Resp = resp.json().await.ok()?;
+        let result = async {
+            let resp = self.client.post(&endpoint).json(&body).send().await.ok()?;
+            resp.json::<Resp>().await.ok()
+        }
+        .await;
+
+        let Some(data) = result else {
+            if fail_closed {
+                return Some(ScanVerdict::Unsafe {
+                    reason: "remote security check unavailable".into(),
+                });
+            }
+            return None;
+        };
 
         Some(match data.verdict.as_str() {
             "clean" => ScanVerdict::Clean,
@@ -221,6 +366,25 @@ impl AdversaryScanner {
                 reason: data.reason.unwrap_or_else(|| "remote unsafe".into()),
             },
         })
+    }
+
+    fn starlark_check(
+        &self,
+        path: &str,
+        url: &str,
+        content: &str,
+        ctx: ScanContext,
+        fail_closed: bool,
+        max_callstack: usize,
+    ) -> Option<ScanVerdict> {
+        match evaluate_starlark_check(&self.starlark_cache, path, url, content, ctx, max_callstack)
+        {
+            Ok(verdict) => Some(verdict),
+            Err(err) if fail_closed => Some(ScanVerdict::Unsafe {
+                reason: format!("starlark security check failed: {err}"),
+            }),
+            Err(_) => None,
+        }
     }
 
     /// Merge two verdicts: stricter wins (Unsafe > Review > Clean).
@@ -235,9 +399,193 @@ impl AdversaryScanner {
     }
 }
 
+#[derive(Default)]
+struct StarlarkPolicyCache {
+    modules: HashMap<PathBuf, CachedStarlarkPolicy>,
+}
+
+#[derive(Clone)]
+struct CachedStarlarkPolicy {
+    modified: Option<SystemTime>,
+    len: u64,
+    ast: AstModule,
+}
+
+impl CachedStarlarkPolicy {
+    fn matches(&self, modified: Option<SystemTime>, len: u64) -> bool {
+        self.modified == modified && self.len == len
+    }
+}
+
+fn evaluate_starlark_check(
+    cache: &Arc<Mutex<StarlarkPolicyCache>>,
+    path: &str,
+    url: &str,
+    content: &str,
+    ctx: ScanContext,
+    max_callstack: usize,
+) -> Result<ScanVerdict, String> {
+    let path = expand_tilde(path);
+    let ast = load_starlark_ast(cache, &path)?;
+    let globals = Globals::standard();
+    let module = Module::new();
+    let mut eval = Evaluator::new(&module);
+    eval.set_max_callstack_size(max_callstack.max(1))
+        .map_err(|err| format!("failed to set callstack limit: {err}"))?;
+
+    let _ = eval
+        .eval_module(ast, &globals)
+        .map_err(|err| format!("module evaluation error: {err}"))?;
+
+    let heap = module.heap();
+    let input = serde_json::json!({
+        "url": url,
+        "content": content,
+        "context": ctx.as_str(),
+    });
+    let input_val = json_to_starlark(&input, heap);
+    let scan_fn = module
+        .get("scan")
+        .ok_or_else(|| "policy must define scan(input)".to_string())?;
+    let result = eval
+        .eval_function(scan_fn, &[input_val], &[])
+        .map_err(|err| format!("scan(input) failed: {err}"))?;
+
+    parse_starlark_verdict(result)
+}
+
+fn load_starlark_ast(
+    cache: &Arc<Mutex<StarlarkPolicyCache>>,
+    path: &PathBuf,
+) -> Result<AstModule, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|err| format!("failed to stat {}: {err}", path.display()))?;
+    let modified = metadata.modified().ok();
+    let len = metadata.len();
+
+    if let Some(ast) = cache
+        .lock()
+        .map_err(|_| "starlark policy cache lock poisoned".to_string())?
+        .modules
+        .get(path)
+        .filter(|cached| cached.matches(modified, len))
+        .map(|cached| cached.ast.clone())
+    {
+        return Ok(ast);
+    }
+
+    let source = std::fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let dialect = Dialect {
+        enable_load: false,
+        ..Dialect::Standard
+    };
+    let ast = AstModule::parse(path.to_string_lossy().as_ref(), source, &dialect)
+        .map_err(|err| format!("parse error: {err}"))?;
+
+    cache
+        .lock()
+        .map_err(|_| "starlark policy cache lock poisoned".to_string())?
+        .modules
+        .insert(
+            path.clone(),
+            CachedStarlarkPolicy {
+                modified,
+                len,
+                ast: ast.clone(),
+            },
+        );
+
+    Ok(ast)
+}
+
+fn parse_starlark_verdict(result: StarlarkValue<'_>) -> Result<ScanVerdict, String> {
+    if let Some(verdict) = result.unpack_str() {
+        return starlark_verdict_from_parts(verdict, None);
+    }
+
+    let json = result
+        .to_json_value()
+        .map_err(|err| format!("result must be a verdict string or JSON-like dict: {err}"))?;
+    let verdict = json
+        .get("verdict")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "result dict must include string field 'verdict'".to_string())?;
+    let reason = json
+        .get("reason")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    starlark_verdict_from_parts(verdict, reason)
+}
+
+fn starlark_verdict_from_parts(
+    verdict: &str,
+    reason: Option<String>,
+) -> Result<ScanVerdict, String> {
+    match verdict {
+        "clean" => Ok(ScanVerdict::Clean),
+        "review" => Ok(ScanVerdict::Review {
+            reason: reason.unwrap_or_else(|| "starlark policy requested review".to_string()),
+        }),
+        "unsafe" => Ok(ScanVerdict::Unsafe {
+            reason: reason.unwrap_or_else(|| "starlark policy blocked content".to_string()),
+        }),
+        _ => Err(format!(
+            "invalid starlark verdict '{verdict}', expected clean/review/unsafe"
+        )),
+    }
+}
+
+fn json_to_starlark<'v>(
+    value: &serde_json::Value,
+    heap: &'v starlark::values::Heap,
+) -> StarlarkValue<'v> {
+    match value {
+        serde_json::Value::Null => StarlarkValue::new_none(),
+        serde_json::Value::Bool(value) => StarlarkValue::new_bool(*value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                heap.alloc(value)
+            } else if let Some(value) = value.as_f64() {
+                heap.alloc(value)
+            } else {
+                heap.alloc(value.to_string())
+            }
+        }
+        serde_json::Value::String(value) => heap.alloc(value.as_str()),
+        serde_json::Value::Array(values) => {
+            let values: Vec<StarlarkValue<'v>> = values
+                .iter()
+                .map(|value| json_to_starlark(value, heap))
+                .collect();
+            heap.alloc(values)
+        }
+        serde_json::Value::Object(values) => {
+            let mut map = SmallMap::with_capacity(values.len());
+            for (key, value) in values {
+                let key = heap.alloc(key.as_str());
+                let value = json_to_starlark(value, heap);
+                map.insert_hashed(key.get_hashed().expect("string keys are hashable"), value);
+            }
+            heap.alloc(Dict::new(map))
+        }
+    }
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Some(home) = home::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    PathBuf::from(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn scanner() -> AdversaryScanner {
         AdversaryScanner::new(ScannerConfig::default())
@@ -364,6 +712,298 @@ mod tests {
         // Layer 2 should still catch it even though layer 3 is unreachable
         assert!(v.is_unsafe());
     }
+
+    #[tokio::test]
+    async fn test_remote_http_check_can_fail_closed() {
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::RemoteHttp {
+                url: "http://127.0.0.1:19999".into(),
+                fail_closed: true,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan(
+                "https://example.com",
+                "ordinary content",
+                ScanContext::WebFetch,
+            )
+            .await;
+
+        assert!(
+            v.is_unsafe(),
+            "fail_closed remote check should block when service is unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remote_http_check_can_block_clean_local_content() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/scan"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "verdict": "unsafe",
+                "reason": "custom classifier blocked this content",
+            })))
+            .mount(&server)
+            .await;
+
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![
+                ScannerCheckConfig::Structural,
+                ScannerCheckConfig::Semantic,
+                ScannerCheckConfig::RemoteHttp {
+                    url: server.uri(),
+                    fail_closed: true,
+                },
+            ],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "ordinary content", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason == "custom classifier blocked this content"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_starlark_check_can_block_clean_local_content() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let policy = temp_dir.path().join("scanner.star");
+        std::fs::write(
+            &policy,
+            r#"
+def scan(input):
+    if "wire money" in input["content"]:
+        return {"verdict": "unsafe", "reason": "custom starlark policy blocked transfer request"}
+    return "clean"
+"#,
+        )
+        .expect("write policy");
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "please wire money", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason == "custom starlark policy blocked transfer request"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_starlark_check_can_review_by_context() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let policy = temp_dir.path().join("scanner.star");
+        std::fs::write(
+            &policy,
+            r#"
+def scan(input):
+    if input["context"] == "web_fetch" and "quarterly report" in input["content"]:
+        return {"verdict": "review", "reason": "manual review for reports"}
+    return "clean"
+"#,
+        )
+        .expect("write policy");
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan(
+                "https://example.com",
+                "quarterly report",
+                ScanContext::WebFetch,
+            )
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Review { reason } if reason == "manual review for reports"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_starlark_check_can_fail_closed() {
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: "/nonexistent/scanner.star".into(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "ordinary content", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason.contains("starlark security check failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_starlark_check_disables_load() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let policy = temp_dir.path().join("scanner.star");
+        std::fs::write(
+            &policy,
+            r#"
+load("other.star", "x")
+def scan(input):
+    return "clean"
+"#,
+        )
+        .expect("write policy");
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "ordinary content", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason.contains("starlark security check failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_starlark_check_reloads_changed_policy() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let policy = temp_dir.path().join("scanner.star");
+        std::fs::write(
+            &policy,
+            r#"
+def scan(input):
+    if "first marker" in input["content"]:
+        return {"verdict": "unsafe", "reason": "first policy"}
+    return "clean"
+"#,
+        )
+        .expect("write policy");
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        });
+
+        let first = s
+            .scan("https://example.com", "first marker", ScanContext::Api)
+            .await;
+        assert!(matches!(
+            first,
+            ScanVerdict::Unsafe { reason } if reason == "first policy"
+        ));
+
+        std::fs::write(
+            &policy,
+            r#"
+def scan(input):
+    if "second marker with longer policy text" in input["content"]:
+        return {"verdict": "unsafe", "reason": "second policy"}
+    return "clean"
+"#,
+        )
+        .expect("rewrite policy");
+
+        let second = s
+            .scan(
+                "https://example.com",
+                "second marker with longer policy text",
+                ScanContext::Api,
+            )
+            .await;
+        assert!(matches!(
+            second,
+            ScanVerdict::Unsafe { reason } if reason == "second policy"
+        ));
+    }
+
+    #[test]
+    fn test_configured_checks_preserve_default_pipeline() {
+        let config = ScannerConfig::default();
+        assert_eq!(
+            config.configured_checks(),
+            vec![ScannerCheckConfig::Structural, ScannerCheckConfig::Semantic]
+        );
+    }
+
+    #[test]
+    fn test_legacy_service_url_appends_remote_check() {
+        let config = ScannerConfig {
+            service_url: Some("http://scanner.example".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            config.configured_checks(),
+            vec![
+                ScannerCheckConfig::Structural,
+                ScannerCheckConfig::Semantic,
+                ScannerCheckConfig::RemoteHttp {
+                    url: "http://scanner.example".into(),
+                    fail_closed: false,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn test_configured_remote_check_dedupes_legacy_service_url() {
+        let config = ScannerConfig {
+            service_url: Some("http://scanner.example".into()),
+            checks: vec![
+                ScannerCheckConfig::Structural,
+                ScannerCheckConfig::RemoteHttp {
+                    url: "http://scanner.example".into(),
+                    fail_closed: true,
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            config.configured_checks(),
+            vec![
+                ScannerCheckConfig::Structural,
+                ScannerCheckConfig::RemoteHttp {
+                    url: "http://scanner.example".into(),
+                    fail_closed: true,
+                }
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn test_borderline_unicode_mixed_content() {
         // Test case: mixed legitimate unicode with suspicious zero-width chars

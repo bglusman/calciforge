@@ -427,6 +427,11 @@ pub struct SecuritySectionConfig {
     /// Enable outbound message scanning
     #[serde(default = "default_scan_outbound")]
     pub scan_outbound: bool,
+    /// Ordered scanner checks. Empty uses the profile default
+    /// structural+semantic local checks. Add `remote_http` entries to call
+    /// custom policy services or an LLM classifier.
+    #[serde(default)]
+    pub scanner_checks: Vec<adversary_detector::ScannerCheckConfig>,
 }
 
 fn default_security_profile() -> String {
@@ -442,6 +447,7 @@ impl Default for SecuritySectionConfig {
         Self {
             profile: default_security_profile(),
             scan_outbound: default_scan_outbound(),
+            scanner_checks: Vec::new(),
         }
     }
 }
@@ -1126,6 +1132,58 @@ safety_margin = 1.02
         assert_eq!(estimator.strategy, TokenEstimatorStrategy::Tiktoken);
         assert_eq!(estimator.tokenizer.as_deref(), Some("o200k_base"));
         assert_eq!(estimator.safety_margin, 1.02);
+    }
+
+    #[test]
+    fn security_scanner_checks_parse() {
+        let cfg: CalciforgeConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[security]
+profile = "hardened"
+scan_outbound = true
+
+[[security.scanner_checks]]
+kind = "structural"
+
+[[security.scanner_checks]]
+kind = "semantic"
+
+[[security.scanner_checks]]
+kind = "remote_http"
+url = "http://127.0.0.1:9801"
+fail_closed = true
+
+[[security.scanner_checks]]
+kind = "starlark"
+path = "/etc/calciforge/scanner.star"
+fail_closed = true
+max_callstack = 32
+"#,
+        )
+        .expect("parse security scanner checks");
+
+        let security = cfg.security.expect("security section");
+        assert_eq!(security.profile, "hardened");
+        assert!(security.scan_outbound);
+        assert_eq!(security.scanner_checks.len(), 4);
+        assert_eq!(
+            security.scanner_checks[2],
+            adversary_detector::ScannerCheckConfig::RemoteHttp {
+                url: "http://127.0.0.1:9801".into(),
+                fail_closed: true,
+            }
+        );
+        assert_eq!(
+            security.scanner_checks[3],
+            adversary_detector::ScannerCheckConfig::Starlark {
+                path: "/etc/calciforge/scanner.star".into(),
+                fail_closed: true,
+                max_callstack: 32,
+            }
+        );
     }
 
     #[test]

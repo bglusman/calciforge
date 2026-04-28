@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
-use adversary_detector::{RateLimitConfig, ScannerConfig};
+use adversary_detector::{RateLimitConfig, ScannerCheckConfig, ScannerConfig};
 use security_proxy::agent_config::AgentsConfig;
 use security_proxy::config::GatewayConfig;
 use security_proxy::proxy::SecurityProxy;
@@ -22,18 +22,42 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or_else(|| GatewayConfig::default().port);
 
-    let config = GatewayConfig {
+    let mut config = GatewayConfig {
         port,
         ..GatewayConfig::default()
     };
+    if let Ok(url) = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_URL") {
+        if !url.trim().is_empty() {
+            let fail_closed = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false);
+            if config.scanner_checks.is_empty() {
+                config.scanner_checks = ScannerConfig::default_checks();
+            }
+            let already_configured = config.scanner_checks.iter().any(|check| {
+                matches!(
+                    check,
+                    ScannerCheckConfig::RemoteHttp {
+                        url: configured,
+                        ..
+                    } if configured == &url
+                )
+            });
+            if !already_configured {
+                config
+                    .scanner_checks
+                    .push(ScannerCheckConfig::RemoteHttp { url, fail_closed });
+            }
+        }
+    }
+    let scanner_config = ScannerConfig {
+        checks: config.scanner_checks.clone(),
+        ..ScannerConfig::default()
+    };
 
     // Build unified security proxy
-    let mut proxy = SecurityProxy::new(
-        config.clone(),
-        ScannerConfig::default(),
-        RateLimitConfig::default(),
-    )
-    .await;
+    let mut proxy =
+        SecurityProxy::new(config.clone(), scanner_config, RateLimitConfig::default()).await;
 
     // Load credentials from ZEROGATE_KEY_* env vars (legacy)
     proxy.credentials.load_from_env();

@@ -21,6 +21,7 @@ async-trait = "0.1"
 sha2 = "0.10"
 axum = { version = "0.7", features = ["tokio", "http1"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+starlark = "0.13"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

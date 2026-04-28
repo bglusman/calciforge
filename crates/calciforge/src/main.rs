@@ -184,6 +184,35 @@ async fn main() -> Result<()> {
     // Apply optional config overrides
     if let Some(cfg) = security_cfg {
         security_config.scan_outbound = cfg.scan_outbound;
+        if !cfg.scanner_checks.is_empty() {
+            security_config.scanner.checks = cfg.scanner_checks.clone();
+        }
+    }
+    if let Ok(url) = std::env::var("CALCIFORGE_REMOTE_SCANNER_URL") {
+        if !url.trim().is_empty() {
+            let fail_closed = std::env::var("CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false);
+            if security_config.scanner.checks.is_empty() {
+                security_config.scanner.checks =
+                    adversary_detector::ScannerConfig::default_checks();
+            }
+            let already_configured = security_config.scanner.checks.iter().any(|check| {
+                matches!(
+                    check,
+                    adversary_detector::ScannerCheckConfig::RemoteHttp {
+                        url: configured,
+                        ..
+                    } if configured == &url
+                )
+            });
+            if !already_configured {
+                security_config
+                    .scanner
+                    .checks
+                    .push(adversary_detector::ScannerCheckConfig::RemoteHttp { url, fail_closed });
+            }
+        }
     }
     let scanner = AdversaryScanner::new(security_config.scanner.clone());
     let audit_logger = AuditLogger::new("calciforge");

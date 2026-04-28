@@ -57,19 +57,17 @@ profile, so using `fnox set/list/tui` manually is a valid way to manage
 the same store Calciforge resolves through. The paste UI currently
 stores through that configured local backend.
 
-Run `calciforge doctor` after editing config or moving services. It
+The installer runs `calciforge doctor --no-network` after installing
+local services when a config file is present. Run `calciforge doctor`
+again after editing config or moving services. It
 validates config, checks referenced secret files without printing
 values, flags stale active-agent/model state, detects suspicious
 self-routing into the local model gateway, and can probe configured
 agent endpoints. Use `--no-network` for a purely local check.
 
-Channel-based secret input is intentionally being de-emphasized. It
-may remain as a per-channel opt-in fallback for travel, low-stakes
-keys, or values you plan to rotate soon. Prefer `!secure input NAME`,
-`!secure bulk LABEL`, `paste-server`, or direct `fnox` input. The risk
-varies by channel: self-hosted encrypted Matrix is the least bad,
-Signal is still a chat-history tradeoff, and Telegram is a poor place
-for raw secrets.
+Channel-based secret input is intentionally being de-emphasized because
+chat transports can retain plaintext values. Prefer the local paste UI
+or direct `fnox` input for new secrets.
 
 Route Claude Code or another HTTP-speaking agent through the gateway:
 

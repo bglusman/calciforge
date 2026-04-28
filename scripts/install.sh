@@ -26,6 +26,15 @@ CLASH_DIR="$HOME/.clash"
 CLAUDE_DIR="$HOME/.claude"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
+SECURITY_PROXY_URL="${SECURITY_PROXY_URL:-http://127.0.0.1:${SECURITY_PROXY_PORT}}"
+SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
+REMOTE_SCANNER_ENABLED="${CALCIFORGE_REMOTE_SCANNER_ENABLED:-${REMOTE_SCANNER_ENABLED:-0}}"
+REMOTE_SCANNER_PORT="${REMOTE_SCANNER_PORT:-9801}"
+REMOTE_SCANNER_URL=""
+REMOTE_SCANNER_FAIL_CLOSED="${REMOTE_SCANNER_FAIL_CLOSED:-true}"
+REMOTE_SCANNER_API_KEY_FILE="${REMOTE_SCANNER_API_KEY_FILE:-$HOME/.calciforge/secrets/remote-scanner-api-key}"
+REMOTE_SCANNER_API_BASE="${REMOTE_SCANNER_API_BASE:-https://api.openai.com/v1}"
+REMOTE_SCANNER_MODEL="${REMOTE_SCANNER_MODEL:-gpt-5.4-mini}"
 LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
 ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
@@ -33,6 +42,19 @@ ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
 LEGACY_SERVICE_PREFIX="${CALCIFORGE_LEGACY_SERVICE_PREFIX:-zeroclawed}"
 CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
 AGENTS_JSON="$CLASH_DIR/agents.json"
+
+case "$REMOTE_SCANNER_ENABLED" in
+    1|true|TRUE|yes|YES|on|ON)
+        REMOTE_SCANNER_URL="http://127.0.0.1:${REMOTE_SCANNER_PORT}"
+        ;;
+esac
+
+proxy_env_pairs() {
+    printf 'HTTP_PROXY=%s\nHTTPS_PROXY=%s\nhttp_proxy=%s\nhttps_proxy=%s\nNO_PROXY=%s\nno_proxy=%s\n' \
+        "$SECURITY_PROXY_URL" "$SECURITY_PROXY_URL" \
+        "$SECURITY_PROXY_URL" "$SECURITY_PROXY_URL" \
+        "$SECURITY_PROXY_NO_PROXY" "$SECURITY_PROXY_NO_PROXY"
+}
 
 # ── platform detection ────────────────────────────────────────────────────────
 # Drives choice of service manager (launchd vs systemd --user) and package
@@ -672,7 +694,85 @@ curl -sf "http://localhost:${CLASHD_PORT}/health" > /dev/null \
     || warn "clashd not yet responding — check $LOG_DIR/clashd.err"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. security-proxy (launchd service)
+# 3. optional remote LLM scanner
+# ══════════════════════════════════════════════════════════════════════════════
+if [[ -n "$REMOTE_SCANNER_URL" ]]; then
+    hdr "remote LLM scanner"
+    mkdir -p "$SEC_LOG_DIR" "$(dirname "$REMOTE_SCANNER_API_KEY_FILE")"
+
+    if [[ -f "$REPO_ROOT/scripts/remote-llm-scanner.py" ]]; then
+        install -m 755 "$REPO_ROOT/scripts/remote-llm-scanner.py" "$BIN_DIR/remote-llm-scanner"
+        ok "Installed remote-llm-scanner → $BIN_DIR/remote-llm-scanner"
+    elif [[ ! -x "$BIN_DIR/remote-llm-scanner" ]]; then
+        warn "remote-llm-scanner script not found; skipping service setup"
+        REMOTE_SCANNER_URL=""
+    fi
+
+    if [[ -n "$REMOTE_SCANNER_URL" ]]; then
+        if [[ ! -s "$REMOTE_SCANNER_API_KEY_FILE" && -z "${REMOTE_SCANNER_API_KEY:-}" ]]; then
+            warn "remote scanner API key not configured; write it to $REMOTE_SCANNER_API_KEY_FILE or set REMOTE_SCANNER_API_KEY"
+        fi
+
+        if [[ "$PLATFORM" == "Darwin" ]]; then
+            SCANNER_PLIST="$PLIST_DIR/com.calciforge.remote-llm-scanner.plist"
+            cat > "$SCANNER_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>com.calciforge.remote-llm-scanner</string>
+    <key>ProgramArguments</key><array><string>${BIN_DIR}/remote-llm-scanner</string></array>
+    <key>EnvironmentVariables</key><dict>
+        <key>REMOTE_SCANNER_PORT</key><string>${REMOTE_SCANNER_PORT}</string>
+        <key>REMOTE_SCANNER_API_KEY_FILE</key><string>${REMOTE_SCANNER_API_KEY_FILE}</string>
+        <key>REMOTE_SCANNER_API_BASE</key><string>${REMOTE_SCANNER_API_BASE}</string>
+        <key>REMOTE_SCANNER_MODEL</key><string>${REMOTE_SCANNER_MODEL}</string>
+        <key>PATH</key><string>${SERVICE_PATH}</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>${SEC_LOG_DIR}/remote-llm-scanner.log</string>
+    <key>StandardErrorPath</key><string>${SEC_LOG_DIR}/remote-llm-scanner.err</string>
+</dict></plist>
+EOF
+            load_launch_agent "com.calciforge.remote-llm-scanner" "$SCANNER_PLIST"
+        else
+            SCANNER_UNIT="$PLIST_DIR/calciforge-remote-llm-scanner.service"
+            cat > "$SCANNER_UNIT" <<EOF
+[Unit]
+Description=Calciforge remote LLM security scanner
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${BIN_DIR}/remote-llm-scanner
+Environment=REMOTE_SCANNER_PORT=${REMOTE_SCANNER_PORT}
+Environment=REMOTE_SCANNER_API_KEY_FILE=${REMOTE_SCANNER_API_KEY_FILE}
+Environment=REMOTE_SCANNER_API_BASE=${REMOTE_SCANNER_API_BASE}
+Environment=REMOTE_SCANNER_MODEL=${REMOTE_SCANNER_MODEL}
+Environment=PATH=${SERVICE_PATH}
+Restart=always
+RestartSec=5
+StandardOutput=append:${SEC_LOG_DIR}/remote-llm-scanner.log
+StandardError=append:${SEC_LOG_DIR}/remote-llm-scanner.err
+
+[Install]
+WantedBy=${WANTED_BY_TARGET}
+EOF
+            $SYSTEMCTL daemon-reload
+            $SYSTEMCTL enable --now calciforge-remote-llm-scanner.service 2>&1 | tail -3 || \
+                warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
+        fi
+
+        sleep 1
+        curl -sf "${REMOTE_SCANNER_URL}/health" > /dev/null \
+            && ok "remote LLM scanner running on :${REMOTE_SCANNER_PORT}" \
+            || warn "remote LLM scanner not yet responding — check $SEC_LOG_DIR/remote-llm-scanner.err"
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. security-proxy (launchd service)
 # ══════════════════════════════════════════════════════════════════════════════
 hdr "security-proxy"
 
@@ -691,6 +791,8 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>ProgramArguments</key><array><string>${BIN_DIR}/security-proxy</string></array>
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
+        <key>SECURITY_PROXY_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
+        <key>SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
@@ -712,6 +814,8 @@ After=network.target
 Type=simple
 ExecStart=${BIN_DIR}/security-proxy
 Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
+Environment=SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
+Environment=SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
 Environment=AGENT_CONFIG=${AGENTS_JSON}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
@@ -732,8 +836,25 @@ curl -sf "http://localhost:${SECURITY_PROXY_PORT}/health" > /dev/null \
     && ok "security-proxy running on :${SECURITY_PROXY_PORT}" \
     || warn "security-proxy not yet responding — check $SEC_LOG_DIR/security-proxy.err"
 
+run_calciforge_doctor() {
+    local mode="${1:-local}"
+    if [[ -f "$ZC_CONFIG" && -x "$BIN_DIR/calciforge" ]]; then
+        hdr "calciforge doctor (${mode})"
+        HTTP_PROXY="$SECURITY_PROXY_URL" \
+        HTTPS_PROXY="$SECURITY_PROXY_URL" \
+        http_proxy="$SECURITY_PROXY_URL" \
+        https_proxy="$SECURITY_PROXY_URL" \
+        NO_PROXY="$SECURITY_PROXY_NO_PROXY" \
+        no_proxy="$SECURITY_PROXY_NO_PROXY" \
+            "$BIN_DIR/calciforge" --config "$ZC_CONFIG" doctor --no-network \
+            || warn "calciforge doctor reported issues; see output above"
+    else
+        warn "Skipping calciforge doctor — config or binary not available yet"
+    fi
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. fnox — encrypted secret resolver (fallback between env and vaultwarden)
+# 5. fnox — encrypted secret resolver (fallback between env and vaultwarden)
 # ══════════════════════════════════════════════════════════════════════════════
 # secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
 # not hard-required by the Rust resolver, but real channel/gateway deployments
@@ -743,7 +864,7 @@ hdr "fnox (secret resolver)"
 ensure_fnox || true
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. calciforge — main agent gateway (channels + router + proxy)
+# 6. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
 # across reboots. Expects config at ~/.calciforge/config.toml; users must
@@ -774,6 +895,14 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     </array>
     <key>EnvironmentVariables</key><dict>
         <key>RUST_LOG</key><string>calciforge=info</string>
+        <key>CALCIFORGE_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
+        <key>CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
+        <key>HTTP_PROXY</key><string>${SECURITY_PROXY_URL}</string>
+        <key>HTTPS_PROXY</key><string>${SECURITY_PROXY_URL}</string>
+        <key>http_proxy</key><string>${SECURITY_PROXY_URL}</string>
+        <key>https_proxy</key><string>${SECURITY_PROXY_URL}</string>
+        <key>NO_PROXY</key><string>${SECURITY_PROXY_NO_PROXY}</string>
+        <key>no_proxy</key><string>${SECURITY_PROXY_NO_PROXY}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
@@ -796,6 +925,14 @@ Wants=calciforge-clashd.service calciforge-security-proxy.service
 Type=simple
 ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
 Environment=RUST_LOG=calciforge=info
+Environment=CALCIFORGE_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
+Environment=CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
+Environment=HTTP_PROXY=${SECURITY_PROXY_URL}
+Environment=HTTPS_PROXY=${SECURITY_PROXY_URL}
+Environment=http_proxy=${SECURITY_PROXY_URL}
+Environment=https_proxy=${SECURITY_PROXY_URL}
+Environment=NO_PROXY=${SECURITY_PROXY_NO_PROXY}
+Environment=no_proxy=${SECURITY_PROXY_NO_PROXY}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=30
@@ -1100,18 +1237,30 @@ if [[ -n "$NODES_FILE" ]]; then
     }
 
     # ── launchd plist generator ───────────────────────────────────────────────
+    xml_escape() {
+        python3 - "${1-}" <<'PYEOF'
+import html
+import sys
+
+print(html.escape(sys.argv[1], quote=True), end="")
+PYEOF
+    }
+
     launchd_plist() {
         local bin="$1" install_dir="$2" label="com.calciforge.${bin}" log_dir="$3"
         local env_block=""
         shift 3
         for pair in "$@"; do
             local k="${pair%%=*}" v="${pair#*=}"
-            env_block+="        <key>${k}</key><string>${v}</string>\n"
+            local escaped_k escaped_v
+            escaped_k="$(xml_escape "$k")"
+            escaped_v="$(xml_escape "$v")"
+            env_block+="        <key>${escaped_k}</key><string>${escaped_v}</string>\n"
         done
 
         printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n    <key>Label</key><string>%s</string>\n    <key>ProgramArguments</key><array><string>%s/%s</string></array>\n    <key>EnvironmentVariables</key><dict>\n%s    </dict>\n    <key>RunAtLoad</key><true/>\n    <key>KeepAlive</key><true/>\n    <key>StandardOutPath</key><string>%s/%s.log</string>\n    <key>StandardErrorPath</key><string>%s/%s.err</string>\n</dict></plist>\n' \
-            "$label" "$install_dir" "$bin" "$(printf '%b' "$env_block")" \
-            "$log_dir" "$bin" "$log_dir" "$bin"
+            "$(xml_escape "$label")" "$(xml_escape "$install_dir")" "$(xml_escape "$bin")" "$(printf '%b' "$env_block")" \
+            "$(xml_escape "$log_dir")" "$(xml_escape "$bin")" "$(xml_escape "$log_dir")" "$(xml_escape "$bin")"
     }
 
     ensure_remote_fnox() {
@@ -1279,7 +1428,7 @@ REMOTE_BUILD
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
-                calciforge)     env_pairs="" ;;
+                calciforge)     env_pairs="$(proxy_env_pairs)" ;;
             esac
             exec_args=""
             if [[ "$bin" == "calciforge" ]]; then
@@ -1300,9 +1449,18 @@ REMOTE_BUILD
         else
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${service_name}"
-            plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" \
-                "CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" \
-                "PATH=${remote_service_path}")
+            local launchd_env=("CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" "PATH=${remote_service_path}")
+            if [[ "$bin" == "calciforge" ]]; then
+                launchd_env+=(
+                    "HTTP_PROXY=${SECURITY_PROXY_URL}"
+                    "HTTPS_PROXY=${SECURITY_PROXY_URL}"
+                    "http_proxy=${SECURITY_PROXY_URL}"
+                    "https_proxy=${SECURITY_PROXY_URL}"
+                    "NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
+                    "no_proxy=${SECURITY_PROXY_NO_PROXY}"
+                )
+            fi
+            plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" "${launchd_env[@]}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
             ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
             ssh "${ssh_opts[@]}" "$ssh_target" "cat > ${plist_path}" <<< "$plist_content"
@@ -1342,6 +1500,8 @@ PYEOF
     done
 fi
 
+run_calciforge_doctor "post-install"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1357,9 +1517,16 @@ agent_enabled zeroclaw && (zeroclaw status 2>/dev/null | grep -q "running" \
 agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
     && echo "  ✓ dirac" || echo "  ✗ dirac (run: npm install -g dirac-cli)")
 echo ""
-echo "To route Claude Code web requests through security-proxy, add to ~/.zshrc:"
-echo "  export HTTP_PROXY=http://localhost:${SECURITY_PROXY_PORT}"
-echo "  export HTTPS_PROXY=http://localhost:${SECURITY_PROXY_PORT}"
+echo "Calciforge service proxy:"
+echo "  HTTP_PROXY=${SECURITY_PROXY_URL}"
+echo "  HTTPS_PROXY=${SECURITY_PROXY_URL}"
+echo "  NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
+if [[ -n "$REMOTE_SCANNER_URL" ]]; then
+    echo "  Remote scanner=${REMOTE_SCANNER_URL} (fail_closed=${REMOTE_SCANNER_FAIL_CLOSED})"
+fi
+echo ""
+echo "For manually started external agent daemons, set the same proxy environment"
+echo "before launch. Installer-managed Calciforge subprocess agents inherit it."
 echo ""
 echo "Logs:"
 echo "  clashd:         $LOG_DIR/"
