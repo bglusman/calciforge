@@ -171,10 +171,12 @@ url = "http://127.0.0.1:9801"
 fail_closed = true
 ```
 
-Checks are evaluated in order. A `clean` result continues to the next check;
-`review` and `unsafe` stop the pipeline immediately. `fail_closed` controls
-scanner errors or outages only: with `false`, an unavailable optional check is
-skipped; successful `review` or `unsafe` verdicts still enforce.
+Checks are evaluated in order. A `clean` result continues to the next check.
+A `review` result is retained while later checks continue, so a later
+`unsafe` result can still block; `unsafe` stops the pipeline immediately.
+`fail_closed` controls scanner errors or outages only: with `false`, an
+unavailable optional check is skipped; successful `review` or `unsafe`
+verdicts still enforce.
 
 Starlark checks run in-process with `load()` disabled and a bounded call stack.
 The policy file must define `scan(input)` and return `"clean"`, `"review"`,

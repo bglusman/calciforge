@@ -62,7 +62,9 @@ limits, allowed-language checks, and branching logic. Remote
 checks cover heavyweight policy or LLM-based classification. Starlark and
 remote checks can be configured best-effort (`fail_closed = false`) or
 fail-closed (`fail_closed = true`) if unavailable. A `clean` result continues
-to the next configured check; `review` and `unsafe` stop the pipeline.
+to the next configured check. A `review` result is retained while later checks
+continue, so a later `unsafe` result can still block; `unsafe` stops the
+pipeline immediately.
 
 ```rust
 use adversary_detector::{ScannerCheckConfig, ScannerConfig};
