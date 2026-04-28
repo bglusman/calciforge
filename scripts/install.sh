@@ -327,6 +327,20 @@ load_launch_agent() {
     fi
 }
 
+enable_restart_service() {
+    local service="$1"
+    $SYSTEMCTL enable "$service" 2>&1 | tail -3 || {
+        warn "systemctl enable failed for $service"
+        return 1
+    }
+    # `enable --now` does not restart an already-running service after
+    # replacing its binary. Restart explicitly so upgrades run new code.
+    $SYSTEMCTL restart "$service" 2>&1 | tail -3 || {
+        warn "systemctl restart failed for $service"
+        return 1
+    }
+}
+
 # ── ask helper ────────────────────────────────────────────────────────────────
 # ask_install <name> <what>: returns 0 (yes) or 1 (no)
 ask_install() {
@@ -685,7 +699,7 @@ StandardError=append:${LOG_DIR}/clashd.err
 WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable --now calciforge-clashd.service 2>&1 | tail -3 || \
+    enable_restart_service calciforge-clashd.service || \
         warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
 fi
 
@@ -771,7 +785,7 @@ StandardError=append:${SEC_LOG_DIR}/remote-llm-scanner.err
 WantedBy=${WANTED_BY_TARGET}
 EOF
             $SYSTEMCTL daemon-reload
-            $SYSTEMCTL enable --now calciforge-remote-llm-scanner.service 2>&1 | tail -3 || \
+            enable_restart_service calciforge-remote-llm-scanner.service || \
                 warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
         fi
 
@@ -838,7 +852,7 @@ StandardError=append:${SEC_LOG_DIR}/security-proxy.err
 WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable --now calciforge-security-proxy.service 2>&1 | tail -3 || \
+    enable_restart_service calciforge-security-proxy.service || \
         warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
 fi
 
@@ -954,7 +968,7 @@ StandardError=append:${ZC_LOG_DIR}/calciforge.err
 WantedBy=${WANTED_BY_TARGET}
 EOF
     $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable --now calciforge.service 2>&1 | tail -3 || \
+    enable_restart_service calciforge.service || \
         warn "systemctl failed — if running as non-root, run: loginctl enable-linger \$USER"
 fi
 
