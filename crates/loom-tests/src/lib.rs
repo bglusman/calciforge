@@ -27,7 +27,7 @@ fn test_loom_cfg_missing() {
     );
 }
 
-#[cfg(loom)]
+#[cfg(all(test, loom))]
 mod loom_tests {
     use loom::sync::atomic::{AtomicUsize, Ordering};
     use loom::sync::{Arc, Mutex, RwLock};
