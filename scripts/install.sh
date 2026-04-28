@@ -711,8 +711,11 @@ if [[ -n "$REMOTE_SCANNER_URL" ]]; then
 
     if [[ -n "$REMOTE_SCANNER_URL" ]]; then
         if [[ ! -s "$REMOTE_SCANNER_PROMPT_FILE" && -f "$REPO_ROOT/scripts/remote-llm-scanner-prompt.txt" ]]; then
-            install -m 600 "$REPO_ROOT/scripts/remote-llm-scanner-prompt.txt" "$REMOTE_SCANNER_PROMPT_FILE"
-            ok "Seeded remote scanner prompt → $REMOTE_SCANNER_PROMPT_FILE"
+            if install -m 600 "$REPO_ROOT/scripts/remote-llm-scanner-prompt.txt" "$REMOTE_SCANNER_PROMPT_FILE"; then
+                ok "Seeded remote scanner prompt → $REMOTE_SCANNER_PROMPT_FILE"
+            else
+                warn "Failed to seed remote scanner prompt → $REMOTE_SCANNER_PROMPT_FILE"
+            fi
         fi
 
         if [[ ! -s "$REMOTE_SCANNER_API_KEY_FILE" && -z "${REMOTE_SCANNER_API_KEY:-}" ]]; then

@@ -299,9 +299,10 @@ fn scanner_policy_globals(builder: &mut GlobalsBuilder) {
 
 /// A single adversary scanning check.
 ///
-/// Returning `None` or `Clean` means "continue"; returning `Review` or
-/// `Unsafe` halts the configured pipeline. External crates can implement this
-/// trait to host custom policy in-process.
+/// Returning `None` or `Clean` means "continue"; returning `Review` records a
+/// suspicious verdict while later checks still run; returning `Unsafe` blocks
+/// immediately. External crates can implement this trait to host custom policy
+/// in-process.
 #[async_trait::async_trait]
 pub trait ScannerCheck: Send + Sync {
     /// Stable operator-facing name for logs and diagnostics.
@@ -342,6 +343,8 @@ impl AdversaryScanner {
     /// scanner policy. Remote checks can be best-effort or fail-closed
     /// depending on their config.
     pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> ScanVerdict {
+        let mut review_verdict = None;
+
         for check in self.config.configured_checks() {
             let next = match check {
                 ScannerCheckConfig::RemoteHttp {
@@ -359,13 +362,19 @@ impl AdversaryScanner {
             };
 
             if let Some(next) = next {
-                if !next.is_clean() {
-                    return next;
+                match next {
+                    ScanVerdict::Clean => {}
+                    ScanVerdict::Review { .. } => {
+                        if review_verdict.is_none() {
+                            review_verdict = Some(next);
+                        }
+                    }
+                    ScanVerdict::Unsafe { .. } => return next,
                 }
             }
         }
 
-        ScanVerdict::Clean
+        review_verdict.unwrap_or(ScanVerdict::Clean)
     }
 
     async fn remote_http_check(
@@ -933,6 +942,58 @@ def scan(input):
         assert!(matches!(
             v,
             ScanVerdict::Review { reason } if reason == "manual review for reports"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_continues_after_review_to_catch_unsafe() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let review_policy = temp_dir.path().join("review.star");
+        let unsafe_policy = temp_dir.path().join("unsafe.star");
+        std::fs::write(
+            &review_policy,
+            r#"
+def scan(input):
+    if "wire money" in input["content"]:
+        return {"verdict": "review", "reason": "first policy asked for review"}
+    return "clean"
+"#,
+        )
+        .expect("write review policy");
+        std::fs::write(
+            &unsafe_policy,
+            r#"
+def scan(input):
+    if "wire money" in input["content"]:
+        return {"verdict": "unsafe", "reason": "second policy blocked transfer"}
+    return "clean"
+"#,
+        )
+        .expect("write unsafe policy");
+
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![
+                ScannerCheckConfig::Starlark {
+                    path: review_policy.to_string_lossy().into_owned(),
+                    fail_closed: true,
+                    max_callstack: 64,
+                },
+                ScannerCheckConfig::Starlark {
+                    path: unsafe_policy.to_string_lossy().into_owned(),
+                    fail_closed: true,
+                    max_callstack: 64,
+                },
+            ],
+            ..Default::default()
+        });
+
+        let v = s
+            .scan("https://example.com", "please wire money", ScanContext::Api)
+            .await;
+
+        assert!(matches!(
+            v,
+            ScanVerdict::Unsafe { reason } if reason == "second policy blocked transfer"
         ));
     }
 
