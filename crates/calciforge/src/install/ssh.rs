@@ -472,7 +472,7 @@ pub fn detect_openclaw_version(
 
     // Fallback: grep for version-like strings.
     let grep_cmd = format!(
-        "grep -o '\"[0-9]\\{{4\\}}\\.\\.[0-9]\\+\\.[0-9]\\+\"' {} 2>/dev/null | head -1 | tr -d '\"' || true",
+        "grep -o '\"[0-9]\\{{4\\}}\\.[0-9]\\+\\.[0-9]\\+\"' {} 2>/dev/null | head -1 | tr -d '\"' || true",
         remote_path_shell(config_path)
     );
     let out = client.run(host, key, &grep_cmd)?;

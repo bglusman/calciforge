@@ -14,6 +14,8 @@ use tracing::{info, warn};
 
 use super::{AdapterError, AgentAdapter, DispatchContext};
 
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+
 /// Adapter for OpenAI-compatible `/v1/chat/completions` endpoints.
 pub struct OpenAiCompatAdapter {
     client: reqwest::Client,
@@ -29,10 +31,11 @@ impl OpenAiCompatAdapter {
         model: Option<String>,
         timeout_ms: Option<u64>,
     ) -> Self {
-        let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(30));
-        if let Some(timeout_ms) = timeout_ms {
-            builder = builder.timeout(Duration::from_millis(timeout_ms));
-        }
+        let builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_millis(
+                timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
+            ));
         let client = builder.build().expect("reqwest client");
 
         Self {
