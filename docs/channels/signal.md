@@ -5,45 +5,44 @@ title: Signal Channel Setup
 
 # Signal Channel
 
-Calciforge's Signal channel is a **webhook receiver**. It accepts incoming
-messages from any compatible Signal gateway and sends replies back through the
-gateway's outbound API. Calciforge does not own the Signal session itself.
+Calciforge's Signal channel embeds [`zeroclawlabs::SignalChannel`][zclaw] as a
+library and talks to [`signal-cli-rest-api`][scra] (or any compatible
+`signal-cli daemon --http` front-end) directly. There is no separate ZeroClaw
+daemon in the runtime path.
 
-The contract is the wire format, not a specific product:
+[zclaw]: https://docs.rs/zeroclawlabs
+[scra]: https://github.com/bbernhard/signal-cli-rest-api
 
-- **Inbound:** the gateway POSTs to `/webhooks/signal` in the format documented
-  under [Webhook payload format](#webhook-payload-format) below.
-- **Outbound:** Calciforge POSTs replies to `{gateway}/tools/invoke` with the
-  body shape under [Reply API](#reply-api).
+The wire-protocol contract is `signal-cli`'s JSON-RPC + SSE API. As long as
+your daemon implements that (signal-cli-rest-api is the reference; any
+compatible re-implementation works), Calciforge will connect.
 
-Any gateway implementing those endpoints will work. The known-working
-implementation is [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) with
-its `signal-web` feature, which is what this guide configures.
+## What this gateway does
 
-> **Future work:** embedding [`zeroclawlabs::SignalChannel`](https://docs.rs/zeroclawlabs)
-> directly in Calciforge (as a Rust library) and pointing it at
-> [`signal-cli-rest-api`](https://github.com/bbernhard/signal-cli-rest-api)
-> would drop the ZeroClaw daemon from the architecture. `signal-cli-rest-api`
-> would still be required (libsignal has no daemon-free Rust client today),
-> but it is a generic Signal automation tool — not a Calciforge-specific or
-> agent-specific service. Tracked in the project backlog.
+`signal-cli-rest-api` owns the Signal session (registration, encryption, the
+libsignal store) and exposes it over HTTP. `zeroclawlabs::SignalChannel` is
+the Rust client that subscribes to the SSE event stream for inbound messages
+and POSTs JSON-RPC `send` requests for outbound replies. Calciforge wires
+that client into its identity resolver, command dispatcher, and agent router.
+
+ZeroClaw is no longer required. `signal-cli-rest-api` is the only external
+dependency, and it is a generic Signal automation tool — not Calciforge- or
+agent-specific.
 
 ## Architecture
 
 ```
-Signal user  ──→  Signal gateway (e.g. ZeroClaw)  ──→  POST /webhooks/signal  ──→  Calciforge
-                                                                                          │
-                                                              identity resolution         │
-                                                              agent dispatch              │
-                                                                                          ↓
-Signal user  ←──  Signal gateway (e.g. ZeroClaw)  ←──  POST /tools/invoke  ←──  Calciforge reply
+Signal user  ──→  signal-cli-rest-api  ──→  zeroclawlabs::SignalChannel  ──→  Calciforge
 ```
+
+Inbound and outbound flow through the same daemon over HTTP/SSE; the SSE
+listener and the JSON-RPC sender live inside the Calciforge process.
 
 ## Prerequisites
 
-- A Signal gateway that implements the wire protocol above and has an active
-  Signal session. ZeroClaw with `signal-web` enabled is the reference
-  implementation; any compatible alternative is fine.
+- A running `signal-cli-rest-api` (or `signal-cli daemon --http`) with a
+  registered Signal account. See the project README for registration steps
+  (one-time SMS or QR-link).
 
 ## Step 1: Channel config
 
@@ -54,48 +53,51 @@ Add to `~/.calciforge/config.toml`:
 kind = "signal"
 enabled = true
 
-# ZeroClaw gateway that owns the Signal session.
-# Calciforge sends replies by POSTing to {zeroclaw_endpoint}/tools/invoke.
-# Use 127.0.0.1 if co-located; use the host IP if running on a separate machine.
-zeroclaw_endpoint = "http://127.0.0.1:18789"
-zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+# HTTP URL of signal-cli-rest-api. Calciforge subscribes to SSE events at
+# {url}/api/v1/events and sends via JSON-RPC at {url}/api/v1/rpc.
+signal_cli_url = "http://127.0.0.1:8080"
 
-# Calciforge's webhook listener — ZeroClaw will POST incoming Signal messages here.
-# Must be reachable from wherever ZeroClaw is running.
-webhook_listen = "0.0.0.0:18796"
-webhook_path = "/webhooks/signal"
+# The bot's registered Signal number (E.164).
+signal_account = "+15555550001"
 
-# Optional HMAC-SHA256 secret for X-Hub-Signature-256 header verification.
-# Set the same value in ZeroClaw as its webhook_forward_secret.
-# webhook_secret = "change-me-to-a-random-secret"
-
-# Allowed sender phone numbers in E.164 format.
-# Must match identity aliases below.
+# Allowed sender phone numbers in E.164 format. Must match identity aliases
+# below. Use "*" to allow any number (not recommended).
 allowed_numbers = ["+15555550001"]
+
+# Optional: restrict to a single Signal group. Replies go back to that group.
+# Use the literal "dm" to filter to direct messages only.
+# signal_group_id = "group.abc123…"
+
+# Optional: drop attachment-only messages (no text body). Default false.
+# signal_ignore_attachments = false
+
+# Optional: drop Signal "story" messages. Default false.
+# signal_ignore_stories = false
 ```
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `zeroclaw_endpoint` | yes | — | URL of the ZeroClaw gateway |
-| `zeroclaw_auth_token` | yes | — | Bearer token for the gateway |
-| `webhook_listen` | no | `0.0.0.0:18796` | Address Calciforge listens on for incoming Signal webhooks |
-| `webhook_path` | no | `/webhooks/signal` | URL path for incoming webhooks |
-| `webhook_secret` | no | — | HMAC-SHA256 secret; when set, Calciforge rejects unsigned requests |
-| `allowed_numbers` | yes | `[]` | E.164 phone numbers allowed to interact |
+| `signal_cli_url` | yes | — | HTTP URL of `signal-cli-rest-api` |
+| `signal_account` | yes | — | Bot's registered Signal number (E.164) |
+| `allowed_numbers` | yes | `[]` | E.164 senders allowed to interact |
+| `signal_group_id` | no | — | Restrict to a specific group; or `"dm"` for DMs only |
+| `signal_ignore_attachments` | no | `false` | Drop attachment-only messages |
+| `signal_ignore_stories` | no | `false` | Drop story messages |
 | `scan_messages` | no | `false` | Enable inbound adversarial content scanning |
 
-## Step 2: ZeroClaw forwarding config
+## Migrating from the legacy webhook config
 
-In ZeroClaw's config, point Signal message delivery at Calciforge's webhook:
+The previous Signal channel was a webhook receiver that forwarded replies
+through a separate ZeroClaw daemon. If your config still has these fields:
 
-```toml
-[channels_config.signal]
-webhook_forward_url    = "http://127.0.0.1:18796/webhooks/signal"
-# webhook_forward_secret = "change-me-to-a-random-secret"  # must match Calciforge's webhook_secret
-allowed_numbers = ["+15555550001"]
-```
+- `zeroclaw_endpoint`, `zeroclaw_auth_token`
+- `webhook_listen`, `webhook_path`, `webhook_secret`
 
-## Step 3: Identity config
+…remove them from the `[[channels]]` block where `kind = "signal"` and
+replace with the new shape above. (The same fields are still used by the
+WhatsApp channel and should stay in any `kind = "whatsapp"` block.)
+
+## Step 2: Identity config
 
 The alias `id` is the E.164 phone number. The leading `+` is required:
 
@@ -114,30 +116,34 @@ default_agent = "librarian"
 allowed_agents = ["librarian"]
 ```
 
-Phone numbers from `allowed_numbers` that don't match any identity alias are silently
-dropped. Calciforge normalises the `from` field to E.164 before lookup (adds `+` prefix
-if absent, strips spaces and dashes).
+Phone numbers in `allowed_numbers` that don't match any identity alias are
+silently dropped at the auth boundary.
 
-## Step 4: Firewall
+## Step 3: Run signal-cli-rest-api
 
-If ZeroClaw and Calciforge are on the same host, no changes needed — both use localhost.
-
-If they're on separate hosts, open port 18796 on the Calciforge host from the ZeroClaw host:
+The standard deployment is the upstream Docker image:
 
 ```bash
-ufw allow from <zeroclaw-host-ip> to any port 18796
+docker run -d --name signal-api \
+  -p 8080:8080 \
+  -v signal-cli-config:/home/.local/share/signal-cli \
+  -e MODE=json-rpc \
+  bbernhard/signal-cli-rest-api
 ```
 
-## Step 5: Verify
+`MODE=json-rpc` is required — Calciforge talks JSON-RPC + SSE, not the
+older REST endpoints.
+
+## Step 4: Verify
 
 ```bash
 calciforge doctor   # validates config
 calciforge          # start; send a Signal message from an allowed number
 ```
 
-Check logs for `identity resolved` on a known number, or `no identity for signal/<number>`
-on an unknown one. Run a health check against the webhook listener:
+Check logs for `Signal channel listening via SSE on …`. A health check on
+`signal-cli-rest-api` itself:
 
 ```bash
-curl http://localhost:18796/health
+curl http://127.0.0.1:8080/v1/health
 ```

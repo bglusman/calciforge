@@ -364,6 +364,30 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
 
+    // --- Signal-specific fields (embedded `zeroclawlabs::SignalChannel`) ---
+    /// HTTP URL of `signal-cli-rest-api` (or compatible signal-cli daemon
+    /// HTTP front-end). Example: `"http://127.0.0.1:8080"`.
+    /// Calciforge connects directly — no separate ZeroClaw daemon required.
+    pub signal_cli_url: Option<String>,
+
+    /// Bot's E.164 phone number registered with signal-cli (the receiving
+    /// account). Example: `"+15555550001"`.
+    pub signal_account: Option<String>,
+
+    /// Optional Signal group ID. When set, only messages from that group are
+    /// processed; replies are sent back to the group. When unset, all DMs and
+    /// groups from `allowed_numbers` are accepted. Use the literal string
+    /// `"dm"` to filter to direct messages only.
+    pub signal_group_id: Option<String>,
+
+    /// When true, drop attachment-only messages (no text body). Default false.
+    #[serde(default)]
+    pub signal_ignore_attachments: bool,
+
+    /// When true, drop Signal "story" messages. Default false.
+    #[serde(default)]
+    pub signal_ignore_stories: bool,
+
     // --- Mock channel settings ---
     /// TCP port for the mock channel's control API. Default: 9090.
     pub control_port: Option<u16>,
@@ -1649,17 +1673,19 @@ version = 2
 [[channels]]
 kind = "signal"
 enabled = true
-zeroclaw_endpoint = "http://127.0.0.1:18789"
-zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
-webhook_listen = "0.0.0.0:18796"
-webhook_path = "/webhooks/signal"
+signal_cli_url = "http://127.0.0.1:8080"
+signal_account = "+15555550001"
 allowed_numbers = ["+15555550001"]
 "#;
         let cfg: CalciforgeConfig = toml::from_str(raw).expect("signal channel config");
         assert_eq!(cfg.channels[0].kind, "signal");
         assert_eq!(
-            cfg.channels[0].webhook_listen.as_deref(),
-            Some("0.0.0.0:18796")
+            cfg.channels[0].signal_cli_url.as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+        assert_eq!(
+            cfg.channels[0].signal_account.as_deref(),
+            Some("+15555550001")
         );
         assert_eq!(
             cfg.channels[0].allowed_numbers,
