@@ -102,4 +102,13 @@ printf '%s' "$SHA" > "$LAST_SHA_FILE"
 # for this to decide whether to run /review-commit.
 touch "$REPO_ROOT/.claude/REVIEW_PENDING"
 
+# Print a notification — Claude Code includes PostToolUse hook stdout
+# in the context message shown after the tool call, so this appears
+# immediately and prompts the review without manual intervention.
+SUBJECT="$(git log -1 --format=%s "$SHA")"
+printf '\n[post-commit hook] Commit queued for adversarial review:\n'
+printf '  SHA:     %s\n' "$SHA"
+printf '  Subject: %s\n' "$SUBJECT"
+printf 'Run /review-commit to review this commit now.\n'
+
 exit 0
