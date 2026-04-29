@@ -10,7 +10,7 @@ use std::time::Duration;
 use adversary_detector::{
     AdversaryScanner, ScanContext, ScanVerdict, ScannerCheckConfig, ScannerConfig,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tokio::net::TcpStream;
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
@@ -257,8 +257,17 @@ async fn check_install_node_ssh(node: &InstallNodeMetadata, report: &mut DoctorR
     if let Some(key) = &node.ssh_key {
         cmd.arg("-i").arg(key);
     }
-    cmd.arg(&target)
-        .arg(remote_install_node_permission_command(node));
+    let permission_command = match remote_install_node_permission_command(node) {
+        Ok(command) => command,
+        Err(err) => {
+            report.error(format!(
+                "install node '{}' has invalid SSH permission-check metadata: {err}",
+                node.name
+            ));
+            return;
+        }
+    };
+    cmd.arg(&target).arg(permission_command);
 
     match timeout(Duration::from_secs(10), cmd.output()).await {
         Ok(Ok(output)) if output.status.success() => {
@@ -291,22 +300,25 @@ async fn check_install_node_ssh(node: &InstallNodeMetadata, report: &mut DoctorR
     }
 }
 
-fn remote_install_node_permission_command(node: &InstallNodeMetadata) -> String {
-    format!(
+fn remote_install_node_permission_command(node: &InstallNodeMetadata) -> Result<String> {
+    Ok(format!(
         "set -eu; os={}; install_dir={}; config_dir={}; \
          if [ \"$os\" = linux ] && [ \"$(id -u)\" != 0 ]; then echo 'linux node install requires root SSH for systemd and install paths' >&2; exit 10; fi; \
          for dir in \"$install_dir\" \"$config_dir\"; do test -d \"$dir\" || {{ echo \"missing required directory: $dir\" >&2; exit 11; }}; test -w \"$dir\" || {{ echo \"directory is not writable: $dir\" >&2; exit 12; }}; tmp=\"$dir/.calciforge-doctor-permission-test.$$\"; : > \"$tmp\"; rm -f \"$tmp\"; done; \
          if [ \"$os\" = linux ]; then command -v systemctl >/dev/null 2>&1 || {{ echo 'systemctl not found' >&2; exit 13; }}; test -w /etc/systemd/system || {{ echo '/etc/systemd/system is not writable' >&2; exit 14; }}; fi; \
          echo OK",
-        shell_quote_for_remote(&node.os),
-        shell_quote_for_remote(&node.install_dir),
-        shell_quote_for_remote(&node.config_dir),
-    )
+        shell_quote_for_remote(&node.os)?,
+        shell_quote_for_remote(&node.install_dir)?,
+        shell_quote_for_remote(&node.config_dir)?,
+    ))
 }
 
-fn shell_quote_for_remote(input: &str) -> String {
+fn shell_quote_for_remote(input: &str) -> Result<String> {
+    if input.contains(['\0', '\n', '\r']) {
+        bail!("remote shell argument contains a control character");
+    }
     let escaped = input.replace('\'', "'\\''");
-    format!("'{escaped}'")
+    Ok(format!("'{escaped}'"))
 }
 
 fn check_secret_tooling(report: &mut DoctorReport) {
@@ -383,7 +395,7 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
             }
         }
         (Some(http), None) => report.warn(format!(
-            "Current calciforge doctor process has ambient HTTP_PROXY set ({}) but HTTPS_PROXY is not set. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+            "Current calciforge doctor process has ambient HTTP_PROXY set ({}). Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
             display_proxy_value(http)
         )),
         (None, Some(https)) => report.warn(format!(
@@ -441,9 +453,9 @@ fn check_agent_proxy_coverage(
             .filter(|agent| has_incomplete_agent_proxy_env(agent))
             .count();
 
-        if has_http_and_https_proxy(env) {
+        if has_http_proxy(env) {
             report.warn(
-                "Current calciforge doctor process has ambient HTTP_PROXY/HTTPS_PROXY; subprocess inheritance works if the service has the same env, but it also risks proxying Calciforge's own provider/control-plane calls. Move proxy env to agent-level config or wrappers.",
+                "Current calciforge doctor process has ambient HTTP_PROXY; subprocess inheritance works if the service has the same env, but it also risks proxying Calciforge's own provider/control-plane calls. Move proxy env to agent-level config or wrappers.",
             );
         }
 
@@ -455,13 +467,13 @@ fn check_agent_proxy_coverage(
 
         if incomplete_count > 0 {
             report.warn(format!(
-                "{incomplete_count} subprocess agent(s) define incomplete proxy env; set both HTTP_PROXY and HTTPS_PROXY to the intended security-proxy endpoint"
+                "{incomplete_count} subprocess agent(s) define incomplete proxy env; set HTTP_PROXY to the intended security-proxy endpoint or clear proxy env keys"
             ));
         }
 
         if complete_count == subprocess_count && clearing_count == 0 && incomplete_count == 0 {
             report.ok(format!(
-                "{subprocess_count} subprocess agent(s) define explicit HTTP_PROXY/HTTPS_PROXY env; verify these point at security-proxy and include NO_PROXY for loopback"
+                "{subprocess_count} subprocess agent(s) define explicit HTTP_PROXY env; verify these point at security-proxy and include NO_PROXY for loopback"
             ));
         } else {
             let missing_count = subprocess_agents
@@ -474,15 +486,15 @@ fn check_agent_proxy_coverage(
                 .count();
             if missing_count > 0 {
                 report.warn(format!(
-                    "{missing_count} subprocess agent(s) lack explicit HTTP_PROXY/HTTPS_PROXY env; Calciforge no longer supplies ambient proxy env"
+                    "{missing_count} subprocess agent(s) lack explicit HTTP_PROXY env; Calciforge no longer supplies ambient proxy env"
                 ));
             }
         }
     }
 
-    if subprocess_count == 0 && has_http_and_https_proxy(env) {
+    if subprocess_count == 0 && has_http_proxy(env) {
         report.warn(
-            "Current calciforge doctor process has ambient HTTP_PROXY/HTTPS_PROXY but no subprocess agents need it; remove proxy env from the Calciforge service if present",
+            "Current calciforge doctor process has ambient HTTP_PROXY but no subprocess agents need it; remove proxy env from the Calciforge service if present",
         );
     }
 
@@ -511,7 +523,7 @@ fn agent_proxy_environment(agent: &AgentConfig) -> ProxyEnvironment {
 }
 
 fn has_complete_agent_proxy_env(agent: &AgentConfig) -> bool {
-    has_http_and_https_proxy(&agent_proxy_environment(agent))
+    has_http_proxy(&agent_proxy_environment(agent))
 }
 
 fn has_incomplete_agent_proxy_env(agent: &AgentConfig) -> bool {
@@ -527,14 +539,10 @@ fn has_any_agent_proxy_env(agent: &AgentConfig) -> bool {
         .is_some_and(|env| env.keys().any(|key| is_proxy_env_key(key)))
 }
 
-fn has_http_and_https_proxy(env: &ProxyEnvironment) -> bool {
+fn has_http_proxy(env: &ProxyEnvironment) -> bool {
     env.http
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
-        && env
-            .https
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn display_proxy_value(value: &str) -> String {
@@ -1327,9 +1335,25 @@ mod tests {
             config_dir: "/etc/calciforge".to_string(),
         };
 
-        let command = remote_install_node_permission_command(&node);
+        let command = remote_install_node_permission_command(&node).unwrap();
         assert!(command.contains("install_dir='/usr/local/bin; rm -rf /'"));
         assert!(command.contains("test -w \"$dir\""));
+    }
+
+    #[test]
+    fn install_node_permission_command_rejects_newlines() {
+        let node = InstallNodeMetadata {
+            name: "bad".to_string(),
+            host: "example.internal".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            os: "linux\nuname -a".to_string(),
+            install_dir: "/usr/local/bin".to_string(),
+            config_dir: "/etc/calciforge".to_string(),
+        };
+
+        let err = remote_install_node_permission_command(&node).unwrap_err();
+        assert!(err.to_string().contains("control character"));
     }
 
     #[test]
@@ -1425,9 +1449,7 @@ mod tests {
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
-                && finding
-                    .message
-                    .contains("lack explicit HTTP_PROXY/HTTPS_PROXY")
+                && finding.message.contains("lack explicit HTTP_PROXY env")
         }));
     }
 
@@ -1440,10 +1462,6 @@ mod tests {
             env: Some(HashMap::from([
                 (
                     "HTTP_PROXY".to_string(),
-                    "http://127.0.0.1:8888".to_string(),
-                ),
-                (
-                    "HTTPS_PROXY".to_string(),
                     "http://127.0.0.1:8888".to_string(),
                 ),
                 (
@@ -1467,9 +1485,7 @@ mod tests {
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Ok
-                && finding
-                    .message
-                    .contains("define explicit HTTP_PROXY/HTTPS_PROXY")
+                && finding.message.contains("define explicit HTTP_PROXY env")
         }));
     }
 
@@ -1480,7 +1496,7 @@ mod tests {
             id: "codex".to_string(),
             kind: "codex-cli".to_string(),
             env: Some(HashMap::from([(
-                "HTTPS_PROXY".to_string(),
+                "https_proxy".to_string(),
                 "http://127.0.0.1:9999".to_string(),
             )])),
             ..Default::default()

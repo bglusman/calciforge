@@ -14,7 +14,7 @@ mod context;
 mod doctor;
 #[cfg(test)]
 mod hooks;
-#[allow(dead_code)]
+#[allow(dead_code)] // installer has production CLI entrypoints plus wizard/test support.
 mod install;
 mod local_model;
 #[cfg(feature = "persistent-context")]
