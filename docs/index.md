@@ -539,10 +539,10 @@ on channels that support it.
 Per-channel setup guides (config reference + TOML examples tested against
 the live schema in CI):
 
-- [Telegram](channels/telegram) — long-poll, no open port required
-- [Matrix](channels/matrix) — HTTP long-poll; note: no E2EE
-- [Signal](channels/signal) — webhook via ZeroClaw/OpenClaw gateway
-- [WhatsApp](channels/whatsapp) — webhook via ZeroClaw/OpenClaw gateway
+- [Telegram](channels/telegram.md) — long-poll, no open port required
+- [Matrix](channels/matrix.md) — HTTP long-poll; note: no E2EE
+- [Signal](channels/signal.md) — webhook via ZeroClaw/OpenClaw gateway
+- [WhatsApp](channels/whatsapp.md) — webhook via ZeroClaw/OpenClaw gateway
 
 ```toml
 # /etc/calciforge/config.toml — channel configuration
