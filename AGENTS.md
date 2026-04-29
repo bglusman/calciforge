@@ -99,15 +99,17 @@ reference implementation. All other config sections and crates follow the same p
 example is wrong, the build fails.
 
 ```rust
-/// Resolves a secret name to its value.
+/// Fetches a secret value by name.
 ///
 /// ```no_run
-/// # use secrets_client::SecretsClient;
-/// let client = SecretsClient::new();
-/// let value = client.resolve("MY_API_KEY")?;
-/// # Ok::<(), anyhow::Error>(())
+/// # use secrets_client::FnoxClient;
+/// # #[tokio::main] async fn main() -> anyhow::Result<()> {
+/// let client = FnoxClient::new();
+/// let value = client.get("MY_API_KEY").await?;
+/// # Ok(())
+/// # }
 /// ```
-pub fn resolve(&self, name: &str) -> anyhow::Result<String> { ... }
+pub async fn get(&self, name: &str) -> Result<String, FnoxError> { ... }
 ```
 
 **Binary crates** (`calciforge`, `host-agent`): use **`include_str!` + unit tests**
