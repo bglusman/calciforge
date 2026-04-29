@@ -1575,6 +1575,7 @@ weight = 20
                 current.push('\n');
             }
         }
+        assert!(!in_block, "unclosed ```toml block in markdown");
         blocks
     }
 
@@ -1685,7 +1686,12 @@ allowed_numbers = ["+15555550001"]
     #[test]
     fn test_channel_docs_telegram_toml_blocks_valid() {
         let doc = include_str!("../../../docs/channels/telegram.md");
-        for block in channel_blocks_from_doc(doc) {
+        let blocks = channel_blocks_from_doc(doc);
+        assert!(
+            !blocks.is_empty(),
+            "no [[channels]] TOML blocks found in telegram.md"
+        );
+        for block in blocks {
             let cfg = parse_channel_block(&block);
             assert_eq!(
                 cfg.channels[0].kind, "telegram",
@@ -1697,7 +1703,12 @@ allowed_numbers = ["+15555550001"]
     #[test]
     fn test_channel_docs_matrix_toml_blocks_valid() {
         let doc = include_str!("../../../docs/channels/matrix.md");
-        for block in channel_blocks_from_doc(doc) {
+        let blocks = channel_blocks_from_doc(doc);
+        assert!(
+            !blocks.is_empty(),
+            "no [[channels]] TOML blocks found in matrix.md"
+        );
+        for block in blocks {
             let cfg = parse_channel_block(&block);
             assert_eq!(
                 cfg.channels[0].kind, "matrix",
@@ -1709,7 +1720,12 @@ allowed_numbers = ["+15555550001"]
     #[test]
     fn test_channel_docs_signal_toml_blocks_valid() {
         let doc = include_str!("../../../docs/channels/signal.md");
-        for block in channel_blocks_from_doc(doc) {
+        let blocks = channel_blocks_from_doc(doc);
+        assert!(
+            !blocks.is_empty(),
+            "no [[channels]] TOML blocks found in signal.md"
+        );
+        for block in blocks {
             let cfg = parse_channel_block(&block);
             assert_eq!(
                 cfg.channels[0].kind, "signal",
@@ -1721,7 +1737,12 @@ allowed_numbers = ["+15555550001"]
     #[test]
     fn test_channel_docs_whatsapp_toml_blocks_valid() {
         let doc = include_str!("../../../docs/channels/whatsapp.md");
-        for block in channel_blocks_from_doc(doc) {
+        let blocks = channel_blocks_from_doc(doc);
+        assert!(
+            !blocks.is_empty(),
+            "no [[channels]] TOML blocks found in whatsapp.md"
+        );
+        for block in blocks {
             let cfg = parse_channel_block(&block);
             assert_eq!(
                 cfg.channels[0].kind, "whatsapp",
