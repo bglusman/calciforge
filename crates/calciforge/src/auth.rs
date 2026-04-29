@@ -117,7 +117,7 @@ mod tests {
             ],
             agents: vec![AgentConfig {
                 id: "librarian".to_string(),
-                kind: "openclaw-http".to_string(),
+                kind: "openclaw-channel".to_string(),
                 endpoint: "http://10.0.0.20:18789".to_string(),
                 timeout_ms: Some(120000),
                 model: None,
@@ -125,6 +125,7 @@ mod tests {
                 api_key: None,
                 api_key_file: None,
                 openclaw_agent_id: None,
+                allow_model_override: None,
                 reply_port: None,
                 reply_auth_token: None,
                 command: None,

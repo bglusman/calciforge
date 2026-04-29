@@ -109,9 +109,13 @@ systemctl start adversary-detector security-gateway clashd
 Create `/etc/profile.d/calciforge-proxy.sh`:
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8080
-export HTTPS_PROXY=http://127.0.0.1:8080
 export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 ```
+
+`HTTPS_PROXY` is intentionally omitted from the basic setup because standard
+HTTPS proxying uses CONNECT tunnels that Calciforge cannot inspect without a
+separate MITM design. Use explicit Calciforge fetch/tool integration for HTTPS
+content that must be scanned or rewritten.
 
 ```bash
 chmod +x /etc/profile.d/calciforge-proxy.sh

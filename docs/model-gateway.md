@@ -4,6 +4,14 @@ Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests across upstream providers, local models, aliases, and synthetic
 model choices.
 
+Agents can also point at an OpenAI-compatible endpoint with
+`kind = "openai-compat"`. Use that for plain model-gateway or model API
+targets. Do not use it as an OpenClaw agent adapter; OpenClaw agents should use
+`kind = "openclaw-channel"` so slash commands and agent identity stay native.
+Set `allow_model_override = true` only for OpenAI-compatible agents that should
+accept Calciforge `!model` selections and synthetic model IDs. Leave it unset
+for endpoints with their own restricted model namespace.
+
 ## What Exists Today
 
 | Feature | Status | Notes |

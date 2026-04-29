@@ -229,7 +229,8 @@ pub struct ChannelAlias {
 /// An agent entry (`[[agents]]`).
 ///
 /// Common fields used by subprocess and HTTP adapter kinds include:
-/// - `"openclaw-http"`: uses `endpoint`, `api_key` / `auth_token`, `model`
+/// - `"openclaw-channel"`: uses `endpoint`, `api_key` / `auth_token`, `model`
+/// - `"openai-compat"`: uses `endpoint`, `api_key` / `auth_token`, `model`
 /// - `"zeroclaw"`:      uses `endpoint`, `api_key` (required)
 /// - `"cli"`:           uses `command`, `args`, `env`, `timeout_ms`
 /// - `"codex-cli"`:     uses `command`(optional), `args`, `env`, `model`, `timeout_ms`
@@ -240,12 +241,12 @@ pub struct ChannelAlias {
 pub struct AgentConfig {
     pub id: String,
     pub kind: String,
-    /// Base URL for HTTP agents (openclaw-http, zeroclaw).
+    /// Base URL for HTTP agents (openclaw-channel, openai-compat, zeroclaw).
     #[serde(default)]
     pub endpoint: String,
     pub timeout_ms: Option<u64>,
     pub model: Option<String>,
-    /// Legacy auth token field (openclaw-http). `api_key` takes precedence when present.
+    /// Legacy auth token field (openclaw-channel). `api_key` takes precedence when present.
     pub auth_token: Option<String>,
     /// Per-agent API key / Bearer token. Overrides global `CALCIFORGE_AGENT_TOKEN`.
     pub api_key: Option<String>,
@@ -256,6 +257,12 @@ pub struct AgentConfig {
     /// OpenClaw agent lane id for kind = "openclaw-channel" (defaults to this agent id).
     #[serde(default)]
     pub openclaw_agent_id: Option<String>,
+    /// Whether Calciforge should forward per-identity `!model` overrides to
+    /// this agent. Defaults are adapter-specific; set this explicitly for
+    /// generic OpenAI-compatible gateway agents that should accept synthetic
+    /// model names.
+    #[serde(default)]
+    pub allow_model_override: Option<bool>,
     /// Local port for OpenClaw callback replies on POST /hooks/reply (default 18797).
     #[serde(default)]
     pub reply_port: Option<u16>,
@@ -1023,7 +1030,7 @@ role = "user"
 
 [[agents]]
 id = "librarian"
-kind = "openclaw-http"
+kind = "openclaw-channel"
 endpoint = "http://10.0.0.20:18789"
 timeout_ms = 120000
 registry = { display_name = "Librarian", specialties = ["general", "homelab-ops"] }
@@ -1468,7 +1475,7 @@ version = 2
 
 [[agents]]
 id = "custodian"
-kind = "openclaw-http"
+kind = "openclaw-channel"
 endpoint = "http://10.0.0.60:18790"
 api_key = "REPLACE_WITH_AUTH_TOKEN"
 timeout_ms = 60000
@@ -1487,7 +1494,7 @@ version = 2
 
 [[agents]]
 id = "gateway"
-kind = "openclaw-http"
+kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18083"
 api_key_file = "/etc/calciforge/secrets/gateway-token"
 model = "local-kimi-gpt55"

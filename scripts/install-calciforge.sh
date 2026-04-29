@@ -56,6 +56,48 @@ copy_to() {
     scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$src" "root@$host:$dst"
 }
 
+preflight_host() {
+    local host="$1"
+    echo "  Preflight SSH and permissions..."
+    run_on "$host" 'bash -s' -- "$INSTALL_DIR" "$CONFIG_DIR" <<'REMOTE_PREFLIGHT'
+set -euo pipefail
+install_dir="$1"
+config_dir="$2"
+
+if [[ "$(id -u)" != "0" ]]; then
+    echo "install-calciforge.sh requires root SSH for systemd units and install paths" >&2
+    exit 10
+fi
+
+if [[ -e /etc/pve/.version || -d /etc/pve/nodes ]]; then
+    echo "refusing to deploy Calciforge directly to a Proxmox host node; target a VM/LXC guest instead" >&2
+    exit 9
+fi
+
+mkdir -p "$install_dir/bin" "$config_dir"
+for dir in "$install_dir/bin" "$config_dir" /etc/systemd/system; do
+    if [[ ! -d "$dir" ]]; then
+        echo "required directory does not exist after mkdir: $dir" >&2
+        exit 11
+    fi
+    if [[ ! -w "$dir" ]]; then
+        echo "no write permission for required directory: $dir" >&2
+        exit 12
+    fi
+done
+
+command -v systemctl >/dev/null 2>&1 || {
+    echo "systemctl not found on target host" >&2
+    exit 13
+}
+
+tmp="$config_dir/.calciforge-permission-test.$$"
+: > "$tmp"
+rm -f "$tmp"
+echo OK
+REMOTE_PREFLIGHT
+}
+
 generate_config() {
     cat << 'DEFAULT_CONFIG'
 # Calciforge Configuration
@@ -64,7 +106,7 @@ generate_config() {
 # See crates/calciforge/examples/config.toml for all options
 
 [calciforge]
-version = 1
+version = 2
 
 # ── Context (conversation ring buffer) ─────────────────────────
 [context]
@@ -138,8 +180,13 @@ scan_messages = false
 # ── Agents ─────────────────────────────────────────────────────
 # [[agents]]
 # id = "main"
-# model = "anthropic/claude-sonnet-4.6"
-# system_prompt = "You are a helpful assistant."
+# kind = "openclaw-channel"
+# endpoint = "http://127.0.0.1:18789"
+# api_key_file = "/etc/calciforge/secrets/openclaw-gateway-token"
+# reply_port = 18797
+# reply_auth_token = "CHANGE_ME_OR_USE_A_SECRET_FILE_ON_DEPLOY"
+# openclaw_agent_id = "main"
+# timeout_ms = 600000
 
 # ── Routing ────────────────────────────────────────────────────
 # [[routing]]
@@ -159,6 +206,8 @@ build() {
 deploy_host() {
     local host="$1"
     echo "── Deploying to $host ──"
+
+    preflight_host "$host"
 
     # Create dirs
     run_on "$host" "mkdir -p $INSTALL_DIR/bin $CONFIG_DIR" 2>&1 || {
@@ -220,6 +269,9 @@ verify_host() {
     else
         echo "❌ missing"
     fi
+
+    echo "  doctor:"
+    run_on "$host" "$INSTALL_DIR/bin/calciforge --config $CONFIG_DIR/config.toml doctor --no-network" 2>&1 | sed 's/^/    /'
 }
 
 # ── Main ───────────────────────────────────────────────────────────
@@ -227,7 +279,7 @@ case "$ACTION" in
     install)
         build
         for host in "${TARGETS[@]}"; do
-            deploy_host "$host" || true
+            deploy_host "$host"
         done
         echo ""
         for host in "${TARGETS[@]}"; do
@@ -245,7 +297,7 @@ case "$ACTION" in
         ;;
     deploy)
         for host in "${TARGETS[@]}"; do
-            deploy_host "$host" || true
+            deploy_host "$host"
         done
         ;;
     build)

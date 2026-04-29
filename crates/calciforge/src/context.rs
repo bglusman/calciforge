@@ -35,6 +35,22 @@
 use crate::sync::{Arc, Mutex};
 use std::collections::{HashMap, VecDeque};
 
+/// Return true when a user message should be delivered as a native downstream
+/// agent command rather than augmented as ordinary chat.
+///
+/// Calciforge owns `!` commands. A leading slash followed by an ASCII letter is
+/// reserved for downstream agents such as OpenClaw, whose native commands must
+/// remain the first token in the payload (`/model`, `/status`, etc.).
+pub fn is_native_agent_command(message: &str) -> bool {
+    let trimmed = message.trim_start();
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return false;
+    };
+
+    let command_token = rest.split_whitespace().next().unwrap_or_default();
+    !command_token.contains('/') && rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -206,6 +222,25 @@ impl ContextStore {
     /// After calling this, the agent's watermark is NOT yet advanced — call
     /// [`push`] after a successful response to do that.
     pub fn augment_message(&self, chat_id: &str, agent_id: &str, message: &str) -> String {
+        self.augment_message_with_options(chat_id, agent_id, message, false)
+    }
+
+    /// Build a context-augmented message with native command preservation.
+    ///
+    /// Set `preserve_native_commands` only for adapters whose downstream
+    /// protocol actually handles slash commands natively. Otherwise a slash
+    /// command is just normal chat text and should receive the usual context.
+    pub fn augment_message_with_options(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+        message: &str,
+        preserve_native_commands: bool,
+    ) -> String {
+        if preserve_native_commands && is_native_agent_command(message) {
+            return message.to_string();
+        }
+
         let map = self.inner.lock().unwrap();
         let preamble = map
             .get(chat_id)
@@ -226,6 +261,23 @@ impl ContextStore {
         agent_id: &str,
         response: &str,
     ) {
+        self.push_with_options(chat_id, sender_label, prompt, agent_id, response, false);
+    }
+
+    /// Record a completed exchange, optionally omitting native slash commands.
+    pub fn push_with_options(
+        &self,
+        chat_id: &str,
+        sender_label: &str,
+        prompt: &str,
+        agent_id: &str,
+        response: &str,
+        preserve_native_commands: bool,
+    ) {
+        if preserve_native_commands && is_native_agent_command(prompt) {
+            return;
+        }
+
         let mut map = self.inner.lock().unwrap();
         let ctx = map
             .entry(chat_id.to_string())
@@ -461,6 +513,41 @@ mod tests {
         let store = ContextStore::new(20, 5);
         let msg = store.augment_message("chat:1", "librarian", "hello agent");
         assert_eq!(msg, "hello agent", "no context = passthrough: {}", msg);
+    }
+
+    #[test]
+    fn test_native_agent_command_detection() {
+        assert!(is_native_agent_command("/model gpt-5.5"));
+        assert!(is_native_agent_command("  /status"));
+        assert!(is_native_agent_command("/model@bot gpt-5.5"));
+        assert!(!is_native_agent_command("!model gpt-5.5"));
+        assert!(!is_native_agent_command("/tmp/file"));
+        assert!(!is_native_agent_command("https://example.com/path"));
+    }
+
+    #[test]
+    fn test_native_agent_commands_bypass_context_and_storage() {
+        let store = ContextStore::new(20, 5);
+        store.push("chat:1", "Operator", "hello", "librarian", "hi");
+
+        let ordinary_msg = store.augment_message("chat:1", "custodian", "/model gpt-5.5");
+        assert!(
+            ordinary_msg.starts_with("[Recent context:"),
+            "ordinary adapters should still receive context: {ordinary_msg}"
+        );
+
+        let msg = store.augment_message_with_options("chat:1", "custodian", "/model gpt-5.5", true);
+        assert_eq!(msg, "/model gpt-5.5");
+
+        store.push_with_options(
+            "chat:1",
+            "Operator",
+            "/model gpt-5.5",
+            "custodian",
+            "model changed",
+            true,
+        );
+        assert_eq!(store.exchange_count("chat:1"), 1);
     }
 
     #[test]

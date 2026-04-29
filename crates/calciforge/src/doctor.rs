@@ -12,6 +12,7 @@ use adversary_detector::{
 };
 use anyhow::Result;
 use tokio::net::TcpStream;
+use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::config::{self, AgentConfig, CalciforgeConfig};
@@ -128,11 +129,184 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_secret_tooling(&mut report);
     check_scanner_config(&config, no_network, &mut report).await;
     check_proxy_environment(&mut report);
+    check_install_node_metadata(no_network, &mut report).await;
     check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
     check_agent_wiring(&config, no_network, &mut report).await;
     check_persisted_state(&config, &mut report);
 
     Ok(report)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallNodeMetadata {
+    name: String,
+    host: String,
+    user: String,
+    ssh_key: Option<PathBuf>,
+    os: String,
+    install_dir: String,
+    config_dir: String,
+}
+
+async fn check_install_node_metadata(no_network: bool, report: &mut DoctorReport) {
+    let path = install_nodes_state_path();
+    if !path.exists() {
+        report.ok(format!(
+            "no persisted install-node metadata found at {}; remote SSH permission checks skipped",
+            path.display()
+        ));
+        return;
+    }
+
+    let nodes = match read_install_nodes(&path) {
+        Ok(nodes) => nodes,
+        Err(err) => {
+            report.error(format!(
+                "failed to read install-node metadata {}: {err}",
+                path.display()
+            ));
+            return;
+        }
+    };
+
+    if nodes.is_empty() {
+        report.warn(format!(
+            "install-node metadata {} contains no nodes",
+            path.display()
+        ));
+        return;
+    }
+
+    if no_network {
+        report.ok(format!(
+            "{} install-node SSH permission check(s) skipped by --no-network",
+            nodes.len()
+        ));
+        return;
+    }
+
+    for node in nodes {
+        check_install_node_ssh(&node, report).await;
+    }
+}
+
+fn install_nodes_state_path() -> PathBuf {
+    std::env::var("CALCIFORGE_INSTALL_NODES_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            PathBuf::from(home)
+                .join(".calciforge")
+                .join("install-nodes.json")
+        })
+}
+
+fn read_install_nodes(path: &Path) -> Result<Vec<InstallNodeMetadata>> {
+    let text = std::fs::read_to_string(path)?;
+    parse_install_nodes_json(&text)
+}
+
+fn parse_install_nodes_json(text: &str) -> Result<Vec<InstallNodeMetadata>> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    let nodes = value
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| anyhow::anyhow!("expected top-level object with array field 'nodes'"))?;
+
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(idx, node)| {
+            let host = json_string(node, "host")
+                .filter(|host| !host.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("nodes[{idx}].host is required"))?;
+            Ok(InstallNodeMetadata {
+                name: json_string(node, "name").unwrap_or_else(|| host.clone()),
+                host,
+                user: json_string(node, "user").unwrap_or_else(|| "root".to_string()),
+                ssh_key: json_string(node, "ssh_key")
+                    .filter(|key| !key.trim().is_empty())
+                    .map(PathBuf::from),
+                os: json_string(node, "os").unwrap_or_else(|| "linux".to_string()),
+                install_dir: json_string(node, "install_dir")
+                    .unwrap_or_else(|| "/usr/local/bin".to_string()),
+                config_dir: json_string(node, "config_dir")
+                    .unwrap_or_else(|| "/etc/calciforge".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+async fn check_install_node_ssh(node: &InstallNodeMetadata, report: &mut DoctorReport) {
+    let target = format!("{}@{}", node.user, node.host);
+    let mut cmd = TokioCommand::new("ssh");
+    cmd.kill_on_drop(true);
+    cmd.arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
+        .arg("-o")
+        .arg("ConnectTimeout=8")
+        .arg("-o")
+        .arg("BatchMode=yes");
+    if let Some(key) = &node.ssh_key {
+        cmd.arg("-i").arg(key);
+    }
+    cmd.arg(&target)
+        .arg(remote_install_node_permission_command(node));
+
+    match timeout(Duration::from_secs(10), cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            report.ok(format!(
+                "install node '{}' accepts SSH and allows writes to {} and {}",
+                node.name, node.install_dir, node.config_dir
+            ));
+        }
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            report.error(format!(
+                "install node '{}' SSH permission check failed at {}: {}",
+                node.name,
+                target,
+                stderr.trim()
+            ));
+        }
+        Ok(Err(err)) => {
+            report.error(format!(
+                "install node '{}' SSH permission check could not spawn ssh for {}: {err}",
+                node.name, target
+            ));
+        }
+        Err(_) => {
+            report.error(format!(
+                "install node '{}' SSH permission check timed out at {}",
+                node.name, target
+            ));
+        }
+    }
+}
+
+fn remote_install_node_permission_command(node: &InstallNodeMetadata) -> String {
+    format!(
+        "set -eu; os={}; install_dir={}; config_dir={}; \
+         if [ \"$os\" = linux ] && [ \"$(id -u)\" != 0 ]; then echo 'linux node install requires root SSH for systemd and install paths' >&2; exit 10; fi; \
+         for dir in \"$install_dir\" \"$config_dir\"; do test -d \"$dir\" || {{ echo \"missing required directory: $dir\" >&2; exit 11; }}; test -w \"$dir\" || {{ echo \"directory is not writable: $dir\" >&2; exit 12; }}; tmp=\"$dir/.calciforge-doctor-permission-test.$$\"; : > \"$tmp\"; rm -f \"$tmp\"; done; \
+         if [ \"$os\" = linux ]; then command -v systemctl >/dev/null 2>&1 || {{ echo 'systemctl not found' >&2; exit 13; }}; test -w /etc/systemd/system || {{ echo '/etc/systemd/system is not writable' >&2; exit 14; }}; fi; \
+         echo OK",
+        shell_quote_for_remote(&node.os),
+        shell_quote_for_remote(&node.install_dir),
+        shell_quote_for_remote(&node.config_dir),
+    )
+}
+
+fn shell_quote_for_remote(input: &str) -> String {
+    let escaped = input.replace('\'', "'\\''");
+    format!("'{escaped}'")
 }
 
 fn check_secret_tooling(report: &mut DoctorReport) {
@@ -197,27 +371,27 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
         (Some(http), Some(https)) => {
             if http == https {
                 report.warn(format!(
-                    "Calciforge has ambient HTTP(S)_PROXY configured ({}); this can route model-provider and control-plane traffic through security-proxy. Prefer explicit proxy env on agent subprocesses instead.",
+                    "Current calciforge doctor process has ambient HTTP(S)_PROXY configured ({}); if the service runs with the same env, model-provider and control-plane traffic can route through security-proxy. Prefer explicit proxy env on agent subprocesses instead.",
                     display_proxy_value(http)
                 ));
             } else {
                 report.warn(format!(
-                    "Calciforge has ambient HTTP_PROXY and HTTPS_PROXY configured but they differ; HTTP_PROXY={}, HTTPS_PROXY={}. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+                    "Current calciforge doctor process has ambient HTTP_PROXY and HTTPS_PROXY configured but they differ; HTTP_PROXY={}, HTTPS_PROXY={}. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
                     display_proxy_value(http),
                     display_proxy_value(https)
                 ));
             }
         }
         (Some(http), None) => report.warn(format!(
-            "Calciforge has ambient HTTP_PROXY set ({}) but HTTPS_PROXY is not set. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+            "Current calciforge doctor process has ambient HTTP_PROXY set ({}) but HTTPS_PROXY is not set. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
             display_proxy_value(http)
         )),
         (None, Some(https)) => report.warn(format!(
-            "Calciforge has ambient HTTPS_PROXY set ({}) but HTTP_PROXY is not set. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+            "Current calciforge doctor process has ambient HTTPS_PROXY set ({}) but HTTP_PROXY is not set. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
             display_proxy_value(https)
         )),
         (None, None) => report.ok(
-            "Calciforge service has no ambient HTTP_PROXY/HTTPS_PROXY; model-provider and control-plane traffic stay direct",
+            "Current calciforge doctor process has no ambient HTTP_PROXY/HTTPS_PROXY",
         ),
     }
 
@@ -269,7 +443,7 @@ fn check_agent_proxy_coverage(
 
         if has_http_and_https_proxy(env) {
             report.warn(
-                "Calciforge has ambient HTTP_PROXY/HTTPS_PROXY; subprocess inheritance works, but it also risks proxying Calciforge's own provider/control-plane calls. Move proxy env to agent-level config or wrappers.",
+                "Current calciforge doctor process has ambient HTTP_PROXY/HTTPS_PROXY; subprocess inheritance works if the service has the same env, but it also risks proxying Calciforge's own provider/control-plane calls. Move proxy env to agent-level config or wrappers.",
             );
         }
 
@@ -281,13 +455,13 @@ fn check_agent_proxy_coverage(
 
         if incomplete_count > 0 {
             report.warn(format!(
-                "{incomplete_count} subprocess agent(s) define incomplete proxy env; set both HTTP_PROXY and HTTPS_PROXY to security-proxy"
+                "{incomplete_count} subprocess agent(s) define incomplete proxy env; set both HTTP_PROXY and HTTPS_PROXY to the intended security-proxy endpoint"
             ));
         }
 
         if complete_count == subprocess_count && clearing_count == 0 && incomplete_count == 0 {
             report.ok(format!(
-                "{subprocess_count} subprocess agent(s) define explicit HTTP_PROXY/HTTPS_PROXY env for security-proxy"
+                "{subprocess_count} subprocess agent(s) define explicit HTTP_PROXY/HTTPS_PROXY env; verify these point at security-proxy and include NO_PROXY for loopback"
             ));
         } else {
             let missing_count = subprocess_agents
@@ -308,7 +482,7 @@ fn check_agent_proxy_coverage(
 
     if subprocess_count == 0 && has_http_and_https_proxy(env) {
         report.warn(
-            "Calciforge has ambient HTTP_PROXY/HTTPS_PROXY but no subprocess agents need it; remove proxy env from the Calciforge service",
+            "Current calciforge doctor process has ambient HTTP_PROXY/HTTPS_PROXY but no subprocess agents need it; remove proxy env from the Calciforge service if present",
         );
     }
 
@@ -672,6 +846,22 @@ async fn check_agent_wiring(
     let mut endpoint_counts: HashMap<&str, usize> = HashMap::new();
 
     for agent in &config.agents {
+        if agent.kind == "openclaw-http" {
+            report.error(format!(
+                "agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
+                agent.id
+            ));
+            continue;
+        }
+
+        if agent.kind == "openclaw-native" {
+            report.error(format!(
+                "agent '{}' uses unsupported kind 'openclaw-native'; /hooks/agent is async automation, not a synchronous chat adapter. Use kind='openclaw-channel'",
+                agent.id
+            ));
+            continue;
+        }
+
         if !is_known_agent_kind(&agent.kind) {
             report.error(format!(
                 "agent '{}' has unknown kind '{}'",
@@ -689,12 +879,40 @@ async fn check_agent_wiring(
             }
             *endpoint_counts.entry(agent.endpoint.as_str()).or_default() += 1;
 
-            if agent.kind == "openclaw-http"
-                && proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind))
+            if proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind))
                 && agent.id != "gateway"
             {
                 report.warn(format!(
                     "agent '{}' points at the local Calciforge proxy; use a clearly named raw gateway agent or route to the real downstream agent",
+                    agent.id
+                ));
+            }
+
+            if agent.kind == "openclaw-channel" {
+                if agent.reply_auth_token.is_none() {
+                    report.warn(format!(
+                        "agent '{}' uses openclaw-channel without reply_auth_token; callback replies should be bearer-protected outside isolated local tests",
+                        agent.id
+                    ));
+                }
+
+                if agent.api_key.is_none()
+                    && agent.api_key_file.is_none()
+                    && agent.auth_token.is_none()
+                {
+                    report.warn(format!(
+                        "agent '{}' uses openclaw-channel without api_key/api_key_file/auth_token; no per-agent token is configured, though adapters may still fall back to CALCIFORGE_AGENT_TOKEN. Only loopback gateways intended to rely on that setup should do this",
+                        agent.id
+                    ));
+                }
+            }
+
+            if agent.kind == "openai-compat"
+                && agent.model.is_none()
+                && agent.allow_model_override != Some(true)
+            {
+                report.error(format!(
+                    "agent '{}' uses openai-compat without a configured model; set model or allow_model_override = true to forward !model overrides",
                     agent.id
                 ));
             }
@@ -717,9 +935,8 @@ async fn check_agent_wiring(
 fn is_known_agent_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "openclaw-http"
-            | "openclaw-native"
-            | "openclaw-channel"
+        "openclaw-channel"
+            | "openai-compat"
             | "zeroclaw-http"
             | "zeroclaw-native"
             | "zeroclaw"
@@ -734,12 +951,7 @@ fn is_known_agent_kind(kind: &str) -> bool {
 fn is_http_agent(agent: &AgentConfig) -> bool {
     matches!(
         agent.kind.as_str(),
-        "openclaw-http"
-            | "openclaw-native"
-            | "openclaw-channel"
-            | "zeroclaw-http"
-            | "zeroclaw-native"
-            | "zeroclaw"
+        "openclaw-channel" | "openai-compat" | "zeroclaw-http" | "zeroclaw-native" | "zeroclaw"
     )
 }
 
@@ -913,7 +1125,7 @@ mod tests {
             agents: vec![
                 AgentConfig {
                     id: "gateway".to_string(),
-                    kind: "openclaw-http".to_string(),
+                    kind: "openclaw-channel".to_string(),
                     endpoint: "http://127.0.0.1:18083".to_string(),
                     model: Some("local-kimi-gpt55".to_string()),
                     api_key_file: Some(PathBuf::from("/tmp/nonexistent-test-token")),
@@ -921,7 +1133,7 @@ mod tests {
                 },
                 AgentConfig {
                     id: "custodian".to_string(),
-                    kind: "openclaw-http".to_string(),
+                    kind: "openclaw-channel".to_string(),
                     endpoint: "http://127.0.0.1:18083".to_string(),
                     model: Some("local-kimi-gpt55".to_string()),
                     api_key_file: Some(PathBuf::from("/tmp/nonexistent-test-token")),
@@ -979,6 +1191,55 @@ mod tests {
     }
 
     #[test]
+    fn rejects_removed_openclaw_http_agent_kind() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "custodian".to_string(),
+            kind: "openclaw-http".to_string(),
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("openclaw-http")
+                && finding.message.contains("openclaw-channel")
+        }));
+    }
+
+    #[test]
+    fn rejects_openai_compat_without_model_or_override_opt_in() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "gateway".to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint: "http://127.0.0.1:8083".to_string(),
+            api_key: Some("test-token".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("openai-compat")
+                && finding.message.contains("allow_model_override")
+        }));
+    }
+
+    #[test]
     fn validates_persisted_active_state_against_config() {
         let config = base_config();
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1030,6 +1291,48 @@ mod tests {
     }
 
     #[test]
+    fn parses_persisted_install_node_metadata() {
+        let nodes = parse_install_nodes_json(
+            r#"{
+              "nodes": [
+                {
+                  "name": "gateway",
+                  "host": "example.internal",
+                  "user": "root",
+                  "ssh_key": "/keys/id_ed25519",
+                  "os": "linux",
+                  "install_dir": "/usr/local/bin",
+                  "config_dir": "/etc/calciforge"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "gateway");
+        assert_eq!(nodes[0].host, "example.internal");
+        assert_eq!(nodes[0].ssh_key, Some(PathBuf::from("/keys/id_ed25519")));
+    }
+
+    #[test]
+    fn install_node_permission_command_is_quoted() {
+        let node = InstallNodeMetadata {
+            name: "quoted".to_string(),
+            host: "example.internal".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            os: "linux".to_string(),
+            install_dir: "/usr/local/bin; rm -rf /".to_string(),
+            config_dir: "/etc/calciforge".to_string(),
+        };
+
+        let command = remote_install_node_permission_command(&node);
+        assert!(command.contains("install_dir='/usr/local/bin; rm -rf /'"));
+        assert!(command.contains("test -w \"$dir\""));
+    }
+
+    #[test]
     fn proxy_environment_accepts_missing_ambient_proxy() {
         let mut report = DoctorReport::default();
         check_proxy_environment_in(
@@ -1047,6 +1350,24 @@ mod tests {
                     .message
                     .contains("no ambient HTTP_PROXY/HTTPS_PROXY")
         }));
+    }
+
+    #[test]
+    fn proxy_environment_skips_no_proxy_check_without_active_proxy() {
+        let mut report = DoctorReport::default();
+        check_proxy_environment_in(
+            ProxyEnvironment {
+                http: None,
+                https: None,
+                no_proxy: None,
+            },
+            &mut report,
+        );
+
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains("NO_PROXY does not include")));
     }
 
     #[test]
@@ -1214,7 +1535,7 @@ mod tests {
         let mut config = base_config();
         config.agents = vec![AgentConfig {
             id: "openclaw".to_string(),
-            kind: "openclaw-native".to_string(),
+            kind: "openclaw-channel".to_string(),
             endpoint: "http://127.0.0.1:18789".to_string(),
             ..Default::default()
         }];

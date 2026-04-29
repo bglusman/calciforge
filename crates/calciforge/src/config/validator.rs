@@ -51,6 +51,9 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     // Check for duplicate IDs
     validate_no_duplicate_ids(config, &mut result);
 
+    // Validate adapter kinds and required per-kind fields
+    validate_agents(config, &mut result);
+
     // Validate routing rules reference valid agents
     validate_routing_rules(config, &mut result);
 
@@ -74,6 +77,110 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     }
 
     result
+}
+
+/// Validate agent adapter kinds and required fields.
+fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
+    for agent in &config.agents {
+        match agent.kind.as_str() {
+            "openclaw-channel" => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' uses openclaw-channel but has no endpoint",
+                        agent.id
+                    ));
+                }
+                if agent.api_key.is_none()
+                    && agent.api_key_file.is_none()
+                    && agent.auth_token.is_none()
+                {
+                    result.add_warning(format!(
+                        "Agent '{}' uses openclaw-channel without api_key/api_key_file/auth_token; no per-agent token is configured, though adapters may still fall back to CALCIFORGE_AGENT_TOKEN. Only loopback gateways intended to rely on that setup should do this",
+                        agent.id
+                    ));
+                }
+                if agent.reply_auth_token.is_none() {
+                    result.add_warning(format!(
+                        "Agent '{}' uses openclaw-channel without reply_auth_token; callback replies should be bearer-protected outside isolated local tests",
+                        agent.id
+                    ));
+                }
+            }
+            "openai-compat" => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' uses openai-compat but has no endpoint",
+                        agent.id
+                    ));
+                }
+                if agent.model.is_none() && agent.allow_model_override != Some(true) {
+                    result.add_error(format!(
+                        "Agent '{}' uses openai-compat without a configured model; set model or allow_model_override = true to forward !model overrides",
+                        agent.id
+                    ));
+                }
+                if agent.api_key.is_none()
+                    && agent.api_key_file.is_none()
+                    && agent.auth_token.is_none()
+                {
+                    result.add_warning(format!(
+                        "Agent '{}' uses openai-compat without api_key/api_key_file/auth_token; only unauthenticated local endpoints should do this",
+                        agent.id
+                    ));
+                }
+            }
+            "openclaw-http" => {
+                result.add_error(format!(
+                    "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
+                    agent.id
+                ));
+            }
+            "openclaw-native" => {
+                result.add_error(format!(
+                    "Agent '{}' uses unsupported kind 'openclaw-native'; /hooks/agent is async automation, not a synchronous chat adapter. Use kind='openclaw-channel'",
+                    agent.id
+                ));
+            }
+            "zeroclaw" => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires endpoint",
+                        agent.id, agent.kind
+                    ));
+                }
+                if agent.api_key.is_none() && agent.api_key_file.is_none() {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires api_key or api_key_file",
+                        agent.id, agent.kind
+                    ));
+                }
+            }
+            "zeroclaw-http" | "zeroclaw-native" => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires endpoint",
+                        agent.id, agent.kind
+                    ));
+                }
+            }
+            "cli" | "acp" | "acpx" => {
+                if agent
+                    .command
+                    .as_deref()
+                    .is_none_or(|command| command.trim().is_empty())
+                {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires command",
+                        agent.id, agent.kind
+                    ));
+                }
+            }
+            "codex-cli" | "dirac-cli" => {}
+            other => {
+                result.add_error(format!("Agent '{}' has unknown kind '{}'", agent.id, other));
+            }
+        }
+    }
 }
 
 /// Check for duplicate IDs across all config sections.
@@ -406,6 +513,145 @@ bot_token_file = "/tmp/nope"
         assert!(
             result.is_valid(),
             "baseline fixture should validate clean; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn removed_openclaw_http_agent_is_an_error() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "custodian"
+kind = "openclaw-http"
+endpoint = "http://127.0.0.1:18789"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "openclaw-http must fail validation");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("openclaw-http") && e.contains("openclaw-channel")),
+            "error should name the removed kind and migration target; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openclaw_channel_agent_validates_with_callback_auth() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "custodian"
+kind = "openclaw-channel"
+endpoint = "http://127.0.0.1:18789"
+api_key = "test-gateway-token"
+reply_auth_token = "test-reply-token"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "openclaw-channel should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_agent_validates() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8083"
+api_key = "test-gateway-token"
+model = "local-kimi-gpt55"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "openai-compat should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_without_model_requires_override_opt_in() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8083"
+api_key = "test-gateway-token"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "openai-compat without model or allow_model_override must fail"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("allow_model_override")),
+            "error should mention allow_model_override; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_without_model_validates_when_override_is_explicit() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8083"
+api_key = "test-gateway-token"
+allow_model_override = true
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "openai-compat with explicit model override should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn zeroclaw_agent_requires_api_key_or_file() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "librarianzero"
+kind = "zeroclaw"
+endpoint = "http://127.0.0.1:18799"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "zeroclaw without key must fail");
+        assert!(
+            result.errors.iter().any(|e| e.contains("api_key")),
+            "error should mention missing api_key/api_key_file; errors: {:?}",
             result.errors
         );
     }

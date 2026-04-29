@@ -37,7 +37,7 @@ pub trait SshClient: Send + Sync {
 
     /// Read the contents of a remote file.
     fn read_file(&self, host: &str, key: Option<&Path>, remote_path: &str) -> Result<String> {
-        let cmd = format!("cat {}", shell_quote(remote_path));
+        let cmd = format!("cat {}", remote_path_shell(remote_path));
         let out = self.run(host, key, &cmd)?;
         Ok(out.stdout)
     }
@@ -60,7 +60,7 @@ pub trait SshClient: Send + Sync {
         let cmd = format!(
             "echo {} | base64 -d > {}",
             shell_quote(&b64),
-            shell_quote(remote_path),
+            remote_path_shell(remote_path),
         );
         let out = self.run(host, key, &cmd)?;
         if !out.success {
@@ -81,8 +81,8 @@ pub trait SshClient: Send + Sync {
     ) -> Result<()> {
         let cmd = format!(
             "cp {} {}",
-            shell_quote(remote_path),
-            shell_quote(backup_path),
+            remote_path_shell(remote_path),
+            remote_path_shell(backup_path),
         );
         let out = self.run(host, key, &cmd)?;
         if !out.success {
@@ -100,7 +100,7 @@ pub trait SshClient: Send + Sync {
     ) -> Result<bool> {
         let cmd = format!(
             "test -s {} && echo EXISTS || echo MISSING",
-            shell_quote(remote_path)
+            remote_path_shell(remote_path)
         );
         let out = self.run(host, key, &cmd)?;
         Ok(out.stdout.trim() == "EXISTS")
@@ -116,8 +116,8 @@ pub trait SshClient: Send + Sync {
     ) -> Result<()> {
         let cmd = format!(
             "cp {} {}",
-            shell_quote(backup_path),
-            shell_quote(original_path),
+            remote_path_shell(backup_path),
+            remote_path_shell(original_path),
         );
         let out = self.run(host, key, &cmd)?;
         if !out.success {
@@ -304,6 +304,25 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", escaped)
 }
 
+/// Render a remote path safely while preserving leading `~/` expansion.
+///
+/// POSIX shells do not expand `~` inside quotes, so blindly passing
+/// `shell_quote("~/file")` makes remote installs look for a literal directory
+/// named `~`.  Installer-managed config paths use `~/...`, so translate that
+/// form to a quoted `$HOME/...` expression and single-quote all other paths.
+pub fn remote_path_shell(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let escaped = rest
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`");
+        format!("\"$HOME/{escaped}\"")
+    } else {
+        shell_quote(path)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSH connectivity test
 // ---------------------------------------------------------------------------
@@ -340,6 +359,92 @@ pub fn test_connectivity(client: &dyn SshClient, host: &str, key: Option<&Path>)
     Ok(())
 }
 
+/// Test SSH connectivity and ensure the target is a guest/workload host, not
+/// a Proxmox bare-metal node.
+///
+/// Operators may SSH to a Proxmox node as a control plane for `pct exec`/`qm`,
+/// but remote agent install targets must be the VM/LXC guest itself. This
+/// preflight prevents accidental agent installs on virtualization hosts.
+pub fn test_agent_target_connectivity(
+    client: &dyn SshClient,
+    host: &str,
+    key: Option<&Path>,
+) -> Result<()> {
+    let out = client
+        .run(
+            host,
+            key,
+            "set -eu; if test -e /etc/pve/.version || test -d /etc/pve/nodes; then echo CALCIFORGE_PROXMOX_HOST; exit 43; fi; echo OK",
+        )
+        .with_context(|| format!("agent target connectivity preflight to '{host}' failed"))?;
+
+    if !out.success {
+        let stdout = out.stdout.trim();
+        if stdout
+            .split_whitespace()
+            .any(|token| token == "CALCIFORGE_PROXMOX_HOST")
+        {
+            bail!(
+                "refusing to configure '{}' directly because it is a Proxmox host node; target a VM/LXC guest instead, or use an explicit Proxmox guest-control install path",
+                host
+            );
+        }
+        bail!(
+            "agent target connectivity preflight to '{}' failed (exit {}): {}",
+            host,
+            out.exit_code,
+            out.stderr.trim()
+        );
+    }
+
+    let stdout_trimmed = out.stdout.trim();
+    let has_ok = stdout_trimmed.split_whitespace().any(|token| token == "OK");
+    if !has_ok {
+        bail!(
+            "agent target connectivity preflight to '{}' succeeded but unexpected stdout: {:?}",
+            host,
+            stdout_trimmed
+        );
+    }
+
+    Ok(())
+}
+
+/// Verify that the installer can read and rewrite a remote config path.
+///
+/// This is deliberately separate from basic SSH connectivity: successful login
+/// is not enough for a multi-host install.  The installer must also be able to
+/// read the target config, write a temporary file in the config directory, and
+/// remove that probe file before it can safely promise remote configuration.
+pub fn test_remote_config_access(
+    client: &dyn SshClient,
+    host: &str,
+    key: Option<&Path>,
+    remote_path: &str,
+) -> Result<()> {
+    let path = remote_path_shell(remote_path);
+    let cmd = format!(
+        "set -eu; config_path={path}; config_dir=$(dirname -- \"$config_path\"); \
+         test -r \"$config_path\" || {{ echo \"remote config is not readable: $config_path\" >&2; exit 41; }}; \
+         test -w \"$config_dir\" || {{ echo \"remote config directory is not writable: $config_dir\" >&2; exit 42; }}; \
+         tmp=\"$config_dir/.calciforge-permission-test.$$\"; : > \"$tmp\"; rm -f \"$tmp\"; echo OK"
+    );
+    let out = client
+        .run(host, key, &cmd)
+        .with_context(|| format!("remote config permission preflight to '{host}' failed"))?;
+
+    if !out.success {
+        bail!(
+            "remote config permission preflight to '{}' failed (exit {}): {}",
+            host,
+            out.exit_code,
+            out.stderr.trim()
+        );
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Version detection
 // ---------------------------------------------------------------------------
@@ -357,7 +462,7 @@ pub fn detect_openclaw_version(
     // Try jq first (most reliable).
     let jq_cmd = format!(
         "jq -r '.meta.lastTouchedVersion // .version // empty' {} 2>/dev/null || true",
-        shell_quote(config_path)
+        remote_path_shell(config_path)
     );
     let out = client.run(host, key, &jq_cmd)?;
     let version = out.stdout.trim().to_string();
@@ -368,7 +473,7 @@ pub fn detect_openclaw_version(
     // Fallback: grep for version-like strings.
     let grep_cmd = format!(
         "grep -o '\"[0-9]\\{{4\\}}\\.\\.[0-9]\\+\\.[0-9]\\+\"' {} 2>/dev/null | head -1 | tr -d '\"' || true",
-        shell_quote(config_path)
+        remote_path_shell(config_path)
     );
     let out = client.run(host, key, &grep_cmd)?;
     let version = out.stdout.trim().to_string();
@@ -465,6 +570,18 @@ mod tests {
     }
 
     #[test]
+    fn remote_path_shell_preserves_home_expansion() {
+        assert_eq!(
+            remote_path_shell("~/.openclaw/openclaw.json"),
+            "\"$HOME/.openclaw/openclaw.json\""
+        );
+        assert_eq!(
+            remote_path_shell("/etc/calciforge/config.toml"),
+            "'/etc/calciforge/config.toml'"
+        );
+    }
+
+    #[test]
     fn mock_ssh_records_calls() {
         let client = MockSshClient::new();
         client.push_success("OK");
@@ -519,6 +636,56 @@ mod tests {
         client.push_success("NOTOK");
         let result = test_connectivity(&client, "user@host", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_target_connectivity_rejects_proxmox_host() {
+        let client = MockSshClient::new();
+        client.push_response(SshOutput {
+            stdout: "CALCIFORGE_PROXMOX_HOST\n".to_string(),
+            stderr: String::new(),
+            exit_code: 43,
+            success: false,
+        });
+
+        let result = test_agent_target_connectivity(&client, "root@proxmox", None);
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("Proxmox host node"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_agent_target_connectivity_accepts_guest() {
+        let client = MockSshClient::new();
+        client.push_success("OK\n");
+
+        test_agent_target_connectivity(&client, "root@guest", None).unwrap();
+        let calls = client.recorded_calls();
+        assert!(calls[0].command.contains("/etc/pve/.version"));
+    }
+
+    #[test]
+    fn test_remote_config_access_reports_permission_failure() {
+        let client = MockSshClient::new();
+        client.push_response(SshOutput {
+            stdout: String::new(),
+            stderr: "remote config directory is not writable".to_string(),
+            exit_code: 42,
+            success: false,
+        });
+
+        let result =
+            test_remote_config_access(&client, "user@host", None, "~/.openclaw/openclaw.json");
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("permission preflight") && msg.contains("not writable"),
+            "got: {msg}"
+        );
+
+        let calls = client.recorded_calls();
+        assert!(calls[0].command.contains("test -r"));
+        assert!(calls[0].command.contains("$HOME/.openclaw/openclaw.json"));
     }
 
     #[test]

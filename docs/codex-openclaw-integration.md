@@ -30,7 +30,7 @@ id = "codex"
 kind = "codex-cli"
 model = "gpt-5.5"
 timeout_ms = 600000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 aliases = ["gpt", "openai"]
 
 [[routing]]
@@ -66,8 +66,13 @@ args = [
   "--skip-git-repo-check",
   "-",
 ]
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
+
+Do not assume ambient `HTTPS_PROXY` gives Calciforge visibility into encrypted
+model traffic. HTTPS clients normally use CONNECT tunnels; use explicit
+fetch/tool integration when encrypted content needs scanning or secret
+substitution.
 
 Keep chat-facing Codex agents conservative. `read-only` is the safer
 default for general messaging channels. Use `workspace-write` only for
@@ -83,18 +88,25 @@ OpenClaw distinguishes three OpenAI-family paths:
 | `openai-codex/gpt-5.4` | Codex/ChatGPT OAuth provider | You want Codex subscription/OAuth access without embedding the Codex harness. |
 | `codex/gpt-5.4` | OpenClaw bundled Codex harness | You want OpenClaw to run an embedded Codex app-server turn. |
 
-For Calciforge, those routes normally sit behind an OpenClaw adapter:
+For Calciforge, those routes normally sit behind an OpenClaw adapter. Prefer
+`openclaw-channel` when the OpenClaw Calciforge plugin is installed and can
+callback to Calciforge. Calciforge intentionally does not support OpenClaw
+agent chat through the OpenAI-compatible `/v1/chat/completions` endpoint.
 
 ```toml
 [[agents]]
 id = "openclaw-codex"
-kind = "openclaw-native"
+kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key = "{{secret:OPENCLAW_HOOK_TOKEN}}"
+api_key = "{{secret:OPENCLAW_GATEWAY_TOKEN}}"
 openclaw_agent_id = "codex"
 timeout_ms = 600000
 aliases = ["oc-codex"]
 ```
+
+The older `openclaw-native` `/hooks/agent` path is for hook-style automation.
+On current OpenClaw it may acknowledge with only a `runId` and complete
+asynchronously, so it is not a reliable inline reply adapter by itself.
 
 OpenClaw owns the Codex provider configuration; Calciforge owns the
 identity, channel, secret-substitution, and policy boundaries.

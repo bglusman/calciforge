@@ -22,7 +22,7 @@ _Session 4 of the calciforge sprint. Written for the Opus review session._
 
 **`ClawAdapter` enum (corrected from original spec)**  
 The key axis is *remote configurability*, not adapter protocol:
-- `ZeroClawNative` and `OpenClawHttp` → SSH-configurable, installer knows config format
+- `ZeroClawNative` and `OpenClawChannel` → SSH-configurable, installer knows config format
 - `OpenAiCompat`, `Webhook`, `Cli` → endpoint-only, installer just registers them
 
 `ClawTarget.ssh_key` is `Option<PathBuf>` — only required for SSH-configurable adapters.
@@ -30,7 +30,7 @@ The key axis is *remote configurability*, not adapter protocol:
 **CLI flag format**
 ```
 --claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path,endpoint=http://...
---claw name=bar,adapter=openclaw,host=user@host,key=/path,endpoint=http://...
+--claw name=bar,adapter=openclaw-channel,host=user@host,key=/path,endpoint=http://...
 --claw name=baz,adapter=openai-compat,endpoint=http://claw/v1
 --claw name=qux,adapter=webhook,endpoint=http://hook/receive,format=json
 --claw name=bin,adapter=cli,command=/usr/local/bin/my-claw
@@ -50,7 +50,7 @@ Uses POSIX `'\''` idiom. The test initially checked "no single-quotes in inner c
 
 **This is the most important stub.** Currently writes a `_calciforge_registered: true` marker to the remote config. Production implementation should:
 
-**For `OpenClawHttp`:**
+**For `OpenClawChannel`:**
 - Parse `openclaw.json` fully with `install::json5::parse_json5_relaxed`
 - Add `hooks.enabled = true` if not present
 - Add a `hooks.token` with a generated shared secret

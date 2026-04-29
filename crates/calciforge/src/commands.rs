@@ -1660,7 +1660,7 @@ mod tests {
             agents: vec![
                 AgentConfig {
                     id: "librarian".to_string(),
-                    kind: "openclaw-http".to_string(),
+                    kind: "openclaw-channel".to_string(),
                     endpoint: "http://10.0.0.20:18789".to_string(),
                     timeout_ms: Some(120000),
                     model: None,
@@ -1668,6 +1668,7 @@ mod tests {
                     api_key: None,
                     api_key_file: None,
                     openclaw_agent_id: None,
+                    allow_model_override: None,
                     reply_port: None,
                     reply_auth_token: None,
                     command: None,
@@ -1681,7 +1682,7 @@ mod tests {
                 },
                 AgentConfig {
                     id: "custodian".to_string(),
-                    kind: "openclaw-http".to_string(),
+                    kind: "openclaw-channel".to_string(),
                     endpoint: "http://10.0.0.50:18789".to_string(),
                     timeout_ms: Some(120000),
                     model: None,
@@ -1689,6 +1690,7 @@ mod tests {
                     api_key: None,
                     api_key_file: None,
                     openclaw_agent_id: None,
+                    allow_model_override: None,
                     reply_port: None,
                     reply_auth_token: None,
                     command: None,
@@ -1868,7 +1870,7 @@ mod tests {
         let reply = h.handle("!agents").unwrap();
         assert!(reply.contains("librarian"), "should show agent id");
         assert!(reply.contains("10.0.0.20"), "should show endpoint");
-        assert!(reply.contains("openclaw-http"), "should show agent kind");
+        assert!(reply.contains("openclaw-channel"), "should show agent kind");
         // Should show model info (fallback to "default" when no model set)
         assert!(reply.contains("model: default"), "should show model info");
     }

@@ -1,5 +1,4 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import type { HookContext, HookResult } from "openclaw/plugin-sdk/hooks";
 
 interface ClashdResponse {
   verdict: "allow" | "deny" | "review";
@@ -62,13 +61,13 @@ export default definePluginEntry({
       }
     });
 
-    // Register the before_tool_call hook
-    api.registerHook(
+    // Register the typed before_tool_call hook.
+    api.on(
       "before_tool_call",
-      async (context: HookContext): Promise<HookResult> => {
-        const toolName = context.toolName;
-        const args = context.args;
-        const identity = context.session?.identity || "unknown";
+      async (event, context) => {
+        const toolName = event.toolName || context.toolName || "unknown";
+        const args = event.params || {};
+        const identity = context.agentId || context.sessionKey || "unknown";
 
         api.logger.debug(
           `[calciforge-policy] Evaluating: ${toolName} for ${identity}`,
@@ -88,7 +87,7 @@ export default definePluginEntry({
             );
             return {
               block: true,
-              reason: `Policy denied: ${verdict.reason || "operation blocked by security policy"}`,
+              blockReason: `Policy denied: ${verdict.reason || "operation blocked by security policy"}`,
             };
           }
 
@@ -97,8 +96,13 @@ export default definePluginEntry({
               `[calciforge-policy] REVIEW REQUIRED: ${toolName} - ${verdict.reason}`,
             );
             return {
-              requireApproval: true,
-              reason: `Policy review required: ${verdict.reason || "custodian approval needed"}`,
+              requireApproval: {
+                title: `Calciforge policy review: ${toolName}`,
+                description: `Policy review required: ${verdict.reason || "custodian approval needed"}`,
+                severity: "warning",
+                timeoutMs: 300_000,
+                timeoutBehavior: "deny",
+              },
             };
           }
 
@@ -119,7 +123,7 @@ export default definePluginEntry({
             );
             return {
               block: true,
-              reason: `Policy enforcement unavailable: ${errorMsg}. Falling back to deny for safety.`,
+              blockReason: `Policy enforcement unavailable: ${errorMsg}. Falling back to deny for safety.`,
             };
           } else {
             api.logger.warn(

@@ -82,9 +82,12 @@ service manager, not on the Calciforge daemon:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8888
-export HTTPS_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
+
+Do not treat ambient `HTTPS_PROXY` as a security boundary. HTTPS clients use
+CONNECT tunnels, which Calciforge does not inspect without explicit tool/fetch
+integration.
 
 ## Tiny Config Sketch
 
@@ -102,7 +105,7 @@ id = "codex"
 kind = "codex-cli"
 model = "gpt-5.5"
 timeout_ms = 600000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 
 [[routing]]
 identity = "owner"

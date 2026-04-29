@@ -2,8 +2,8 @@
 //!
 //! ## Why this exists
 //!
-//! `OpenClawHttpAdapter` uses `POST /v1/chat/completions` (an OpenAI-compat shim
-//! that bypasses the native agent pipeline entirely). Two bugs follow:
+//! OpenAI-compatible `/v1/chat/completions` integrations bypass the native
+//! agent pipeline entirely. Two bugs follow:
 //!
 //! 1. **No session continuity** — every request is stateless from OpenClaw's
 //!    perspective; the agent has no memory of prior turns.
@@ -11,20 +11,13 @@
 //!    are forwarded to the LLM as plain text rather than dispatched through
 //!    OpenClaw's command pipeline.
 //!
-//! ## The fix
+//! ## Current status
 //!
-//! OpenClaw's `/hooks/agent` endpoint runs a **full native agent loop** — same
-//! codepath as Telegram/Signal inbound messages.  It accepts a `sessionKey` for
-//! continuity, a `sender` identity, and an arbitrary `message` string.  OpenClaw
-//! interprets leading `/` and `!` tokens as native commands before they ever
-//! reach the LLM.
-//!
-//! This adapter targets `/hooks/agent` so that:
-//!
-//! - Session history is maintained across Calciforge turns (stable `sessionKey`
-//!   derived from agent_id + sender).
-//! - Commands like `/status`, `/model`, `!approve`, `!deny` are handled natively.
-//! - Reactions and multi-part replies flow through the normal OpenClaw channel.
+//! Current OpenClaw releases may acknowledge `/hooks/agent` with only a `runId`
+//! and complete asynchronously. Calciforge therefore rejects `openclaw-native`
+//! in config validation, doctor, and the public adapter factory for chat use.
+//! Keep this module as a low-level test/automation surface; use
+//! `openclaw-channel` for real chat routing.
 //!
 //! ## OpenClaw gateway requirements
 //!
@@ -48,15 +41,9 @@
 //! If the gateway rejects the `sessionKey`, this adapter falls back to
 //! stateless delivery (one-shot, no continuity) while logging a warning.
 //!
-//! ## Config example
-//!
-//! ```toml
-//! [[agents]]
-//! id = "librarian"
-//! kind = "openclaw-native"
-//! endpoint = "http://10.0.0.20:18789"
-//! api_key = "REPLACE_WITH_HOOKS_TOKEN"   # hooks.token, NOT the gateway token
-//! ```
+//! Do not configure `[[agents]] kind = "openclaw-native"` in Calciforge chat
+//! configs. The validator rejects it so deployments do not accidentally use an
+//! async hook acknowledgement as a chat reply path.
 
 use std::time::Duration;
 
@@ -104,8 +91,8 @@ struct HooksAgentRequest<'a> {
 /// running when the 200 arrives.  Calciforge needs a separate poll or inline
 /// response; see `deliver: false` flow.
 ///
-/// When `deliver = false`, OpenClaw runs the agent loop synchronously within
-/// the request and the response contains the agent's reply text.
+/// Some OpenClaw releases acknowledge the hook with a run id and execute it
+/// asynchronously instead of returning an inline response.
 #[derive(Debug, Deserialize)]
 struct HooksAgentResponse {
     /// Agent response text.  Present when `deliver = false` and the agent
@@ -126,17 +113,10 @@ struct HooksAgentResponse {
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
-/// OpenClaw native channel adapter using the `/hooks/agent` endpoint.
+/// Low-level OpenClaw `/hooks/agent` adapter.
 ///
-/// Compared to [`super::OpenClawHttpAdapter`]:
-///
-/// | Feature | `openclaw-http` | `openclaw-native` |
-/// |---------|-----------------|-------------------|
-/// | Session continuity | ⚠️ via `x-openclaw-session-key` header (passthrough only) | ✅ native `sessionKey` (full pipeline) |
-/// | Native commands (`/status`, etc.) | ❌ forwarded to LLM | ✅ handled by OpenClaw |
-/// | `!approve` / `!deny` | ❌ not supported | ✅ native handler |
-/// | Heartbeats | ❌ LLM loop only | ✅ proper heartbeat |
-/// | Tool-call approval | ❌ not reachable | ✅ full Clash flow |
+/// Do not use this for Calciforge chat routing unless OpenClaw grows a
+/// synchronous reply contract or Calciforge adds polling for accepted hook runs.
 pub struct OpenClawNativeAdapter {
     client: reqwest::Client,
     /// Base URL, e.g. `http://10.0.0.20:18789`.
@@ -296,10 +276,11 @@ impl AgentAdapter for OpenClawNativeAdapter {
             )));
         }
 
-        let reply = hooks_resp
-            .response
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "(no response)".to_string());
+        let Some(reply) = hooks_resp.response.filter(|s| !s.is_empty()) else {
+            return Err(AdapterError::Protocol(
+                "openclaw-native accepted the hook run but did not return an inline response; use openclaw-channel or a Gateway RPC adapter for synchronous replies".to_string(),
+            ));
+        };
 
         info!(len = reply.len(), "openclaw-native: response received");
         debug!(response = %reply, "agent response");
@@ -501,6 +482,51 @@ mod tests {
         // 3. Dispatch must succeed
         assert!(result.is_ok(), "dispatch failed: {:?}", result);
         assert_eq!(result.unwrap(), "native reply");
+    }
+
+    #[tokio::test]
+    async fn test_openclaw_native_rejects_async_only_ack() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let json_body = r#"{"ok":true,"runId":"accepted-but-async"}"#;
+        let http_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            json_body.len(),
+            json_body
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = stream.read(&mut buf).await.unwrap_or(0);
+                let _ = stream.write_all(http_response.as_bytes()).await;
+                let _ = stream.flush().await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let a = OpenClawNativeAdapter::new(
+            format!("http://127.0.0.1:{}", port),
+            "test-token".to_string(),
+            "librarian".to_string(),
+            None,
+            Some(2000),
+        );
+
+        let result = a.dispatch("hello").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AdapterError::Protocol(msg) => {
+                assert!(msg.contains("did not return an inline response"), "{msg}");
+            }
+            other => panic!("expected Protocol, got {other:?}"),
+        }
     }
 
     /// Verify that the session key is consistent across multiple calls with the same sender.

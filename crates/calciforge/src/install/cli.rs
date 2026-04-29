@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! --claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path/id_rsa,endpoint=http://...
-//! --claw name=bar,adapter=openclaw,host=user@host,key=/path/id_ed25519,endpoint=http://...
+//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...,policy_endpoint=http://clashd:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1;::1
 //! --claw name=baz,adapter=openai-compat,endpoint=http://some-claw/v1
 //! --claw name=qux,adapter=webhook,endpoint=http://custom/hook,format=json
 //! --claw name=bin,adapter=cli,command=/usr/local/bin/my-claw
@@ -95,18 +95,19 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 ///
 /// The spec is a comma-separated list of `key=value` pairs. Values may contain
 /// `=` characters (only the first `=` is the delimiter). Commas inside values
-/// are not supported — use URL encoding if needed.
+/// are not supported. For `no_proxy`, use semicolons in the CLI string; the
+/// installer normalizes them to comma-separated `NO_PROXY`.
 ///
 /// # Required keys (all adapters)
 /// - `name` — friendly name
-/// - `adapter` — one of: `zeroclaw-native`, `openclaw`, `openai-compat`, `webhook`, `cli`
+/// - `adapter` — one of: `zeroclaw-native`, `openclaw-channel`, `openai-compat`, `webhook`, `cli`
 ///
 /// # Adapter-specific keys
 ///
 /// | Adapter | Required | Optional |
 /// |---------|----------|----------|
 /// | `zeroclaw-native` | `host`, `endpoint` | `key` |
-/// | `openclaw` | `host`, `endpoint` | `key` |
+/// | `openclaw-channel` | `host`, `endpoint` | `key`, `policy_endpoint`, `proxy_endpoint`, `no_proxy` |
 /// | `openai-compat` | `endpoint` | — |
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
 /// | `cli` | `command` | — |
@@ -136,7 +137,7 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         ClawKind::OpenAiCompat { endpoint } => endpoint.clone(),
         ClawKind::Webhook { endpoint, .. } => endpoint.clone(),
         _ => {
-            // ZeroClawNative / OpenClawHttp: endpoint explicitly provided.
+            // ZeroClawNative / OpenClawChannel: endpoint explicitly provided.
             kv.get("endpoint").cloned().with_context(|| {
                 format!(
                     "adapter '{}' requires 'endpoint=...' in spec: {}",
@@ -152,6 +153,9 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         host,
         ssh_key,
         endpoint,
+        policy_endpoint: kv.get("policy_endpoint").cloned(),
+        proxy_endpoint: kv.get("proxy_endpoint").cloned(),
+        no_proxy: kv.get("no_proxy").map(|value| value.replace(';', ",")),
     })
 }
 
@@ -166,7 +170,7 @@ fn parse_adapter(
 ) -> Result<ClawKind> {
     match adapter_str {
         "zeroclaw-native" => Ok(ClawKind::ZeroClawNative),
-        "openclaw" => Ok(ClawKind::OpenClawHttp),
+        "openclaw-channel" => Ok(ClawKind::OpenClawChannel),
         "openai-compat" => {
             let endpoint = require_key(kv, "endpoint", spec)?;
             Ok(ClawKind::OpenAiCompat { endpoint })
@@ -189,7 +193,7 @@ fn parse_adapter(
             Ok(ClawKind::Cli { command })
         }
         other => bail!(
-            "unknown adapter '{}' in spec: {} (valid: zeroclaw-native, openclaw, openai-compat, webhook, cli)",
+            "unknown adapter '{}' in spec: {} (valid: zeroclaw-native, openclaw-channel, openai-compat, webhook, cli)",
             other,
             spec
         ),
@@ -292,11 +296,28 @@ mod tests {
 
     #[test]
     fn parse_openclaw_claw() {
-        let spec = "name=custodian,adapter=openclaw,host=admin@10.0.0.50,key=/keys/id_rsa,endpoint=http://10.0.0.50:18789";
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789";
         let claw = parse_claw_spec(spec).unwrap();
         assert_eq!(claw.name, "custodian");
-        assert!(matches!(claw.adapter, ClawKind::OpenClawHttp));
+        assert!(matches!(claw.adapter, ClawKind::OpenClawChannel));
         assert!(claw.needs_ssh_config());
+        assert!(claw.policy_endpoint.is_none());
+        assert!(claw.proxy_endpoint.is_none());
+    }
+
+    #[test]
+    fn parse_openclaw_claw_with_policy_endpoint() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,policy_endpoint=http://clashd.example.invalid:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1";
+        let claw = parse_claw_spec(spec).unwrap();
+        assert_eq!(
+            claw.policy_endpoint.as_deref(),
+            Some("http://clashd.example.invalid:9001/evaluate")
+        );
+        assert_eq!(
+            claw.proxy_endpoint.as_deref(),
+            Some("http://127.0.0.1:8888")
+        );
+        assert_eq!(claw.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
     }
 
     #[test]
@@ -563,7 +584,7 @@ mod tests {
                 // openclaw: requires host and endpoint
                 let host = format!("admin@192.168.1.{}", tc.draw(gs::integers::<u8>()));
                 let endpoint = format!("http://{name}.local:18789");
-                format!("name={name},adapter=openclaw,host={host},endpoint={endpoint}")
+                format!("name={name},adapter=openclaw-channel,host={host},endpoint={endpoint}")
             }
         };
 
@@ -585,7 +606,7 @@ mod tests {
             1 => "webhook",
             2 => "cli",
             3 => "zeroclaw-native",
-            _ => "openclaw",
+            _ => "openclaw-channel",
         };
         assert_eq!(
             claw.adapter.kind_label(),
@@ -617,7 +638,7 @@ mod tests {
                     command
                 );
             }
-            ClawKind::ZeroClawNative | ClawKind::OpenClawHttp => {
+            ClawKind::ZeroClawNative | ClawKind::OpenClawChannel => {
                 assert!(
                     claw.endpoint.contains(&name),
                     "zeroclaw/openclaw endpoint should contain name: endpoint={:?}",
@@ -706,7 +727,7 @@ mod tests {
         ];
         let safe_vals = vec![
             "zeroclaw-native".to_string(),
-            "openclaw".to_string(),
+            "openclaw-channel".to_string(),
             "http://host:18799".to_string(),
             "user@host".to_string(),
             "/path/to/key".to_string(),

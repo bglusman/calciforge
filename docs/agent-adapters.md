@@ -20,10 +20,40 @@ and failure modes.
 |---|---|---|
 | Codex CLI | `kind = "codex-cli"` or `[[exec_models]]` | Good fit when the Unix account running Calciforge owns Codex credentials. Keep chat-facing agents conservative unless the channel is trusted. |
 | Claude Code | `kind = "cli"` or `acpx` | Use `claude -p` for simple subscription-backed prompt execution. Use `acpx` when ACP sessions are needed. |
-| OpenClaw | `openclaw-native`, `openclaw-http`, or model gateway upstream | Preferred path for richer agent runtime, skills, plugins, and provider routing. |
+| OpenClaw | `openclaw-channel` | Preferred path for richer agent runtime, skills, plugins, provider routing, and slash commands. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
+| OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
 | opencode | `acpx` or generic CLI | Model-agnostic terminal agent with a mature CLI/TUI surface. Prefer ACP when available. |
 | Dirac | `kind = "dirac-cli"` | Good scriptable fit. The adapter uses `--yolo --json`, sends the user task on stdin, ignores internal JSON event spam, and returns the final `completion_result`. |
 | AgentSwift | Not supported directly | Interesting iOS-specific workflow, but current public shape is a SwiftUI app that drives Claude plus `xcodebuildmcp`/`openspec`, not a stable CLI adapter surface. Revisit if it exposes a noninteractive JSON/ACP/HTTP protocol. |
+
+## OpenClaw Integration Findings
+
+OpenClaw exposes several surfaces that look similar but behave differently:
+
+- `POST /v1/chat/completions` is synchronous and OpenAI-compatible when
+  `gateway.http.endpoints.chatCompletions.enabled = true`, but Calciforge does
+  not use it for OpenClaw agents. It bypasses the channel/plugin semantics
+  required for reliable slash commands and agent identity. Use
+  `kind = "openai-compat"` only when you intentionally want a plain model
+  endpoint rather than an OpenClaw agent.
+- `POST /hooks/agent` is useful for trusted external automations. Current
+  OpenClaw releases acknowledge with a `runId` and may execute asynchronously,
+  so Calciforge must not treat a bare `{ ok: true, runId }` response as an
+  agent reply.
+- `POST /calciforge/inbound` plus the Calciforge reply callback is the intended
+  channel/plugin style integration. Prefer this when OpenClaw should see
+  Calciforge messages as native inbound channel turns.
+
+Operational guidance:
+
+- Keep OpenClaw slash commands as the first token. Calciforge must not prepend
+  cross-agent context before `/model`, `/status`, `/reset`, or similar
+  downstream commands.
+- Treat any remaining `openclaw-http` config as stale and broken. Run
+  `calciforge doctor` after install or config edits to catch it before startup.
+- Use live OpenClaw gateway tests for command behavior. Mock adapter tests are
+  not enough because command parsing depends on enabled gateway endpoints,
+  channel/plugin surface, session key shape, and authorization context.
 
 ## Dirac Findings
 

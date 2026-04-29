@@ -6,7 +6,7 @@
 //!
 //! # Adapters
 //!
-//! - [`OpenClawHttpAdapter`] — POST `/v1/chat/completions` (OpenAI-compat HTTP)
+//! - [`OpenClawChannelAdapter`] — POST `/calciforge/inbound` with reply callback
 //! - [`ZeroClawAdapter`] — POST `/webhook` with `{"message": text}` (custom protocol)
 //! - [`CliAdapter`] — spawn binary, pass `-m "text"`, read stdout
 //!
@@ -25,8 +25,10 @@ pub mod acpx;
 pub mod cli;
 pub mod codex_cli;
 pub mod dirac_cli;
+pub mod openai_compat;
 pub mod openclaw;
 pub mod openclaw_channel;
+#[cfg(test)]
 pub mod openclaw_native;
 pub mod zeroclaw;
 pub mod zeroclaw_native;
@@ -36,9 +38,9 @@ pub use acpx::AcpxAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
 pub use dirac_cli::DiracCliAdapter;
-pub use openclaw::{OpenClawHttpAdapter, ZeroClawHttpAdapter};
+pub use openai_compat::OpenAiCompatAdapter;
+pub use openclaw::ZeroClawHttpAdapter;
 pub use openclaw_channel::OpenClawChannelAdapter;
-pub use openclaw_native::OpenClawNativeAdapter;
 pub use zeroclaw::ZeroClawAdapter;
 pub use zeroclaw_native::ZeroClawNativeAdapter;
 
@@ -159,7 +161,7 @@ pub trait AgentAdapter: Send + Sync {
         self.dispatch(ctx.message).await
     }
 
-    /// Short name for logs and `!agents` output (e.g. "openclaw-http", "zeroclaw", "cli").
+    /// Short name for logs and `!agents` output (e.g. "openclaw-channel", "zeroclaw", "cli").
     fn kind(&self) -> &'static str;
 
     /// Query the underlying agent's runtime model/provider status.
@@ -169,6 +171,30 @@ pub trait AgentAdapter: Send + Sync {
     async fn get_runtime_status(&self) -> Option<RuntimeStatus> {
         None
     }
+}
+
+/// Return true if this configured agent kind exposes a downstream native
+/// command surface and therefore needs leading slash commands delivered
+/// verbatim as the first token.
+pub fn agent_supports_native_commands(agent: &AgentConfig) -> bool {
+    matches!(agent.kind.as_str(), "openclaw-channel")
+}
+
+/// Return true if this adapter kind intentionally consumes Calciforge's
+/// per-identity `!model` override.
+///
+/// Keep this as an explicit allowlist. Model IDs are protocol-specific: sending
+/// a model-gateway synthetic ID to an agent endpoint that expects native agent
+/// model IDs can produce hard-to-diagnose HTTP 400/protocol errors.
+pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
+    if let Some(allow_model_override) = agent.allow_model_override {
+        return allow_model_override;
+    }
+
+    matches!(
+        agent.kind.as_str(),
+        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "codex-cli"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -184,8 +210,8 @@ pub trait AgentAdapter: Send + Sync {
 ///
 /// | `kind`             | Protocol            | Session continuity | Native commands |
 /// |--------------------|---------------------|--------------------|-----------------|
-/// | `openclaw-http`    | `/v1/chat/completions` (SSE) | ⚠️ via header | ❌ |
-/// | `openclaw-native`  | `/hooks/agent`      | ✅ native sessionKey | ✅ |
+/// | `openclaw-channel` | `/calciforge/inbound` + callback | ✅ native sessionKey | ✅ plugin channel |
+/// | `openai-compat`    | `/v1/chat/completions` | provider-specific | n/a |
 /// | `zeroclaw-http`    | `/webhook`          | ❌ stateless        | ✅ |
 /// | `zeroclaw-native`  | `/webhook` + history | ✅ in-process ring buffer | ✅ |
 /// | `zeroclaw`         | `/webhook`          | per-ZeroClaw-config | n/a |
@@ -200,14 +226,10 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
 
     match agent.kind.as_str() {
         "openclaw-http" => {
-            let token = agent_token()?;
-            Ok(Box::new(OpenClawHttpAdapter::new_with_agent_id(
-                agent.endpoint.clone(),
-                token,
-                agent.model.clone(),
-                agent.timeout_ms,
-                &agent.id,
-            )))
+            Err(format!(
+                "agent '{}': kind='openclaw-http' is no longer supported; use kind='openclaw-channel' with the Calciforge OpenClaw channel plugin",
+                agent.id
+            ))
         }
         "openclaw-channel" => {
             let token = agent_token()?;
@@ -224,6 +246,21 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
+        "openai-compat" => {
+            if agent.endpoint.trim().is_empty() {
+                return Err(format!(
+                    "agent '{}': kind='openai-compat' requires endpoint",
+                    agent.id
+                ));
+            }
+            let token = agent_token()?;
+            Ok(Box::new(OpenAiCompatAdapter::new(
+                agent.endpoint.clone(),
+                token,
+                agent.model.clone(),
+                agent.timeout_ms,
+            )))
+        }
         "zeroclaw-http" => {
             let token = agent_token_no_env()?;
             Ok(Box::new(ZeroClawHttpAdapter::new(
@@ -232,34 +269,11 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
-        // ── New native adapters ─────────────────────────────────────────────
-        //
-        // `openclaw-native`: uses OpenClaw's `/hooks/agent` endpoint so that
-        // native commands (/status, !approve, etc.) are handled by the OpenClaw
-        // pipeline rather than forwarded to the LLM.  Session continuity is
-        // maintained via a stable `sessionKey` derived from agent_id + sender.
-        //
-        // Requires `hooks.enabled = true` in your OpenClaw config, and optionally
-        // `hooks.allowRequestSessionKey = true` + `allowedSessionKeyPrefixes = ["calciforge:"]`
-        // for full session continuity.
-        //
-        // `api_key` / `auth_token` should be the `hooks.token` (NOT the gateway token).
         "openclaw-native" => {
-            let token = agent_token()?;
-            // Use openclaw_agent_id if set, otherwise fall back to agent.id.
-            // This allows a Calciforge agent named "openclaw-max" to route to
-            // OpenClaw's "david" agent without renaming the Calciforge-side entry.
-            let target_agent_id = agent
-                .openclaw_agent_id
-                .clone()
-                .unwrap_or_else(|| agent.id.clone());
-            Ok(Box::new(OpenClawNativeAdapter::new(
-                agent.endpoint.clone(),
-                token,
-                target_agent_id,
-                None, // hooks_path — use default "/hooks"
-                agent.timeout_ms,
-            )))
+            Err(format!(
+                "agent '{}': kind='openclaw-native' is not a supported chat adapter; /hooks/agent is async automation. Use kind='openclaw-channel'",
+                agent.id
+            ))
         }
         // `zeroclaw-native`: wraps `ZeroClawHttpAdapter` with an in-process conversation
         // history ring buffer.  Each request includes the prior (user, assistant)
@@ -383,7 +397,7 @@ mod tests {
     fn openclaw_agent() -> AgentConfig {
         AgentConfig {
             id: "test-openclaw".to_string(),
-            kind: "openclaw-http".to_string(),
+            kind: "openclaw-channel".to_string(),
             endpoint: "http://127.0.0.1:18789".to_string(),
             timeout_ms: Some(5000),
             model: Some("openclaw:main".to_string()),
@@ -391,6 +405,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -412,6 +427,7 @@ mod tests {
             api_key: Some("zc_abc123".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -433,6 +449,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: Some("/usr/local/bin/ironclaw".to_string()),
@@ -455,7 +472,7 @@ mod tests {
     fn test_build_openclaw_adapter() {
         let agent = openclaw_agent();
         let adapter = build_adapter(&agent).expect("should build openclaw adapter");
-        assert_eq!(adapter.kind(), "openclaw-http");
+        assert_eq!(adapter.kind(), "openclaw-channel");
     }
 
     #[test]
@@ -484,6 +501,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -508,6 +526,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -532,6 +551,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -558,6 +578,7 @@ mod tests {
             api_key: None, // missing!
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -583,6 +604,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: Some("claude".to_string()),
@@ -612,6 +634,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None, // missing!
@@ -638,6 +661,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None, // missing!
@@ -666,11 +690,51 @@ mod tests {
     }
 
     #[test]
-    fn test_openclaw_uses_api_key_over_auth_token() {
+    fn test_openclaw_http_is_rejected() {
+        let mut agent = openclaw_agent();
+        agent.kind = "openclaw-http".to_string();
+        let err = match build_adapter(&agent) {
+            Ok(_) => panic!("openclaw-http should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("no longer supported"), "got: {err}");
+    }
+
+    #[test]
+    fn test_model_override_support_is_explicit_allowlist() {
+        let mut agent = openclaw_agent();
+        agent.kind = "openclaw-channel".to_string();
+        assert!(
+            !agent_supports_model_override(&agent),
+            "OpenClaw channel model changes should use native OpenClaw commands, not Calciforge synthetic model IDs"
+        );
+
+        agent.kind = "openai-compat".to_string();
+        assert!(
+            !agent_supports_model_override(&agent),
+            "OpenAI-compatible endpoints require explicit opt-in because supported model IDs are endpoint-specific"
+        );
+
+        agent.allow_model_override = Some(true);
+        assert!(agent_supports_model_override(&agent));
+        agent.allow_model_override = None;
+
+        agent.kind = "cli".to_string();
+        assert!(agent_supports_model_override(&agent));
+
+        agent.kind = "acpx".to_string();
+        assert!(
+            !agent_supports_model_override(&agent),
+            "ACP/ACPX model handling is provider/session-specific until implemented explicitly"
+        );
+    }
+
+    #[test]
+    fn test_openclaw_channel_uses_api_key_over_auth_token() {
         // api_key should take priority over auth_token
         let agent = AgentConfig {
             id: "test".to_string(),
-            kind: "openclaw-http".to_string(),
+            kind: "openclaw-channel".to_string(),
             endpoint: "http://localhost".to_string(),
             timeout_ms: None,
             model: None,
@@ -678,6 +742,7 @@ mod tests {
             api_key: Some("new-api-key".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -688,17 +753,17 @@ mod tests {
         };
         // Should build without error — api_key takes priority
         let adapter = build_adapter(&agent).expect("should build");
-        assert_eq!(adapter.kind(), "openclaw-http");
+        assert_eq!(adapter.kind(), "openclaw-channel");
     }
 
     #[test]
-    fn test_openclaw_accepts_api_key_file() {
+    fn test_openclaw_channel_accepts_api_key_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let key_file = dir.path().join("gateway-token");
         std::fs::write(&key_file, "file-token\n").expect("write token");
         let agent = AgentConfig {
             id: "gateway".to_string(),
-            kind: "openclaw-http".to_string(),
+            kind: "openclaw-channel".to_string(),
             endpoint: "http://localhost".to_string(),
             timeout_ms: None,
             model: Some("local-kimi-gpt55".to_string()),
@@ -706,6 +771,7 @@ mod tests {
             api_key: None,
             api_key_file: Some(key_file),
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -716,22 +782,22 @@ mod tests {
         };
 
         let adapter = build_adapter(&agent).expect("should build");
-        assert_eq!(adapter.kind(), "openclaw-http");
+        assert_eq!(adapter.kind(), "openclaw-channel");
     }
 
-    // ── New adapter factory tests ────────────────────────────────────────────
-
-    fn openclaw_native_agent() -> AgentConfig {
-        AgentConfig {
-            id: "test-librarian".to_string(),
-            kind: "openclaw-native".to_string(),
-            endpoint: "http://127.0.0.1:18789".to_string(),
-            timeout_ms: Some(5000),
-            model: None,
+    #[test]
+    fn test_build_openai_compat_adapter() {
+        let agent = AgentConfig {
+            id: "gateway".to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint: "http://127.0.0.1:8083".to_string(),
+            timeout_ms: None,
+            model: Some("local-kimi-gpt55".to_string()),
             auth_token: None,
-            api_key: Some("REPLACE_WITH_HOOKS_TOKEN".to_string()),
+            api_key: Some("gateway-token".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -739,8 +805,13 @@ mod tests {
             env: None,
             registry: None,
             aliases: vec![],
-        }
+        };
+
+        let adapter = build_adapter(&agent).expect("should build openai-compat adapter");
+        assert_eq!(adapter.kind(), "openai-compat");
     }
+
+    // ── New adapter factory tests ────────────────────────────────────────────
 
     fn zeroclaw_native_agent() -> AgentConfig {
         AgentConfig {
@@ -753,6 +824,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -764,31 +836,18 @@ mod tests {
     }
 
     #[test]
-    fn test_build_openclaw_native_adapter() {
-        let agent = openclaw_native_agent();
-        let adapter = build_adapter(&agent).expect("should build openclaw-native adapter");
-        assert_eq!(adapter.kind(), "openclaw-native");
-    }
-
-    #[test]
-    fn test_build_zeroclaw_native_adapter() {
-        let agent = zeroclaw_native_agent();
-        let adapter = build_adapter(&agent).expect("should build zeroclaw-native adapter");
-        assert_eq!(adapter.kind(), "zeroclaw-native");
-    }
-
-    #[test]
-    fn test_openclaw_native_uses_api_key() {
+    fn test_openclaw_native_is_rejected_for_chat() {
         let agent = AgentConfig {
-            id: "native-test".to_string(),
+            id: "test-librarian".to_string(),
             kind: "openclaw-native".to_string(),
-            endpoint: "http://localhost:18789".to_string(),
-            timeout_ms: None,
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            timeout_ms: Some(5000),
             model: None,
-            auth_token: Some("old-token".to_string()),
-            api_key: Some("new-hooks-token".to_string()),
+            auth_token: None,
+            api_key: Some("REPLACE_WITH_HOOKS_TOKEN".to_string()),
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -797,9 +856,19 @@ mod tests {
             registry: None,
             aliases: vec![],
         };
-        // api_key takes precedence — should build without error
-        let adapter = build_adapter(&agent).expect("should build");
-        assert_eq!(adapter.kind(), "openclaw-native");
+        let err = match build_adapter(&agent) {
+            Ok(_) => panic!("openclaw-native should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("openclaw-native"));
+        assert!(err.contains("openclaw-channel"));
+    }
+
+    #[test]
+    fn test_build_zeroclaw_native_adapter() {
+        let agent = zeroclaw_native_agent();
+        let adapter = build_adapter(&agent).expect("should build zeroclaw-native adapter");
+        assert_eq!(adapter.kind(), "zeroclaw-native");
     }
 
     #[test]
@@ -814,6 +883,7 @@ mod tests {
             api_key: None, // no api_key — falls back to auth_token
             api_key_file: None,
             openclaw_agent_id: None,
+            allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
             command: None,
@@ -824,31 +894,5 @@ mod tests {
         };
         let adapter = build_adapter(&agent).expect("should build with auth_token fallback");
         assert_eq!(adapter.kind(), "zeroclaw-native");
-    }
-
-    #[test]
-    fn test_openclaw_native_builds_without_token() {
-        // Should build even with no token (empty string is valid — might be
-        // an unauthenticated loopback deployment)
-        let agent = AgentConfig {
-            id: "no-token".to_string(),
-            kind: "openclaw-native".to_string(),
-            endpoint: "http://127.0.0.1:18789".to_string(),
-            timeout_ms: None,
-            model: None,
-            auth_token: None,
-            api_key: None,
-            api_key_file: None,
-            openclaw_agent_id: None,
-            reply_port: None,
-            reply_auth_token: None,
-            command: None,
-            args: None,
-            env: None,
-            registry: None,
-            aliases: vec![],
-        };
-        let adapter = build_adapter(&agent).expect("should build with empty token");
-        assert_eq!(adapter.kind(), "openclaw-native");
     }
 }

@@ -52,7 +52,7 @@ aliases = ["test"]
 
 #[test]
 fn test_unknown_adapter_kind_fails() {
-    // Bug: kind = "openclaw" was not recognized (should be "openclaw-http")
+    // Bug: kind = "openclaw" was not recognized (should be "openclaw-channel")
     // Config should be validated and reject unknown kinds
 
     let valid_kinds = vec![
@@ -61,9 +61,8 @@ fn test_unknown_adapter_kind_fails() {
         "acp",
         "acpx",
         "zeroclaw",
-        "openclaw-http",
         "openclaw-channel",
-        "openclaw-native",
+        "openai-compat",
         "zeroclaw-http",
         "zeroclaw-native",
     ];
@@ -101,9 +100,8 @@ fn is_valid_adapter_kind(kind: &str) -> bool {
             | "codex-cli"
             | "acpx"
             | "zeroclaw"
-            | "openclaw-http"
             | "openclaw-channel"
-            | "openclaw-native"
+            | "openai-compat"
             | "zeroclaw-http"
             | "zeroclaw-native"
     )

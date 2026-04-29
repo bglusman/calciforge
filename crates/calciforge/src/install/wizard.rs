@@ -31,7 +31,7 @@ use super::{
     executor::{run_install_with_deps, ExecutorDeps, StepOutcome},
     health::{health_check_claw, HttpHealthChecker},
     model::{CalciforgeTarget, ClawKind, ClawTarget, InstallTarget, WebhookFormat},
-    ssh::{test_connectivity, RealSshClient},
+    ssh::{test_agent_target_connectivity, RealSshClient},
 };
 
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
         // Adapter selection.
         let adapter_options = &[
             "zeroclaw          — ZeroClaw native (SSH-configurable)",
-            "openclaw     — OpenClaw HTTP gateway (SSH-configurable)",
+            "openclaw-channel — OpenClaw Calciforge channel plugin (SSH-configurable)",
             "openai-compat — OpenAI-compatible endpoint (endpoint-only)",
             "webhook      — Generic HTTP webhook (endpoint-only)",
             "cli          — Local binary (no network)",
@@ -255,7 +255,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 
         let adapter_str = match adapter_idx {
             0 => "zeroclaw",
-            1 => "openclaw",
+            1 => "openclaw-channel",
             2 => "openai-compat",
             3 => "webhook",
             4 => "cli",
@@ -271,6 +271,9 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
             host,
             ssh_key,
             endpoint,
+            policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         });
 
         let add_another = Confirm::new()
@@ -290,7 +293,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 fn collect_adapter_config(adapter_str: &str) -> Result<ClawKind> {
     match adapter_str {
         "zeroclaw" => Ok(ClawKind::ZeroClawNative),
-        "openclaw" => Ok(ClawKind::OpenClawHttp),
+        "openclaw-channel" => Ok(ClawKind::OpenClawChannel),
         "openai-compat" => {
             let endpoint: String = Input::new()
                 .with_prompt("  OpenAI-compat endpoint (e.g. http://host/v1)")
@@ -401,7 +404,7 @@ async fn test_connections(target: &InstallTarget) -> bool {
         print!("  Testing '{}' ...", claw.name);
 
         if claw.needs_ssh_config() {
-            match test_connectivity(&ssh, &claw.host, claw.ssh_key.as_deref()) {
+            match test_agent_target_connectivity(&ssh, &claw.host, claw.ssh_key.as_deref()) {
                 Ok(()) => print!(" {} SSH", style("✓").green()),
                 Err(e) => {
                     print!(" {} SSH ({})", style("✗").red(), e);
@@ -609,6 +612,9 @@ mod tests {
                     host: "user@10.0.0.20".into(),
                     ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
                     endpoint: "http://10.0.0.20:18799".into(),
+                    policy_endpoint: None,
+                    proxy_endpoint: None,
+                    no_proxy: None,
                 },
                 ClawTarget {
                     name: "openai".into(),
@@ -618,6 +624,9 @@ mod tests {
                     host: String::new(),
                     ssh_key: None,
                     endpoint: "http://llm/v1".into(),
+                    policy_endpoint: None,
+                    proxy_endpoint: None,
+                    no_proxy: None,
                 },
             ],
         };
