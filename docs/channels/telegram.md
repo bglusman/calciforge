@@ -1,0 +1,91 @@
+---
+layout: default
+title: Telegram Channel Setup
+---
+
+# Telegram Channel
+
+Calciforge connects to Telegram via the [Telegram Bot API](https://core.telegram.org/bots/api)
+using **long-polling** — no public webhook endpoint or open firewall port required.
+
+## Architecture
+
+```
+Telegram user  ──→  Telegram Bot API  ──→  Calciforge (long-poll)
+                                                   │
+                                       identity resolution
+                                       agent dispatch
+                                                   │
+Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply
+```
+
+## Prerequisites
+
+1. **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`, follow the
+   prompts, copy the token it returns (format: `1234567890:ABCDEFghijklmnopqrstuvwxyz01234567`)
+2. **Find your Telegram user ID** (numeric, not your username):
+   - Send any message to your new bot, then run `calciforge` — the user ID appears in logs
+     on the first unrecognised message
+   - Or send a message to [@userinfobot](https://t.me/userinfobot) — it replies with your ID
+
+## Step 1: Save the bot token
+
+Write the raw token string (no extra whitespace) to a file readable only by the Calciforge
+process:
+
+```bash
+install -m 600 /dev/null ~/.calciforge/secrets/telegram-token
+printf '%s' '1234567890:ABCDEFghijklmnopqrstuvwxyz01234567' \
+  > ~/.calciforge/secrets/telegram-token
+```
+
+## Step 2: Channel config
+
+Add to `~/.calciforge/config.toml`:
+
+```toml
+[[channels]]
+kind = "telegram"
+enabled = true
+bot_token_file = "~/.calciforge/secrets/telegram-token"
+```
+
+Optional fields:
+
+| Field | Default | Description |
+|---|---|---|
+| `scan_messages` | `false` | Enable inbound adversarial content scanning via the security proxy |
+| `allow_chat_secret_set` | `false` | Allow `!secure set NAME=value` via Telegram chat (not recommended — the value appears in chat history and provider logs) |
+
+## Step 3: Identity config
+
+Each user you want to allow needs an `[[identities]]` entry. The alias `id` is the
+**numeric Telegram user ID** — not a username, not a phone number:
+
+```toml
+[[identities]]
+id = "operator"
+display_name = "Alice"
+role = "admin"
+aliases = [
+    { channel = "telegram", id = "7000000001" },
+]
+
+[[routing]]
+identity = "operator"
+default_agent = "librarian"
+allowed_agents = ["librarian"]
+```
+
+Messages from Telegram user IDs not listed in any identity's aliases are silently dropped.
+
+## Step 4: Verify
+
+```bash
+calciforge doctor   # validates config before starting
+calciforge          # start; send /start to your bot in Telegram
+```
+
+On first message from a known identity, you'll see `identity resolved` in the logs and the
+bot will route to the default agent. On an unknown user ID, you'll see
+`no identity for telegram/<id>` — use that output to find the ID if needed.

@@ -1542,4 +1542,191 @@ weight = 20
             "error should name the missing field, got: {msg}"
         );
     }
+
+    // ── Channel config example tests ─────────────────────────────────────────
+    //
+    // Each test below does two things:
+    //
+    //   1. Parses the inline TOML example that appears in the corresponding
+    //      docs/channels/*.md setup guide, verifying the example is
+    //      syntactically valid and matches the live ChannelConfig schema.
+    //
+    //   2. Loads the markdown file via include_str! and scans every fenced
+    //      ```toml block, wrapping each in a minimal CalciforgeConfig envelope
+    //      and parsing it. If any code block in the doc drifts out of sync
+    //      with the schema, cargo test catches it here.
+    //
+    // When you add or rename a ChannelConfig field, run `cargo test -p calciforge`
+    // and fix any failures in these tests before updating the docs.
+
+    fn extract_toml_blocks(markdown: &str) -> Vec<String> {
+        let mut blocks = Vec::new();
+        let mut in_block = false;
+        let mut current = String::new();
+        for line in markdown.lines() {
+            if line.trim() == "```toml" {
+                in_block = true;
+                current.clear();
+            } else if line.trim() == "```" && in_block {
+                in_block = false;
+                blocks.push(current.clone());
+            } else if in_block {
+                current.push_str(line);
+                current.push('\n');
+            }
+        }
+        blocks
+    }
+
+    fn channel_blocks_from_doc(markdown: &str) -> Vec<String> {
+        extract_toml_blocks(markdown)
+            .into_iter()
+            .filter(|b| b.contains("[[channels]]"))
+            .collect()
+    }
+
+    fn parse_channel_block(block: &str) -> CalciforgeConfig {
+        let wrapped = format!("[calciforge]\nversion = 2\n\n{block}");
+        toml::from_str(&wrapped).unwrap_or_else(|e| {
+            panic!("channel config block failed to parse:\n{block}\nerror: {e}")
+        })
+    }
+
+    #[test]
+    fn test_channel_config_telegram_inline() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+bot_token_file = "~/.calciforge/secrets/telegram-token"
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("telegram channel config");
+        assert_eq!(cfg.channels[0].kind, "telegram");
+        assert!(cfg.channels[0].enabled);
+        assert_eq!(
+            cfg.channels[0].bot_token_file.as_deref(),
+            Some("~/.calciforge/secrets/telegram-token")
+        );
+    }
+
+    #[test]
+    fn test_channel_config_matrix_inline() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "matrix"
+enabled = true
+homeserver = "https://matrix.example.com"
+access_token_file = "~/.calciforge/secrets/matrix-token"
+room_id = "!abc123def456:example.com"
+allowed_users = ["@operator:example.com"]
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("matrix channel config");
+        assert_eq!(cfg.channels[0].kind, "matrix");
+        assert_eq!(
+            cfg.channels[0].homeserver.as_deref(),
+            Some("https://matrix.example.com")
+        );
+        assert_eq!(cfg.channels[0].allowed_users, ["@operator:example.com"]);
+    }
+
+    #[test]
+    fn test_channel_config_signal_inline() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "signal"
+enabled = true
+zeroclaw_endpoint = "http://127.0.0.1:18789"
+zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+webhook_listen = "0.0.0.0:18796"
+webhook_path = "/webhooks/signal"
+allowed_numbers = ["+15555550001"]
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("signal channel config");
+        assert_eq!(cfg.channels[0].kind, "signal");
+        assert_eq!(
+            cfg.channels[0].webhook_listen.as_deref(),
+            Some("0.0.0.0:18796")
+        );
+        assert_eq!(cfg.channels[0].allowed_numbers, ["+15555550001"]);
+    }
+
+    #[test]
+    fn test_channel_config_whatsapp_inline() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "whatsapp"
+enabled = true
+zeroclaw_endpoint = "http://127.0.0.1:18789"
+zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
+webhook_listen = "0.0.0.0:18795"
+webhook_path = "/webhooks/whatsapp"
+allowed_numbers = ["+15555550001"]
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("whatsapp channel config");
+        assert_eq!(cfg.channels[0].kind, "whatsapp");
+        assert_eq!(
+            cfg.channels[0].webhook_listen.as_deref(),
+            Some("0.0.0.0:18795")
+        );
+    }
+
+    #[test]
+    fn test_channel_docs_telegram_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/channels/telegram.md");
+        for block in channel_blocks_from_doc(doc) {
+            let cfg = parse_channel_block(&block);
+            assert_eq!(
+                cfg.channels[0].kind, "telegram",
+                "unexpected kind in block:\n{block}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_channel_docs_matrix_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/channels/matrix.md");
+        for block in channel_blocks_from_doc(doc) {
+            let cfg = parse_channel_block(&block);
+            assert_eq!(
+                cfg.channels[0].kind, "matrix",
+                "unexpected kind in block:\n{block}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_channel_docs_signal_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/channels/signal.md");
+        for block in channel_blocks_from_doc(doc) {
+            let cfg = parse_channel_block(&block);
+            assert_eq!(
+                cfg.channels[0].kind, "signal",
+                "unexpected kind in block:\n{block}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_channel_docs_whatsapp_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/channels/whatsapp.md");
+        for block in channel_blocks_from_doc(doc) {
+            let cfg = parse_channel_block(&block);
+            assert_eq!(
+                cfg.channels[0].kind, "whatsapp",
+                "unexpected kind in block:\n{block}"
+            );
+        }
+    }
 }
