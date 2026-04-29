@@ -196,10 +196,15 @@ gateway covers seven overlapping concerns; you can adopt any subset.
 ### Security gateway
 
 The core product is the security gateway: a local network enforcement
-point that agents use through `HTTP_PROXY` and `HTTPS_PROXY`. Instead of
+point that agents use through explicit fetch/tool integration and, for
+plaintext HTTP, `HTTP_PROXY`. Instead of
 hoping each agent remembers the right rules, Calciforge puts the rules
 at the request boundary where secrets, destinations, model routes, and
 tool permissions can be checked before traffic leaves the machine.
+
+Ambient `HTTPS_PROXY` is deliberately not presented as full protection:
+standard HTTPS proxying uses CONNECT tunnels, so encrypted request bodies
+cannot be inspected or rewritten without a separate MITM design.
 
 The gateway protects in three places:
 
@@ -609,7 +614,6 @@ Calciforge daemon:
 ```bash
 # ~/.zshrc
 export HTTP_PROXY=http://127.0.0.1:8888
-export HTTPS_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
 

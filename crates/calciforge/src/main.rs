@@ -14,7 +14,7 @@ mod context;
 mod doctor;
 #[cfg(test)]
 mod hooks;
-#[cfg(test)]
+#[allow(dead_code)]
 mod install;
 mod local_model;
 #[cfg(feature = "persistent-context")]
@@ -72,6 +72,27 @@ enum CliCommand {
         #[arg(long)]
         no_network: bool,
     },
+    /// Configure Calciforge against existing agent installations over SSH.
+    Install {
+        /// Calciforge host metadata, e.g. user@host.
+        #[arg(long)]
+        calciforge_host: String,
+        /// SSH private key for the Calciforge host.
+        #[arg(long)]
+        calciforge_key: Option<PathBuf>,
+        /// Claw target spec. May be provided more than once.
+        #[arg(long = "claw")]
+        claw_specs: Vec<String>,
+        /// Show planned changes without writing remote configs.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip remote config backup before patching.
+        #[arg(long)]
+        skip_backup: bool,
+        /// Skip interactive confirmations.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -89,6 +110,45 @@ async fn main() -> Result<()> {
         let has_errors = report.has_errors();
         report.print();
         std::process::exit(if has_errors { 1 } else { 0 });
+    }
+
+    if let Some(CliCommand::Install {
+        calciforge_host,
+        calciforge_key,
+        claw_specs,
+        dry_run,
+        skip_backup,
+        yes,
+    }) = args.command
+    {
+        let install_args = install::cli::InstallArgs {
+            calciforge_host: Some(calciforge_host),
+            calciforge_key,
+            claw_specs,
+            dry_run,
+            skip_backup,
+            _yes: yes,
+        };
+        let target = install::cli::parse_install_target(&install_args)?;
+        let summary = install::executor::run_install_with_deps(
+            target,
+            &install_args,
+            install::executor::ExecutorDeps::real(),
+        )
+        .await;
+
+        for result in &summary.claw_results {
+            println!(
+                "{} {}",
+                if result.success { "ok" } else { "failed" },
+                result.name
+            );
+            for step in &result.steps {
+                println!("  {}: {}", step.step, step.outcome.summary());
+            }
+        }
+
+        std::process::exit(if summary.any_failed() { 1 } else { 0 });
     }
 
     // If --validate flag is set, just validate and exit

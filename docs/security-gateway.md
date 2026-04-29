@@ -27,7 +27,7 @@ The gateway can be enforced at three tiers:
 
 | Tier | Method | Level | Description |
 |------|---------|--------|-------------|
-| 1 | **Cooperative** | App | Set `HTTP_PROXY` / `HTTPS_PROXY` env vars. |
+| 1 | **Cooperative** | App | Set `HTTP_PROXY` for plaintext HTTP, and use explicit fetch/tool integration for HTTPS. |
 | 2 | **Enforced** | OS | `iptables` redirect of ports 80/443 to gateway. |
 | 3 | **Isolated** | Net | Network namespaces restricting all traffic to the gateway. |
 
@@ -36,6 +36,12 @@ The unified installer starts `security-proxy`, but it does not put
 exec-backed agents must receive proxy environment explicitly through agent
 configuration or wrapper scripts. The shipped examples bias toward this
 protected default by setting proxy env on subprocess agents directly.
+
+`HTTPS_PROXY` is not a complete protection story for Calciforge today. Standard
+HTTPS proxying uses CONNECT tunnels; without a trusted MITM CA, the proxy cannot
+inspect request or response bodies or substitute secrets inside the encrypted
+stream. Prefer explicit fetch/tool integration for HTTPS content that must be
+scanned.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
@@ -48,7 +54,6 @@ For a manually started daemon:
 
 ```sh
 export HTTP_PROXY=http://127.0.0.1:8888
-export HTTPS_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
 

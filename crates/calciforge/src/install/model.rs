@@ -116,6 +116,18 @@ pub struct ClawTarget {
     /// legacy policy plugin entries and enables `calciforge-policy` in
     /// `openclaw.json`.
     pub policy_endpoint: Option<String>,
+    /// Optional HTTP proxy endpoint for managed agent outbound traffic.
+    ///
+    /// For `openclaw-channel`, the installer writes a systemd drop-in for the
+    /// remote OpenClaw gateway service so plain HTTP model/tool traffic uses
+    /// Calciforge's `security-proxy`. `HTTPS_PROXY` is intentionally not set:
+    /// the current proxy is not a TLS MITM, so HTTPS inspection must use
+    /// explicit fetch/tool integration rather than ambient CONNECT tunneling.
+    pub proxy_endpoint: Option<String>,
+    /// Optional `NO_PROXY` value used with [`Self::proxy_endpoint`].
+    ///
+    /// When omitted, installer-managed daemons keep loopback traffic local.
+    pub no_proxy: Option<String>,
 }
 
 impl ClawTarget {
@@ -308,6 +320,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/key")),
             endpoint: "http://host:18799".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         assert!(zeroclaw.needs_ssh_config());
 
@@ -320,6 +334,8 @@ mod tests {
             ssh_key: None,
             endpoint: "http://host/v1".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         assert!(!openai.needs_ssh_config());
     }
@@ -333,6 +349,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_rsa")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         let key = target.ssh_key_required().unwrap();
         assert_eq!(key, &PathBuf::from("/keys/id_rsa"));
@@ -347,6 +365,8 @@ mod tests {
             ssh_key: None,
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         let result = target.ssh_key_required();
         assert!(result.is_err());

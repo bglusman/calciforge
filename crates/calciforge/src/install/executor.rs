@@ -28,7 +28,7 @@
 //! The result (rollback ok / rollback also failed) is recorded in
 //! [`ClawInstallResult`].
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tracing::{error, info, warn};
 
 use crate::sync::Arc;
@@ -42,10 +42,13 @@ use super::{
         VersionCompatibility,
     },
     ssh::{
-        detect_openclaw_version, detect_zeroclaw_version, test_agent_target_connectivity,
-        test_remote_config_access, MockSshClient, RealSshClient, SshClient,
+        detect_openclaw_version, detect_zeroclaw_version, remote_path_shell, shell_quote,
+        test_agent_target_connectivity, test_remote_config_access, MockSshClient, RealSshClient,
+        SshClient,
     },
 };
+
+const DEFAULT_AGENT_NO_PROXY: &str = "localhost,127.0.0.1,::1";
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -108,6 +111,16 @@ pub enum StepOutcome {
 impl StepOutcome {
     pub fn is_failure(&self) -> bool {
         matches!(self, StepOutcome::Failed { .. })
+    }
+
+    pub fn summary(&self) -> &str {
+        match self {
+            StepOutcome::Skipped { _reason } => _reason,
+            StepOutcome::DryRun { _description } => _description,
+            StepOutcome::Ok { _detail } => _detail,
+            StepOutcome::Warning { _detail } => _detail,
+            StepOutcome::Failed { error } => error,
+        }
     }
 }
 
@@ -433,22 +446,40 @@ fn run_remote_config_access(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResul
 }
 
 async fn run_health_check(claw: &ClawTarget, deps: &ExecutorDeps, step: InstallStep) -> StepResult {
-    match health_check_claw(deps.health.as_ref(), &claw.adapter, &claw.endpoint).await {
-        Ok(()) => StepResult {
-            step,
-            outcome: StepOutcome::Ok {
-                _detail: format!("endpoint {} is healthy", claw.endpoint),
-            },
-        },
-        Err(e) => {
-            warn!(claw = %claw.name, err = %e, "health check failed");
-            StepResult {
-                step,
-                outcome: StepOutcome::Failed {
-                    error: e.to_string(),
-                },
+    let attempts = if step == InstallStep::HealthCheckPostApply {
+        6
+    } else {
+        1
+    };
+    let mut last_err = None;
+
+    for attempt in 1..=attempts {
+        match health_check_claw(deps.health.as_ref(), &claw.adapter, &claw.endpoint).await {
+            Ok(()) => {
+                return StepResult {
+                    step,
+                    outcome: StepOutcome::Ok {
+                        _detail: format!("endpoint {} is healthy", claw.endpoint),
+                    },
+                };
+            }
+            Err(e) => {
+                warn!(claw = %claw.name, attempt, attempts, err = %e, "health check failed");
+                last_err = Some(e);
+                if attempt < attempts {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
             }
         }
+    }
+
+    StepResult {
+        step,
+        outcome: StepOutcome::Failed {
+            error: last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "health check failed".to_string()),
+        },
     }
 }
 
@@ -679,11 +710,16 @@ fn remote_config_path(claw: &ClawTarget) -> String {
 fn describe_proposed_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawChannel => format!(
-            "Will add Calciforge webhook hook entry to openclaw.json on {} \
-             (hooks.enabled = true, hooks.token = <generated>{})",
+            "Will update Calciforge OpenClaw integration config on {} \
+             ({}{})",
             claw.host,
             if claw.policy_endpoint.is_some() {
-                ", calciforge-policy enabled"
+                "calciforge-policy enabled"
+            } else {
+                "no policy plugin change"
+            },
+            if claw.proxy_endpoint.is_some() {
+                ", OpenClaw service proxy env configured"
             } else {
                 ""
             }
@@ -710,10 +746,15 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
 fn describe_apply_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawChannel => format!(
-            "would patch openclaw.json on {} to add Calciforge hook entry{}",
+            "would patch openclaw.json on {} for Calciforge OpenClaw integration{}{}",
             claw.host,
             if claw.policy_endpoint.is_some() {
-                " and policy plugin entry"
+                " with policy plugin entry"
+            } else {
+                ""
+            },
+            if claw.proxy_endpoint.is_some() {
+                " and configure OpenClaw service proxy env"
             } else {
                 ""
             }
@@ -729,9 +770,9 @@ fn describe_apply_changes(claw: &ClawTarget) -> String {
 /// Apply remote config changes for SSH-configurable claws.
 ///
 /// For `OpenClawChannel`: reads `openclaw.json` via SSH, strips JSON5 comments,
-/// parses as JSON, injects the Calciforge webhook hook entry under
-/// `hooks.entries.calciforge`, serializes back to pretty JSON, writes via SSH,
-/// and verifies the written file parses correctly.
+/// parses as JSON, removes obsolete Calciforge hook config that current
+/// OpenClaw rejects, migrates the policy plugin entry, serializes back to
+/// pretty JSON, writes via SSH, and verifies the written file parses correctly.
 ///
 /// For `ZeroClawNative`: stub — adds a `[calciforge]` section to `config.toml`.
 /// The ZeroClaw config format is TOML and has its own migration path; full patching
@@ -784,30 +825,159 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
             .map_err(|e| anyhow::anyhow!("written openclaw.json is not valid JSON: {}", e))?;
     }
 
-    Ok(format!(
-        "patched {} on {} — Calciforge hook registered",
+    let mut details = vec![format!(
+        "patched {} on {} — Calciforge OpenClaw policy config updated",
         config_path, claw.host
-    ))
+    )];
+
+    if matches!(claw.adapter, ClawKind::OpenClawChannel) {
+        if let Some(detail) = configure_remote_openclaw_proxy_env(claw, deps)? {
+            details.push(detail);
+        }
+    }
+
+    Ok(details.join("; "))
 }
 
-/// Patch `openclaw.json` to register Calciforge as a webhook receiver.
+fn configure_remote_openclaw_proxy_env(
+    claw: &ClawTarget,
+    deps: &ExecutorDeps,
+) -> Result<Option<String>> {
+    let Some(proxy_endpoint) = claw
+        .proxy_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    if proxy_endpoint.contains('\n') || proxy_endpoint.contains('\r') {
+        bail!("proxy_endpoint must be a single-line URL");
+    }
+
+    let no_proxy = claw
+        .no_proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_AGENT_NO_PROXY);
+    if no_proxy.contains('\n') || no_proxy.contains('\r') {
+        bail!("no_proxy must be a single-line value");
+    }
+
+    let key = claw.ssh_key.as_deref();
+    let health_url = format!("{}/health", proxy_endpoint.trim_end_matches('/'));
+    let proxy_health = deps.ssh.run(
+        &claw.host,
+        key,
+        &format!(
+            "curl -fsS --max-time 3 {} >/dev/null",
+            shell_quote(&health_url)
+        ),
+    )?;
+    if !proxy_health.success {
+        bail!(
+            "security-proxy endpoint is not reachable from {} at {}: {}",
+            claw.host,
+            health_url,
+            proxy_health.stderr.trim()
+        );
+    }
+
+    let detect = deps.ssh.run(
+        &claw.host,
+        key,
+        "if systemctl is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo user; elif systemctl cat openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then echo user; else echo missing; exit 42; fi",
+    )?;
+    if !detect.success {
+        bail!(
+            "could not find openclaw-gateway.service on {} for proxy env install: {}",
+            claw.host,
+            detect.stderr.trim()
+        );
+    }
+
+    let service_mode = detect.stdout.trim();
+    let (dropin_dir, dropin_path, reload_restart) = match service_mode {
+        "user" => (
+            "~/.config/systemd/user/openclaw-gateway.service.d",
+            "~/.config/systemd/user/openclaw-gateway.service.d/10-calciforge-proxy.conf",
+            "systemctl --user daemon-reload && systemctl --user restart openclaw-gateway.service",
+        ),
+        "system" => (
+            "/etc/systemd/system/openclaw-gateway.service.d",
+            "/etc/systemd/system/openclaw-gateway.service.d/10-calciforge-proxy.conf",
+            "systemctl daemon-reload && systemctl restart openclaw-gateway.service",
+        ),
+        other => bail!(
+            "unexpected OpenClaw service mode from {}: {}",
+            claw.host,
+            other
+        ),
+    };
+
+    let content = format!(
+        "# Managed by calciforge install. Do not put secrets in this file.\n\
+         # HTTPS_PROXY is intentionally not set: Calciforge security-proxy does\n\
+         # not inspect TLS CONNECT tunnels. Use explicit fetch/tool integration\n\
+         # for HTTPS content scanning and credential substitution.\n\
+         [Service]\n{}{}\n",
+        systemd_environment_line("HTTP_PROXY", proxy_endpoint)?,
+        systemd_environment_line("NO_PROXY", no_proxy)?,
+    );
+
+    let mkdir = format!("mkdir -p {}", remote_path_shell(dropin_dir));
+    let mkdir_out = deps.ssh.run(&claw.host, key, &mkdir)?;
+    if !mkdir_out.success {
+        bail!(
+            "failed to create OpenClaw systemd drop-in directory on {}: {}",
+            claw.host,
+            mkdir_out.stderr.trim()
+        );
+    }
+
+    deps.ssh
+        .write_file(&claw.host, key, dropin_path, &content)
+        .map_err(|e| anyhow::anyhow!("failed to write OpenClaw proxy drop-in: {}", e))?;
+
+    let restart = deps.ssh.run(&claw.host, key, reload_restart)?;
+    if !restart.success {
+        bail!(
+            "failed to reload/restart OpenClaw after proxy env install on {}: {}",
+            claw.host,
+            restart.stderr.trim()
+        );
+    }
+
+    Ok(Some(format!(
+        "configured OpenClaw {} service HTTP_PROXY via systemd drop-in",
+        service_mode
+    )))
+}
+
+fn systemd_environment_line(key: &str, value: &str) -> Result<String> {
+    if key.contains('=') || key.contains('\n') || key.contains('\r') {
+        bail!("invalid environment key");
+    }
+    if value.contains('\n') || value.contains('\r') {
+        bail!("invalid multiline environment value for {}", key);
+    }
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!("Environment=\"{}={}\"\n", key, escaped))
+}
+
+/// Patch `openclaw.json` for Calciforge-managed OpenClaw integration.
 ///
-/// Adds/updates `hooks.entries.calciforge` with `enabled`, `url`, and `token`.
-/// When a policy endpoint is provided, also migrates legacy policy plugin
-/// names and enables `plugins.entries.calciforge-policy`.
+/// Current OpenClaw channel integration uses `/calciforge/inbound` directly and
+/// does not require a `hooks.entries.*` block. Modern OpenClaw rejects that old
+/// shape, so this patcher only migrates legacy policy plugin names and enables
+/// `plugins.entries.calciforge-policy` when a policy endpoint is provided.
 ///
-/// Preserves all existing config fields.  Generates a fresh token using
-/// a 24-byte random hex string if none is already set.
-///
-/// # Token generation
-///
-/// Uses `generate_hook_token` which produces a 48-char hex string from
-/// 24 random bytes.  In a production system this would be stored in the
-/// vault; for now it is generated fresh on each install and written inline.
+/// Preserves all existing config fields.
 fn patch_openclaw_config(
     current_content: &str,
-    claw_name: &str,
-    calciforge_endpoint: &str,
+    _claw_name: &str,
+    _calciforge_endpoint: &str,
     policy_endpoint: Option<&str>,
 ) -> Result<String> {
     // Parse the existing config (handles JSON5 / JSONC comments).
@@ -818,55 +988,31 @@ fn patch_openclaw_config(
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("openclaw.json root is not a JSON object"))?;
 
-    // Ensure hooks object exists.
-    let hooks = config_obj
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-
-    let hooks_obj = hooks
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("hooks field is not a JSON object"))?;
-
-    // Enable hooks globally if not already.
-    hooks_obj
-        .entry("enabled")
-        .or_insert(serde_json::json!(true));
-
-    // Ensure entries sub-object exists.
-    let entries = hooks_obj
-        .entry("entries")
-        .or_insert_with(|| serde_json::json!({}));
-
-    let entries_obj = entries
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("hooks.entries is not a JSON object"))?;
-
-    // Generate a fresh token if we're creating a new entry.
-    // If the entry already exists and has a token, preserve it.
-    let existing_token = entries_obj
-        .get(claw_name)
-        .and_then(|e| e.get("token"))
-        .and_then(|t| t.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_owned());
-
-    let token = existing_token.unwrap_or_else(generate_hook_token);
-
-    // Upsert the Calciforge entry.
-    entries_obj.insert(
-        claw_name.to_owned(),
-        serde_json::json!({
-            "enabled": true,
-            "url": calciforge_endpoint,
-            "token": token,
-        }),
-    );
-
+    remove_legacy_openclaw_hook_entries(config_obj)?;
     patch_openclaw_policy_plugin(config_obj, policy_endpoint)?;
 
     // Serialize back to pretty JSON (no comments — they were stripped on read).
     serde_json::to_string_pretty(&config)
         .map_err(|e| anyhow::anyhow!("failed to serialize patched config: {}", e))
+}
+
+fn remove_legacy_openclaw_hook_entries(
+    config_obj: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let Some(hooks) = config_obj.get_mut("hooks") else {
+        return Ok(());
+    };
+    let hooks_obj = hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("hooks field is not a JSON object"))?;
+    hooks_obj.remove("entries");
+    if !hooks_obj.contains_key("token") {
+        hooks_obj.remove("enabled");
+    }
+    if hooks_obj.is_empty() {
+        config_obj.remove("hooks");
+    }
+    Ok(())
 }
 
 fn patch_openclaw_policy_plugin(
@@ -925,38 +1071,6 @@ fn patch_openclaw_policy_plugin(
     Ok(())
 }
 
-/// Generate a random 48-char hex token suitable for use as a webhook secret.
-///
-/// Uses `std::collections::hash_map::DefaultHasher` seeded with the current
-/// time and process ID as a best-effort random source.  For production use,
-/// integrate a proper CSPRNG (e.g. `rand` crate or `getrandom`).
-///
-/// NOTE: This is not cryptographically strong.  It is sufficient as a
-/// correlation token for webhook matching, but should be replaced with a
-/// vault-generated secret in a hardened deployment.
-fn generate_hook_token() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::SystemTime;
-
-    let mut h1 = DefaultHasher::new();
-    SystemTime::now().hash(&mut h1);
-    std::process::id().hash(&mut h1);
-    let v1 = h1.finish();
-
-    let mut h2 = DefaultHasher::new();
-    v1.hash(&mut h2);
-    42u64.hash(&mut h2); // salt
-    let v2 = h2.finish();
-
-    let mut h3 = DefaultHasher::new();
-    v2.hash(&mut h3);
-    99u64.hash(&mut h3);
-    let v3 = h3.finish();
-
-    format!("{:016x}{:016x}{:016x}", v1, v2, v3)
-}
-
 /// Stub patcher for ZeroClaw TOML config.
 ///
 /// Appends a minimal `[calciforge]` section if not already present.
@@ -996,6 +1110,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1037,6 +1153,8 @@ mod tests {
             ssh_key: None,
             endpoint: "http://llm.internal/v1".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         let ssh = MockSshClient::new();
         let health = MockHealthChecker::new();
@@ -1170,6 +1288,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1189,7 +1309,9 @@ mod tests {
         // call 2: post-apply → FAIL (triggers rollback)
         let health = MockHealthChecker::new();
         health.push_ok(); // baseline health check
-        health.push_err("gateway down after change"); // post-apply health check
+        for _ in 0..6 {
+            health.push_err("gateway down after change"); // post-apply health check retries
+        }
 
         let args = InstallArgs::default();
         let deps = ExecutorDeps::mock(ssh, health);
@@ -1212,6 +1334,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1242,6 +1366,8 @@ mod tests {
             ssh_key: None,
             endpoint: "http://unreachable:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1270,6 +1396,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1394,49 +1522,32 @@ mod tests {
 
     // ── S1 tests: patch_openclaw_config and mock-SSH apply ───────────────────
 
-    /// patch_openclaw_config injects the hooks.entries.<claw_name> block.
+    /// patch_openclaw_config does not inject legacy hooks.entries blocks.
     #[test]
-    fn patch_openclaw_config_adds_hook_entry() {
+    fn patch_openclaw_config_does_not_add_legacy_hook_entry() {
         let input = r#"{"version": "2026.3.13"}"#;
         let patched =
             patch_openclaw_config(input, "calciforge", "http://calciforge.host/hook", None)
                 .expect("patch should succeed");
 
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
-        let entry = &v["hooks"]["entries"]["calciforge"];
-        assert_eq!(entry["enabled"], serde_json::json!(true));
-        assert_eq!(entry["url"], "http://calciforge.host/hook");
-        // Token must be present and non-empty.
-        let token = entry["token"].as_str().unwrap_or("");
-        assert!(!token.is_empty(), "token should be generated");
+        assert!(
+            v.get("hooks").is_none(),
+            "modern OpenClaw rejects hooks.entries; installer must not add it"
+        );
     }
 
-    /// patch_openclaw_config with hooks.enabled = false already set enables it.
+    /// patch_openclaw_config preserves existing hooks fields without mutation.
     #[test]
-    fn patch_openclaw_config_enables_hooks() {
-        let input = r#"{"hooks": {"enabled": false}}"#;
-        // enabled is set to or_insert — won't overwrite existing false if present.
-        // Actually or_insert only inserts if absent, so false stays. That's intentional:
-        // we don't forcibly override the user's enabled: false — we just add the entry.
-        // The user can re-enable manually. Let's verify the entry is still added.
+    fn patch_openclaw_config_preserves_existing_hooks() {
+        let input =
+            r#"{"hooks": {"enabled": false, "entries": {"calciforge": {"enabled": true}}}}"#;
         let patched = patch_openclaw_config(input, "calciforge", "http://pc/hook", None)
             .expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
-        assert_eq!(v["hooks"]["entries"]["calciforge"]["enabled"], true);
-    }
-
-    /// patch_openclaw_config preserves existing token on re-run.
-    #[test]
-    fn patch_openclaw_config_preserves_existing_token() {
-        let input = r#"{"hooks": {"enabled": true, "entries": {"calciforge": {"enabled": true, "url": "old", "token": "existing-tok"}}}}"#;
-        let patched = patch_openclaw_config(input, "calciforge", "http://new/hook", None)
-            .expect("should patch");
-        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
-        // Token preserved; URL updated.
-        assert_eq!(v["hooks"]["entries"]["calciforge"]["token"], "existing-tok");
-        assert_eq!(
-            v["hooks"]["entries"]["calciforge"]["url"],
-            "http://new/hook"
+        assert!(
+            v.get("hooks").is_none(),
+            "hooks without a token are invalid in current OpenClaw and should be removed"
         );
     }
 
@@ -1517,6 +1628,8 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://calciforge.host:18799/webhook".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1551,9 +1664,56 @@ mod tests {
         );
     }
 
-    /// S1 test: written config is verified to contain the hook.
+    #[tokio::test]
+    async fn apply_remote_config_configures_openclaw_proxy_dropin_when_requested() {
+        let claw = ClawTarget {
+            name: "calciforge".into(),
+            adapter: ClawKind::OpenClawChannel,
+            host: "user@host".into(),
+            ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
+            endpoint: "http://calciforge.host:18799/webhook".into(),
+            policy_endpoint: Some("http://calciforge.host:9001/evaluate".into()),
+            proxy_endpoint: Some("http://127.0.0.1:8888".into()),
+            no_proxy: Some("localhost,127.0.0.1,::1,calciforge.host".into()),
+        };
+
+        let ssh = Arc::new(MockSshClient::new());
+        ssh.push_success(r#"{"version": "2026.3.13"}"#);
+        ssh.push_success("");
+        ssh.push_success(
+            r#"{"version":"2026.3.13","hooks":{"enabled":true,"entries":{"calciforge":{"enabled":true,"url":"http://calciforge.host:18799/webhook","token":"abc123"}}},"plugins":{"enabled":true,"entries":{"calciforge-policy":{"enabled":true,"config":{"clashdEndpoint":"http://calciforge.host:9001/evaluate"}}}}}"#,
+        );
+        ssh.push_success("");
+        ssh.push_success("user\n");
+        ssh.push_success("");
+        ssh.push_success("");
+        ssh.push_success("");
+
+        let deps = ExecutorDeps {
+            ssh: ssh.clone(),
+            health: Arc::new(MockHealthChecker::new()),
+        };
+        let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
+        assert!(detail.contains("HTTP_PROXY"));
+
+        let calls = ssh.recorded_calls();
+        assert!(
+            calls.iter().any(|c| c
+                .command
+                .contains("openclaw-gateway.service.d/10-calciforge-proxy.conf")),
+            "expected write to OpenClaw proxy drop-in, got {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c
+                .command
+                .contains("systemctl --user restart openclaw-gateway.service")),
+            "expected user service restart, got {calls:?}"
+        );
+    }
+
+    /// S1 test: written config remains valid JSON and preserves existing fields.
     #[test]
-    fn patch_openclaw_config_written_json_contains_hook() {
+    fn patch_openclaw_config_written_json_preserves_existing_fields() {
         let original = r#"{"version": "2026.3.13", "gateway": {"port": 18789}}"#;
         let endpoint = "http://calciforge.internal:18799/hooks/calciforge";
         let patched =
@@ -1566,22 +1726,7 @@ mod tests {
         // Original fields preserved.
         assert_eq!(v["version"], "2026.3.13");
         assert_eq!(v["gateway"]["port"], 18789);
-
-        // Hook entry present.
-        let entry = &v["hooks"]["entries"]["calciforge"];
-        assert!(
-            entry.is_object(),
-            "hooks.entries.calciforge must be an object"
-        );
-        assert_eq!(entry["enabled"], true);
-        assert_eq!(entry["url"], endpoint);
-        assert!(
-            entry["token"]
-                .as_str()
-                .map(|s| s.len() > 10)
-                .unwrap_or(false),
-            "token should be non-trivially long"
-        );
+        assert!(v.get("hooks").is_none());
     }
 
     #[test]
@@ -1593,6 +1738,8 @@ mod tests {
             ssh_key: None,
             endpoint: "http://h".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         assert_eq!(remote_config_path(&claw), "~/.openclaw/openclaw.json");
     }
@@ -1606,6 +1753,8 @@ mod tests {
             ssh_key: None,
             endpoint: "http://h".into(),
             policy_endpoint: None,
+            proxy_endpoint: None,
+            no_proxy: None,
         };
         assert_eq!(remote_config_path(&claw), "~/.config/zeroclaw/config.toml");
     }

@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! --claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path/id_rsa,endpoint=http://...
-//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...,policy_endpoint=http://clashd:9001/evaluate
+//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...,policy_endpoint=http://clashd:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1;::1
 //! --claw name=baz,adapter=openai-compat,endpoint=http://some-claw/v1
 //! --claw name=qux,adapter=webhook,endpoint=http://custom/hook,format=json
 //! --claw name=bin,adapter=cli,command=/usr/local/bin/my-claw
@@ -95,7 +95,8 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 ///
 /// The spec is a comma-separated list of `key=value` pairs. Values may contain
 /// `=` characters (only the first `=` is the delimiter). Commas inside values
-/// are not supported — use URL encoding if needed.
+/// are not supported. For `no_proxy`, use semicolons in the CLI string; the
+/// installer normalizes them to comma-separated `NO_PROXY`.
 ///
 /// # Required keys (all adapters)
 /// - `name` — friendly name
@@ -106,7 +107,7 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 /// | Adapter | Required | Optional |
 /// |---------|----------|----------|
 /// | `zeroclaw-native` | `host`, `endpoint` | `key` |
-/// | `openclaw-channel` | `host`, `endpoint` | `key`, `policy_endpoint` |
+/// | `openclaw-channel` | `host`, `endpoint` | `key`, `policy_endpoint`, `proxy_endpoint`, `no_proxy` |
 /// | `openai-compat` | `endpoint` | — |
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
 /// | `cli` | `command` | — |
@@ -153,6 +154,8 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         ssh_key,
         endpoint,
         policy_endpoint: kv.get("policy_endpoint").cloned(),
+        proxy_endpoint: kv.get("proxy_endpoint").cloned(),
+        no_proxy: kv.get("no_proxy").map(|value| value.replace(';', ",")),
     })
 }
 
@@ -299,16 +302,22 @@ mod tests {
         assert!(matches!(claw.adapter, ClawKind::OpenClawChannel));
         assert!(claw.needs_ssh_config());
         assert!(claw.policy_endpoint.is_none());
+        assert!(claw.proxy_endpoint.is_none());
     }
 
     #[test]
     fn parse_openclaw_claw_with_policy_endpoint() {
-        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,policy_endpoint=http://clashd.example.invalid:9001/evaluate";
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,policy_endpoint=http://clashd.example.invalid:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1";
         let claw = parse_claw_spec(spec).unwrap();
         assert_eq!(
             claw.policy_endpoint.as_deref(),
             Some("http://clashd.example.invalid:9001/evaluate")
         );
+        assert_eq!(
+            claw.proxy_endpoint.as_deref(),
+            Some("http://127.0.0.1:8888")
+        );
+        assert_eq!(claw.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
     }
 
     #[test]
