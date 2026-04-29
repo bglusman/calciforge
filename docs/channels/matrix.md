@@ -74,7 +74,7 @@ allowed_users = ["@operator:example.com"]
 | `homeserver` | yes | Full URL of the Matrix homeserver |
 | `access_token_file` | yes | Path to file containing the bot's access token |
 | `room_id` | yes | Internal room ID (starts with `!`) |
-| `allowed_users` | yes | Matrix user IDs permitted to send commands; empty list allows all room members (not recommended) |
+| `allowed_users` | yes | Matrix user IDs permitted to send commands; use `["*"]` to allow all room members; empty list is rejected at startup |
 | `scan_messages` | no (`false`) | Enable inbound adversarial content scanning |
 | `allow_chat_secret_set` | no (`false`) | Allow `!secure set` via Matrix (not recommended) |
 

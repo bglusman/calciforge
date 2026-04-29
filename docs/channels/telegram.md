@@ -88,4 +88,5 @@ calciforge          # start; send /start to your bot in Telegram
 
 On first message from a known identity, you'll see `identity resolved` in the logs and the
 bot will route to the default agent. On an unknown user ID, you'll see
-`no identity for telegram/<id>` — use that output to find the ID if needed.
+`unknown Telegram sender — dropping silently sender_id=<id>` — use that to find the numeric
+ID to add to your identity aliases.
