@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! --claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path/id_rsa,endpoint=http://...
-//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...
+//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...,policy_endpoint=http://clashd:9001/evaluate
 //! --claw name=baz,adapter=openai-compat,endpoint=http://some-claw/v1
 //! --claw name=qux,adapter=webhook,endpoint=http://custom/hook,format=json
 //! --claw name=bin,adapter=cli,command=/usr/local/bin/my-claw
@@ -106,7 +106,7 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 /// | Adapter | Required | Optional |
 /// |---------|----------|----------|
 /// | `zeroclaw-native` | `host`, `endpoint` | `key` |
-/// | `openclaw-channel` | `host`, `endpoint` | `key` |
+/// | `openclaw-channel` | `host`, `endpoint` | `key`, `policy_endpoint` |
 /// | `openai-compat` | `endpoint` | — |
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
 /// | `cli` | `command` | — |
@@ -152,6 +152,7 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         host,
         ssh_key,
         endpoint,
+        policy_endpoint: kv.get("policy_endpoint").cloned(),
     })
 }
 
@@ -297,6 +298,17 @@ mod tests {
         assert_eq!(claw.name, "custodian");
         assert!(matches!(claw.adapter, ClawKind::OpenClawChannel));
         assert!(claw.needs_ssh_config());
+        assert!(claw.policy_endpoint.is_none());
+    }
+
+    #[test]
+    fn parse_openclaw_claw_with_policy_endpoint() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,policy_endpoint=http://clashd.example.invalid:9001/evaluate";
+        let claw = parse_claw_spec(spec).unwrap();
+        assert_eq!(
+            claw.policy_endpoint.as_deref(),
+            Some("http://clashd.example.invalid:9001/evaluate")
+        );
     }
 
     #[test]

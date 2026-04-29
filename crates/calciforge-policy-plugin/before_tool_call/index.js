@@ -77,17 +77,25 @@ function beforeToolCall(context) {
                 case 3:
                     result = _b.sent();
                     if (result.verdict === "deny") {
-                        return [2 /*return*/, { block: true, reason: result.reason || "Policy denied" }];
+                        return [2 /*return*/, { block: true, blockReason: result.reason || "Policy denied" }];
                     }
                     if (result.verdict === "review") {
-                        return [2 /*return*/, { requireApproval: true, reason: result.reason || "Custodian approval required" }];
+                        return [2 /*return*/, {
+                                requireApproval: {
+                                    title: "Calciforge policy review: ".concat(toolName),
+                                    description: result.reason || "Custodian approval required",
+                                    severity: "warning",
+                                    timeoutMs: 300000,
+                                    timeoutBehavior: "deny"
+                                }
+                            }];
                     }
                     return [2 /*return*/, { block: false }];
                 case 4:
                     error_1 = _b.sent();
                     console.error("[calciforge-policy] Error: ".concat(error_1));
                     // Fail-safe: deny on error
-                    return [2 /*return*/, { block: true, reason: "Policy enforcement unavailable" }];
+                    return [2 /*return*/, { block: true, blockReason: "Policy enforcement unavailable" }];
                 case 5: return [2 /*return*/];
             }
         });

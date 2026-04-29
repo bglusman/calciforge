@@ -11,8 +11,14 @@ interface HookContext {
 
 interface HookResult {
   block?: boolean;
-  requireApproval?: boolean;
-  reason?: string;
+  blockReason?: string;
+  requireApproval?: {
+    title: string;
+    description: string;
+    severity?: "info" | "warning" | "critical";
+    timeoutMs?: number;
+    timeoutBehavior?: "allow" | "deny";
+  };
 }
 
 interface ClashdResponse {
@@ -53,12 +59,20 @@ export default async function beforeToolCall(context: HookContext): Promise<Hook
 
     const result: ClashdResponse = await response.json();
 
-    if (result.verdict === "deny") {
-      return { block: true, reason: result.reason || "Policy denied" };
+  if (result.verdict === "deny") {
+      return { block: true, blockReason: result.reason || "Policy denied" };
     }
 
     if (result.verdict === "review") {
-      return { requireApproval: true, reason: result.reason || "Custodian approval required" };
+      return {
+        requireApproval: {
+          title: `Calciforge policy review: ${toolName}`,
+          description: result.reason || "Custodian approval required",
+          severity: "warning",
+          timeoutMs: 300_000,
+          timeoutBehavior: "deny",
+        }
+      };
     }
 
     return { block: false };
@@ -66,6 +80,6 @@ export default async function beforeToolCall(context: HookContext): Promise<Hook
   } catch (error) {
     console.error(`[calciforge-policy] Error: ${error}`);
     // Fail-safe: deny on error
-    return { block: true, reason: "Policy enforcement unavailable" };
+    return { block: true, blockReason: "Policy enforcement unavailable" };
   }
 }

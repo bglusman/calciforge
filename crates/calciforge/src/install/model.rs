@@ -110,6 +110,12 @@ pub struct ClawTarget {
     pub ssh_key: Option<PathBuf>,
     /// HTTP endpoint Calciforge sends messages to (empty for `Cli` adapters).
     pub endpoint: String,
+    /// Optional clashd `/evaluate` endpoint for OpenClaw policy enforcement.
+    ///
+    /// When set on an `openclaw-channel` target, the installer migrates stale
+    /// legacy policy plugin entries and enables `calciforge-policy` in
+    /// `openclaw.json`.
+    pub policy_endpoint: Option<String>,
 }
 
 impl ClawTarget {
@@ -301,6 +307,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/key")),
             endpoint: "http://host:18799".into(),
+            policy_endpoint: None,
         };
         assert!(zeroclaw.needs_ssh_config());
 
@@ -312,6 +319,7 @@ mod tests {
             host: "host".into(),
             ssh_key: None,
             endpoint: "http://host/v1".into(),
+            policy_endpoint: None,
         };
         assert!(!openai.needs_ssh_config());
     }
@@ -324,6 +332,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_rsa")),
             endpoint: "http://host:18789".into(),
+            policy_endpoint: None,
         };
         let key = target.ssh_key_required().unwrap();
         assert_eq!(key, &PathBuf::from("/keys/id_rsa"));
@@ -337,6 +346,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: None,
             endpoint: "http://host:18789".into(),
+            policy_endpoint: None,
         };
         let result = target.ssh_key_required();
         assert!(result.is_err());

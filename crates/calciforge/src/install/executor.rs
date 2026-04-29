@@ -680,8 +680,13 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawChannel => format!(
             "Will add Calciforge webhook hook entry to openclaw.json on {} \
-             (hooks.enabled = true, hooks.token = <generated>)",
-            claw.host
+             (hooks.enabled = true, hooks.token = <generated>{})",
+            claw.host,
+            if claw.policy_endpoint.is_some() {
+                ", calciforge-policy enabled"
+            } else {
+                ""
+            }
         ),
         ClawKind::ZeroClawNative => format!(
             "Will register Calciforge as upstream router in ZeroClaw config on {}",
@@ -705,8 +710,13 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
 fn describe_apply_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawChannel => format!(
-            "would patch openclaw.json on {} to add Calciforge hook entry",
-            claw.host
+            "would patch openclaw.json on {} to add Calciforge hook entry{}",
+            claw.host,
+            if claw.policy_endpoint.is_some() {
+                " and policy plugin entry"
+            } else {
+                ""
+            }
         ),
         ClawKind::ZeroClawNative => format!(
             "would patch ZeroClaw config on {} to register Calciforge upstream",
@@ -737,8 +747,13 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
         .map_err(|e| anyhow::anyhow!("failed to read remote config: {}", e))?;
 
     let patched = match &claw.adapter {
-        ClawKind::OpenClawChannel => patch_openclaw_config(&current, &claw.name, &claw.endpoint)
-            .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
+        ClawKind::OpenClawChannel => patch_openclaw_config(
+            &current,
+            &claw.name,
+            &claw.endpoint,
+            claw.policy_endpoint.as_deref(),
+        )
+        .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
         ClawKind::ZeroClawNative => {
             // ZeroClaw uses TOML — full patching deferred; use safe stub for now.
             // TODO (follow-on): implement real TOML patching for ZeroClaw config.
@@ -778,6 +793,9 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
 /// Patch `openclaw.json` to register Calciforge as a webhook receiver.
 ///
 /// Adds/updates `hooks.entries.calciforge` with `enabled`, `url`, and `token`.
+/// When a policy endpoint is provided, also migrates legacy policy plugin
+/// names and enables `plugins.entries.calciforge-policy`.
+///
 /// Preserves all existing config fields.  Generates a fresh token using
 /// a 24-byte random hex string if none is already set.
 ///
@@ -790,6 +808,7 @@ fn patch_openclaw_config(
     current_content: &str,
     claw_name: &str,
     calciforge_endpoint: &str,
+    policy_endpoint: Option<&str>,
 ) -> Result<String> {
     // Parse the existing config (handles JSON5 / JSONC comments).
     let mut config = parse_json5_relaxed(current_content)
@@ -843,9 +862,67 @@ fn patch_openclaw_config(
         }),
     );
 
+    patch_openclaw_policy_plugin(config_obj, policy_endpoint)?;
+
     // Serialize back to pretty JSON (no comments — they were stripped on read).
     serde_json::to_string_pretty(&config)
         .map_err(|e| anyhow::anyhow!("failed to serialize patched config: {}", e))
+}
+
+fn patch_openclaw_policy_plugin(
+    config_obj: &mut serde_json::Map<String, serde_json::Value>,
+    policy_endpoint: Option<&str>,
+) -> Result<()> {
+    let policy_endpoint = policy_endpoint.map(str::trim).filter(|s| !s.is_empty());
+    if policy_endpoint.is_none() && !config_obj.contains_key("plugins") {
+        return Ok(());
+    }
+
+    let plugins = config_obj
+        .entry("plugins")
+        .or_insert_with(|| serde_json::json!({}));
+    let plugins_obj = plugins
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("plugins field is not a JSON object"))?;
+    if policy_endpoint.is_some() {
+        plugins_obj
+            .entry("enabled")
+            .or_insert(serde_json::json!(true));
+    }
+
+    let entries = plugins_obj
+        .entry("entries")
+        .or_insert_with(|| serde_json::json!({}));
+    let entries_obj = entries
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("plugins.entries is not a JSON object"))?;
+
+    for stale in [
+        "zeroclawed-policy",
+        "polyclaw-policy",
+        "polyclaw-plugin",
+        "nonzeroclaw-policy",
+    ] {
+        entries_obj.remove(stale);
+    }
+
+    let Some(policy_endpoint) = policy_endpoint else {
+        return Ok(());
+    };
+
+    entries_obj.insert(
+        "calciforge-policy".to_string(),
+        serde_json::json!({
+            "enabled": true,
+            "config": {
+                "clashdEndpoint": policy_endpoint,
+                "timeoutMs": 500,
+                "fallbackOnError": "deny",
+            },
+        }),
+    );
+
+    Ok(())
 }
 
 /// Generate a random 48-char hex token suitable for use as a webhook secret.
@@ -918,6 +995,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
+            policy_endpoint: None,
         };
 
         let ssh = MockSshClient::new();
@@ -958,6 +1036,7 @@ mod tests {
             host: "llm.internal".into(),
             ssh_key: None,
             endpoint: "http://llm.internal/v1".into(),
+            policy_endpoint: None,
         };
         let ssh = MockSshClient::new();
         let health = MockHealthChecker::new();
@@ -1090,6 +1169,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
+            policy_endpoint: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1131,6 +1211,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
+            policy_endpoint: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1160,6 +1241,7 @@ mod tests {
             host: "user@unreachable".into(),
             ssh_key: None,
             endpoint: "http://unreachable:18789".into(),
+            policy_endpoint: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1187,6 +1269,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
+            policy_endpoint: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1315,8 +1398,9 @@ mod tests {
     #[test]
     fn patch_openclaw_config_adds_hook_entry() {
         let input = r#"{"version": "2026.3.13"}"#;
-        let patched = patch_openclaw_config(input, "calciforge", "http://calciforge.host/hook")
-            .expect("patch should succeed");
+        let patched =
+            patch_openclaw_config(input, "calciforge", "http://calciforge.host/hook", None)
+                .expect("patch should succeed");
 
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         let entry = &v["hooks"]["entries"]["calciforge"];
@@ -1335,8 +1419,8 @@ mod tests {
         // Actually or_insert only inserts if absent, so false stays. That's intentional:
         // we don't forcibly override the user's enabled: false — we just add the entry.
         // The user can re-enable manually. Let's verify the entry is still added.
-        let patched =
-            patch_openclaw_config(input, "calciforge", "http://pc/hook").expect("should patch");
+        let patched = patch_openclaw_config(input, "calciforge", "http://pc/hook", None)
+            .expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         assert_eq!(v["hooks"]["entries"]["calciforge"]["enabled"], true);
     }
@@ -1345,8 +1429,8 @@ mod tests {
     #[test]
     fn patch_openclaw_config_preserves_existing_token() {
         let input = r#"{"hooks": {"enabled": true, "entries": {"calciforge": {"enabled": true, "url": "old", "token": "existing-tok"}}}}"#;
-        let patched =
-            patch_openclaw_config(input, "calciforge", "http://new/hook").expect("should patch");
+        let patched = patch_openclaw_config(input, "calciforge", "http://new/hook", None)
+            .expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         // Token preserved; URL updated.
         assert_eq!(v["hooks"]["entries"]["calciforge"]["token"], "existing-tok");
@@ -1359,8 +1443,46 @@ mod tests {
     /// patch_openclaw_config fails gracefully on invalid JSON.
     #[test]
     fn patch_openclaw_config_invalid_json_returns_error() {
-        let result = patch_openclaw_config("{ not valid json", "calciforge", "http://pc/hook");
+        let result =
+            patch_openclaw_config("{ not valid json", "calciforge", "http://pc/hook", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn patch_openclaw_config_migrates_policy_plugin_when_endpoint_set() {
+        let input = r#"{
+          "plugins": {
+            "entries": {
+              "zeroclawed-policy": {
+                "enabled": true,
+                "config": {"clashdEndpoint": "http://old.invalid/evaluate"}
+              },
+              "kimi": {"enabled": true}
+            }
+          }
+        }"#;
+
+        let patched = patch_openclaw_config(
+            input,
+            "custodian",
+            "http://calciforge.internal/hooks/calciforge",
+            Some("http://clashd.internal:9001/evaluate"),
+        )
+        .expect("patch succeeds");
+        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
+
+        let entries = &v["plugins"]["entries"];
+        assert!(entries["zeroclawed-policy"].is_null());
+        assert_eq!(entries["kimi"]["enabled"], true);
+        assert_eq!(entries["calciforge-policy"]["enabled"], true);
+        assert_eq!(
+            entries["calciforge-policy"]["config"]["clashdEndpoint"],
+            "http://clashd.internal:9001/evaluate"
+        );
+        assert_eq!(
+            entries["calciforge-policy"]["config"]["fallbackOnError"],
+            "deny"
+        );
     }
 
     /// patch_zeroclaw_config_stub appends [calciforge] section.
@@ -1394,6 +1516,7 @@ mod tests {
             host: "user@host".into(),
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://calciforge.host:18799/webhook".into(),
+            policy_endpoint: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1434,7 +1557,7 @@ mod tests {
         let original = r#"{"version": "2026.3.13", "gateway": {"port": 18789}}"#;
         let endpoint = "http://calciforge.internal:18799/hooks/calciforge";
         let patched =
-            patch_openclaw_config(original, "calciforge", endpoint).expect("patch succeeds");
+            patch_openclaw_config(original, "calciforge", endpoint, None).expect("patch succeeds");
 
         // Must parse as valid JSON.
         let v: serde_json::Value =
@@ -1469,6 +1592,7 @@ mod tests {
             host: "h".into(),
             ssh_key: None,
             endpoint: "http://h".into(),
+            policy_endpoint: None,
         };
         assert_eq!(remote_config_path(&claw), "~/.openclaw/openclaw.json");
     }
@@ -1481,6 +1605,7 @@ mod tests {
             host: "h".into(),
             ssh_key: None,
             endpoint: "http://h".into(),
+            policy_endpoint: None,
         };
         assert_eq!(remote_config_path(&claw), "~/.config/zeroclaw/config.toml");
     }

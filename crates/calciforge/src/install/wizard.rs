@@ -271,6 +271,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
             host,
             ssh_key,
             endpoint,
+            policy_endpoint: None,
         });
 
         let add_another = Confirm::new()
@@ -609,6 +610,7 @@ mod tests {
                     host: "user@10.0.0.20".into(),
                     ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
                     endpoint: "http://10.0.0.20:18799".into(),
+                    policy_endpoint: None,
                 },
                 ClawTarget {
                     name: "openai".into(),
@@ -618,6 +620,7 @@ mod tests {
                     host: String::new(),
                     ssh_key: None,
                     endpoint: "http://llm/v1".into(),
+                    policy_endpoint: None,
                 },
             ],
         };
