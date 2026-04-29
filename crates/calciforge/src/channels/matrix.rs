@@ -309,18 +309,39 @@ async fn send_matrix_message(
         "msgtype": "m.text",
         "body": body,
     });
-    let resp = http
-        .put(&url)
-        .header("Authorization", auth_header)
-        .json(&payload)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
+
+    const MAX_RETRIES: u32 = 4;
+    let mut attempt = 0u32;
+    loop {
+        let resp = http
+            .put(&url)
+            .header("Authorization", auth_header)
+            .json(&payload)
+            .send()
+            .await?;
         let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        // Respect Synapse rate-limit: parse retry_after_ms and wait.
+        if status.as_u16() == 429 && attempt < MAX_RETRIES {
+            let body_text = resp.text().await.unwrap_or_default();
+            let retry_ms: u64 = serde_json::from_str::<serde_json::Value>(&body_text)
+                .ok()
+                .and_then(|v| v["retry_after_ms"].as_u64())
+                .unwrap_or(1000);
+            tracing::debug!(
+                attempt,
+                retry_ms,
+                "Matrix send rate-limited (429); retrying"
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(retry_ms + 50)).await;
+            attempt += 1;
+            continue;
+        }
         let err = resp.text().await.unwrap_or_default();
         anyhow::bail!("Matrix send failed ({status}): {err}");
     }
-    Ok(())
 }
 
 async fn join_matrix_room(

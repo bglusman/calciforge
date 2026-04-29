@@ -544,6 +544,9 @@ the live schema in CI):
 - [Signal](channels/signal) — webhook via ZeroClaw/OpenClaw gateway
 - [WhatsApp](channels/whatsapp) — webhook via ZeroClaw/OpenClaw gateway
 
+Agent backends, identities, and routing rules are documented in the
+[Agents, Identities, and Routing](agents) guide.
+
 ```toml
 # /etc/calciforge/config.toml — channel configuration
 [[channels]]

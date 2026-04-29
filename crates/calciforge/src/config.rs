@@ -1729,4 +1729,33 @@ allowed_numbers = ["+15555550001"]
             );
         }
     }
+
+    fn is_agent_doc_block(block: &str) -> bool {
+        block.contains("[[agents]]")
+            || block.contains("[[identities]]")
+            || block.contains("[[routing]]")
+            || block.contains("[calciforge]")
+    }
+
+    fn parse_agent_doc_block(block: &str) -> CalciforgeConfig {
+        let input = if block.contains("[calciforge]") {
+            block.to_string()
+        } else {
+            format!("[calciforge]\nversion = 2\n\n{block}")
+        };
+        toml::from_str(&input).unwrap_or_else(|e| {
+            panic!("agents.md config block failed to parse:\n{block}\nerror: {e}")
+        })
+    }
+
+    #[test]
+    fn test_agent_docs_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/agents.md");
+        for block in extract_toml_blocks(doc)
+            .into_iter()
+            .filter(|b| is_agent_doc_block(b))
+        {
+            parse_agent_doc_block(&block);
+        }
+    }
 }
