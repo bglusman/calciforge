@@ -136,6 +136,11 @@ env = { "LLM_BACKEND" = "openai_compatible", "LLM_MODEL" = "kimi-k2.5" }
 
 `env` (optional) — extra environment variables passed to the subprocess.
 
+**Security note:** `{message}` in `args` places user content in the process
+argv, which is visible in `ps` output and `/proc/<pid>/cmdline` on multi-user
+systems. If the message may contain secret values, use a CLI that reads from
+stdin instead and pass the message via stdin rather than argv.
+
 ### `kind = "acp"`
 
 Persistent-session adapter for ACP-compliant agents (e.g. `claude --acp`,
@@ -255,7 +260,7 @@ allowlist of agents they may switch to.
 |---|---|---|---|
 | `identity` | yes | — | Must match an `id` in `[[identities]]` |
 | `default_agent` | yes | — | Agent dispatched when no `!switch` is active |
-| `allowed_agents` | no | `[]` | Agents the identity may `!switch` to; empty = no restriction for admins |
+| `allowed_agents` | no | `[]` | Agents the identity may `!switch` to; empty = no restriction (any configured agent, regardless of role) |
 
 ```toml
 [[routing]]
@@ -270,7 +275,8 @@ allowed_agents = ["librarian"]
 ```
 
 When `allowed_agents` is empty, the identity can switch to any configured
-agent. Restrict it explicitly for non-admin users.
+agent — there is no role-based check. Set it explicitly for every identity
+that should not have unrestricted agent access.
 
 ---
 

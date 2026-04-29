@@ -553,7 +553,6 @@ Agent backends, identities, and routing rules are documented in the
 kind = "telegram"
 enabled = true
 bot_token_file = "/etc/calciforge/secrets/telegram-bot-token"
-allowed_users = ["7000000001", "7000000002"]
 
 [[channels]]
 kind = "matrix"
