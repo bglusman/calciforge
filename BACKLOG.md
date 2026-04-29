@@ -9,9 +9,9 @@
 - [ ] Test end-to-end: Telegram → calciforge → claw-code → security proxy → provider
 - [ ] Document claw-code integration in `docs/claw-code-setup.md`
 
-### ZeroClaw (zeroclawlabs) Integration  
-- [ ] Install zeroclawlabs on 210 via deploy script (`--with-zeroclaw`)
-- [ ] Configure zeroclawlabs gateway URL to use Calciforge security proxy
+### ZeroClaw Integration
+- [ ] Install zeroclaw on 210 via deploy script (`--with-zeroclaw`)
+- [ ] Configure zeroclaw gateway URL to use Calciforge security proxy
 - [ ] Create wrapper script: `zeroclaw-wrapped` → routes through Calciforge security proxy
 - [ ] Test: Telegram → calciforge → zeroclaw → security proxy → provider
 - [ ] Document zeroclaw integration
@@ -91,10 +91,10 @@
 - [x] Remove vendored zeroclaw crate (use upstream)
 - [x] Remove robot-kit, aardvark-sys (use upstream)
 - [x] Remove local clash (use crates.io)
-- [x] Update deps: zeroclawlabs 0.6.8, clash 0.6.2
+- [x] Update deps: zeroclaw 0.6.8, clash 0.6.2
 - [x] Sanitize deploy scripts (move to infra/, gitignore)
 - [x] Git history filter to remove secrets/artifacts
-- [x] CI cleanup (remove zeroclaw from matrix)
+- [x] CI cleanup (remove zeroclaw from CI matrix)
 
 ---
 
