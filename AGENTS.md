@@ -73,6 +73,37 @@ bash scripts/install-git-hooks.sh   # one-time
 
 Mixed: older crates on `2021`, newer on `2024`. Known and tracked. Don't bump in a PR that isn't explicitly about edition migration.
 
+## Documentation standard for channels (and future subsystems)
+
+Channel setup guides live in `docs/channels/<channel>.md` and are part of the
+public docs site ([calciforge.org/channels/…](https://calciforge.org/channels/telegram)).
+
+**Every channel doc must have:**
+- An architecture diagram (ASCII text art showing the message flow)
+- Prerequisites section (external accounts, tokens, running services)
+- A `[[channels]]` TOML config block — this is the source of truth for config examples
+- An identity/routing TOML block showing how to wire users to the channel
+- A verify/health-check step
+
+**The TOML blocks are compile-tested.** `crates/calciforge/src/config.rs` contains
+`test_channel_docs_<channel>_toml_blocks_valid` tests that load each markdown file
+via `include_str!`, extract every fenced `toml` block containing `[[channels]]`,
+and parse it against the live `CalciforgeConfig` schema. If a field is renamed or
+removed and the doc isn't updated, `cargo test -p calciforge` fails.
+
+**When adding or modifying a channel:**
+1. Update or create `docs/channels/<channel>.md` with accurate config examples
+2. Add or update the corresponding `test_channel_config_<channel>_inline` and
+   `test_channel_docs_<channel>_toml_blocks_valid` tests in `config.rs`
+3. Run `cargo test -p calciforge` to confirm all doc tests pass
+4. Update `docs/index.md` if adding a new channel
+
+**When renaming a `ChannelConfig` field:**
+1. Run `cargo test -p calciforge` — the doc-block tests will fail, naming the broken doc
+2. Fix the markdown file, re-run tests, then commit both together
+
+Do not add a new channel without a corresponding `docs/channels/<channel>.md`.
+
 ## When working on a specific area, also read
 
 - `crates/host-agent/AGENTS.md` — host-agent security model (Unix-permissions enforcement, fail-closed, mTLS CN→Unix user mapping).
