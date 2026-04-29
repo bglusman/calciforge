@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -17,15 +20,17 @@ jobs:
   fmt-and-clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry
@@ -55,13 +60,17 @@ jobs:
           - clashd
           - security-proxy
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry
@@ -79,9 +88,11 @@ jobs:
     if: always()
     steps:
       - name: Verify all crate test jobs succeeded
+        env:
+          TEST_CRATES_RESULT: ${{ needs.test-crates.result }}
         run: |
-          if [ "${{ needs.test-crates.result }}" != "success" ]; then
-            echo "One or more crate test jobs failed: ${{ needs.test-crates.result }}"
+          if [ "$TEST_CRATES_RESULT" != "success" ]; then
+            echo "One or more crate test jobs failed: $TEST_CRATES_RESULT"
             exit 1
           fi
 
@@ -92,13 +103,17 @@ jobs:
     name: Loom Concurrency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry
@@ -119,13 +134,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: [fmt-and-clippy, test]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry

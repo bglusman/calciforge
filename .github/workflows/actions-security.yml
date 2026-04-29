@@ -1,0 +1,29 @@
+name: GitHub Actions Security
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        run: python3 -m pip install --user zizmor==1.16.3
+
+      - name: Audit GitHub Actions workflows
+        run: |
+          "$HOME/.local/bin/zizmor" --offline --format=github .
