@@ -1552,9 +1552,10 @@ weight = 20
     //      syntactically valid and matches the live ChannelConfig schema.
     //
     //   2. Loads the markdown file via include_str! and scans every fenced
-    //      ```toml block, wrapping each in a minimal CalciforgeConfig envelope
-    //      and parsing it. If any code block in the doc drifts out of sync
-    //      with the schema, cargo test catches it here.
+    //      ```toml block that contains [[channels]], wrapping each in a
+    //      minimal CalciforgeConfig envelope and parsing it. If any
+    //      [[channels]] block in the doc drifts out of sync with the schema,
+    //      cargo test catches it here.
     //
     // When you add or rename a ChannelConfig field, run `cargo test -p calciforge`
     // and fix any failures in these tests before updating the docs.
@@ -1633,7 +1634,10 @@ allowed_users = ["@operator:example.com"]
             cfg.channels[0].homeserver.as_deref(),
             Some("https://matrix.example.com")
         );
-        assert_eq!(cfg.channels[0].allowed_users, ["@operator:example.com"]);
+        assert_eq!(
+            cfg.channels[0].allowed_users,
+            vec!["@operator:example.com".to_string()]
+        );
     }
 
     #[test]
@@ -1657,7 +1661,10 @@ allowed_numbers = ["+15555550001"]
             cfg.channels[0].webhook_listen.as_deref(),
             Some("0.0.0.0:18796")
         );
-        assert_eq!(cfg.channels[0].allowed_numbers, ["+15555550001"]);
+        assert_eq!(
+            cfg.channels[0].allowed_numbers,
+            vec!["+15555550001".to_string()]
+        );
     }
 
     #[test]
