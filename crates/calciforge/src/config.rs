@@ -1772,10 +1772,15 @@ allowed_numbers = ["+15555550001"]
     #[test]
     fn test_agent_docs_toml_blocks_valid() {
         let doc = include_str!("../../../docs/agents.md");
-        for block in extract_toml_blocks(doc)
+        let blocks: Vec<_> = extract_toml_blocks(doc)
             .into_iter()
             .filter(|b| is_agent_doc_block(b))
-        {
+            .collect();
+        assert!(
+            !blocks.is_empty(),
+            "no [[agents]]/[[identities]]/[[routing]] TOML blocks found in agents.md"
+        );
+        for block in blocks {
             parse_agent_doc_block(&block);
         }
     }
