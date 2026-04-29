@@ -25,4 +25,5 @@ jobs:
         run: python3 -m pip install --user zizmor==1.16.3
 
       - name: Audit GitHub Actions workflows
-        run: "$HOME/.local/bin/zizmor --offline --format=github ."
+        run: |
+          "$HOME/.local/bin/zizmor" --offline --format=github .
