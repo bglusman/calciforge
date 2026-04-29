@@ -69,6 +69,11 @@ if [[ "$(id -u)" != "0" ]]; then
     exit 10
 fi
 
+if [[ -e /etc/pve/.version || -d /etc/pve/nodes ]]; then
+    echo "refusing to deploy Calciforge directly to a Proxmox host node; target a VM/LXC guest instead" >&2
+    exit 9
+fi
+
 mkdir -p "$install_dir/bin" "$config_dir"
 for dir in "$install_dir/bin" "$config_dir" /etc/systemd/system; do
     if [[ ! -d "$dir" ]]; then

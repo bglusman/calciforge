@@ -274,6 +274,10 @@ hdr()  { echo -e "\n${CYAN}━━ $* ━━${NC}"; }
 
 agent_enabled() { [[ ",$AGENTS," == *",$1,"* ]]; }
 
+if [[ "$NODES_ONLY" != "true" ]] && [[ -e /etc/pve/.version || -d /etc/pve/nodes ]]; then
+    die "refusing to install Calciforge/OpenClaw directly on a Proxmox host node; target a VM/LXC guest instead"
+fi
+
 run_build() {
     local label="$1"
     shift
@@ -1367,6 +1371,11 @@ REMOTE_FNOX
             "$name" "$os" "$services" "$install_dir" "$config_dir" <<'REMOTE_PREFLIGHT'
 set -euo pipefail
 name="$1"; os="$2"; services="$3"; install_dir="$4"; config_dir="$5"
+
+if [[ -e /etc/pve/.version || -d /etc/pve/nodes ]]; then
+    echo "refusing to deploy Calciforge services directly to Proxmox host node '$name'; target a VM/LXC guest instead" >&2
+    exit 9
+fi
 
 if [[ "$os" == "linux" && "$(id -u)" != "0" ]]; then
     echo "linux node '$name' must be installed by root for systemd units and /usr/local/bin writes; rerun with user=root or install via a root-capable SSH target" >&2

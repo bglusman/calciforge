@@ -42,7 +42,7 @@ use super::{
         VersionCompatibility,
     },
     ssh::{
-        detect_openclaw_version, detect_zeroclaw_version, test_connectivity,
+        detect_openclaw_version, detect_zeroclaw_version, test_agent_target_connectivity,
         test_remote_config_access, MockSshClient, RealSshClient, SshClient,
     },
 };
@@ -385,11 +385,14 @@ async fn install_claw(
 
 fn run_ssh_connectivity(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
     let key = claw.ssh_key.as_deref();
-    match test_connectivity(deps.ssh.as_ref(), &claw.host, key) {
+    match test_agent_target_connectivity(deps.ssh.as_ref(), &claw.host, key) {
         Ok(()) => StepResult {
             step: InstallStep::SshConnectivity,
             outcome: StepOutcome::Ok {
-                _detail: format!("connected to {}", claw.host),
+                _detail: format!(
+                    "connected to {} and confirmed non-Proxmox target",
+                    claw.host
+                ),
             },
         },
         Err(e) => {

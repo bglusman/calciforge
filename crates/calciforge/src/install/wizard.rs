@@ -31,7 +31,7 @@ use super::{
     executor::{run_install_with_deps, ExecutorDeps, StepOutcome},
     health::{health_check_claw, HttpHealthChecker},
     model::{CalciforgeTarget, ClawKind, ClawTarget, InstallTarget, WebhookFormat},
-    ssh::{test_connectivity, RealSshClient},
+    ssh::{test_agent_target_connectivity, RealSshClient},
 };
 
 // ---------------------------------------------------------------------------
@@ -401,7 +401,7 @@ async fn test_connections(target: &InstallTarget) -> bool {
         print!("  Testing '{}' ...", claw.name);
 
         if claw.needs_ssh_config() {
-            match test_connectivity(&ssh, &claw.host, claw.ssh_key.as_deref()) {
+            match test_agent_target_connectivity(&ssh, &claw.host, claw.ssh_key.as_deref()) {
                 Ok(()) => print!(" {} SSH", style("✓").green()),
                 Err(e) => {
                     print!(" {} SSH ({})", style("✗").red(), e);

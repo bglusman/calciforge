@@ -359,6 +359,57 @@ pub fn test_connectivity(client: &dyn SshClient, host: &str, key: Option<&Path>)
     Ok(())
 }
 
+/// Test SSH connectivity and ensure the target is a guest/workload host, not
+/// a Proxmox bare-metal node.
+///
+/// Operators may SSH to a Proxmox node as a control plane for `pct exec`/`qm`,
+/// but remote agent install targets must be the VM/LXC guest itself. This
+/// preflight prevents accidental agent installs on virtualization hosts.
+pub fn test_agent_target_connectivity(
+    client: &dyn SshClient,
+    host: &str,
+    key: Option<&Path>,
+) -> Result<()> {
+    let out = client
+        .run(
+            host,
+            key,
+            "set -eu; if test -e /etc/pve/.version || test -d /etc/pve/nodes; then echo CALCIFORGE_PROXMOX_HOST; exit 43; fi; echo OK",
+        )
+        .with_context(|| format!("agent target connectivity preflight to '{host}' failed"))?;
+
+    if !out.success {
+        let stdout = out.stdout.trim();
+        if stdout
+            .split_whitespace()
+            .any(|token| token == "CALCIFORGE_PROXMOX_HOST")
+        {
+            bail!(
+                "refusing to configure '{}' directly because it is a Proxmox host node; target a VM/LXC guest instead, or use an explicit Proxmox guest-control install path",
+                host
+            );
+        }
+        bail!(
+            "agent target connectivity preflight to '{}' failed (exit {}): {}",
+            host,
+            out.exit_code,
+            out.stderr.trim()
+        );
+    }
+
+    let stdout_trimmed = out.stdout.trim();
+    let has_ok = stdout_trimmed.split_whitespace().any(|token| token == "OK");
+    if !has_ok {
+        bail!(
+            "agent target connectivity preflight to '{}' succeeded but unexpected stdout: {:?}",
+            host,
+            stdout_trimmed
+        );
+    }
+
+    Ok(())
+}
+
 /// Verify that the installer can read and rewrite a remote config path.
 ///
 /// This is deliberately separate from basic SSH connectivity: successful login
@@ -585,6 +636,32 @@ mod tests {
         client.push_success("NOTOK");
         let result = test_connectivity(&client, "user@host", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_target_connectivity_rejects_proxmox_host() {
+        let client = MockSshClient::new();
+        client.push_response(SshOutput {
+            stdout: "CALCIFORGE_PROXMOX_HOST\n".to_string(),
+            stderr: String::new(),
+            exit_code: 43,
+            success: false,
+        });
+
+        let result = test_agent_target_connectivity(&client, "root@proxmox", None);
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("Proxmox host node"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_agent_target_connectivity_accepts_guest() {
+        let client = MockSshClient::new();
+        client.push_success("OK\n");
+
+        test_agent_target_connectivity(&client, "root@guest", None).unwrap();
+        let calls = client.recorded_calls();
+        assert!(calls[0].command.contains("/etc/pve/.version"));
     }
 
     #[test]
