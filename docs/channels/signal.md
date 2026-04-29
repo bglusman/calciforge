@@ -5,24 +5,45 @@ title: Signal Channel Setup
 
 # Signal Channel
 
-Calciforge receives Signal messages via a **webhook** posted by a running
-[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) or OpenClaw instance that owns
-the Signal session. Replies are sent back through the same gateway.
+Calciforge's Signal channel is a **webhook receiver**. It accepts incoming
+messages from any compatible Signal gateway and sends replies back through the
+gateway's outbound API. Calciforge does not own the Signal session itself.
+
+The contract is the wire format, not a specific product:
+
+- **Inbound:** the gateway POSTs to `/webhooks/signal` in the format documented
+  under [Webhook payload format](#webhook-payload-format) below.
+- **Outbound:** Calciforge POSTs replies to `{gateway}/tools/invoke` with the
+  body shape under [Reply API](#reply-api).
+
+Any gateway implementing those endpoints will work. The known-working
+implementation is [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) with
+its `signal-web` feature, which is what this guide configures.
+
+> **Future work:** embedding [`zeroclawlabs::SignalChannel`](https://docs.rs/zeroclawlabs)
+> directly in Calciforge (as a Rust library) and pointing it at
+> [`signal-cli-rest-api`](https://github.com/bbernhard/signal-cli-rest-api)
+> would drop the ZeroClaw daemon from the architecture. `signal-cli-rest-api`
+> would still be required (libsignal has no daemon-free Rust client today),
+> but it is a generic Signal automation tool — not a Calciforge-specific or
+> agent-specific service. Tracked in the project backlog.
 
 ## Architecture
 
 ```
-Signal user  ──→  ZeroClaw (Signal session host)  ──→  POST /webhooks/signal  ──→  Calciforge
+Signal user  ──→  Signal gateway (e.g. ZeroClaw)  ──→  POST /webhooks/signal  ──→  Calciforge
                                                                                           │
-                                                              identity resolution          │
-                                                              agent dispatch               │
+                                                              identity resolution         │
+                                                              agent dispatch              │
                                                                                           ↓
-Signal user  ←──  ZeroClaw (Signal session host)  ←──  POST /tools/invoke  ←──  Calciforge reply
+Signal user  ←──  Signal gateway (e.g. ZeroClaw)  ←──  POST /tools/invoke  ←──  Calciforge reply
 ```
 
 ## Prerequisites
 
-- A running ZeroClaw or OpenClaw instance with an active Signal session and its auth token
+- A Signal gateway that implements the wire protocol above and has an active
+  Signal session. ZeroClaw with `signal-web` enabled is the reference
+  implementation; any compatible alternative is fine.
 
 ## Step 1: Channel config
 
@@ -33,7 +54,7 @@ Add to `~/.calciforge/config.toml`:
 kind = "signal"
 enabled = true
 
-# ZeroClaw / OpenClaw gateway that owns the Signal session.
+# ZeroClaw gateway that owns the Signal session.
 # Calciforge sends replies by POSTing to {zeroclaw_endpoint}/tools/invoke.
 # Use 127.0.0.1 if co-located; use the host IP if running on a separate machine.
 zeroclaw_endpoint = "http://127.0.0.1:18789"
@@ -55,7 +76,7 @@ allowed_numbers = ["+15555550001"]
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `zeroclaw_endpoint` | yes | — | URL of the ZeroClaw/OpenClaw gateway |
+| `zeroclaw_endpoint` | yes | — | URL of the ZeroClaw gateway |
 | `zeroclaw_auth_token` | yes | — | Bearer token for the gateway |
 | `webhook_listen` | no | `0.0.0.0:18796` | Address Calciforge listens on for incoming Signal webhooks |
 | `webhook_path` | no | `/webhooks/signal` | URL path for incoming webhooks |

@@ -5,24 +5,43 @@ title: WhatsApp Channel Setup
 
 # WhatsApp Channel
 
-Calciforge receives WhatsApp messages via a **webhook** posted by a running
-[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) or OpenClaw instance that owns
-the WhatsApp Web session. Replies are sent back through the same gateway.
+Calciforge's WhatsApp channel is a **webhook receiver**. It accepts incoming
+messages from any compatible WhatsApp gateway and sends replies back through the
+gateway's outbound API. Calciforge does not own the WhatsApp Web session itself.
+
+The contract is the wire format, not a specific product:
+
+- **Inbound:** the gateway POSTs to `/webhooks/whatsapp` in the WhatsApp Cloud API
+  webhook payload format (see [Webhook payload format](#webhook-payload-format) below).
+- **Outbound:** Calciforge POSTs replies to `{gateway}/tools/invoke` with the body
+  shape documented under [Reply API](#reply-api).
+
+Any gateway that implements those two endpoints will work. The known-working
+implementation is [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)'s
+`whatsapp-web` feature, which is what this guide configures. If you're running
+a different gateway, point Calciforge at it and adjust the auth token accordingly.
+
+> **Future work:** embedding the WhatsApp protocol directly into Calciforge (so
+> no external gateway is required) is tracked in the project backlog. It would
+> use `zeroclawlabs::WhatsAppWebChannel` (which wraps `whatsmeow-rs`) as a Rust
+> library — distinct from running ZeroClaw as a separate daemon.
 
 ## Architecture
 
 ```
-WA user  ──→  ZeroClaw (WhatsApp Web session host)  ──→  POST /webhooks/whatsapp  ──→  Calciforge
-                                                                                              │
-                                                              identity resolution              │
-                                                              agent dispatch                   │
-                                                                                              ↓
-WA user  ←──  ZeroClaw (WhatsApp Web session host)  ←──  POST /tools/invoke  ←──  Calciforge reply
+WA user  ──→  WhatsApp gateway (e.g. ZeroClaw)  ──→  POST /webhooks/whatsapp  ──→  Calciforge
+                                                                                          │
+                                                              identity resolution         │
+                                                              agent dispatch              │
+                                                                                          ↓
+WA user  ←──  WhatsApp gateway (e.g. ZeroClaw)  ←──  POST /tools/invoke  ←──  Calciforge reply
 ```
 
 ## Prerequisites
 
-- A running ZeroClaw or OpenClaw instance with an active WhatsApp Web session and its auth token
+- A WhatsApp gateway that implements the wire protocol described above and has
+  an active WhatsApp Web session. ZeroClaw with `whatsapp-web` enabled is the
+  reference implementation; any compatible alternative is fine.
 
 ## Step 1: Channel config
 
@@ -33,7 +52,7 @@ Add to `~/.calciforge/config.toml`:
 kind = "whatsapp"
 enabled = true
 
-# ZeroClaw / OpenClaw gateway that owns the WhatsApp Web session.
+# ZeroClaw gateway that owns the WhatsApp Web session.
 # Calciforge sends replies by POSTing to {zeroclaw_endpoint}/tools/invoke.
 # Use 127.0.0.1 if co-located; use the host IP if running on a separate machine.
 zeroclaw_endpoint = "http://127.0.0.1:18789"
@@ -55,7 +74,7 @@ allowed_numbers = ["+15555550001"]
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `zeroclaw_endpoint` | yes | — | URL of the ZeroClaw/OpenClaw gateway |
+| `zeroclaw_endpoint` | yes | — | URL of the ZeroClaw gateway |
 | `zeroclaw_auth_token` | yes | — | Bearer token for the gateway |
 | `webhook_listen` | no | `0.0.0.0:18795` | Address Calciforge listens on for incoming WhatsApp webhooks |
 | `webhook_path` | no | `/webhooks/whatsapp` | URL path for incoming webhooks |
