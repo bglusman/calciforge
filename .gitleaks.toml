@@ -127,7 +127,4 @@ regexes = [
     '''10\.0\.0\.20''',
     '''10\.0\.0\.40''',
     '''192\.168\.1\.49''',
-    # GoatCounter analytics endpoint — intentionally public, visible in
-    # page source to every visitor of calciforge.org.
-    '''stats\.calciforge\.org''',
 ]
