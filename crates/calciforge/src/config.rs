@@ -1687,7 +1687,10 @@ allowed_numbers = ["+15555550001"]
         let doc = include_str!("../../../docs/channels/telegram.md");
         for block in channel_blocks_from_doc(doc) {
             let cfg = parse_channel_block(&block);
-            assert_eq!(cfg.channels[0].kind, "telegram", "unexpected kind in block:\n{block}");
+            assert_eq!(
+                cfg.channels[0].kind, "telegram",
+                "unexpected kind in block:\n{block}"
+            );
         }
     }
 
@@ -1696,7 +1699,10 @@ allowed_numbers = ["+15555550001"]
         let doc = include_str!("../../../docs/channels/matrix.md");
         for block in channel_blocks_from_doc(doc) {
             let cfg = parse_channel_block(&block);
-            assert_eq!(cfg.channels[0].kind, "matrix", "unexpected kind in block:\n{block}");
+            assert_eq!(
+                cfg.channels[0].kind, "matrix",
+                "unexpected kind in block:\n{block}"
+            );
         }
     }
 
@@ -1705,7 +1711,10 @@ allowed_numbers = ["+15555550001"]
         let doc = include_str!("../../../docs/channels/signal.md");
         for block in channel_blocks_from_doc(doc) {
             let cfg = parse_channel_block(&block);
-            assert_eq!(cfg.channels[0].kind, "signal", "unexpected kind in block:\n{block}");
+            assert_eq!(
+                cfg.channels[0].kind, "signal",
+                "unexpected kind in block:\n{block}"
+            );
         }
     }
 
@@ -1714,7 +1723,10 @@ allowed_numbers = ["+15555550001"]
         let doc = include_str!("../../../docs/channels/whatsapp.md");
         for block in channel_blocks_from_doc(doc) {
             let cfg = parse_channel_block(&block);
-            assert_eq!(cfg.channels[0].kind, "whatsapp", "unexpected kind in block:\n{block}");
+            assert_eq!(
+                cfg.channels[0].kind, "whatsapp",
+                "unexpected kind in block:\n{block}"
+            );
         }
     }
 }
