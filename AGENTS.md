@@ -73,36 +73,107 @@ bash scripts/install-git-hooks.sh   # one-time
 
 Mixed: older crates on `2021`, newer on `2024`. Known and tracked. Don't bump in a PR that isn't explicitly about edition migration.
 
-## Documentation standard for channels (and future subsystems)
+## Documentation standard (gold standard — applies to all crates)
 
-Channel setup guides live in `docs/channels/<channel>.md` and are part of the
-public docs site ([calciforge.org/channels/…](https://calciforge.org/channels/telegram)).
+**The rule:** every user-facing config section, public API, and user-facing feature must
+have documentation with examples that are verified by the test suite. Docs that aren't
+tested go stale silently; tested docs can't.
 
-**Every channel doc must have:**
-- An architecture diagram (ASCII text art showing the message flow)
-- Prerequisites section (external accounts, tokens, running services)
-- A `[[channels]]` TOML config block — this is the source of truth for config examples
-- An identity/routing TOML block showing how to wire users to the channel
-- A verify/health-check step
+Channels (`docs/channels/`) were the first area to reach this standard and serve as the
+reference implementation. All other config sections and crates follow the same pattern.
 
-**The TOML blocks are compile-tested.** `crates/calciforge/src/config.rs` contains
-`test_channel_docs_<channel>_toml_blocks_valid` tests that load each markdown file
-via `include_str!`, extract every fenced `toml` block containing `[[channels]]`,
-and parse it against the live `CalciforgeConfig` schema. If a field is renamed or
-removed and the doc isn't updated, `cargo test -p calciforge` fails.
+### What needs docs
 
-**When adding or modifying a channel:**
-1. Update or create `docs/channels/<channel>.md` with accurate config examples
-2. Add or update the corresponding `test_channel_config_<channel>_inline` and
-   `test_channel_docs_<channel>_toml_blocks_valid` tests in `config.rs`
-3. Run `cargo test -p calciforge` to confirm all doc tests pass
-4. Update `docs/index.md` if adding a new channel
+- **Every `pub struct` in `config.rs`** — all fields documented; a TOML example that
+  parses against the live schema and is tested
+- **Every user-facing feature** — setup guide in `docs/` covering prerequisites,
+  config, identity wiring (where applicable), and a verify step
+- **Every public API in library crates** — at least one doctest per public function /
+  type showing the happy path; complex types get a full usage example
 
-**When renaming a `ChannelConfig` field:**
-1. Run `cargo test -p calciforge` — the doc-block tests will fail, naming the broken doc
-2. Fix the markdown file, re-run tests, then commit both together
+### Two testing mechanisms — use the right one for the crate type
 
-Do not add a new channel without a corresponding `docs/channels/<channel>.md`.
+**Library crates** (`secrets-client`, `adversary-detector`, `clashd`, `mcp-server`,
+`paste-server`, `security-proxy`): use native Rust **doctests** in `///` comments.
+`cargo test --doc -p <crate>` compiles and runs them. If an API changes and the
+example is wrong, the build fails.
+
+```rust
+/// Resolves a secret name to its value.
+///
+/// ```no_run
+/// # use secrets_client::SecretsClient;
+/// let client = SecretsClient::new();
+/// let value = client.resolve("MY_API_KEY")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn resolve(&self, name: &str) -> anyhow::Result<String> { ... }
+```
+
+**Binary crates** (`calciforge`, `host-agent`): use **`include_str!` + unit tests**
+in the relevant source file's `#[cfg(test)]` block. The test loads the markdown doc,
+extracts fenced TOML blocks, and parses them against the live config schema.
+
+```rust
+#[test]
+fn test_agent_docs_toml_blocks_valid() {
+    let doc = include_str!("../../../docs/agents.md");
+    for block in doc_blocks_with(doc, "[[agents]]") {
+        parse_as_config(&block);  // panics with file + block on failure
+    }
+}
+```
+
+The channel tests in `config.rs` (`test_channel_docs_*_toml_blocks_valid`) are the
+canonical example — copy that pattern for each new config section.
+
+### Doc file locations
+
+| What | Location | Tested by |
+|---|---|---|
+| Channel setup guides | `docs/channels/<channel>.md` | `config.rs` unit tests |
+| Agent config | `docs/agents.md` | `config.rs` unit tests |
+| Routing / identity | `docs/routing.md` | `config.rs` unit tests |
+| Model gateway (alloys, cascades, dispatchers, exec models) | `docs/model-gateway.md` | `config.rs` unit tests |
+| Security / proxy config | `docs/security-gateway.md` | `config.rs` unit tests |
+| Library crate APIs | `///` doc comments in source | `cargo test --doc -p <crate>` |
+| host-agent setup | `docs/host-agent.md` | `host-agent` unit tests |
+
+### Structure for setup guides in `docs/`
+
+Every setup guide covering a user-facing feature must have these sections, in order:
+
+1. **Architecture** — ASCII diagram showing data flow end to end
+2. **Prerequisites** — external accounts, tokens, running services, dependencies
+3. **Config** — TOML block(s) with every required field shown; optional fields in a table
+4. **Identity / routing** (where applicable) — how to wire a user to the feature
+5. **Verify** — commands to confirm it's working (health check, log output, smoke test)
+
+### Rules for every agent and contributor
+
+**When adding a config field to any `pub struct`:**
+1. Add a `///` doc comment to the field explaining what it does and its default
+2. Update the TOML example in the relevant `docs/` file
+3. Run `cargo test -p calciforge` — the doc-block tests will fail if the example is now
+   invalid, telling you exactly which file to fix
+4. Commit the code change and the doc update together — never in separate PRs
+
+**When adding a new config section:**
+1. Create `docs/<section>.md` with all five structure sections above
+2. Add `test_<section>_docs_toml_blocks_valid` in the relevant `#[cfg(test)]` block
+3. Link from `docs/index.md`
+
+**When adding a public function to a library crate:**
+1. Write at least one `///` doctest showing the happy path
+2. Run `cargo test --doc -p <crate>` to confirm it compiles and passes
+3. For functions with meaningful error paths, add a second doctest for the failure case
+
+**When renaming any field or function:**
+- `cargo test` will name every broken doc example
+- Fix markdown files and doctests in the same commit as the rename
+
+Do not add a new channel, config section, or public library API without corresponding
+tested documentation. A PR that adds functionality without docs should not be merged.
 
 ## When working on a specific area, also read
 
