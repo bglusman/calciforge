@@ -279,6 +279,7 @@ mod tests {
                 message: "hello",
                 sender: Some("brian"),
                 model_override: Some("override"),
+                session: None,
             })
             .await
             .unwrap();

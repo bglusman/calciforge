@@ -113,6 +113,8 @@ pub struct DispatchContext<'a> {
     /// Optional per-request model override (used by alloy routing).
     #[allow(dead_code)]
     pub model_override: Option<&'a str>,
+    /// Optional downstream session selected for session-aware adapters.
+    pub session: Option<&'a str>,
 }
 
 impl<'a> DispatchContext<'a> {
@@ -122,6 +124,7 @@ impl<'a> DispatchContext<'a> {
             message,
             sender: None,
             model_override: None,
+            session: None,
         }
     }
 }

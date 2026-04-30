@@ -24,7 +24,7 @@ and failure modes.
 
 | Agent | Calciforge path | Notes |
 |---|---|---|
-| Codex CLI | `kind = "codex-cli"` or `[[exec_models]]` | Good fit when the Unix account running Calciforge owns Codex credentials. Keep chat-facing agents conservative unless the channel is trusted. |
+| Codex CLI | `kind = "codex-cli"`, `[[exec_models]]`, or future ACP via `codex-acp` | Good fit when the Unix account running Calciforge owns Codex credentials. Zed's Apache-2.0 `codex-acp` adapter is the better reference path for richer Codex sessions because it exposes ACP features such as images, tool-call permission requests, edit review, TODO lists, slash commands, MCP server forwarding, and Codex auth methods. Keep chat-facing agents conservative unless the channel is trusted. |
 | Claude Code | `kind = "cli"` or `acpx` | Use `claude -p` for simple subscription-backed prompt execution. Use `acpx` when ACP sessions are needed. |
 | OpenClaw | `openclaw-channel` | Preferred path for richer agent runtime, skills, plugins, provider routing, and slash commands. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
 | OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |

@@ -363,6 +363,9 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
 
         let identity_id = identity.id.clone();
         let model_override = self.command_handler.active_model_for_identity(&identity_id);
+        let selected_session = self
+            .command_handler
+            .active_session_for(&identity_id, &agent_id);
         let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
         tokio::spawn(async move {
@@ -379,12 +382,13 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             let dispatch_start = std::time::Instant::now();
             match self
                 .router
-                .dispatch_message_with_sender_and_model(
+                .dispatch_message_with_sender_model_and_session(
                     &augmented,
                     &agent,
                     &self.config,
                     Some(&identity_id),
                     model_override.as_deref(),
+                    selected_session.as_deref(),
                 )
                 .await
             {

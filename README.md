@@ -183,7 +183,6 @@ bash scripts/install-git-hooks.sh
 - [Roadmap](docs/roadmap/)
 - [Staging test matrix](docs/staging-test-matrix.md)
 - [Channel secret-input deprecation note](docs/roadmap/channel-secret-input-deprecation.md)
-- [Internal research and planning notes](research/)
 
 ## License
 

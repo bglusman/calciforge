@@ -79,6 +79,10 @@
 - [ ] Explore a local web channel for desktop/LAN testing that uses the same
       identity, routing, message-envelope, artifact, and proxy policy paths as
       Telegram, Matrix, and text channels
+- [ ] Prototype a native ACP client adapter using the `agent-client-protocol`
+      Rust crate, with Zed's `codex-acp` as the first smoke target
+- [ ] Evaluate ACP orchestrators such as AgentPool, cagent, and fast-agent as
+      recipe-backed async work backends
 - [ ] Architecture decision records (ADRs)
 
 ### Observability

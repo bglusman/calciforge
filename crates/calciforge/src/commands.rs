@@ -40,6 +40,11 @@ fn active_model_state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-models.json")
 }
 
+/// Path to the active downstream session selections within `state_dir`.
+fn active_session_state_file_path_for(state_dir: &Path) -> PathBuf {
+    state_dir.join("active-agent-sessions.json")
+}
+
 /// Load persisted active-agent selections from a given state directory.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
 fn load_active_agents_from(state_dir: &Path) -> HashMap<String, String> {
@@ -54,6 +59,16 @@ fn load_active_agents_from(state_dir: &Path) -> HashMap<String, String> {
 /// Returns an empty map if the file doesn't exist or can't be parsed.
 fn load_active_models_from(state_dir: &Path) -> HashMap<String, String> {
     let path = active_model_state_file_path_for(state_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Load persisted active downstream session selections.
+/// Returns an empty map if the file doesn't exist or can't be parsed.
+fn load_active_sessions_from(state_dir: &Path) -> HashMap<String, HashMap<String, String>> {
+    let path = active_session_state_file_path_for(state_dir);
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => HashMap::new(),
@@ -82,6 +97,25 @@ fn save_active_models_to(state_dir: &Path, map: &HashMap<String, String>) {
     }
 }
 
+/// Persist the active downstream session selections to a given state directory.
+fn save_active_sessions_to(state_dir: &Path, map: &HashMap<String, HashMap<String, String>>) {
+    let path = active_session_state_file_path_for(state_dir);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+fn valid_downstream_session_name(session: &str) -> bool {
+    !session.is_empty()
+        && session.len() <= 128
+        && session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// In-memory command handler with simple counters and per-identity active-agent state.
 pub struct CommandHandler {
     start_time: Instant,
@@ -95,6 +129,9 @@ pub struct CommandHandler {
     /// Persisted to `state_dir/active-models.json` and restored into the
     /// [`AlloyManager`] once it is attached.
     active_models: Mutex<HashMap<String, String>>,
+    /// Per-identity, per-agent active downstream session selection.
+    /// Persisted to `state_dir/active-agent-sessions.json`.
+    active_sessions: Mutex<HashMap<String, HashMap<String, String>>>,
     /// Directory for persisted state files.
     /// Defaults to `~/.calciforge/state/`; overridable for tests via
     /// [`CommandHandler::with_state_dir`].
@@ -140,6 +177,13 @@ impl CommandHandler {
                 "loaded persisted active-model selections"
             );
         }
+        let active_sessions = load_active_sessions_from(&state_dir);
+        if !active_sessions.is_empty() {
+            tracing::info!(
+                sessions = ?active_sessions,
+                "loaded persisted active session selections"
+            );
+        }
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()
@@ -151,6 +195,7 @@ impl CommandHandler {
             total_latency_ms: AtomicU64::new(0),
             active_agents: Mutex::new(active_agents),
             active_models: Mutex::new(active_models),
+            active_sessions: Mutex::new(active_sessions),
             state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
@@ -234,6 +279,14 @@ impl CommandHandler {
         }
         // Fall back to the config default.
         crate::auth::default_agent_for(identity_id, &self.config)
+    }
+
+    /// Return the currently selected downstream session for an identity/agent.
+    pub fn active_session_for(&self, identity_id: &str, agent_id: &str) -> Option<String> {
+        let map = self.active_sessions.lock().unwrap();
+        map.get(identity_id)
+            .and_then(|sessions| sessions.get(agent_id))
+            .cloned()
     }
 
     /// Handle a pre-auth command (commands that do not require identity context).
@@ -771,8 +824,15 @@ impl CommandHandler {
 
                 // Check if this is an acpx agent and session was specified
                 let is_acpx = agent_cfg.map(|a| a.kind == "acpx").unwrap_or(false);
+                if is_acpx {
+                    if let Some(session) = session_arg.as_deref() {
+                        if !valid_downstream_session_name(session) {
+                            return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash.".to_string();
+                        }
+                    }
+                }
                 let session_info = if is_acpx {
-                    if let Some(session) = session_arg {
+                    if let Some(session) = session_arg.as_ref() {
                         format!(" (session: {})", session)
                     } else {
                         " (default session)".to_string()
@@ -788,6 +848,25 @@ impl CommandHandler {
                     let mut map = self.active_agents.lock().unwrap();
                     map.insert(identity_id.to_string(), agent_id.to_string());
                     save_active_agents_to(&self.state_dir, &map);
+                }
+                {
+                    let mut sessions = self.active_sessions.lock().unwrap();
+                    if let Some(session) = session_arg.as_ref().filter(|_| is_acpx) {
+                        sessions
+                            .entry(identity_id.to_string())
+                            .or_default()
+                            .insert(agent_id.to_string(), session.to_string());
+                    } else if is_acpx {
+                        let mut remove_identity = false;
+                        if let Some(identity_sessions) = sessions.get_mut(identity_id) {
+                            identity_sessions.remove(agent_id);
+                            remove_identity = identity_sessions.is_empty();
+                        }
+                        if remove_identity {
+                            sessions.remove(identity_id);
+                        }
+                    }
+                    save_active_sessions_to(&self.state_dir, &sessions);
                 }
 
                 format!(
@@ -908,11 +987,15 @@ impl CommandHandler {
 
     /// List ACPX sessions for an agent using the acpx CLI.
     async fn list_acpx_sessions(&self, agent_name: &str) -> Result<Vec<String>, String> {
+        tokio::fs::create_dir_all(crate::adapters::acpx::ACPX_SESSION_DIR)
+            .await
+            .map_err(|e| format!("Failed to create acpx session dir: {}", e))?;
+
         let output = tokio::process::Command::new("acpx")
             .arg(agent_name)
             .arg("sessions")
             .arg("list")
-            .current_dir("/tmp")
+            .current_dir(crate::adapters::acpx::ACPX_SESSION_DIR)
             .output()
             .await
             .map_err(|e| format!("Failed to run acpx: {}", e))?;
@@ -949,6 +1032,11 @@ impl CommandHandler {
             let mut map = self.active_agents.lock().unwrap();
             map.insert(identity_id.to_string(), default_agent_id.clone());
             save_active_agents_to(&self.state_dir, &map);
+        }
+        {
+            let mut sessions = self.active_sessions.lock().unwrap();
+            sessions.remove(identity_id);
+            save_active_sessions_to(&self.state_dir, &sessions);
         }
 
         format!("✅ Switched to default agent: {}", default_agent_id)
@@ -1699,6 +1787,25 @@ mod tests {
                     registry: None,
                     aliases: vec!["keeper".to_string(), "cust".to_string()],
                 },
+                AgentConfig {
+                    id: "claude-acpx".to_string(),
+                    kind: "acpx".to_string(),
+                    endpoint: String::new(),
+                    timeout_ms: Some(120000),
+                    model: None,
+                    auth_token: None,
+                    api_key: None,
+                    api_key_file: None,
+                    openclaw_agent_id: None,
+                    allow_model_override: None,
+                    reply_port: None,
+                    reply_auth_token: None,
+                    command: Some("claude".to_string()),
+                    args: None,
+                    env: None,
+                    registry: None,
+                    aliases: vec!["claude".to_string()],
+                },
             ],
             routing: vec![
                 RoutingRule {
@@ -2237,6 +2344,66 @@ mod tests {
             reply
         );
         assert_eq!(h.active_agent_for("brian"), Some("custodian".to_string()));
+    }
+
+    #[test]
+    fn test_switch_records_acpx_session_selection() {
+        let h = make_handler();
+        let reply = h.handle_switch("!switch claude-acpx backend", "brian");
+        assert!(
+            reply.contains("session: backend"),
+            "reply should identify selected session: {}",
+            reply
+        );
+        assert_eq!(h.active_agent_for("brian"), Some("claude-acpx".to_string()));
+        assert_eq!(
+            h.active_session_for("brian", "claude-acpx"),
+            Some("backend".to_string())
+        );
+    }
+
+    #[test]
+    fn test_switch_acpx_without_session_clears_prior_session() {
+        let h = make_handler();
+        h.handle_switch("!switch claude-acpx backend", "brian");
+        assert_eq!(
+            h.active_session_for("brian", "claude-acpx"),
+            Some("backend".to_string())
+        );
+
+        let reply = h.handle_switch("!switch claude-acpx", "brian");
+        assert!(
+            reply.contains("default session"),
+            "reply should show default session after clearing: {}",
+            reply
+        );
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
+    }
+
+    #[test]
+    fn test_switch_acpx_rejects_path_like_session_name() {
+        let h = make_handler();
+        let reply = h.handle_switch("!switch claude-acpx ../backend", "brian");
+        assert!(
+            reply.contains("Invalid session name"),
+            "path-like session should be rejected: {}",
+            reply
+        );
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
+    }
+
+    #[test]
+    fn test_default_clears_acpx_session_selection() {
+        let h = make_handler();
+        h.handle_switch("!switch claude-acpx backend", "brian");
+        assert_eq!(
+            h.active_session_for("brian", "claude-acpx"),
+            Some("backend".to_string())
+        );
+
+        h.handle_default("brian");
+        assert_eq!(h.active_agent_for("brian"), Some("librarian".to_string()));
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
     }
 
     #[test]

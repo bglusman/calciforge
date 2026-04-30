@@ -832,14 +832,16 @@ async fn handle_message(
     );
     let dispatch_start = std::time::Instant::now();
     let model_override = cmd_handler.active_model_for_identity(identity_id);
+    let selected_session = cmd_handler.active_session_for(identity_id, &agent_id);
 
     match router
-        .dispatch_message_with_sender_and_model(
+        .dispatch_message_with_sender_model_and_session(
             &augmented,
             &agent,
             config,
             Some(identity_id),
             model_override.as_deref(),
+            selected_session.as_deref(),
         )
         .await
     {

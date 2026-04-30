@@ -110,6 +110,18 @@ Once configured, messages routed to `claude-acpx` go directly to Claude Code. Us
 !agents               # list available agents
 ```
 
+ACPX sessions can be listed and selected from any authenticated channel:
+
+```
+!sessions claude-acpx
+!switch claude-acpx backend-review
+```
+
+When a session name is supplied, Calciforge persists that identity's selected
+session for the ACPX agent and passes it to `acpx --session <name>` on
+subsequent messages. Running `!switch claude-acpx` without a session returns
+the identity to the default ACPX session.
+
 ## Troubleshooting
 
 **`acpx exec failed: Authentication required`**

@@ -23,5 +23,5 @@ Manual candidate-adapter smoke checks live in
 Gas Town in disposable Docker containers to verify current CLI surfaces before
 turning a recipe into first-class support.
 
-Internal reviews, audit scratchpads, vendor comparisons, and session
-planning notes live under [`../research/`](../research/) instead.
+Internal reviews, audit scratchpads, vendor comparisons, and session planning
+notes should stay outside the public documentation tree.

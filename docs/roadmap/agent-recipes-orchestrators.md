@@ -31,9 +31,32 @@ three-part vocabulary:
 - Add retention and cleanup policy for artifact directories.
 - Add recipe examples for npcsh, opencode/OmO profiles, and other local agent
   CLIs after smoke-testing installed versions.
+- Evaluate Zed's Apache-2.0 ACP work as the reference implementation path for
+  richer coding-agent sessions. In particular, `codex-acp` already wraps Codex
+  CLI behind ACP with images, tool-call permission requests, edit review, TODO
+  lists, slash commands, MCP server forwarding, and Codex auth methods.
 - Add channel capability reporting so channels can say whether they prefer
   native media upload or text links.
 - Cut all chat channels over through the same outbound-message contract.
+
+## ACP Direction
+
+ACP is the most promising common protocol layer for interactive coding agents.
+Calciforge already has `kind = "acp"` and `kind = "acpx"` paths, but Zed's
+current ACP ecosystem suggests the higher-value product shape is:
+
+- treat Calciforge as an ACP client for session-aware coding agents,
+- preserve per-identity session selection across chat channels,
+- expose Calciforge-owned MCP tools for policy, artifacts, secrets, and
+  approvals,
+- route every ACP agent through the same identity, proxy, Clash policy, and
+  audit surface as other adapters,
+- use upstream ACP adapters such as `codex-acp` where they are maintained
+  separately from editor-specific UI code.
+
+That path fits both direct agents and orchestrators. Orchestrators such as
+AgentPool, cagent, or fast-agent can sit behind ACP and present one session
+surface to Calciforge while coordinating their own worker teams internally.
 
 ## Orchestrator Direction
 

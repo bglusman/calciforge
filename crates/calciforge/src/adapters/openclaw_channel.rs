@@ -493,6 +493,7 @@ mod tests {
                 message: "hello from calciforge",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await
             .expect("dispatch should succeed");
@@ -536,6 +537,7 @@ mod tests {
                 message: "route this",
                 sender: Some("renee"),
                 model_override: None,
+                session: None,
             })
             .await
             .expect("dispatch should return reply callback");
@@ -566,6 +568,7 @@ mod tests {
                 message: "first",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await
             .expect("first dispatch should start reply server");
@@ -577,6 +580,7 @@ mod tests {
                 message: "second",
                 sender: Some("renee"),
                 model_override: None,
+                session: None,
             })
             .await
             .expect("rebuilt adapter should reuse reply server/router");
@@ -603,6 +607,7 @@ mod tests {
                 message: "will not send",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await
             .expect_err("conflicting reply auth token should fail");
