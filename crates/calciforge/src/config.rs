@@ -307,11 +307,13 @@ pub struct RoutingRule {
 
 /// A channel entry (`[[channels]]`).
 ///
-/// Supports `kind = "telegram"`, `kind = "matrix"`, `kind = "whatsapp"`, and `kind = "signal"`.
+/// Supports `kind = "telegram"`, `kind = "matrix"`, `kind = "whatsapp"`, `kind = "signal"`,
+/// and `kind = "sms"` for Linq-backed iMessage/RCS/SMS.
 /// For Telegram: set `bot_token_file`.
 /// For Matrix: set `homeserver`, `access_token_file`, `room_id`, and optionally `allowed_users`.
-/// For WhatsApp: set `zeroclaw_endpoint`, `zeroclaw_auth_token`, `webhook_listen`, and `allowed_numbers`.
-/// For Signal: set `zeroclaw_endpoint`, `zeroclaw_auth_token`, `webhook_listen`, and `allowed_numbers` (same fields as WhatsApp).
+/// For WhatsApp: set `whatsapp_session_path` and `allowed_numbers`.
+/// For Signal: set `signal_cli_url`, `signal_account`, and `allowed_numbers`.
+/// For text/iMessage: set `sms_linq_api_token_file`, `sms_from_phone`, and `allowed_numbers`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelConfig {
     pub kind: String,
@@ -336,33 +338,91 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub allowed_users: Vec<String>,
 
-    // --- WhatsApp/Signal-specific fields (shared) ---
-    /// ZeroClaw / OpenClaw gateway endpoint that owns the WA Web or Signal session.
-    /// Calciforge will POST reply messages to `{zeroclaw_endpoint}/tools/invoke`.
-    /// Example: `"http://127.0.0.1:18789"` (local OpenClaw) or
-    ///          `"http://10.0.0.10:18789"` (remote Lucien/ZeroClaw instance).
+    // --- Legacy webhook fields (rejected by embedded Signal/WhatsApp channels) ---
+    /// Legacy ZeroClaw / OpenClaw gateway endpoint. Embedded Signal and
+    /// WhatsApp reject this field with a migration error.
     pub zeroclaw_endpoint: Option<String>,
 
-    /// Bearer token for the ZeroClaw / OpenClaw gateway.
+    /// Legacy bearer token for the ZeroClaw / OpenClaw gateway.
     pub zeroclaw_auth_token: Option<String>,
 
-    /// HTTP address to listen on for incoming webhook POSTs from ZeroClaw.
-    /// Defaults to `"0.0.0.0:18795"`.
+    /// Legacy webhook listen address.
     pub webhook_listen: Option<String>,
 
-    /// URL path Calciforge registers for incoming WhatsApp webhooks.
-    /// Defaults to `"/webhooks/whatsapp"`.
+    /// Legacy webhook path.
     pub webhook_path: Option<String>,
 
-    /// Optional HMAC-SHA256 secret for `X-Hub-Signature-256` webhook verification.
-    /// Leave unset to skip signature checking (not recommended for production).
+    /// Legacy webhook HMAC secret.
     pub webhook_secret: Option<String>,
 
     /// Allowed sender phone numbers in E.164 format, e.g. `["+15555550001"]`.
     /// Use `"*"` to allow any number (not recommended).
-    /// Must correspond to identity aliases with `channel = "whatsapp"` or `channel = "signal"`.
+    /// Must correspond to identity aliases with `channel = "whatsapp"`, `channel = "signal"`,
+    /// or `channel = "sms"`.
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
+
+    // --- WhatsApp-specific fields (embedded `zeroclawlabs::WhatsAppWebChannel`) ---
+    /// Path to the WhatsApp Web SQLite session database.
+    pub whatsapp_session_path: Option<String>,
+
+    /// Optional phone number for pairing-code linking, without punctuation.
+    pub whatsapp_pair_phone: Option<String>,
+
+    /// Optional custom pair code; leave unset for auto-generated pairing.
+    pub whatsapp_pair_code: Option<String>,
+
+    /// When true, only respond to WhatsApp group messages that mention the bot.
+    #[serde(default)]
+    pub whatsapp_mention_only: bool,
+
+    /// WhatsApp Web operating mode.
+    #[serde(default)]
+    pub whatsapp_mode: zeroclaw::config::WhatsAppWebMode,
+
+    /// Direct-message policy when `whatsapp_mode = "personal"`.
+    #[serde(default)]
+    pub whatsapp_dm_policy: zeroclaw::config::WhatsAppChatPolicy,
+
+    /// Group-chat policy when `whatsapp_mode = "personal"`.
+    #[serde(default)]
+    pub whatsapp_group_policy: zeroclaw::config::WhatsAppChatPolicy,
+
+    /// When true, always respond in self-chat mode when `whatsapp_mode = "personal"`.
+    #[serde(default)]
+    pub whatsapp_self_chat_mode: bool,
+
+    /// Optional case-insensitive regexes that count as bot mentions in DMs.
+    #[serde(default)]
+    pub whatsapp_dm_mention_patterns: Vec<String>,
+
+    /// Optional case-insensitive regexes that count as bot mentions in groups.
+    #[serde(default)]
+    pub whatsapp_group_mention_patterns: Vec<String>,
+
+    // --- Text/iMessage-specific fields (embedded `zeroclawlabs::LinqChannel`) ---
+    /// Linq Partner API token. Prefer `sms_linq_api_token_file`.
+    pub sms_linq_api_token: Option<String>,
+
+    /// Path to a file containing the Linq Partner API token.
+    pub sms_linq_api_token_file: Option<String>,
+
+    /// E.164 phone number Linq should send from.
+    pub sms_from_phone: Option<String>,
+
+    /// HTTP address to listen on for Linq inbound webhooks.
+    /// Defaults to `"0.0.0.0:18798"`.
+    pub sms_webhook_listen: Option<String>,
+
+    /// URL path for Linq inbound webhooks.
+    /// Defaults to `"/webhooks/sms"`.
+    pub sms_webhook_path: Option<String>,
+
+    /// Linq webhook signing secret. Prefer `sms_linq_signing_secret_file`.
+    pub sms_linq_signing_secret: Option<String>,
+
+    /// Path to a file containing the Linq webhook signing secret.
+    pub sms_linq_signing_secret_file: Option<String>,
 
     // --- Signal-specific fields (embedded `zeroclawlabs::SignalChannel`) ---
     /// HTTP URL of `signal-cli-rest-api` (or compatible signal-cli daemon
@@ -1611,6 +1671,13 @@ weight = 20
             .collect()
     }
 
+    fn full_config_blocks_from_doc(markdown: &str) -> Vec<String> {
+        extract_toml_blocks(markdown)
+            .into_iter()
+            .filter(|b| b.contains("[calciforge]"))
+            .collect()
+    }
+
     fn parse_channel_block(block: &str) -> CalciforgeConfig {
         let wrapped = format!("[calciforge]\nversion = 2\n\n{block}");
         toml::from_str(&wrapped).unwrap_or_else(|e| {
@@ -1702,17 +1769,46 @@ version = 2
 [[channels]]
 kind = "whatsapp"
 enabled = true
-zeroclaw_endpoint = "http://127.0.0.1:18789"
-zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
-webhook_listen = "0.0.0.0:18795"
-webhook_path = "/webhooks/whatsapp"
+whatsapp_session_path = "~/.calciforge/whatsapp/session.db"
+whatsapp_pair_phone = "15555550001"
 allowed_numbers = ["+15555550001"]
 "#;
         let cfg: CalciforgeConfig = toml::from_str(raw).expect("whatsapp channel config");
         assert_eq!(cfg.channels[0].kind, "whatsapp");
         assert_eq!(
-            cfg.channels[0].webhook_listen.as_deref(),
-            Some("0.0.0.0:18795")
+            cfg.channels[0].whatsapp_session_path.as_deref(),
+            Some("~/.calciforge/whatsapp/session.db")
+        );
+        assert_eq!(
+            cfg.channels[0].whatsapp_pair_phone.as_deref(),
+            Some("15555550001")
+        );
+    }
+
+    #[test]
+    fn test_channel_config_sms_inline() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_linq_api_token_file = "~/.calciforge/secrets/linq-token"
+sms_from_phone = "+15555550001"
+sms_webhook_listen = "0.0.0.0:18798"
+sms_webhook_path = "/webhooks/sms"
+allowed_numbers = ["+15555550100"]
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("sms channel config");
+        assert_eq!(cfg.channels[0].kind, "sms");
+        assert_eq!(
+            cfg.channels[0].sms_linq_api_token_file.as_deref(),
+            Some("~/.calciforge/secrets/linq-token")
+        );
+        assert_eq!(
+            cfg.channels[0].sms_from_phone.as_deref(),
+            Some("+15555550001")
         );
     }
 
@@ -1781,6 +1877,38 @@ allowed_numbers = ["+15555550001"]
                 cfg.channels[0].kind, "whatsapp",
                 "unexpected kind in block:\n{block}"
             );
+        }
+    }
+
+    #[test]
+    fn test_channel_docs_sms_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/channels/sms.md");
+        let blocks = channel_blocks_from_doc(doc);
+        assert!(
+            !blocks.is_empty(),
+            "no [[channels]] TOML blocks found in sms.md"
+        );
+        for block in blocks {
+            let cfg = parse_channel_block(&block);
+            assert_eq!(
+                cfg.channels[0].kind, "sms",
+                "unexpected kind in block:\n{block}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_agents_doc_full_config_toml_blocks_valid() {
+        let doc = include_str!("../../../docs/agents.md");
+        let blocks = full_config_blocks_from_doc(doc);
+        assert!(
+            !blocks.is_empty(),
+            "no full config TOML blocks found in agents.md"
+        );
+        for block in blocks {
+            toml::from_str::<CalciforgeConfig>(&block).unwrap_or_else(|e| {
+                panic!("agents.md full config block failed to parse:\n{block}\nerror: {e}")
+            });
         }
     }
 }

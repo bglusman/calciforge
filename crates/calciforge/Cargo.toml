@@ -35,7 +35,7 @@ axum = "0.7"
 # Embedded Signal channel implementation. The crate brings its own
 # SignalChannel that talks to signal-cli-rest-api, so we no longer host a
 # webhook receiver inside calciforge for Signal.
-zeroclawlabs = { workspace = true }
+zeroclawlabs = { workspace = true, features = ["whatsapp-web"] }
 
 # Secret resolution helpers
 secrets-client = { path = "../secrets-client" }

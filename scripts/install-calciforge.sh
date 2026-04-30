@@ -129,26 +129,32 @@ profile = "balanced"  # open | balanced | hardened | paranoid
 scan_outbound = false
 
 # ── Channels ────────────────────────────────────────────────────
-# WhatsApp channel (requires ZeroClaw/OpenClaw gateway with WA session)
+# WhatsApp channel (embedded WhatsApp Web session)
 [[channels]]
 kind = "whatsapp"
 enabled = false
 scan_messages = false
-# zeroclaw_endpoint = "http://127.0.0.1:18789"
-# zeroclaw_auth_token = "YOUR_ZEROCLAW_TOKEN"
-# webhook_listen = "0.0.0.0:18795"
-# webhook_path = "/webhooks/whatsapp"
+# whatsapp_session_path = "/var/lib/calciforge/whatsapp/session.db"
 # allowed_numbers = ["+15555550001"]
 
-# Signal channel (requires ZeroClaw/OpenClaw gateway with Signal session)
+# Signal channel (embedded signal-cli-rest-api bridge)
 [[channels]]
 kind = "signal"
 enabled = false
 scan_messages = false
-# zeroclaw_endpoint = "http://127.0.0.1:18789"
-# zeroclaw_auth_token = "YOUR_ZEROCLAW_TOKEN"
-# webhook_listen = "0.0.0.0:18796"
-# webhook_path = "/webhooks/signal"
+# signal_cli_url = "http://127.0.0.1:8080"
+# signal_account = "+15555550001"
+# allowed_numbers = ["+15555550001"]
+
+# Text/iMessage channel (Linq Partner API webhook receiver for iMessage/RCS/SMS)
+[[channels]]
+kind = "sms"
+enabled = false
+scan_messages = false
+# sms_linq_api_token_file = "/etc/calciforge/secrets/linq-token"
+# sms_from_phone = "+15555550001"
+# sms_webhook_listen = "0.0.0.0:18798"
+# sms_webhook_path = "/webhooks/sms"
 # allowed_numbers = ["+15555550001"]
 
 # Telegram channel (direct bot integration)

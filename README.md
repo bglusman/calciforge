@@ -23,7 +23,7 @@ being treated as daily-driver infrastructure.
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
-| Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
+| Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
@@ -75,10 +75,12 @@ Channel-based secret input is intentionally being de-emphasized because
 chat transports can retain plaintext values. Prefer the local paste UI
 or direct `fnox` input for new secrets.
 
-Route Claude Code or another HTTP-speaking agent process through the gateway.
-The installer and examples bias toward setting this on managed subprocess
-agents directly; for external daemons, set it on the agent process or its
-service manager, not on the Calciforge daemon:
+Calciforge-managed subprocess agents should get proxy environment from their
+agent config or installer-generated config. Do not put proxy variables on the
+Calciforge daemon itself; that can route Calciforge's own provider and
+control-plane traffic through its security proxy. For externally managed agent
+daemons that Calciforge does not launch, set plain HTTP proxying on the agent
+process or its service manager and validate it against `security-proxy` logs:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8888

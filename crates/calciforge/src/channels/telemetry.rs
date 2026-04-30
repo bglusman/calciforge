@@ -1,7 +1,7 @@
 //! Shared channel telemetry helpers.
 //!
 //! Keep channel adapters on the same event schema so latency regressions can
-//! be compared across Telegram, WhatsApp, Signal, and Matrix without scraping
+//! be compared across Telegram, WhatsApp, Signal, SMS, and Matrix without scraping
 //! channel-specific log text.
 
 use std::fmt::Display;

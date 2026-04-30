@@ -401,10 +401,31 @@ mod tests {
         let mut file = std::fs::File::create(&path).expect("create script");
         writeln!(file, "#!/bin/sh").expect("write shebang");
         writeln!(file, "{body}").expect("write body");
+        file.sync_all().expect("sync script");
         let mut perms = file.metadata().expect("script metadata").permissions();
+        drop(file);
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).expect("chmod script");
         path
+    }
+
+    fn script_adapter(
+        script: &Path,
+        args: Option<Vec<String>>,
+        artifact_root: PathBuf,
+        max_artifact_bytes: u64,
+    ) -> ArtifactCliAdapter {
+        let mut shell_args = vec![script.display().to_string()];
+        shell_args.extend(args.unwrap_or_default());
+        ArtifactCliAdapter::with_artifact_root(
+            "/bin/sh".to_string(),
+            Some(shell_args),
+            HashMap::new(),
+            None,
+            Some(5000),
+            artifact_root,
+            max_artifact_bytes,
+        )
     }
 
     #[tokio::test]
@@ -414,12 +435,9 @@ mod tests {
             temp.path(),
             "cat >/dev/null\nprintf '\\211PNG\\r\\n\\032\\n' > \"$CALCIFORGE_ARTIFACT_DIR/out.png\"\necho generated image",
         );
-        let adapter = ArtifactCliAdapter::with_artifact_root(
-            script.display().to_string(),
+        let adapter = script_adapter(
+            &script,
             None,
-            HashMap::new(),
-            None,
-            Some(5000),
             temp.path().join("artifacts"),
             DEFAULT_MAX_ARTIFACT_BYTES,
         );
@@ -442,12 +460,9 @@ mod tests {
             temp.path(),
             "read task\nprintf '%s' \"$1\" > \"$CALCIFORGE_ARTIFACT_DIR/arg.txt\"\nprintf '%s' \"$task\"",
         );
-        let adapter = ArtifactCliAdapter::with_artifact_root(
-            script.display().to_string(),
+        let adapter = script_adapter(
+            &script,
             Some(vec![MESSAGE_PLACEHOLDER.to_string()]),
-            HashMap::new(),
-            None,
-            Some(5000),
             temp.path().join("artifacts"),
             DEFAULT_MAX_ARTIFACT_BYTES,
         );
@@ -474,15 +489,7 @@ mod tests {
             temp.path(),
             "cat >/dev/null\nprintf 'too large' > \"$CALCIFORGE_ARTIFACT_DIR/out.txt\"\necho done",
         );
-        let adapter = ArtifactCliAdapter::with_artifact_root(
-            script.display().to_string(),
-            None,
-            HashMap::new(),
-            None,
-            Some(5000),
-            temp.path().join("artifacts"),
-            4,
-        );
+        let adapter = script_adapter(&script, None, temp.path().join("artifacts"), 4);
 
         let err = adapter
             .dispatch_message_with_context(DispatchContext::message_only("make file"))
@@ -501,12 +508,9 @@ mod tests {
             temp.path(),
             "cat >/dev/null\ni=0\nwhile [ \"$i\" -le 16 ]; do printf x > \"$CALCIFORGE_ARTIFACT_DIR/$i.txt\"; i=$((i + 1)); done\necho done",
         );
-        let adapter = ArtifactCliAdapter::with_artifact_root(
-            script.display().to_string(),
+        let adapter = script_adapter(
+            &script,
             None,
-            HashMap::new(),
-            None,
-            Some(5000),
             temp.path().join("artifacts"),
             DEFAULT_MAX_ARTIFACT_BYTES,
         );

@@ -178,8 +178,8 @@ raw API keys or trusting the agent's own restraint.</p>
 
 <div class="nav">
 <a href="https://github.com/bglusman/calciforge">GitHub</a>
-<a href="https://github.com/bglusman/calciforge/blob/main/README.md">README</a>
-<a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
+<a href="#quick-install-mac">Install</a>
+<a href="agents.md">Agents</a>
 </div>
 
 </div>
@@ -315,7 +315,7 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 `what is your api key`). Generic high-entropy secret-shape detection
 (JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
 during the channel-integration cut and is on the
-[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
+[roadmap](roadmap/outbound-sensitive-data-detection.md).
 
 The scanner pipeline is configurable. The default policy now runs through
 `builtin:calciforge/default-scanner.star`, so the rule set can be copied,
@@ -473,10 +473,10 @@ context_window = 262144
 ```
 
 The full gateway reference is
-[`docs/model-gateway.md`](https://github.com/bglusman/calciforge/blob/main/docs/model-gateway.md).
+[`docs/model-gateway.md`](model-gateway.md).
 Named cascades, dispatchers, and token-window fit checks are captured
 in
-[`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
+[`docs/rfcs/model-gateway-primitives.md`](rfcs/model-gateway-primitives.md).
 
 ### Subscription-backed agents and models
 
@@ -542,7 +542,7 @@ kind = "artifact-cli"
 command = "/usr/local/bin/npcsh-vixynt-stdin"
 args = ["{artifact_dir}/image.png"]
 timeout_ms = 180000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 The command above is a recipe shape, not a promise that every npcsh
@@ -567,7 +567,7 @@ Today, discovery is process-scoped: it sees the fnox names available
 to the MCP server or CLI process. Calciforge enforces per-secret
 destination allowlists at substitution time, but does not yet enforce
 per-agent secret discovery/use ACLs. That policy layer is on the
-[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/agent-secret-access-policy.md).
+[roadmap](roadmap/agent-secret-access-policy.md).
 
 ```json
 // ~/.claude/mcp-config.json
@@ -588,16 +588,21 @@ calciforge-secrets ref BRAVE_API_KEY
 
 ### Multi-channel chat
 
-Today: Telegram, Matrix, WhatsApp, Signal. Optional voice forwarding
-on channels that support it.
+Today: Telegram, Matrix, WhatsApp, Signal, and text/iMessage. Voice is a separate
+proxy passthrough surface today, not a settled per-chat-channel capability; richer
+voice input, push-to-talk channels, and audio artifacts remain roadmap work.
 
 Per-channel setup guides (config reference + TOML examples tested against
 the live schema in CI):
 
-- [Telegram](channels/telegram) — long-poll, no open port required
-- [Matrix](channels/matrix) — HTTP long-poll; note: no E2EE
-- [Signal](channels/signal) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
-- [WhatsApp](channels/whatsapp) — webhook via ZeroClaw/OpenClaw gateway
+- [Telegram](channels/telegram.md) — long-poll, no open port required
+- [Matrix](channels/matrix.md) — HTTP long-poll; note: no E2EE
+- [Signal](channels/signal.md) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
+- [WhatsApp](channels/whatsapp.md) — embedded WhatsApp Web session
+- [Text/iMessage](channels/sms.md) — Linq webhook receiver for iMessage/RCS/SMS
+
+Agent backends, identities, and routing rules are documented in the
+[Agents, Identities, and Routing](agents.md) guide.
 
 ```toml
 # /etc/calciforge/config.toml — channel configuration
@@ -618,8 +623,16 @@ allowed_users = ["@alice:example.com"]
 [[channels]]
 kind = "whatsapp"
 enabled = true
-zeroclaw_endpoint = "http://127.0.0.1:18789"
-zeroclaw_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
+whatsapp_session_path = "/var/lib/calciforge/whatsapp/session.db"
+allowed_numbers = ["+15555550100"]
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_linq_api_token_file = "/etc/calciforge/secrets/linq-token"
+sms_from_phone = "+15555550001"
+sms_webhook_listen = "0.0.0.0:18798"
+sms_webhook_path = "/webhooks/sms"
 allowed_numbers = ["+15555550100"]
 ```
 
@@ -669,13 +682,17 @@ unverified, validates configured scanner policy files and rule syntax,
 and can probe configured endpoints.
 Use `calciforge doctor --no-network` when you want a local-only check.
 
-Route Claude Code through the gateway. The installer and examples bias
-toward setting this on managed subprocess agents directly; for external
-daemons, set it on the agent process or its service manager, not on the
-Calciforge daemon:
+Calciforge-managed subprocess agents should get proxy environment from their
+agent config or installer-generated config. Do not put proxy variables in
+`~/.zshrc` for the Calciforge daemon itself; that can route Calciforge's own
+provider and control-plane traffic through its security proxy.
+
+For externally managed agent daemons that Calciforge does not launch, set
+plain HTTP proxying on the agent process or its service manager and validate
+it against `security-proxy` logs:
 
 ```bash
-# ~/.zshrc
+# External agent process environment
 export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
@@ -690,10 +707,9 @@ macOS and a headless Linux service host). Treat new deployments as
 operator-reviewed until their channel credentials, fnox store, model
 gateway providers, and synthetic model routes pass smoke tests.
 
-The list of what works today and what's still in flight lives in the
-[README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
-Public roadmap ideas live in
-[`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
+The status summary above is the site-facing snapshot of what works today and
+what is still in flight. Public roadmap ideas live in
+the [roadmap notes](roadmap/v3-ideas.md).
 
 <footer>
 <div class="name-origin">

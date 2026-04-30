@@ -95,7 +95,7 @@ args = [
   "{message}",
 ]
 timeout_ms = 120000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 The command above must read the actual task from stdin. `{message}` is a safe
@@ -113,7 +113,7 @@ args = [
   "{artifact_dir}/image.png",
 ]
 timeout_ms = 180000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 Treat this npcsh command as a recipe to verify against the installed npcsh
@@ -127,6 +127,8 @@ Before promoting a recipe, run:
 
 ```bash
 scripts/agent-recipe-smoke.sh
+# or include it in the local Docker deploy smoke:
+CALCIFORGE_AGENT_RECIPE_SMOKE=1 scripts/manual-docker-test.sh
 ```
 
 The smoke script installs npcsh, OmO/oh-my-opencode, and Gas Town in disposable

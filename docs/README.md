@@ -5,6 +5,7 @@ that should be reasonably stable:
 
 - `index.md` — GitHub Pages feature tour
 - `agent-adapters.md` — agent adapter selection and evaluation notes
+- `agents.md` — agent backends, identities, and routing rules
 - `agent-adapters.md` also covers secured recipes, artifact-producing
   CLI integrations, and the early orchestrator support model for async
   work systems.

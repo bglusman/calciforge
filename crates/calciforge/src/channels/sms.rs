@@ -1,28 +1,30 @@
-//! WhatsApp channel adapter for Calciforge.
+//! Text/iMessage channel adapter for Calciforge.
 //!
-//! Calciforge embeds [`zeroclaw::channels::WhatsAppWebChannel`] directly. The
-//! embedded channel owns the WhatsApp Web session, surfaces inbound messages via
-//! a `tokio::mpsc` `Receiver`, and sends replies through the same
-//! `Channel::send` interface.
-//!
-//! ```text
-//! WhatsApp user  <->  zeroclawlabs::WhatsAppWebChannel  <->  Calciforge dispatch
-//! ```
-//!
-//! There is no webhook receiver in Calciforge for WhatsApp anymore. Legacy
-//! ZeroClaw/OpenClaw webhook fields are rejected at startup for `kind =
-//! "whatsapp"`.
+//! Calciforge exposes `kind = "sms"` and uses `zeroclawlabs::LinqChannel`
+//! underneath. Linq is webhook based for inbound iMessage/RCS/SMS events, so
+//! this module hosts a small webhook receiver, lets the zeroclawlabs parser
+//! normalize incoming payloads, then sends replies through the same `Channel`
+//! interface used by other embedded transports.
 
 use crate::sync::Arc;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router as AxumRouter,
+};
+use serde_json::json;
 use tracing::{debug, info, warn};
 use zeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
-use zeroclaw::channels::WhatsAppWebChannel as ZclWhatsAppWebChannel;
+use zeroclaw::channels::LinqChannel as ZclLinqChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{expand_tilde, CalciforgeConfig, ChannelConfig},
+    config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
     messages::OutboundMessage,
     router::Router,
@@ -33,10 +35,7 @@ use super::telemetry;
 use adversary_detector::middleware::ChannelScanner;
 use adversary_detector::verdict::ScanContext;
 
-/// Calciforge-side bridge that owns a `zeroclawlabs::WhatsAppWebChannel`,
-/// drains its inbound stream, and dispatches messages through the standard
-/// router / command / context pipeline.
-pub struct WhatsAppChannel<C: Channel + ?Sized = ZclWhatsAppWebChannel> {
+pub struct SmsChannel<C: Channel + ?Sized = ZclLinqChannel> {
     config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
@@ -45,7 +44,7 @@ pub struct WhatsAppChannel<C: Channel + ?Sized = ZclWhatsAppWebChannel> {
     transport: Arc<C>,
 }
 
-impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
+impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
     pub fn new(
         config: Arc<CalciforgeConfig>,
         router: Arc<Router>,
@@ -68,7 +67,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         self.config
             .channels
             .iter()
-            .find(|c| c.kind == "whatsapp")
+            .find(|c| c.kind == "sms")
             .map(|c| c.scan_messages)
             .unwrap_or(false)
     }
@@ -83,7 +82,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         {
             Ok(()) => {
                 telemetry::reply_sent(
-                    "whatsapp",
+                    "sms",
                     recipient,
                     "reply",
                     response_len,
@@ -91,7 +90,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                 );
             }
             Err(e) => {
-                warn!(recipient = %recipient, error = %e, "WhatsApp: failed to send reply");
+                warn!(recipient = %recipient, error = %e, "Text/iMessage: failed to send reply");
             }
         }
     }
@@ -113,17 +112,17 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         };
         let text = msg.content.clone();
 
-        let identity = match resolve_channel_sender("whatsapp", &from, &self.config) {
+        let identity = match resolve_channel_sender("sms", &from, &self.config) {
             Some(id) => id,
             None => {
-                warn!(from = %from, "WhatsApp: unknown sender - dropping");
+                warn!(from = %from, "Text/iMessage: unknown sender - dropping");
                 return;
             }
         };
 
-        telemetry::authorized_message("whatsapp", &identity.id, &from, text.len(), delivery_lag_ms);
+        telemetry::authorized_message("sms", &identity.id, &from, text.len(), delivery_lag_ms);
 
-        let chat_key = format!("whatsapp-{}", identity.id);
+        let chat_key = format!("sms-{}", identity.id);
 
         if self.scan_enabled() {
             let verdict = self
@@ -135,7 +134,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                     warn!(
                         identity = %identity.id,
                         reason = %reason,
-                        "WhatsApp: inbound message BLOCKED by adversary scan"
+                        "Text/iMessage: inbound message BLOCKED by adversary scan"
                     );
                     let channel = self.clone();
                     let target = reply_target.clone();
@@ -154,17 +153,17 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                     warn!(
                         identity = %identity.id,
                         reason = %reason,
-                        "WhatsApp: inbound message flagged REVIEW - passing with caution"
+                        "Text/iMessage: inbound message flagged REVIEW - passing with caution"
                     );
                 }
                 adversary_detector::verdict::ScanVerdict::Clean => {
-                    debug!(identity = %identity.id, "WhatsApp: inbound scan clean");
+                    debug!(identity = %identity.id, "Text/iMessage: inbound scan clean");
                 }
             }
         }
 
         if let Some(reply) = self.command_handler.handle(&text) {
-            debug!(identity = %identity.id, cmd = %text.trim(), "WhatsApp: handled pre-auth command");
+            debug!(identity = %identity.id, cmd = %text.trim(), "Text/iMessage: handled pre-auth command");
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
@@ -247,11 +246,11 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         }
 
         if CommandHandler::is_secure_command(&text) {
-            debug!(identity = %identity.id, "WhatsApp: handling !secure command");
+            debug!(identity = %identity.id, "Text/iMessage: handling !secure command");
             if CommandHandler::is_secure_set_command(&text)
-                && !crate::config::channel_allows_chat_secret_set(&self.config, "whatsapp")
+                && !crate::config::channel_allows_chat_secret_set(&self.config, "sms")
             {
-                let reply = CommandHandler::secure_set_disabled_reply("WhatsApp");
+                let reply = CommandHandler::secure_set_disabled_reply("SMS");
                 let channel = self.clone();
                 let target = reply_target.clone();
                 tokio::spawn(async move {
@@ -287,7 +286,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         let agent_id = match self.command_handler.active_agent_for(&identity.id) {
             Some(id) => id,
             None => {
-                warn!(identity = %identity.id, "WhatsApp: no routing rule for identity - dropping");
+                warn!(identity = %identity.id, "Text/iMessage: no routing rule for identity - dropping");
                 return;
             }
         };
@@ -295,7 +294,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         let agent = match find_agent(&agent_id, &self.config) {
             Some(a) => a.clone(),
             None => {
-                warn!(agent_id = %agent_id, "WhatsApp: agent not in config");
+                warn!(agent_id = %agent_id, "Text/iMessage: agent not in config");
                 let channel = self.clone();
                 let target = reply_target.clone();
                 tokio::spawn(async move {
@@ -320,7 +319,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
 
         tokio::spawn(async move {
             let queue_wait_ms = received_at.elapsed().as_millis() as u64;
-            telemetry::agent_dispatch_started("whatsapp", &identity_id, &agent_id, queue_wait_ms);
+            telemetry::agent_dispatch_started("sms", &identity_id, &agent_id, queue_wait_ms);
 
             let augmented = self.context_store.augment_message_with_options(
                 &chat_key,
@@ -346,7 +345,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                     let final_response = response.render_text_fallback();
                     self.command_handler.record_dispatch(latency_ms);
                     telemetry::agent_dispatch_succeeded(
-                        "whatsapp",
+                        "sms",
                         &identity_id,
                         &agent_id,
                         latency_ms,
@@ -358,7 +357,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                         agent_id = %agent_id,
                         response_len = %final_response.len(),
                         attachments = response.attachments.len(),
-                        "WhatsApp: got agent response"
+                        "Text/iMessage: got agent response"
                     );
 
                     self.context_store.push_with_options(
@@ -373,7 +372,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                     self.send_outbound(&reply_target, &response).await;
                 }
                 Err(e) => {
-                    warn!(identity = %identity_id, error = %e, "WhatsApp: agent dispatch failed");
+                    warn!(identity = %identity_id, error = %e, "Text/iMessage: agent dispatch failed");
                     self.send_reply(&reply_target, &format!("Agent error: {e}"))
                         .await;
                 }
@@ -382,30 +381,79 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
     }
 }
 
-const MIGRATION_TOML: &str = r#"
-[[channels]]
-kind = "whatsapp"
-enabled = true
-whatsapp_session_path = "~/.calciforge/whatsapp/session.db"
-allowed_numbers = ["+15555550001"]
-# Optional pairing-code login:
-# whatsapp_pair_phone = "15555550001"
-"#;
-
-fn migration_error(field: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "WhatsApp channel: legacy webhook field `{field}` is no longer supported. \
-         Calciforge now embeds zeroclawlabs::WhatsAppWebChannel and owns the \
-         WhatsApp Web session directly. Update your config to the new schema:\n{MIGRATION_TOML}"
-    )
+#[derive(Clone)]
+struct WebhookState {
+    bridge: Arc<SmsChannel<ZclLinqChannel>>,
+    transport: Arc<ZclLinqChannel>,
+    signing_secret: Option<String>,
 }
 
-fn resolved_session_path(config: &ChannelConfig) -> Result<String> {
-    let configured = config
-        .whatsapp_session_path
-        .as_deref()
-        .context("whatsapp_session_path is required for kind = \"whatsapp\"")?;
-    Ok(expand_tilde(configured).display().to_string())
+async fn health_handler() -> impl IntoResponse {
+    Json(json!({ "status": "ok", "channel": "sms" }))
+}
+
+async fn webhook_handler(
+    State(state): State<WebhookState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Some(secret) = state.signing_secret.as_deref() {
+        let timestamp = match headers
+            .get("x-webhook-timestamp")
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) => value,
+            None => return (StatusCode::UNAUTHORIZED, "missing webhook timestamp"),
+        };
+        let signature = match headers
+            .get("x-webhook-signature")
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) => value,
+            None => return (StatusCode::UNAUTHORIZED, "missing webhook signature"),
+        };
+        let body_text = match std::str::from_utf8(&body) {
+            Ok(value) => value,
+            Err(_) => return (StatusCode::BAD_REQUEST, "body must be utf-8 json"),
+        };
+        if !zeroclaw::channels::linq::verify_linq_signature(secret, body_text, timestamp, signature)
+        {
+            return (StatusCode::UNAUTHORIZED, "invalid webhook signature");
+        }
+    }
+
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid json"),
+    };
+
+    let messages = state.transport.parse_webhook_payload(&payload);
+    for msg in messages {
+        let bridge = state.bridge.clone();
+        tokio::spawn(async move {
+            bridge.handle_message(msg).await;
+        });
+    }
+
+    (StatusCode::OK, "ok")
+}
+
+fn read_secret_file(path: &str, label: &str) -> Result<String> {
+    Ok(std::fs::read_to_string(expand_tilde(path))
+        .with_context(|| format!("Text/iMessage: failed to read {label} '{path}'"))?
+        .trim()
+        .to_string())
+}
+
+fn resolve_optional_secret(
+    inline: &Option<String>,
+    file: &Option<String>,
+    label: &str,
+) -> Result<Option<String>> {
+    if let Some(path) = file {
+        return Ok(Some(read_secret_file(path, label)?));
+    }
+    Ok(inline.clone().map(|value| value.trim().to_string()))
 }
 
 pub async fn run(
@@ -415,65 +463,56 @@ pub async fn run(
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
 ) -> Result<()> {
-    let whatsapp_cfg = config
+    let sms_cfg = config
         .channels
         .iter()
-        .find(|c| c.kind == "whatsapp" && c.enabled)
-        .context("no enabled whatsapp channel found in config")?;
+        .find(|c| c.kind == "sms" && c.enabled)
+        .context("no enabled sms channel found in config")?;
 
-    if whatsapp_cfg.zeroclaw_endpoint.is_some() {
-        return Err(migration_error("zeroclaw_endpoint"));
+    let api_token = resolve_optional_secret(
+        &sms_cfg.sms_linq_api_token,
+        &sms_cfg.sms_linq_api_token_file,
+        "sms_linq_api_token_file",
+    )?
+    .filter(|value| !value.is_empty())
+    .context("sms_linq_api_token_file or sms_linq_api_token is required for kind = \"sms\"")?;
+    let signing_secret = resolve_optional_secret(
+        &sms_cfg.sms_linq_signing_secret,
+        &sms_cfg.sms_linq_signing_secret_file,
+        "sms_linq_signing_secret_file",
+    )?
+    .filter(|value| !value.is_empty());
+    if signing_secret.is_none() {
+        warn!(
+            "Text/iMessage webhook signature verification is disabled; \
+             configure sms_linq_signing_secret_file for public webhook endpoints"
+        );
     }
-    if whatsapp_cfg.zeroclaw_auth_token.is_some() {
-        return Err(migration_error("zeroclaw_auth_token"));
-    }
-    if whatsapp_cfg.webhook_listen.is_some() {
-        return Err(migration_error("webhook_listen"));
-    }
-    if whatsapp_cfg.webhook_path.is_some() {
-        return Err(migration_error("webhook_path"));
-    }
-    if whatsapp_cfg.webhook_secret.is_some() {
-        return Err(migration_error("webhook_secret"));
-    }
-
-    let session_path = resolved_session_path(whatsapp_cfg)?;
-    let pair_phone = whatsapp_cfg.whatsapp_pair_phone.clone();
-    let pair_code = whatsapp_cfg.whatsapp_pair_code.clone();
-    let allowed = whatsapp_cfg.allowed_numbers.clone();
-    let mention_only = whatsapp_cfg.whatsapp_mention_only;
-    let mode = whatsapp_cfg.whatsapp_mode.clone();
-    let dm_policy = whatsapp_cfg.whatsapp_dm_policy.clone();
-    let group_policy = whatsapp_cfg.whatsapp_group_policy.clone();
-    let self_chat_mode = whatsapp_cfg.whatsapp_self_chat_mode;
-    let dm_mention_patterns = whatsapp_cfg.whatsapp_dm_mention_patterns.clone();
-    let group_mention_patterns = whatsapp_cfg.whatsapp_group_mention_patterns.clone();
+    let from_phone = sms_cfg
+        .sms_from_phone
+        .as_deref()
+        .context("sms_from_phone is required for kind = \"sms\"")?
+        .to_string();
+    let listen_addr = sms_cfg
+        .sms_webhook_listen
+        .clone()
+        .unwrap_or_else(|| "0.0.0.0:18798".to_string());
+    let webhook_path = sms_cfg
+        .sms_webhook_path
+        .clone()
+        .unwrap_or_else(|| "/webhooks/sms".to_string());
+    let allowed = sms_cfg.allowed_numbers.clone();
 
     info!(
-        session_path = %session_path,
-        pair_phone = ?pair_phone,
-        mode = ?mode,
-        mention_only,
-        "WhatsApp channel starting (embedded zeroclawlabs::WhatsAppWebChannel)"
+        listen = %listen_addr,
+        path = %webhook_path,
+        from_phone = %from_phone,
+        signed = signing_secret.is_some(),
+        "Text/iMessage channel starting (Linq webhook receiver)"
     );
 
-    let transport = Arc::new(
-        ZclWhatsAppWebChannel::new(
-            session_path,
-            pair_phone,
-            pair_code,
-            allowed,
-            mention_only,
-            mode,
-            dm_policy,
-            group_policy,
-            self_chat_mode,
-        )
-        .with_dm_mention_patterns(dm_mention_patterns)
-        .with_group_mention_patterns(group_mention_patterns),
-    );
-
-    let bridge = Arc::new(WhatsAppChannel::<ZclWhatsAppWebChannel>::new(
+    let transport = Arc::new(ZclLinqChannel::new(api_token, from_phone, allowed));
+    let bridge = Arc::new(SmsChannel::<ZclLinqChannel>::new(
         config,
         router,
         command_handler,
@@ -482,30 +521,23 @@ pub async fn run(
         transport.clone(),
     ));
 
-    run_transport_loop(bridge, transport).await
-}
+    let state = WebhookState {
+        bridge,
+        transport,
+        signing_secret,
+    };
+    let app = AxumRouter::new()
+        .route("/health", get(health_handler))
+        .route(&webhook_path, post(webhook_handler))
+        .with_state(state);
 
-async fn run_transport_loop<C>(bridge: Arc<WhatsAppChannel<C>>, transport: Arc<C>) -> Result<()>
-where
-    C: Channel + ?Sized + 'static,
-{
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(64);
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .with_context(|| format!("binding SMS webhook listener on {listen_addr}"))?;
 
-    let listener_transport = Arc::clone(&transport);
-    let listener_handle = tokio::spawn(async move { listener_transport.listen(tx).await });
-
-    while let Some(msg) = rx.recv().await {
-        let bridge = bridge.clone();
-        tokio::spawn(async move {
-            bridge.handle_message(msg).await;
-        });
-    }
-
-    match listener_handle.await {
-        Ok(Ok(())) => Err(anyhow!("WhatsApp listener exited unexpectedly")),
-        Ok(Err(e)) => Err(e).context("WhatsApp listener exited with error"),
-        Err(e) => Err(anyhow!("WhatsApp listener task failed: {e}")),
-    }
+    axum::serve(listener, app)
+        .await
+        .context("Text/iMessage webhook listener exited")
 }
 
 #[cfg(test)]
@@ -523,7 +555,6 @@ mod tests {
     struct MockChannel {
         sent: StdMutex<Vec<SendMessage>>,
         sent_notify: Notify,
-        listen_error: StdMutex<Option<String>>,
     }
 
     impl MockChannel {
@@ -531,15 +562,6 @@ mod tests {
             Self {
                 sent: StdMutex::new(Vec::new()),
                 sent_notify: Notify::new(),
-                listen_error: StdMutex::new(None),
-            }
-        }
-
-        fn with_listen_error(error: &str) -> Self {
-            Self {
-                sent: StdMutex::new(Vec::new()),
-                sent_notify: Notify::new(),
-                listen_error: StdMutex::new(Some(error.to_string())),
             }
         }
 
@@ -560,14 +582,14 @@ mod tests {
                 }
             })
             .await
-            .expect("timed out waiting for WhatsApp mock send");
+            .expect("timed out waiting for SMS mock send");
         }
     }
 
     #[async_trait]
     impl Channel for MockChannel {
         fn name(&self) -> &str {
-            "mock-whatsapp"
+            "mock-sms"
         }
 
         async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
@@ -577,30 +599,18 @@ mod tests {
         }
 
         async fn listen(&self, _tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-            if let Some(error) = self.listen_error.lock().unwrap().take() {
-                return Err(anyhow::anyhow!(error));
-            }
-            Ok(())
+            Err(anyhow::anyhow!("SMS tests drive handle_message directly"))
         }
     }
 
-    fn make_test_config<F: FnOnce(&mut ChannelConfig)>(mutate: F) -> Arc<CalciforgeConfig> {
-        let mut channel = ChannelConfig {
-            kind: "whatsapp".to_string(),
-            enabled: true,
-            allowed_numbers: vec!["+15555550100".to_string()],
-            whatsapp_session_path: Some("test-session.db".to_string()),
-            ..Default::default()
-        };
-        mutate(&mut channel);
-
+    fn make_test_config() -> Arc<CalciforgeConfig> {
         Arc::new(CalciforgeConfig {
             calciforge: CalciforgeHeader { version: 2 },
             identities: vec![Identity {
                 id: "alice".to_string(),
                 display_name: Some("Alice".to_string()),
                 aliases: vec![ChannelAlias {
-                    channel: "whatsapp".to_string(),
+                    channel: "sms".to_string(),
                     id: "+15555550100".to_string(),
                 }],
                 role: Some("owner".to_string()),
@@ -616,7 +626,14 @@ mod tests {
                 default_agent: "librarian".to_string(),
                 allowed_agents: vec![],
             }],
-            channels: vec![channel],
+            channels: vec![ChannelConfig {
+                kind: "sms".to_string(),
+                enabled: true,
+                allowed_numbers: vec!["+15555550100".to_string()],
+                sms_linq_api_token: Some("test-token".to_string()),
+                sms_from_phone: Some("+15555550001".to_string()),
+                ..Default::default()
+            }],
             permissions: None,
             memory: None,
             context: Default::default(),
@@ -635,29 +652,28 @@ mod tests {
         let security_config = adversary_detector::profiles::SecurityConfig::balanced();
         let scanner =
             adversary_detector::scanner::AdversaryScanner::new(security_config.scanner.clone());
-        let audit_logger = adversary_detector::audit::AuditLogger::new("test-whatsapp");
+        let audit_logger = adversary_detector::audit::AuditLogger::new("test-sms");
         Arc::new(ChannelScanner::new(scanner, audit_logger, security_config))
     }
 
     struct TestBridge {
-        bridge: Arc<WhatsAppChannel<MockChannel>>,
+        bridge: Arc<SmsChannel<MockChannel>>,
         _state_dir: tempfile::TempDir,
     }
 
     fn dummy_bridge_with(config: Arc<CalciforgeConfig>, transport: Arc<MockChannel>) -> TestBridge {
         let router = Arc::new(Router::new());
-        let tmp = tempfile::tempdir().expect("tempdir for whatsapp test state isolation");
+        let tmp = tempfile::tempdir().expect("tempdir for sms test state isolation");
         let command_handler = Arc::new(CommandHandler::with_state_dir(
             config.clone(),
             tmp.path().to_path_buf(),
         ));
-        let context_store = ContextStore::new(20, 5);
         TestBridge {
-            bridge: Arc::new(WhatsAppChannel::<MockChannel>::new(
+            bridge: Arc::new(SmsChannel::<MockChannel>::new(
                 config,
                 router,
                 command_handler,
-                context_store,
+                ContextStore::new(20, 5),
                 make_scanner(),
                 transport,
             )),
@@ -666,181 +682,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_errors_on_old_config_fields() {
-        let config = make_test_config(|c| {
-            c.zeroclaw_endpoint = Some("http://127.0.0.1:18789".to_string());
-        });
-
-        let router = Arc::new(Router::new());
-        let tmp = tempfile::tempdir().expect("tempdir for whatsapp test state isolation");
-        let command_handler = Arc::new(CommandHandler::with_state_dir(
-            config.clone(),
-            tmp.path().to_path_buf(),
-        ));
-        let context_store = ContextStore::new(20, 5);
-        let channel_scanner = make_scanner();
-
-        let err = run(
-            config,
-            router,
-            command_handler,
-            context_store,
-            channel_scanner,
-        )
-        .await
-        .expect_err("legacy zeroclaw_endpoint must be rejected");
-
-        let rendered = format!("{err}");
-        assert!(rendered.contains("zeroclaw_endpoint"));
-        assert!(rendered.contains("whatsapp_session_path"));
-    }
-
-    #[test]
-    fn test_session_path_expands_tilde() {
-        let mut config = ChannelConfig {
-            whatsapp_session_path: Some("~/.calciforge/whatsapp/session.db".to_string()),
-            ..Default::default()
-        };
-
-        let session_path = resolved_session_path(&config)
-            .expect("configured WhatsApp session path should resolve");
-
-        assert!(
-            !session_path.starts_with("~/"),
-            "WhatsApp session path should not keep a literal tilde: {session_path}"
-        );
-        assert!(
-            session_path.ends_with(".calciforge/whatsapp/session.db"),
-            "WhatsApp session path should preserve the configured suffix: {session_path}"
-        );
-
-        config.whatsapp_session_path = Some("/var/lib/calciforge/wa.db".to_string());
-        assert_eq!(
-            resolved_session_path(&config).expect("absolute session path should resolve"),
-            "/var/lib/calciforge/wa.db"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_transport_loop_propagates_listener_error() {
-        let config = make_test_config(|_| {});
-        let transport = Arc::new(MockChannel::with_listen_error("listen failed"));
-        let bridge = dummy_bridge_with(config, Arc::clone(&transport));
-
-        let err = run_transport_loop(bridge.bridge, transport)
-            .await
-            .expect_err("listener errors must surface from WhatsApp run loop");
-
-        let rendered = format!("{err:#}");
-        assert!(rendered.contains("listen failed"));
-    }
-
-    #[tokio::test]
-    async fn test_transport_loop_errors_on_clean_listener_exit() {
-        let config = make_test_config(|_| {});
-        let transport = Arc::new(MockChannel::new());
-        let bridge = dummy_bridge_with(config, Arc::clone(&transport));
-
-        let err = run_transport_loop(bridge.bridge, transport)
-            .await
-            .expect_err("clean listener exits are unexpected in production");
-
-        let rendered = format!("{err:#}");
-        assert!(rendered.contains("exited unexpectedly"));
-    }
-
-    #[tokio::test]
     async fn test_handle_message_unknown_sender_drops() {
-        let config = make_test_config(|_| {});
         let transport = Arc::new(MockChannel::new());
-        let bridge = dummy_bridge_with(config, transport.clone());
+        let bridge = dummy_bridge_with(make_test_config(), transport.clone());
 
-        let msg = ChannelMessage {
-            id: "1".into(),
-            sender: "+19990001111".into(),
-            reply_target: "+19990001111".into(),
-            content: "!ping".into(),
-            channel: "whatsapp".into(),
-            timestamp: 0,
-            thread_ts: None,
-            interruption_scope_id: None,
-            attachments: vec![],
-        };
-
-        bridge.bridge.handle_message(msg).await;
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+19990001111".into(),
+                reply_target: "+19990001111".into(),
+                content: "!ping".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
 
         assert!(transport.drain().is_empty());
     }
 
     #[tokio::test]
-    async fn test_handle_message_replies_to_group_target() {
-        let config = make_test_config(|_| {});
+    async fn test_handle_message_replies_to_chat_id_target() {
         let transport = Arc::new(MockChannel::new());
-        let bridge = dummy_bridge_with(config, transport.clone());
+        let bridge = dummy_bridge_with(make_test_config(), transport.clone());
 
-        let msg = ChannelMessage {
-            id: "1".into(),
-            sender: "+15555550100".into(),
-            reply_target: "12345@g.us".into(),
-            content: "!ping".into(),
-            channel: "whatsapp".into(),
-            timestamp: 0,
-            thread_ts: None,
-            interruption_scope_id: None,
-            attachments: vec![],
-        };
-
-        bridge.bridge.handle_message(msg).await;
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+15555550100".into(),
+                reply_target: "chat_123".into(),
+                content: "!ping".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
 
         transport.wait_for_sent_len(1).await;
-
         let sent = transport.drain();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].recipient, "12345@g.us");
-    }
-
-    #[tokio::test]
-    async fn test_handle_message_renders_artifact_fallback() {
-        let mut config = (*make_test_config(|_| {})).clone();
-        config.agents = vec![AgentConfig {
-            id: "librarian".to_string(),
-            kind: "artifact-cli".to_string(),
-            command: Some("/bin/sh".to_string()),
-            args: Some(vec![
-                "-c".to_string(),
-                "cat >/dev/null; printf 'image-bytes' > \"$CALCIFORGE_ARTIFACT_DIR/result.png\"; printf 'done\\n'"
-                    .to_string(),
-            ]),
-            ..Default::default()
-        }];
-        let config = Arc::new(config);
-        let transport = Arc::new(MockChannel::new());
-        let bridge = dummy_bridge_with(config, transport.clone());
-
-        let msg = ChannelMessage {
-            id: "1".into(),
-            sender: "+15555550100".into(),
-            reply_target: "+15555550100".into(),
-            content: "make an image".into(),
-            channel: "whatsapp".into(),
-            timestamp: 0,
-            thread_ts: None,
-            interruption_scope_id: None,
-            attachments: vec![],
-        };
-
-        bridge.bridge.handle_message(msg).await;
-        transport.wait_for_sent_len(1).await;
-
-        let sent = transport.drain();
-        assert_eq!(sent.len(), 1);
-        assert!(sent[0].content.contains("done"));
-        assert!(sent[0].content.contains("Attachments:"));
-        assert!(sent[0].content.contains("result.png"));
-        assert!(
-            !sent[0].content.contains("/tmp/calciforge-artifacts"),
-            "fallback must not leak local artifact paths: {}",
-            sent[0].content
-        );
+        assert_eq!(sent[0].recipient, "chat_123");
     }
 }

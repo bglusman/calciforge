@@ -1582,7 +1582,9 @@ PYEOF
     done
 fi
 
-run_calciforge_doctor "post-install"
+if declare -F run_calciforge_doctor >/dev/null; then
+    run_calciforge_doctor "post-install"
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
@@ -1601,7 +1603,6 @@ agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
 echo ""
 echo "Agent subprocess proxy:"
 echo "  HTTP_PROXY=${SECURITY_PROXY_URL}"
-echo "  HTTPS_PROXY=${SECURITY_PROXY_URL}"
 echo "  NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
 if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     echo "  Remote scanner=${REMOTE_SCANNER_URL} (fail_closed=${REMOTE_SCANNER_FAIL_CLOSED})"
@@ -1609,6 +1610,7 @@ fi
 echo ""
 echo "Set this environment on manually started external agent daemons or"
 echo "per-agent subprocess configuration. Do not set it on the Calciforge service."
+echo "HTTPS content needs explicit tool/fetch integration; ambient HTTPS_PROXY is not a security boundary."
 echo ""
 echo "Logs:"
 echo "  clashd:         $LOG_DIR/"

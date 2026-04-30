@@ -76,6 +76,9 @@
 - [ ] Rust client SDK for host-agent
 - [ ] Python bindings
 - [ ] CLI admin tool
+- [ ] Explore a local web channel for desktop/LAN testing that uses the same
+      identity, routing, message-envelope, artifact, and proxy policy paths as
+      Telegram, Matrix, and text channels
 - [ ] Architecture decision records (ADRs)
 
 ### Observability
