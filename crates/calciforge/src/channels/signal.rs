@@ -2,46 +2,22 @@
 //!
 //! ## Architecture
 //!
-//! This channel is a **webhook receiver + identity router + reply sender**.
-//!
-//! The actual Signal protocol handling (registration, encryption, send/receive
-//! at the Signal wire level) lives in the OpenClaw `message` tool with
-//! `action = "send"` and `channel = "signal"`. Calciforge acts as a routing
-//! sidecar:
+//! Calciforge embeds [`zeroclaw::channels::SignalChannel`] directly. The
+//! embedded channel talks to a `signal-cli-rest-api` daemon over HTTP/JSON-RPC
+//! and surfaces inbound messages via a `tokio::mpsc` `Receiver`. Calciforge
+//! drains that receiver, resolves the sender against its identity table,
+//! routes through commands / agents, and writes the reply back through the
+//! same `Channel::send` interface.
 //!
 //! ```text
-//! Signal user  →  OpenClaw (signal-web)  →  POST /webhooks/signal  →  Calciforge
-//!                                                                          │
-//!                                              identity resolution         │
-//!                                              agent dispatch              │
-//!                                                                          ↓
-//! Signal user  ←  OpenClaw (signal-web)  ←  POST /tools/invoke  ←  Calciforge reply
+//! Signal user  ⇄  signal-cli-rest-api  ⇄  zeroclawlabs::SignalChannel  ⇄  Calciforge dispatch
 //! ```
 //!
-//! ## Webhook payload format
-//!
-//! Incoming messages are expected in the Signal REST API webhook format
-//! (as produced by the OpenClaw signal-web receive path):
-//!
-//! ```json
-//! {
-//!   "account": "+15555550001",
-//!   "envelope": {
-//!     "source": "+14155551234",
-//!     "sourceNumber": "+14155551234",
-//!     "sourceName": "Alice",
-//!     "sourceDevice": 1,
-//!     "timestamp": 1699999999999,
-//!     "dataMessage": {
-//!       "message": "Hello from Signal!",
-//!       "timestamp": 1699999999999
-//!     }
-//!   }
-//! }
-//! ```
-//!
-//! The `sourceNumber` field is the sender's E.164 phone number.
-//! Calciforge uses it directly for identity lookup.
+//! There is **no** webhook receiver in Calciforge for Signal anymore — we no
+//! longer terminate HTTP from a ZeroClaw runtime peer. The legacy webhook
+//! configuration fields (`zeroclaw_endpoint`, `zeroclaw_auth_token`,
+//! `webhook_listen`, `webhook_path`, `webhook_secret`) are rejected at startup
+//! when `kind = "signal"`.
 //!
 //! ## Config
 //!
@@ -49,26 +25,20 @@
 //! [[channels]]
 //! kind = "signal"
 //! enabled = true
-//! # OpenClaw gateway endpoint — the running OpenClaw instance that owns the Signal session
-//! # and can forward messages via its /tools/invoke HTTP API.
-//! zeroclaw_endpoint = "http://127.0.0.1:18789"
-//! # Bearer token for the OpenClaw gateway
-//! zeroclaw_auth_token = "REPLACE_WITH_AUTH_TOKEN"
-//! # Webhook path Calciforge registers (on the Calciforge gateway HTTP server)
-//! webhook_path = "/webhooks/signal"
-//! # HMAC secret for webhook signature verification (optional but recommended)
-//! webhook_secret = "your-shared-secret"
-//! # Webhook HTTP listen address (host:port). Default: 0.0.0.0:18796
-//! webhook_listen = "0.0.0.0:18796"
-//! # Allowed E.164 phone numbers. Must match identity aliases with channel = "signal".
-//! allowed_numbers = ["+14155551234"]
+//! signal_cli_url = "http://127.0.0.1:8080"
+//! signal_account = "+15555550001"
+//! allowed_numbers = ["+15555550001"]
+//! # Optional:
+//! # signal_group_id = "group.abc123…"
+//! # signal_ignore_attachments = false
+//! # signal_ignore_stories = false
 //! ```
 
 use crate::sync::Arc;
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
+use zeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
+use zeroclaw::channels::SignalChannel as ZclSignalChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},
@@ -84,124 +54,43 @@ use adversary_detector::middleware::ChannelScanner;
 use adversary_detector::verdict::ScanContext;
 
 // ---------------------------------------------------------------------------
-// Incoming webhook payload types (Signal REST API format)
-// ---------------------------------------------------------------------------
-
-/// Top-level Signal REST API webhook body.
-#[derive(Debug, Deserialize)]
-struct SignalWebhookPayload {
-    /// The receiving account (our Signal number).
-    #[serde(default, rename = "account")]
-    _account: Option<String>,
-    /// The message envelope containing sender and message data.
-    #[serde(default)]
-    envelope: Option<SignalEnvelope>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SignalEnvelope {
-    /// Sender phone number in E.164 format.
-    #[serde(default)]
-    source: Option<String>,
-    /// Alternative field for sender number (some Signal API versions).
-    #[serde(rename = "sourceNumber", default)]
-    source_number: Option<String>,
-    /// Display name (if known in sender's contacts - unused for identity).
-    #[serde(rename = "sourceName", default)]
-    _source_name: Option<String>,
-    /// Device ID of the sender.
-    #[serde(rename = "sourceDevice", default)]
-    _source_device: Option<u32>,
-    /// Unix timestamp in milliseconds.
-    #[serde(default)]
-    timestamp: Option<u64>,
-    /// The actual message data.
-    #[serde(rename = "dataMessage", default)]
-    data_message: Option<SignalDataMessage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SignalDataMessage {
-    /// The message text content.
-    #[serde(default)]
-    message: Option<String>,
-    /// Timestamp (redundant with envelope timestamp).
-    #[serde(default)]
-    timestamp: Option<u64>,
-}
-
-/// A parsed, normalised inbound Signal message.
-#[derive(Debug, Clone)]
-pub struct InboundSignalMessage {
-    /// Sender phone number in E.164 format (e.g. `"+14155551234"`).
-    pub from: String,
-    /// Message text content.
-    pub text: String,
-    /// Unix timestamp in seconds.
-    pub _timestamp: u64,
-}
-
-// ---------------------------------------------------------------------------
-// Outbound reply request (for the ZeroClaw /tools/invoke API)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-struct ToolInvokeRequest {
-    tool: &'static str,
-    args: ToolInvokeArgs,
-}
-
-#[derive(Debug, Serialize)]
-struct ToolInvokeArgs {
-    action: &'static str,
-    channel: &'static str,
-    target: String,
-    message: String,
-}
-
-// ---------------------------------------------------------------------------
 // Signal channel
 // ---------------------------------------------------------------------------
 
-/// Signal channel adapter.
-///
-/// Runs an HTTP server listening for incoming webhook POSTs from OpenClaw
-/// (or any conforming Signal webhook source), resolves sender identity,
-/// dispatches to the configured agent, and sends the reply back via the
-/// OpenClaw `/tools/invoke` API.
-pub struct SignalChannel {
+/// Calciforge-side bridge that owns a `zeroclawlabs::SignalChannel`, drains
+/// its inbound stream, and dispatches messages through the standard
+/// router / command / context pipeline.
+pub struct SignalChannel<C: Channel + ?Sized = ZclSignalChannel> {
     config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
-    http_client: reqwest::Client,
+    /// The actual transport used to send replies. Generic so tests can plug
+    /// in a mock; defaults to the concrete `ZclSignalChannel`.
+    transport: Arc<C>,
 }
 
-impl SignalChannel {
+impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
     pub fn new(
         config: Arc<CalciforgeConfig>,
         router: Arc<Router>,
         command_handler: Arc<CommandHandler>,
         context_store: ContextStore,
         channel_scanner: Arc<ChannelScanner>,
+        transport: Arc<C>,
     ) -> Self {
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .expect("failed to build HTTP client");
-
         Self {
             config,
             router,
             command_handler,
             context_store,
             channel_scanner,
-            http_client,
+            transport,
         }
     }
 
-    /// Check if message scanning is enabled for this channel.
+    /// Whether adversary scanning is enabled for the `signal` channel.
     fn scan_enabled(&self) -> bool {
         self.config
             .channels
@@ -211,151 +100,44 @@ impl SignalChannel {
             .unwrap_or(false)
     }
 
-    /// Parse an incoming webhook payload and return all valid inbound messages.
-    ///
-    /// Filters out:
-    /// - Non-text messages (receipts, typing indicators, etc.)
-    /// - Messages from numbers not in the `allowed_numbers` list
-    /// - Messages with empty body
-    pub fn parse_webhook_payload(
-        &self,
-        raw: &serde_json::Value,
-        allowed_numbers: &[String],
-    ) -> Vec<InboundSignalMessage> {
-        let mut messages = Vec::new();
-
-        let payload: SignalWebhookPayload = match serde_json::from_value(raw.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("Signal: failed to deserialise webhook payload: {e}");
-                return messages;
-            }
-        };
-
-        let Some(envelope) = payload.envelope else {
-            debug!("Signal: webhook has no envelope, skipping");
-            return messages;
-        };
-
-        // Get sender number from source or source_number field
-        let from = envelope
-            .source
-            .or(envelope.source_number)
-            .unwrap_or_default();
-
-        if from.is_empty() {
-            warn!("Signal: message has no source number, skipping");
-            return messages;
-        }
-
-        // Normalise phone number to E.164 (add + if missing)
-        let from = normalise_phone(&from);
-
-        // Allowlist check
-        if !is_number_allowed(&from, allowed_numbers) {
-            warn!(
-                from = %from,
-                "Signal: dropping message from number not in allowed_numbers"
-            );
-            return messages;
-        }
-
-        // Get message text from dataMessage
-        let Some(data_msg) = envelope.data_message else {
-            debug!("Signal: envelope has no dataMessage, skipping");
-            return messages;
-        };
-
-        let text = match data_msg.message {
-            Some(t) if !t.trim().is_empty() => t,
-            _ => {
-                debug!("Signal: skipping empty text message");
-                return messages;
-            }
-        };
-
-        // Extract timestamp (prefer dataMessage timestamp, fall back to envelope)
-        let timestamp_ms = data_msg.timestamp.or(envelope.timestamp).unwrap_or(0);
-        let timestamp = timestamp_ms / 1000; // Convert ms to seconds
-
-        messages.push(InboundSignalMessage {
-            from,
-            text,
-            _timestamp: timestamp,
-        });
-
-        messages
-    }
-
-    /// Send a reply to a Signal user via the OpenClaw gateway `/tools/invoke` API.
-    ///
-    /// OpenClaw must be running with a live Signal session for this to succeed.
-    /// Returns Ok(()) if the HTTP call was accepted (2xx), Err otherwise.
-    pub async fn send_reply(
-        &self,
-        zeroclaw_endpoint: &str,
-        zeroclaw_auth_token: Option<&str>,
-        to: &str,
-        text: &str,
-    ) -> Result<()> {
-        let url = format!("{zeroclaw_endpoint}/tools/invoke");
-
-        let body = ToolInvokeRequest {
-            tool: "message",
-            args: ToolInvokeArgs {
-                action: "send",
-                channel: "signal",
-                target: to.to_string(),
-                message: text.to_string(),
-            },
-        };
-
-        let mut req = self.http_client.post(&url).json(&body);
-
-        if let Some(token) = zeroclaw_auth_token {
-            req = req.bearer_auth(token);
-        }
-
+    /// Best-effort reply send; logs (does not propagate) failures.
+    async fn send_reply(&self, recipient: &str, body: &str) {
         let start = std::time::Instant::now();
-        let response_len = text.len();
-        let resp = req
-            .send()
+        let response_len = body.len();
+        match self
+            .transport
+            .send(&SendMessage::new(body, recipient))
             .await
-            .with_context(|| format!("Signal: HTTP error sending reply via {url}"))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Signal: OpenClaw replied {status} for send to {to}: {body_text}");
+        {
+            Ok(()) => {
+                telemetry::reply_sent(
+                    "signal",
+                    recipient,
+                    "reply",
+                    response_len,
+                    start.elapsed().as_millis() as u64,
+                );
+            }
+            Err(e) => {
+                warn!(recipient = %recipient, error = %e, "Signal: failed to send reply");
+            }
         }
-
-        telemetry::reply_sent(
-            "signal",
-            to,
-            "reply",
-            response_len,
-            start.elapsed().as_millis() as u64,
-        );
-        Ok(())
     }
 
-    /// Handle a single inbound Signal message end-to-end.
-    ///
-    /// Performs identity lookup, command dispatch, agent routing, and reply.
-    pub async fn handle_message(
-        self: Arc<Self>,
-        msg: InboundSignalMessage,
-        zeroclaw_endpoint: String,
-        zeroclaw_auth_token: Option<String>,
-    ) {
+    /// Handle a single inbound `ChannelMessage` end-to-end.
+    pub async fn handle_message(self: Arc<Self>, msg: ChannelMessage) {
         let received_at = std::time::Instant::now();
-        let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg._timestamp);
+        let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg.timestamp);
 
-        // Clone owned strings up front so they can be moved into spawned tasks.
-        let from: String = msg.from.clone();
-        let text: String = msg.text.clone();
+        let from = msg.sender.clone();
+        let reply_target = if msg.reply_target.is_empty() {
+            msg.sender.clone()
+        } else {
+            msg.reply_target.clone()
+        };
+        let text = msg.content.clone();
 
-        // Auth boundary: resolve sender to identity
+        // Auth boundary: resolve sender to identity (looks up by E.164 phone).
         let identity = match resolve_channel_sender("signal", &from, &self.config) {
             Some(id) => id,
             None => {
@@ -366,11 +148,9 @@ impl SignalChannel {
 
         telemetry::authorized_message("signal", &identity.id, &from, text.len(), delivery_lag_ms);
 
-        // Context key: scoped per identity (phone is the key)
         let chat_key = format!("signal-{}", identity.id);
 
-        // ── Adversary inbound scan ────────────────────────────────────────────
-
+        // ── Adversary inbound scan ────────────────────────────────────────
         if self.scan_enabled() {
             let verdict = self
                 .channel_scanner
@@ -384,27 +164,24 @@ impl SignalChannel {
                         "Signal: inbound message BLOCKED by adversary scan"
                     );
                     let channel = self.clone();
-                    let from_owned = from.clone();
+                    let target = reply_target.clone();
                     let reason_owned = reason.clone();
                     tokio::spawn(async move {
-                        let reply =
-                            format!("🚫 Message blocked by security scanner: {reason_owned}");
-                        if let Err(e) = channel
+                        channel
                             .send_reply(
-                                &zeroclaw_endpoint,
-                                zeroclaw_auth_token.as_deref(),
-                                &from_owned,
-                                &reply,
+                                &target,
+                                &format!("🚫 Message blocked by security scanner: {reason_owned}"),
                             )
-                            .await
-                        {
-                            warn!(from = %from_owned, error = %e, "Signal: failed to send block notice");
-                        }
+                            .await;
                     });
                     return;
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                    warn!(identity = %identity.id, reason = %reason, "Signal: inbound message flagged REVIEW — passing with caution");
+                    warn!(
+                        identity = %identity.id,
+                        reason = %reason,
+                        "Signal: inbound message flagged REVIEW — passing with caution"
+                    );
                 }
                 adversary_detector::verdict::ScanVerdict::Clean => {
                     debug!(identity = %identity.id, "Signal: inbound scan clean");
@@ -412,30 +189,20 @@ impl SignalChannel {
             }
         }
 
-        // ── Command fast-path ──────────────────────────────────────────────
+        // ── Command fast-path ─────────────────────────────────────────────
 
-        // Pre-auth commands (!ping, !help, !agents, !metrics)
+        // Pre-auth handler (`!ping`, `!help`, `!agents`, `!metrics`, …)
         if let Some(reply) = self.command_handler.handle(&text) {
             debug!(identity = %identity.id, cmd = %text.trim(), "Signal: handled pre-auth command");
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send command reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
 
-        // Unknown !command handling
+        // Unknown !command
         if CommandHandler::is_command(&text)
             && !CommandHandler::is_status_command(&text)
             && !CommandHandler::is_switch_command(&text)
@@ -445,130 +212,70 @@ impl SignalChannel {
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "failed to send unknown-command reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
 
-        // !status — post-auth command
+        // !status
         if CommandHandler::is_status_command(&text) {
             let reply = self
                 .command_handler
                 .cmd_status_for_identity(&identity.id)
                 .await;
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send status reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
 
-        // !switch — post-auth command
+        // !switch
         if CommandHandler::is_switch_command(&text) {
             let reply = self.command_handler.handle_switch(&text, &identity.id);
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send switch reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
 
-        // !model — post-auth command for alloy selection
+        // !model
         if CommandHandler::is_model_command(&text) {
             let reply = self.command_handler.handle_model(&text, &identity.id);
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send model reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
 
-        // !sessions — post-auth command
+        // !sessions
         if CommandHandler::is_sessions_command(&text) {
             let reply = self
                 .command_handler
                 .handle_sessions(&text, &identity.id)
                 .await;
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send sessions reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
 
-        // !default — post-auth command
+        // !default
         if CommandHandler::is_default_command(&text) {
             let reply = self.command_handler.handle_default(&identity.id);
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        &reply,
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send default reply");
-                }
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
@@ -577,24 +284,16 @@ impl SignalChannel {
         if text.trim().eq_ignore_ascii_case("!context clear") {
             self.context_store.clear(&chat_key);
             let channel = self.clone();
-            let from_owned = from.clone();
+            let target = reply_target.clone();
             tokio::spawn(async move {
-                if let Err(e) = channel
-                    .send_reply(
-                        &zeroclaw_endpoint,
-                        zeroclaw_auth_token.as_deref(),
-                        &from_owned,
-                        "🧹 Conversation context cleared.",
-                    )
-                    .await
-                {
-                    warn!(from = %from_owned, error = %e, "Signal: failed to send context-clear reply");
-                }
+                channel
+                    .send_reply(&target, "🧹 Conversation context cleared.")
+                    .await;
             });
             return;
         }
 
-        // ── Agent dispatch ─────────────────────────────────────────────────
+        // ── Agent dispatch ───────────────────────────────────────────────
 
         let agent_id = match self.command_handler.active_agent_for(&identity.id) {
             Some(id) => id,
@@ -609,22 +308,16 @@ impl SignalChannel {
             None => {
                 warn!(agent_id = %agent_id, "Signal: agent not in config");
                 let channel = self.clone();
-                let from_owned = from.clone();
+                let target = reply_target.clone();
                 tokio::spawn(async move {
-                    let _ = channel
-                        .send_reply(
-                            &zeroclaw_endpoint,
-                            zeroclaw_auth_token.as_deref(),
-                            &from_owned,
-                            "⚠️ Agent not configured.",
-                        )
+                    channel
+                        .send_reply(&target, "⚠️ Agent not configured.")
                         .await;
                 });
                 return;
             }
         };
 
-        // Sender label for context preambles
         let sender_label = self
             .config
             .identities
@@ -638,7 +331,6 @@ impl SignalChannel {
         let model_override = self.command_handler.active_model_for_identity(&identity_id);
         let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
-        // Spawn agent dispatch — handler returns immediately
         tokio::spawn(async move {
             let queue_wait_ms = received_at.elapsed().as_millis() as u64;
             telemetry::agent_dispatch_started("signal", &identity_id, &agent_id, queue_wait_ms);
@@ -673,7 +365,6 @@ impl SignalChannel {
                         response.len(),
                     );
 
-                    // Outbound scanning dropped — see docs/roadmap/outbound-sensitive-data-detection.md
                     let final_response = response;
 
                     debug!(
@@ -683,7 +374,6 @@ impl SignalChannel {
                         "Signal: got agent response"
                     );
 
-                    // Record exchange in context buffer
                     self.context_store.push_with_options(
                         &chat_key,
                         &sender_label,
@@ -693,31 +383,11 @@ impl SignalChannel {
                         preserve_native_commands,
                     );
 
-                    if let Err(e) = self
-                        .send_reply(
-                            &zeroclaw_endpoint,
-                            zeroclaw_auth_token.as_deref(),
-                            &from,
-                            &final_response,
-                        )
-                        .await
-                    {
-                        warn!(
-                            identity = %identity_id,
-                            error = %e,
-                            "Signal: failed to send agent reply"
-                        );
-                    }
+                    self.send_reply(&reply_target, &final_response).await;
                 }
                 Err(e) => {
                     warn!(identity = %identity_id, error = %e, "Signal: agent dispatch failed");
-                    let _ = self
-                        .send_reply(
-                            &zeroclaw_endpoint,
-                            zeroclaw_auth_token.as_deref(),
-                            &from,
-                            &format!("⚠️ Agent error: {e}"),
-                        )
+                    self.send_reply(&reply_target, &format!("⚠️ Agent error: {e}"))
                         .await;
                 }
             }
@@ -726,17 +396,37 @@ impl SignalChannel {
 }
 
 // ---------------------------------------------------------------------------
-// Webhook HTTP server
+// Migration error rendering for legacy webhook config
 // ---------------------------------------------------------------------------
 
-/// Run the Signal webhook HTTP listener.
-///
-/// Starts an HTTP server on `listen_addr` that accepts POST requests on
-/// `webhook_path`. For each valid inbound message, spawns a handler task that
-/// routes through Calciforge's identity/agent system and sends the reply via
-/// OpenClaw's `/tools/invoke` API.
-///
-/// This function runs until the server errors or is cancelled.
+const MIGRATION_TOML: &str = r#"
+[[channels]]
+kind = "signal"
+enabled = true
+signal_cli_url = "http://127.0.0.1:8080"
+signal_account = "+15555550001"
+allowed_numbers = ["+15555550001"]
+# Optional:
+# signal_group_id = "group.abc123…"
+# signal_ignore_attachments = false
+# signal_ignore_stories = false
+"#;
+
+fn migration_error(field: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Signal channel: legacy webhook field `{field}` is no longer supported. \
+         Calciforge now embeds zeroclawlabs::SignalChannel and talks directly \
+         to signal-cli-rest-api — no ZeroClaw daemon webhook required. \
+         Update your config to the new schema:\n{MIGRATION_TOML}"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Entry point: spawn embedded SignalChannel listener and dispatch loop
+// ---------------------------------------------------------------------------
+
+/// Run the embedded Signal channel. Returns when the listener exits or
+/// errors irrecoverably.
 pub async fn run(
     config: Arc<CalciforgeConfig>,
     router: Arc<Router>,
@@ -744,259 +434,91 @@ pub async fn run(
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
 ) -> Result<()> {
-    use std::net::SocketAddr;
-    use tokio::io::AsyncReadExt;
-
-    // Find Signal channel config
-    let signal_channel_cfg = config
+    // Locate the enabled signal channel config block.
+    let signal_cfg = config
         .channels
         .iter()
         .find(|c| c.kind == "signal" && c.enabled)
         .context("no enabled signal channel found in config")?;
 
-    let listen_addr: SocketAddr = signal_channel_cfg
-        .webhook_listen
-        .as_deref()
-        .unwrap_or("0.0.0.0:18796")
-        .parse()
-        .context("invalid signal webhook_listen address")?;
+    // Reject legacy webhook fields with a migration message.
+    if signal_cfg.zeroclaw_endpoint.is_some() {
+        return Err(migration_error("zeroclaw_endpoint"));
+    }
+    if signal_cfg.zeroclaw_auth_token.is_some() {
+        return Err(migration_error("zeroclaw_auth_token"));
+    }
+    if signal_cfg.webhook_listen.is_some() {
+        return Err(migration_error("webhook_listen"));
+    }
+    if signal_cfg.webhook_path.is_some() {
+        return Err(migration_error("webhook_path"));
+    }
+    if signal_cfg.webhook_secret.is_some() {
+        return Err(migration_error("webhook_secret"));
+    }
 
-    let zeroclaw_endpoint = signal_channel_cfg
-        .zeroclaw_endpoint
+    let signal_cli_url = signal_cfg
+        .signal_cli_url
         .as_deref()
-        .unwrap_or("http://127.0.0.1:18789")
+        .context("signal_cli_url is required for kind = \"signal\"")?
         .to_string();
-
-    let zeroclaw_auth_token = signal_channel_cfg.zeroclaw_auth_token.clone();
-    let webhook_path = signal_channel_cfg
-        .webhook_path
+    let signal_account = signal_cfg
+        .signal_account
         .as_deref()
-        .unwrap_or("/webhooks/signal")
+        .context("signal_account is required for kind = \"signal\"")?
         .to_string();
-    let webhook_secret = signal_channel_cfg.webhook_secret.clone();
-    let allowed_numbers = signal_channel_cfg.allowed_numbers.clone();
+    let group_id = signal_cfg.signal_group_id.clone();
+    let allowed = signal_cfg.allowed_numbers.clone();
+    let ignore_attachments = signal_cfg.signal_ignore_attachments;
+    let ignore_stories = signal_cfg.signal_ignore_stories;
 
     info!(
-        listen = %listen_addr,
-        path = %webhook_path,
-        zeroclaw = %zeroclaw_endpoint,
-        "Signal webhook channel starting"
+        url = %signal_cli_url,
+        account = %signal_account,
+        group = ?group_id,
+        "Signal channel starting (embedded zeroclawlabs::SignalChannel)"
     );
 
-    let channel = Arc::new(SignalChannel::new(
+    let transport = Arc::new(ZclSignalChannel::new(
+        signal_cli_url,
+        signal_account,
+        group_id,
+        allowed,
+        ignore_attachments,
+        ignore_stories,
+    ));
+
+    let bridge = Arc::new(SignalChannel::<ZclSignalChannel>::new(
         config,
         router,
         command_handler,
         context_store,
         channel_scanner,
+        transport.clone(),
     ));
 
-    let listener = tokio::net::TcpListener::bind(listen_addr)
-        .await
-        .with_context(|| format!("binding Signal webhook listener on {listen_addr}"))?;
+    // Create the inbound channel and start the listener.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(64);
 
-    info!(addr = %listen_addr, "Signal webhook listener ready");
+    let listener_transport = transport.clone();
+    let listener_handle = tokio::spawn(async move {
+        if let Err(e) = listener_transport.listen(tx).await {
+            warn!(error = %e, "Signal: listener exited with error");
+        }
+    });
 
-    loop {
-        let (mut stream, peer_addr) = match listener.accept().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                warn!(error = %e, "Signal: accept error");
-                continue;
-            }
-        };
-
-        let channel = channel.clone();
-        let zeroclaw_endpoint = zeroclaw_endpoint.clone();
-        let zeroclaw_auth_token = zeroclaw_auth_token.clone();
-        let webhook_path = webhook_path.clone();
-        let webhook_secret = webhook_secret.clone();
-        let allowed_numbers = allowed_numbers.clone();
-
+    // Drain inbound messages.
+    while let Some(msg) = rx.recv().await {
+        let bridge = bridge.clone();
         tokio::spawn(async move {
-            // Read the raw HTTP request (max 256 KB)
-            let mut buf = vec![0u8; 262_144];
-            let n = match stream.read(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(peer = %peer_addr, error = %e, "Signal: read error");
-                    return;
-                }
-            };
-
-            let raw = match std::str::from_utf8(&buf[..n]) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ =
-                        send_http_response(&mut stream, 400, "Bad Request", "Invalid UTF-8").await;
-                    return;
-                }
-            };
-
-            // Parse method and path from first line
-            let first_line = raw.lines().next().unwrap_or("");
-            let mut parts = first_line.splitn(3, ' ');
-            let method = parts.next().unwrap_or("").to_uppercase();
-            let path = parts.next().unwrap_or("");
-
-            // Health check
-            if method == "GET" && (path == "/health" || path == "/healthz") {
-                let _ = send_http_response(&mut stream, 200, "OK", r#"{"status":"ok"}"#).await;
-                return;
-            }
-
-            // Only POST to the configured webhook path
-            if method != "POST" || path != webhook_path {
-                let _ =
-                    send_http_response(&mut stream, 404, "Not Found", r#"{"error":"not found"}"#)
-                        .await;
-                return;
-            }
-
-            // Extract body (everything after the blank line that separates headers from body)
-            let body = if let Some(idx) = raw.find("\r\n\r\n") {
-                &raw[idx + 4..]
-            } else if let Some(idx) = raw.find("\n\n") {
-                &raw[idx + 2..]
-            } else {
-                ""
-            };
-
-            // Optional HMAC verification
-            if let Some(ref secret) = webhook_secret {
-                let signature = raw
-                    .lines()
-                    .find(|l| l.to_lowercase().starts_with("x-hub-signature-256:"))
-                    .and_then(|l| l.split_once(':').map(|x| x.1))
-                    .map(|s| s.trim());
-
-                if let Some(sig) = signature {
-                    if !verify_hmac_sha256(secret, body, sig) {
-                        warn!(peer = %peer_addr, "Signal: HMAC verification failed");
-                        let _ = send_http_response(
-                            &mut stream,
-                            401,
-                            "Unauthorized",
-                            r#"{"error":"invalid signature"}"#,
-                        )
-                        .await;
-                        return;
-                    }
-                } else {
-                    warn!(peer = %peer_addr, "Signal: missing HMAC signature");
-                    let _ = send_http_response(
-                        &mut stream,
-                        401,
-                        "Unauthorized",
-                        r#"{"error":"missing signature"}"#,
-                    )
-                    .await;
-                    return;
-                }
-            }
-
-            // Parse JSON body
-            let json: serde_json::Value = match serde_json::from_str(body) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(peer = %peer_addr, error = %e, "Signal: JSON parse error");
-                    let _ = send_http_response(
-                        &mut stream,
-                        400,
-                        "Bad Request",
-                        r#"{"error":"invalid json"}"#,
-                    )
-                    .await;
-                    return;
-                }
-            };
-
-            // Parse and handle messages
-            let messages = channel.parse_webhook_payload(&json, &allowed_numbers);
-
-            if messages.is_empty() {
-                // Return 200 even if no messages (could be a valid webhook with no actionable content)
-                let _ = send_http_response(&mut stream, 200, "OK", r#"{"received":true}"#).await;
-                return;
-            }
-
-            // Acknowledge receipt immediately
-            if let Err(e) = send_http_response(&mut stream, 200, "OK", r#"{"received":true}"#).await
-            {
-                warn!(peer = %peer_addr, error = %e, "Signal: failed to send ack");
-            }
-
-            // Handle each message asynchronously
-            for msg in messages {
-                let ch = channel.clone();
-                let zeroclaw_ep = zeroclaw_endpoint.clone();
-                let zeroclaw_token = zeroclaw_auth_token.clone();
-                tokio::spawn(async move {
-                    ch.handle_message(msg, zeroclaw_ep, zeroclaw_token).await;
-                });
-            }
+            bridge.handle_message(msg).await;
         });
     }
-}
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
-/// Normalise a phone number to E.164 format (with leading +).
-fn normalise_phone(num: &str) -> String {
-    let trimmed = num.trim();
-    let cleaned = trimmed.replace([' ', '-'], "");
-    if cleaned.starts_with('+') {
-        cleaned
-    } else {
-        format!("+{cleaned}")
-    }
-}
-
-/// Check if a phone number is in the allowed list.
-/// Supports wildcard "*" to allow any number (not recommended for production).
-fn is_number_allowed(id: &str, allowed: &[String]) -> bool {
-    if allowed.is_empty() {
-        return false;
-    }
-    allowed.iter().any(|a| a == "*" || a == id)
-}
-
-/// Verify HMAC-SHA256 signature.
-fn verify_hmac_sha256(secret: &str, body: &str, signature: &str) -> bool {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
-    type HmacSha256 = Hmac<Sha256>;
-
-    let sig_bytes = match hex::decode(signature.strip_prefix("sha256=").unwrap_or(signature)) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-
-    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-
-    mac.update(body.as_bytes());
-    mac.verify_slice(&sig_bytes).is_ok()
-}
-
-/// Send a simple HTTP response.
-async fn send_http_response(
-    stream: &mut tokio::net::TcpStream,
-    status: u16,
-    status_text: &str,
-    body: &str,
-) -> std::io::Result<()> {
-    let response = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(response.as_bytes()).await?;
-    stream.flush().await
+    // Listener returned (channel closed); join it for cleanup.
+    let _ = listener_handle.await;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,128 +528,252 @@ async fn send_http_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig, Identity,
+        RoutingRule,
+    };
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+    use tokio::sync::mpsc;
 
-    // Test normalise_phone helper
-    #[test]
-    fn test_normalise_phone_with_plus() {
-        assert_eq!(normalise_phone("+15555550100"), "+15555550100");
+    /// Test double for `zeroclawlabs::Channel`. Records every `send` call so
+    /// tests can assert routing decisions without standing up a real
+    /// signal-cli daemon.
+    struct MockChannel {
+        sent: StdMutex<Vec<SendMessage>>,
     }
 
-    #[test]
-    fn test_normalise_phone_without_plus() {
-        assert_eq!(normalise_phone("15555550100"), "+15555550100");
+    impl MockChannel {
+        fn new() -> Self {
+            Self {
+                sent: StdMutex::new(Vec::new()),
+            }
+        }
+
+        fn drain(&self) -> Vec<SendMessage> {
+            std::mem::take(&mut *self.sent.lock().unwrap())
+        }
     }
 
-    #[test]
-    fn test_normalise_phone_with_spaces() {
-        // Function only trims, doesn't strip internal spaces
-        assert_eq!(normalise_phone("  +15555550100  "), "+15555550100");
-        assert_eq!(normalise_phone("  15555550100  "), "+15555550100");
+    #[async_trait]
+    impl Channel for MockChannel {
+        fn name(&self) -> &str {
+            "mock-signal"
+        }
+
+        async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
+            self.sent.lock().unwrap().push(message.clone());
+            Ok(())
+        }
+
+        async fn listen(&self, _tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+            // Tests drive `handle_message` directly; listen() is a no-op.
+            Ok(())
+        }
     }
 
-    #[test]
-    fn test_normalise_phone_preserves_formatting() {
-        // Function strips dashes and internal spaces, ensuring E.164 format
-        assert_eq!(normalise_phone("+1-555-555-0100"), "+15555550100");
-        assert_eq!(normalise_phone("555-555-0100"), "+5555550100");
-        assert_eq!(normalise_phone("+1 555 555 0100"), "+15555550100");
+    /// Build a `CalciforgeConfig` with one Signal channel block, optional
+    /// legacy webhook fields applied via `mutate`, and one identity aliased
+    /// to `"+15555550100"` so dispatch can resolve it.
+    fn make_test_config<F: FnOnce(&mut ChannelConfig)>(mutate: F) -> Arc<CalciforgeConfig> {
+        let mut channel = ChannelConfig {
+            kind: "signal".to_string(),
+            bot_token_file: None,
+            enabled: true,
+            homeserver: None,
+            access_token_file: None,
+            room_id: None,
+            allowed_users: vec![],
+            zeroclaw_endpoint: None,
+            zeroclaw_auth_token: None,
+            webhook_listen: None,
+            webhook_path: None,
+            webhook_secret: None,
+            allowed_numbers: vec!["+15555550100".to_string()],
+            signal_cli_url: Some("http://127.0.0.1:8080".to_string()),
+            signal_account: Some("+15555550001".to_string()),
+            signal_group_id: None,
+            signal_ignore_attachments: false,
+            signal_ignore_stories: false,
+            control_port: None,
+            scan_messages: false,
+            allow_chat_secret_set: false,
+        };
+        mutate(&mut channel);
+
+        Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
+            identities: vec![Identity {
+                id: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                aliases: vec![ChannelAlias {
+                    channel: "signal".to_string(),
+                    id: "+15555550100".to_string(),
+                }],
+                role: Some("owner".to_string()),
+            }],
+            agents: vec![AgentConfig {
+                id: "librarian".to_string(),
+                kind: "openclaw-channel".to_string(),
+                endpoint: "http://127.0.0.1:18789".to_string(),
+                ..Default::default()
+            }],
+            routing: vec![RoutingRule {
+                identity: "alice".to_string(),
+                default_agent: "librarian".to_string(),
+                allowed_agents: vec![],
+            }],
+            channels: vec![channel],
+            permissions: None,
+            memory: None,
+            context: Default::default(),
+            model_shortcuts: vec![],
+            alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
+            exec_models: vec![],
+            security: None,
+            proxy: None,
+            local_models: None,
+        })
     }
 
-    #[test]
-    fn test_normalise_phone_empty() {
-        assert_eq!(normalise_phone(""), "+");
+    fn make_scanner() -> Arc<ChannelScanner> {
+        let security_config = adversary_detector::profiles::SecurityConfig::balanced();
+        let scanner =
+            adversary_detector::scanner::AdversaryScanner::new(security_config.scanner.clone());
+        let audit_logger = adversary_detector::audit::AuditLogger::new("test-signal");
+        Arc::new(ChannelScanner::new(scanner, audit_logger, security_config))
     }
 
-    // Test is_number_allowed helper
-    #[test]
-    fn test_is_number_allowed_exact_match() {
-        let allowed = vec!["+15555550100".to_string()];
-        assert!(is_number_allowed("+15555550100", &allowed));
+    fn dummy_bridge_with(
+        config: Arc<CalciforgeConfig>,
+        transport: Arc<MockChannel>,
+    ) -> Arc<SignalChannel<MockChannel>> {
+        let router = Arc::new(Router::new());
+        let tmp = tempfile::tempdir().expect("tempdir for signal test state isolation");
+        let command_handler = Arc::new(CommandHandler::with_state_dir(
+            config.clone(),
+            tmp.path().to_path_buf(),
+        ));
+        // Leak tmp so the dir survives for the lifetime of the test (state
+        // dir paths are cached inside CommandHandler).
+        std::mem::forget(tmp);
+        let context_store = ContextStore::new(20, 5);
+        Arc::new(SignalChannel::<MockChannel>::new(
+            config,
+            router,
+            command_handler,
+            context_store,
+            make_scanner(),
+            transport,
+        ))
     }
 
-    #[test]
-    fn test_is_number_allowed_wildcard() {
-        let allowed = vec!["*".to_string()];
-        assert!(is_number_allowed("+15555550100", &allowed));
-        assert!(is_number_allowed("any-number", &allowed));
+    /// `run` should refuse to start with the legacy webhook fields and surface
+    /// a migration error pointing the operator at the new schema.
+    #[tokio::test]
+    async fn test_run_errors_on_old_config_fields() {
+        let config = make_test_config(|c| {
+            c.zeroclaw_endpoint = Some("http://127.0.0.1:18789".to_string());
+        });
+
+        let router = Arc::new(Router::new());
+        let tmp = tempfile::tempdir().expect("tempdir for signal test state isolation");
+        let command_handler = Arc::new(CommandHandler::with_state_dir(
+            config.clone(),
+            tmp.path().to_path_buf(),
+        ));
+        let context_store = ContextStore::new(20, 5);
+        let channel_scanner = make_scanner();
+
+        let err = run(
+            config,
+            router,
+            command_handler,
+            context_store,
+            channel_scanner,
+        )
+        .await
+        .expect_err("legacy zeroclaw_endpoint must be rejected");
+
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("zeroclaw_endpoint"),
+            "error should name the offending field: {rendered}"
+        );
+        assert!(
+            rendered.contains("signal_cli_url"),
+            "error should reference the new schema: {rendered}"
+        );
     }
 
-    #[test]
-    fn test_is_number_allowed_not_in_list() {
-        let allowed = vec!["+15555550100".to_string()];
-        assert!(!is_number_allowed("+15555550101", &allowed));
+    /// Unknown senders (no matching identity alias) must be silently dropped —
+    /// no reply is sent.
+    #[tokio::test]
+    async fn test_handle_message_unknown_sender_drops() {
+        let config = make_test_config(|_| {});
+        let transport = Arc::new(MockChannel::new());
+        let bridge = dummy_bridge_with(config, transport.clone());
+
+        let msg = ChannelMessage {
+            id: "1".into(),
+            sender: "+19990001111".into(),
+            reply_target: "+19990001111".into(),
+            content: "!ping".into(),
+            channel: "signal".into(),
+            timestamp: 0,
+            thread_ts: None,
+            interruption_scope_id: None,
+            attachments: vec![],
+        };
+
+        bridge.handle_message(msg).await;
+
+        // Allow any spawned tasks to settle (none should produce sends).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            transport.drain().is_empty(),
+            "unknown sender must not trigger any send"
+        );
     }
 
-    #[test]
-    fn test_is_number_allowed_empty_list() {
-        let allowed: Vec<String> = vec![];
-        assert!(!is_number_allowed("+15555550100", &allowed));
-    }
+    /// Group messages set `reply_target = "group:<id>"`. The bridge must reply
+    /// to that target verbatim, never to the raw `sender`.
+    #[tokio::test]
+    async fn test_handle_message_replies_to_group_target() {
+        let config = make_test_config(|_| {});
+        let transport = Arc::new(MockChannel::new());
+        let bridge = dummy_bridge_with(config, transport.clone());
 
-    // Test verify_hmac_sha256 helper
-    #[test]
-    fn test_verify_hmac_sha256_valid() {
-        let secret = "test-secret";
-        let body = "test-message-body";
+        let msg = ChannelMessage {
+            id: "1".into(),
+            sender: "+15555550100".into(),
+            reply_target: "group:abc".into(),
+            content: "!ping".into(),
+            channel: "signal".into(),
+            timestamp: 0,
+            thread_ts: None,
+            interruption_scope_id: None,
+            attachments: vec![],
+        };
 
-        // Generate a valid signature
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
-        type HmacSha256 = Hmac<Sha256>;
+        bridge.handle_message(msg).await;
 
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
-        mac.update(body.as_bytes());
-        let sig_bytes = mac.finalize().into_bytes();
-        let sig_hex = hex::encode(sig_bytes);
+        // !ping is dispatched on a spawned task; give it a beat to land.
+        for _ in 0..20 {
+            if !transport.sent.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
-        // Verify with sha256= prefix
-        let sig_with_prefix = format!("sha256={}", sig_hex);
-        assert!(verify_hmac_sha256(secret, body, &sig_with_prefix));
-
-        // Verify without prefix
-        assert!(verify_hmac_sha256(secret, body, &sig_hex));
-    }
-
-    #[test]
-    fn test_verify_hmac_sha256_invalid_secret() {
-        let body = "test-message-body";
-
-        // Generate signature with one secret
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
-        type HmacSha256 = Hmac<Sha256>;
-
-        let mut mac = HmacSha256::new_from_slice("correct-secret".as_bytes()).unwrap();
-        mac.update(body.as_bytes());
-        let sig_bytes = mac.finalize().into_bytes();
-        let sig_hex = hex::encode(sig_bytes);
-
-        // Verify with different secret
-        assert!(!verify_hmac_sha256("wrong-secret", body, &sig_hex));
-    }
-
-    #[test]
-    fn test_verify_hmac_sha256_invalid_signature_format() {
-        assert!(!verify_hmac_sha256("secret", "body", "not-hex"));
-        assert!(!verify_hmac_sha256("secret", "body", ""));
-    }
-
-    #[test]
-    fn test_verify_hmac_sha256_tampered_body() {
-        let secret = "test-secret";
-        let body = "original-body";
-
-        // Generate signature for original body
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
-        type HmacSha256 = Hmac<Sha256>;
-
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
-        mac.update(body.as_bytes());
-        let sig_bytes = mac.finalize().into_bytes();
-        let sig_hex = hex::encode(sig_bytes);
-
-        // Verify against tampered body
-        assert!(!verify_hmac_sha256(secret, "tampered-body", &sig_hex));
+        let sent = transport.drain();
+        assert_eq!(sent.len(), 1, "expected exactly one reply, got {sent:?}");
+        assert_eq!(
+            sent[0].recipient, "group:abc",
+            "reply must target the group, not the raw sender"
+        );
     }
 }
