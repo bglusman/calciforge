@@ -5,10 +5,10 @@
 //! local reply webhook `POST /hooks/reply`.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::Duration;
 
-use crate::messages::{AttachmentKind, OutboundAttachment, OutboundMessage};
+use crate::artifacts::{create_run_dir, write_inline_attachment};
+use crate::messages::OutboundMessage;
 use crate::sync::{Arc, AtomicBool, OnceLock, Ordering};
 
 use async_trait::async_trait;
@@ -20,12 +20,12 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex, Notify};
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_REPLY_PORT: u16 = 18_797;
+const OPENCLAW_ARTIFACT_ROOT_NAME: &str = "calciforge-openclaw-artifacts";
 const MAX_REPLY_ATTACHMENTS: usize = 8;
 const MAX_REPLY_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
 
@@ -235,12 +235,7 @@ impl ReplyPayload {
         let run_dir = if self.attachments.is_empty() {
             None
         } else {
-            let path = std::env::temp_dir()
-                .join("calciforge-openclaw-artifacts")
-                .join(Uuid::new_v4().to_string());
-            std::fs::create_dir_all(&path)
-                .map_err(|e| format!("failed to create callback artifact directory: {e}"))?;
-            Some(path)
+            Some(create_run_dir(OPENCLAW_ARTIFACT_ROOT_NAME)?)
         };
 
         let mut attachments = Vec::with_capacity(self.attachments.len());
@@ -262,128 +257,23 @@ impl ReplyPayload {
 impl ReplyAttachmentPayload {
     fn into_outbound_attachment(
         self,
-        run_dir: &Path,
+        run_dir: &std::path::Path,
         index: usize,
-    ) -> Result<OutboundAttachment, String> {
-        let mime_type = self
-            .mime_type
-            .filter(|value| is_safe_mime_type(value))
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-
+    ) -> Result<crate::messages::OutboundAttachment, String> {
         let data_base64 = self
             .data_base64
             .ok_or_else(|| "openclaw-channel callback attachment missing dataBase64".to_string())?;
-        let data_base64 = strip_data_url_prefix(&data_base64);
-        let max_encoded_len = MAX_REPLY_ATTACHMENT_BYTES.div_ceil(3) * 4 + 4;
-        if data_base64.len() > max_encoded_len {
-            return Err(format!(
-                "openclaw-channel callback attachment base64 payload exceeds encoded limit of {max_encoded_len} bytes"
-            ));
-        }
-        let data = {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD
-                .decode(data_base64.as_bytes())
-                .map_err(|e| format!("openclaw-channel callback attachment base64 error: {e}"))?
-        };
 
-        if data.is_empty() {
-            return Err("openclaw-channel callback attachment is empty".to_string());
-        }
-        if data.len() > MAX_REPLY_ATTACHMENT_BYTES {
-            return Err(format!(
-                "openclaw-channel callback attachment is {} bytes, limit is {}",
-                data.len(),
-                MAX_REPLY_ATTACHMENT_BYTES
-            ));
-        }
-
-        let filename = sanitize_attachment_name(self.name.as_deref(), &mime_type, index);
-        let path = unique_attachment_path(run_dir, filename, index);
-        std::fs::write(&path, &data)
-            .map_err(|e| format!("failed to write callback attachment: {e}"))?;
-
-        Ok(OutboundAttachment {
-            kind: AttachmentKind::from_mime(&mime_type),
-            path,
-            mime_type,
-            caption: self.caption.filter(|caption| !caption.trim().is_empty()),
-            size_bytes: data.len() as u64,
-        })
-    }
-}
-
-fn strip_data_url_prefix(value: &str) -> &str {
-    value
-        .split_once(',')
-        .filter(|(prefix, _)| prefix.trim_start().starts_with("data:"))
-        .map(|(_, data)| data)
-        .unwrap_or(value)
-        .trim()
-}
-
-fn is_safe_mime_type(value: &str) -> bool {
-    let Some((top, sub)) = value.split_once('/') else {
-        return false;
-    };
-    !top.is_empty()
-        && !sub.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '+' | '-' | '.'))
-}
-
-fn sanitize_attachment_name(name: Option<&str>, mime_type: &str, index: usize) -> String {
-    let raw = name.unwrap_or("").rsplit(['/', '\\']).next().unwrap_or("");
-    let mut sanitized = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-
-    while sanitized.starts_with('.') {
-        sanitized.remove(0);
-    }
-    if sanitized.is_empty() {
-        sanitized = format!("attachment-{}", index + 1);
-    }
-    if sanitized.len() > 128 {
-        sanitized.truncate(128);
-        sanitized = sanitized.trim_end_matches('.').to_string();
-    }
-    if !sanitized.contains('.') {
-        sanitized.push_str(default_extension_for_mime(mime_type));
-    }
-    sanitized
-}
-
-fn unique_attachment_path(run_dir: &Path, filename: String, index: usize) -> std::path::PathBuf {
-    let candidate = run_dir.join(&filename);
-    if !candidate.exists() {
-        return candidate;
-    }
-
-    let disambiguated = format!("attachment-{}-{}", index + 1, filename);
-    run_dir.join(disambiguated)
-}
-
-fn default_extension_for_mime(mime_type: &str) -> &'static str {
-    match mime_type {
-        "image/png" => ".png",
-        "image/jpeg" => ".jpg",
-        "image/gif" => ".gif",
-        "image/webp" => ".webp",
-        "audio/mpeg" => ".mp3",
-        "audio/wav" => ".wav",
-        "video/mp4" => ".mp4",
-        "text/plain" => ".txt",
-        "application/pdf" => ".pdf",
-        _ => ".bin",
+        write_inline_attachment(
+            run_dir,
+            index,
+            self.name.as_deref(),
+            self.mime_type.as_deref(),
+            self.caption,
+            &data_base64,
+            MAX_REPLY_ATTACHMENT_BYTES,
+        )
+        .map_err(|e| format!("openclaw-channel {e}"))
     }
 }
 

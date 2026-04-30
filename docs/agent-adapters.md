@@ -80,6 +80,8 @@ such as npcsh. It is intentionally conservative:
   tree, and the same path is exposed as `CALCIFORGE_ARTIFACT_DIR`.
 - Calciforge rejects artifacts that escape the run directory or exceed the
   current size limit.
+- Artifact run directories are retained locally for short-lived delivery and
+  debugging; new runs opportunistically prune directories older than 24 hours.
 - Telegram and Matrix receive the internal outbound message envelope and send
   image/file artifacts through native channel media APIs when possible. Other
   channels render a text fallback with attachment names and sizes.

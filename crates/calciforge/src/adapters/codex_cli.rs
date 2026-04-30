@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 const MESSAGE_PLACEHOLDER: &str = "{message}";
+static NEXT_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Adapter for the official OpenAI Codex CLI.
 pub struct CodexCliAdapter {
@@ -87,8 +89,11 @@ impl CodexCliAdapter {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        self.output_dir
-            .join(format!("codex-last-message-{nanos}.txt"))
+        let seq = NEXT_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
+        self.output_dir.join(format!(
+            "codex-last-message-{}-{nanos}-{seq}.txt",
+            std::process::id()
+        ))
     }
 
     fn configured_output_path(args: &[String]) -> Result<Option<PathBuf>, AdapterError> {
@@ -168,6 +173,48 @@ impl CodexCliAdapter {
 
         Ok((args, stdin_message, capture))
     }
+
+    async fn ensure_output_dir(&self) -> Result<(), AdapterError> {
+        reject_symlinked_dir(&self.output_dir).await?;
+        tokio::fs::create_dir_all(&self.output_dir)
+            .await
+            .map_err(|e| {
+                AdapterError::Unavailable(format!("failed to create Codex output dir: {e}"))
+            })?;
+        reject_symlinked_dir(&self.output_dir).await?;
+        set_private_dir_permissions(&self.output_dir).await
+    }
+}
+
+async fn reject_symlinked_dir(path: &Path) -> Result<(), AdapterError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(AdapterError::Unavailable(
+            "Codex output dir must not be a symlink".to_string(),
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(AdapterError::Unavailable(format!(
+            "Codex output path is not a directory: {}",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(AdapterError::Unavailable(format!(
+            "failed to inspect Codex output dir: {e}"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+async fn set_private_dir_permissions(path: &Path) -> Result<(), AdapterError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .map_err(|e| AdapterError::Unavailable(format!("failed to secure Codex output dir: {e}")))
+}
+
+#[cfg(not(unix))]
+async fn set_private_dir_permissions(_path: &Path) -> Result<(), AdapterError> {
+    Ok(())
 }
 
 fn default_codex_args() -> Vec<String> {
@@ -193,11 +240,7 @@ impl AgentAdapter for CodexCliAdapter {
         &self,
         ctx: DispatchContext<'_>,
     ) -> Result<String, AdapterError> {
-        tokio::fs::create_dir_all(&self.output_dir)
-            .await
-            .map_err(|e| {
-                AdapterError::Unavailable(format!("failed to create Codex output dir: {e}"))
-            })?;
+        self.ensure_output_dir().await?;
 
         let output_path = self.output_path();
         let (args, stdin_message, capture) =
@@ -474,6 +517,146 @@ printf 'event noise\n'
 
         let response = adapter.dispatch("hello").await.unwrap();
         assert_eq!(response, "final:hello");
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatches_use_distinct_generated_output_files() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("fake-codex-output-path");
+        let mut script = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script_path)
+            .unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|--output-last-message)
+      out="$2"
+      shift 2
+      ;;
+    -)
+      prompt="$(cat)"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf 'path:%s prompt:%s\n' "$out" "$prompt" > "$out"
+"#
+        )
+        .unwrap();
+        script.sync_all().unwrap();
+        drop(script);
+
+        let adapter = CodexCliAdapter::new(
+            Some(script_path.to_string_lossy().to_string()),
+            Some(vec!["exec".to_string(), "-".to_string()]),
+            None,
+            None,
+            Some(5_000),
+        );
+
+        let (first, second) = tokio::join!(adapter.dispatch("one"), adapter.dispatch("two"));
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.contains("prompt:one"));
+        assert!(second.contains("prompt:two"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_secures_generated_output_dir_permissions() {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let output_dir = dir.path().join("codex-output");
+        std::fs::create_dir(&output_dir).unwrap();
+        std::fs::set_permissions(&output_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let script_path = dir.path().join("fake-codex");
+        let mut script = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script_path)
+            .unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|--output-last-message)
+      out="$2"
+      shift 2
+      ;;
+    -)
+      cat >/dev/null
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf 'secured\n' > "$out"
+"#
+        )
+        .unwrap();
+        script.sync_all().unwrap();
+        drop(script);
+
+        let mut adapter = CodexCliAdapter::new(
+            Some(script_path.to_string_lossy().to_string()),
+            Some(vec!["exec".to_string(), "-".to_string()]),
+            None,
+            None,
+            Some(5_000),
+        );
+        adapter.output_dir = output_dir.clone();
+
+        assert_eq!(adapter.dispatch("hello").await.unwrap(), "secured");
+        let mode = std::fs::metadata(output_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_rejects_symlinked_generated_output_dir() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_output_dir = dir.path().join("real-output");
+        let symlink_output_dir = dir.path().join("linked-output");
+        std::fs::create_dir(&real_output_dir).unwrap();
+        symlink(&real_output_dir, &symlink_output_dir).unwrap();
+
+        let mut adapter = CodexCliAdapter::new(
+            Some("/bin/echo".to_string()),
+            Some(vec!["-".to_string()]),
+            None,
+            None,
+            Some(5_000),
+        );
+        adapter.output_dir = symlink_output_dir;
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(
+            matches!(err, AdapterError::Unavailable(msg) if msg.contains("must not be a symlink"))
+        );
     }
 
     #[tokio::test]

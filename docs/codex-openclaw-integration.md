@@ -151,9 +151,11 @@ reports, or other files:
 Calciforge writes inline data into its own artifact storage before channels see
 it. Attachment names are sanitized, local paths are not exposed in fallback
 text, and malformed attachment payloads fail the pending dispatch instead of
-hanging. Remote URL ingestion is intentionally not part of this callback
-contract yet; it needs an explicit SSRF-safe policy and should prefer local
-push/upload or short-lived signed URLs over arbitrary fetches.
+hanging. Callback artifacts share the same local cleanup policy as artifact CLI
+recipes: new runs opportunistically prune run directories older than 24 hours.
+Remote URL ingestion is intentionally not part of this callback contract yet; it
+needs an explicit SSRF-safe policy and should prefer local push/upload or
+short-lived signed URLs over arbitrary fetches.
 
 ## Claude Code CLI path
 

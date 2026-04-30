@@ -4,8 +4,7 @@
 //! on stdin, validates files created under that directory, and returns an
 //! outbound message with a text fallback plus discovered artifacts.
 
-use std::collections::{HashMap, VecDeque};
-use std::io::Read;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -14,16 +13,16 @@ use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
-use crate::messages::{AttachmentKind, OutboundAttachment, OutboundMessage};
+use crate::artifacts::{
+    collect_run_artifacts, create_run_dir, DEFAULT_MAX_ARTIFACTS, DEFAULT_MAX_ARTIFACT_BYTES,
+};
+use crate::messages::{OutboundAttachment, OutboundMessage};
 
 use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 25 * 1024 * 1024;
-const DEFAULT_MAX_ARTIFACT_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
-const DEFAULT_MAX_ARTIFACTS: usize = 16;
+const ARTIFACT_ROOT_NAME: &str = "calciforge-artifacts";
 const ARTIFACT_DIR_PLACEHOLDER: &str = "{artifact_dir}";
 const MESSAGE_PLACEHOLDER: &str = "{message}";
 const MODEL_PLACEHOLDER: &str = "{model}";
@@ -119,8 +118,19 @@ impl ArtifactCliAdapter {
         env
     }
 
-    fn run_artifact_dir(&self) -> PathBuf {
-        self.artifact_root.join(Uuid::new_v4().to_string())
+    fn run_artifact_dir(&self) -> Result<PathBuf, AdapterError> {
+        if self.artifact_root == crate::artifacts::artifact_root(ARTIFACT_ROOT_NAME) {
+            return create_run_dir(ARTIFACT_ROOT_NAME).map_err(AdapterError::Unavailable);
+        }
+
+        let run_dir = self.artifact_root.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&run_dir).map_err(|e| {
+            AdapterError::Unavailable(format!(
+                "failed to create artifact directory {}: {e}",
+                run_dir.display()
+            ))
+        })?;
+        Ok(run_dir)
     }
 
     fn stderr_preview(stderr: &[u8]) -> String {
@@ -160,134 +170,9 @@ impl ArtifactCliAdapter {
         &self,
         artifact_dir: &Path,
     ) -> Result<Vec<OutboundAttachment>, AdapterError> {
-        let base = artifact_dir.canonicalize().map_err(|e| {
-            AdapterError::Protocol(format!(
-                "artifact directory {} is not accessible: {e}",
-                artifact_dir.display()
-            ))
-        })?;
-
-        let mut attachments = Vec::new();
-        let mut total_artifact_bytes: u64 = 0;
-        let mut pending = VecDeque::from([base.clone()]);
-        while let Some(dir) = pending.pop_front() {
-            let entries = std::fs::read_dir(&dir).map_err(|e| {
-                AdapterError::Protocol(format!("failed to read artifact directory: {e}"))
-            })?;
-
-            for entry in entries {
-                let entry = entry.map_err(|e| {
-                    AdapterError::Protocol(format!("failed to read artifact entry: {e}"))
-                })?;
-                let path = entry.path();
-                let canonical = path.canonicalize().map_err(|e| {
-                    AdapterError::Protocol(format!(
-                        "failed to canonicalize artifact {}: {e}",
-                        path.display()
-                    ))
-                })?;
-
-                if !canonical.starts_with(&base) {
-                    return Err(AdapterError::Protocol(format!(
-                        "artifact path escaped run directory: {}",
-                        path.display()
-                    )));
-                }
-
-                let metadata = std::fs::metadata(&canonical).map_err(|e| {
-                    AdapterError::Protocol(format!(
-                        "failed to inspect artifact {}: {e}",
-                        canonical.display()
-                    ))
-                })?;
-                if metadata.is_dir() {
-                    pending.push_back(canonical);
-                    continue;
-                }
-                if !metadata.is_file() {
-                    continue;
-                }
-                if metadata.len() > self.max_artifact_bytes {
-                    return Err(AdapterError::Protocol(format!(
-                        "artifact {} exceeds {} byte limit",
-                        canonical.display(),
-                        self.max_artifact_bytes
-                    )));
-                }
-                total_artifact_bytes = total_artifact_bytes
-                    .checked_add(metadata.len())
-                    .ok_or_else(|| {
-                        AdapterError::Protocol("artifact total byte count overflowed".to_string())
-                    })?;
-                if total_artifact_bytes > DEFAULT_MAX_ARTIFACT_TOTAL_BYTES {
-                    return Err(AdapterError::Protocol(format!(
-                        "artifacts exceed {} byte total limit",
-                        DEFAULT_MAX_ARTIFACT_TOTAL_BYTES
-                    )));
-                }
-                if attachments.len() >= DEFAULT_MAX_ARTIFACTS {
-                    return Err(AdapterError::Protocol(format!(
-                        "artifact count exceeds {} file limit",
-                        DEFAULT_MAX_ARTIFACTS
-                    )));
-                }
-
-                let mime_type = detect_mime_type(&canonical);
-                attachments.push(OutboundAttachment {
-                    kind: AttachmentKind::from_mime(&mime_type),
-                    path: canonical,
-                    mime_type,
-                    caption: None,
-                    size_bytes: metadata.len(),
-                });
-            }
-        }
-
-        attachments.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(attachments)
+        collect_run_artifacts(artifact_dir, self.max_artifact_bytes, DEFAULT_MAX_ARTIFACTS)
+            .map_err(AdapterError::Protocol)
     }
-}
-
-fn detect_mime_type(path: &Path) -> String {
-    let mut header = [0_u8; 16];
-    let bytes_read = std::fs::File::open(path)
-        .and_then(|mut file| file.read(&mut header))
-        .unwrap_or(0);
-    let bytes = &header[..bytes_read];
-    if !bytes.is_empty() {
-        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return "image/png".to_string();
-        }
-        if bytes.starts_with(b"\xff\xd8\xff") {
-            return "image/jpeg".to_string();
-        }
-        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-            return "image/gif".to_string();
-        }
-        if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-            return "image/webp".to_string();
-        }
-    }
-
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("mp3") => "audio/mpeg",
-        Some("wav") => "audio/wav",
-        Some("mp4") => "video/mp4",
-        Some("webm") => "video/webm",
-        Some("pdf") => "application/pdf",
-        Some("txt") | Some("md") => "text/plain",
-        _ => "application/octet-stream",
-    }
-    .to_string()
 }
 
 #[async_trait]
@@ -303,13 +188,7 @@ impl AgentAdapter for ArtifactCliAdapter {
         &self,
         ctx: DispatchContext<'_>,
     ) -> Result<OutboundMessage, AdapterError> {
-        let artifact_dir = self.run_artifact_dir();
-        std::fs::create_dir_all(&artifact_dir).map_err(|e| {
-            AdapterError::Unavailable(format!(
-                "failed to create artifact directory {}: {e}",
-                artifact_dir.display()
-            ))
-        })?;
+        let artifact_dir = self.run_artifact_dir()?;
 
         let args = self.build_args(&artifact_dir, ctx.model_override);
         let env = self.build_env(&artifact_dir, ctx.model_override);
