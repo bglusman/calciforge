@@ -46,6 +46,9 @@ three-part vocabulary:
 - Add channel capability reporting so channels can say whether they prefer
   native media upload or text links.
 - Cut all chat channels over through the same outbound-message contract.
+- Define an agent-accessible Calciforge API so first-class agents such as
+  OpenClaw can request artifacts, progress updates, policy checks, and final
+  delivery without learning each chat channel's mechanics.
 
 ## ACP Direction
 
@@ -135,6 +138,65 @@ Useful orchestrator outputs may include:
 - trace files,
 - generated PR descriptions,
 - links to worktrees, branches, or review artifacts.
+
+## Agent-Accessible Calciforge APIs
+
+The artifact model should not be npcsh-specific. npcsh is only the first useful
+smoke because image generation naturally produces files. The broader contract
+should let an authorized agent or orchestrator ask Calciforge to create, ingest,
+validate, and deliver artifacts through the same channel envelope.
+
+OpenClaw is the most important early target because it is a first-class managed
+agent path rather than a niche media CLI. The current `openclaw-channel` bridge
+sends text into OpenClaw and receives a text-only callback:
+
+```json
+{ "sessionKey": "calciforge:librarian:brian", "message": "done" }
+```
+
+That is enough for chat, but not enough for diagrams, memes, screenshots,
+reports, or generated files. A richer callback should allow OpenClaw to return
+structured attachments while Calciforge still owns the security boundary:
+
+```json
+{
+  "sessionKey": "calciforge:librarian:brian",
+  "message": "I made a diagram.",
+  "attachments": [
+    {
+      "kind": "image",
+      "mimeType": "image/png",
+      "name": "diagram.png",
+      "url": "http://openclaw.local/artifacts/run-123/diagram.png"
+    }
+  ]
+}
+```
+
+Calciforge should not blindly forward those URLs. It should fetch or copy the
+artifact into a Calciforge-owned run directory, enforce type and size limits,
+record audit metadata, and then deliver through Matrix, Telegram, SMS fallback,
+or any future channel. URL ingestion needs its own SSRF-safe policy: allowed
+origins, no ambient credentials, bounded redirects, content sniffing, byte
+limits before full reads, and a preference for local push/upload or short-lived
+signed URLs over arbitrary fetches.
+
+There are two complementary integration shapes:
+
+- **Callback ingestion** — OpenClaw, Gas Town, OmO, or another orchestrator
+  returns artifact descriptors with final or progress callbacks. This is the
+  smallest extension to existing bridges.
+- **Agent-callable tools** — Calciforge exposes authenticated local tools such
+  as `generate_image`, `attach_file`, `record_progress`, `request_approval`,
+  `check_policy`, and `finalize_work`. ACP/MCP agents can call these directly;
+  OpenClaw can surface them as native tools; recipe wrappers can call them via
+  a local CLI or HTTP endpoint.
+
+The second shape is where generated Starlark and shared SQLite coordination
+become useful. Agents should be able to propose glue, but Calciforge should
+require operator-reviewed Starlark before changing policy or routing. For
+async work, a standard SQLite queue can give agents and orchestrators a durable
+coordination surface without forcing every integration to run a bespoke daemon.
 
 ## Extension Points
 

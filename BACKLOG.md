@@ -88,6 +88,16 @@
   - [ ] Smoke `@zed-industries/codex-acp` as the first real native ACP target
 - [ ] Evaluate ACP orchestrators such as AgentPool, cagent, and fast-agent as
       recipe-backed async work backends
+- [ ] Prototype agent-accessible Calciforge APIs for artifacts and work status
+  - [ ] Extend `openclaw-channel` reply callbacks from text-only messages to an
+        optional attachment envelope
+  - [ ] Add a local authenticated artifact ingest endpoint or CLI that copies
+        agent-produced files into Calciforge-owned artifact storage
+  - [ ] Expose the same artifact/progress/final-result operations as MCP or ACP
+        tools for agents that can call tools directly
+  - [ ] Draft a reviewed-Starlark flow for agent-proposed policy/routing glue
+  - [ ] Sketch a versioned SQLite work queue schema for orchestrator
+        coordination
 - [ ] Architecture decision records (ADRs)
 
 ### Observability
