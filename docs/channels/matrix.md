@@ -8,9 +8,10 @@ title: Matrix Channel Setup
 Calciforge connects to Matrix via the [Client-Server API v3](https://spec.matrix.org/v1.9/client-server-api/)
 using **HTTP long-polling** (`/sync`). No webhook endpoint or open firewall port required.
 
-> **No end-to-end encryption.** The Matrix channel sends and receives plaintext `m.text`
-> events only. E2EE is not supported due to compile-time dependency conflicts in the
-> current workspace. Do not use this channel in rooms where E2EE is required.
+> **No end-to-end encryption.** The Matrix channel receives plaintext `m.text`
+> events and can send plaintext replies plus native media events for agent
+> artifacts. E2EE is not supported due to compile-time dependency conflicts in
+> the current workspace. Do not use this channel in rooms where E2EE is required.
 
 ## Architecture
 
@@ -21,7 +22,7 @@ Matrix user  ──→  homeserver  ──→  Calciforge (/sync long-poll)
                                   (allowed_users check)
                                   agent dispatch
                                           │
-Matrix user  ←──  homeserver  ←──  Calciforge (PUT /send/m.room.message)
+Matrix user  ←──  homeserver  ←──  Calciforge (PUT /send/m.room.message, media upload)
 ```
 
 ## Prerequisites
@@ -114,3 +115,8 @@ calciforge          # start; send a message in the room
 
 The bot responds to commands (`!help`, `!ping`, `!agents`, etc.) and routes other messages
 to the default agent for the sender's identity.
+
+Agent replies that include artifacts are uploaded through the Matrix media API
+and sent as native `m.image`, `m.audio`, `m.video`, or `m.file` events. If media
+upload fails, Calciforge sends the safe text fallback with artifact names and
+sizes instead of exposing local artifact paths.

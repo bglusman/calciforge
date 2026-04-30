@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use teloxide::{
     prelude::*,
-    types::{ChatId, Me, ParseMode},
+    types::{ChatId, InputFile, Me, ParseMode},
 };
 use tracing::{debug, info, warn};
 
@@ -17,7 +17,7 @@ use crate::{
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
-    messages::OutboundMessage,
+    messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
 };
 
@@ -577,10 +577,127 @@ async fn send_outbound_reply(
     reply: OutboundMessage,
     reply_kind: &'static str,
 ) {
-    // First prototype: preserve artifacts through the envelope and use the
-    // text fallback for all Telegram replies. Native photo/document sending can
-    // plug in here without changing adapter/orchestrator contracts.
-    send_markdown_reply(bot, chat_id, reply.render_text_fallback(), reply_kind).await;
+    if reply.attachments.is_empty() {
+        send_markdown_reply(bot, chat_id, reply.render_text_fallback(), reply_kind).await;
+        return;
+    }
+
+    if let Some(text) = reply.text.as_deref().filter(|text| !text.trim().is_empty()) {
+        send_markdown_reply(bot.clone(), chat_id, text.to_string(), reply_kind).await;
+    }
+
+    for attachment in &reply.attachments {
+        if !send_telegram_attachment(bot.clone(), chat_id, attachment, reply_kind).await {
+            warn!(
+                chat_id = %chat_id,
+                path = %attachment.path.display(),
+                "Telegram native artifact send failed; sending text fallback"
+            );
+            send_plain_reply(
+                bot,
+                chat_id,
+                reply.render_text_fallback(),
+                "agent_response_attachment_fallback",
+            )
+            .await;
+            return;
+        }
+    }
+}
+
+async fn send_telegram_attachment(
+    bot: Bot,
+    chat_id: ChatId,
+    attachment: &OutboundAttachment,
+    reply_kind: &'static str,
+) -> bool {
+    const MAX_TELEGRAM_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+
+    let start = std::time::Instant::now();
+    match tokio::fs::metadata(&attachment.path).await {
+        Ok(metadata) if !metadata.is_file() => {
+            telemetry::reply_failed(
+                "telegram",
+                &chat_id.to_string(),
+                reply_kind,
+                start.elapsed().as_millis() as u64,
+                format!("artifact path is not a file: {}", attachment.path.display()),
+            );
+            return false;
+        }
+        Ok(metadata) if metadata.len() > MAX_TELEGRAM_UPLOAD_BYTES => {
+            telemetry::reply_failed(
+                "telegram",
+                &chat_id.to_string(),
+                reply_kind,
+                start.elapsed().as_millis() as u64,
+                format!(
+                    "artifact is {} bytes, limit is {}",
+                    metadata.len(),
+                    MAX_TELEGRAM_UPLOAD_BYTES
+                ),
+            );
+            return false;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            telemetry::reply_failed(
+                "telegram",
+                &chat_id.to_string(),
+                reply_kind,
+                start.elapsed().as_millis() as u64,
+                e,
+            );
+            return false;
+        }
+    }
+
+    let input = InputFile::file(attachment.path.clone());
+    let caption = attachment
+        .caption
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let result = match attachment.kind {
+        AttachmentKind::Image => {
+            let request = bot.send_photo(chat_id, input);
+            if let Some(caption) = caption {
+                request.caption(caption.to_string()).await
+            } else {
+                request.await
+            }
+        }
+        _ => {
+            let request = bot.send_document(chat_id, input);
+            if let Some(caption) = caption {
+                request.caption(caption.to_string()).await
+            } else {
+                request.await
+            }
+        }
+    };
+
+    match result {
+        Ok(_) => {
+            telemetry::reply_sent(
+                "telegram",
+                &chat_id.to_string(),
+                reply_kind,
+                attachment.size_bytes as usize,
+                start.elapsed().as_millis() as u64,
+            );
+            true
+        }
+        Err(e) => {
+            telemetry::reply_failed(
+                "telegram",
+                &chat_id.to_string(),
+                reply_kind,
+                start.elapsed().as_millis() as u64,
+                e,
+            );
+            false
+        }
+    }
 }
 
 async fn send_plain_reply(

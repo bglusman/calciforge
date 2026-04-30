@@ -16,7 +16,7 @@ Telegram user  ──→  Telegram Bot API  ──→  Calciforge (long-poll)
                                        identity resolution
                                        agent dispatch
                                                    │
-Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply
+Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply/media
 ```
 
 ## Prerequisites
@@ -90,3 +90,8 @@ On first message from a known identity, you'll see `identity resolved` in the lo
 bot will route to the default agent. On an unknown user ID, you'll see
 `unknown Telegram sender — dropping silently sender_id=<id>` — use that to find the numeric
 ID to add to your identity aliases.
+
+Agent replies that include artifacts are sent through Telegram's native media
+APIs: images are sent as photos, and other artifact types are sent as documents.
+If native media delivery fails, Calciforge sends the safe text fallback with
+artifact names and sizes instead of exposing local artifact paths.
