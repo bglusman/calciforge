@@ -3,12 +3,18 @@
 //! This module provides a SQLite-backed implementation of conversation context
 //! storage that persists across restarts. It implements the same interface as
 //! the in-memory `ContextStore` but stores exchanges in a SQLite database.
+//!
+//! Backed by `rusqlite` (synchronous C API). The connection lives behind a
+//! `std::sync::Mutex` and all DB calls run inside `tokio::task::spawn_blocking`
+//! so the async caller stays unblocked. The mutex is only held within the
+//! blocking closures, never across an `.await`.
 
-use anyhow::{Context as AnyhowContext, Result};
-use chrono::{DateTime, Utc};
+use anyhow::{anyhow, Result};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 // ---------------------------------------------------------------------------
 // Database schema
@@ -48,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_exchanges_created_at ON exchanges(created_at);
 // ---------------------------------------------------------------------------
 
 /// A single exchange stored in the database.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentExchange {
     pub id: i64,
     pub chat_id: String,
@@ -60,13 +66,50 @@ pub struct PersistentExchange {
     pub created_at: DateTime<Utc>,
 }
 
-/// A watermark entry for an agent in a chat.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct Watermark {
-    pub chat_id: String,
-    pub agent_id: String,
-    pub last_seen_seq: i64,
-    pub updated_at: DateTime<Utc>,
+impl PersistentExchange {
+    fn try_from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        // SQLite's CURRENT_TIMESTAMP yields "YYYY-MM-DD HH:MM:SS" (UTC, no tz).
+        let created_at_idx = row.as_ref().column_index("created_at")?;
+        let created_at_str: String = row.get("created_at")?;
+        let created_at = parse_sqlite_timestamp(&created_at_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                created_at_idx,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            )
+        })?;
+
+        Ok(Self {
+            id: row.get("id")?,
+            chat_id: row.get("chat_id")?,
+            seq: row.get("seq")?,
+            sender_label: row.get("sender_label")?,
+            prompt: row.get("prompt")?,
+            agent_id: row.get("agent_id")?,
+            response: row.get("response")?,
+            created_at,
+        })
+    }
+}
+
+fn parse_sqlite_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
+    // Try the canonical SQLite default format first.
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc));
+    }
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc));
+    }
+    // RFC3339 fallback in case someone has stored ISO8601 strings.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    Err(format!("unrecognized timestamp format: {s}"))
+}
+
+fn lock_conn(conn: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>> {
+    conn.lock()
+        .map_err(|_| anyhow!("persistent context sqlite connection mutex poisoned"))
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +126,7 @@ pub struct Watermark {
 /// The main difference is that exchanges are persisted to a SQLite database
 /// and survive process restarts.
 pub struct PersistentContextStore {
-    pool: SqlitePool,
+    conn: Arc<Mutex<Connection>>,
     buffer_size: usize,
     inject_depth: usize,
 }
@@ -92,25 +135,25 @@ impl PersistentContextStore {
     /// Create a new persistent context store.
     ///
     /// # Arguments
-    /// * `database_url` - SQLite database URL (e.g., "sqlite:///path/to/context.db")
+    /// * `database_url` - SQLite database URL or path (e.g.,
+    ///   `"sqlite:///path/to/context.db"` or `"/path/to/context.db"`)
     /// * `buffer_size` - Maximum number of exchanges to retain per chat
     /// * `inject_depth` - Maximum number of unseen exchanges to inject
     pub async fn new(database_url: &str, buffer_size: usize, inject_depth: usize) -> Result<Self> {
-        let options = SqliteConnectOptions::new()
-            .filename(
-                database_url
-                    .strip_prefix("sqlite://")
-                    .unwrap_or(database_url),
-            )
-            .create_if_missing(true);
+        let path = database_url
+            .strip_prefix("sqlite://")
+            .unwrap_or(database_url)
+            .to_string();
 
-        let pool = SqlitePool::connect_with(options).await?;
-
-        // Initialize database schema
-        sqlx::query(SCHEMA).execute(&pool).await?;
+        let conn = tokio::task::spawn_blocking(move || -> rusqlite::Result<Connection> {
+            let conn = Connection::open(&path)?;
+            conn.execute_batch(SCHEMA)?;
+            Ok(conn)
+        })
+        .await??;
 
         Ok(Self {
-            pool,
+            conn: Arc::new(Mutex::new(conn)),
             buffer_size,
             inject_depth,
         })
@@ -119,12 +162,13 @@ impl PersistentContextStore {
     /// Create a persistent context store with a file path.
     ///
     /// This is a convenience method that accepts a file path instead of a full URL.
+    #[allow(dead_code)]
     pub async fn with_file_path<P: AsRef<Path>>(
         path: P,
         buffer_size: usize,
         inject_depth: usize,
     ) -> Result<Self> {
-        let path_str = path.as_ref().to_string_lossy();
+        let path_str = path.as_ref().to_string_lossy().into_owned();
         Self::new(&format!("sqlite://{}", path_str), buffer_size, inject_depth).await
     }
 
@@ -137,56 +181,53 @@ impl PersistentContextStore {
         agent_id: &str,
         response: &str,
     ) -> Result<()> {
-        // Get the next sequence number for this chat
-        let next_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(seq), -1) + 1 FROM exchanges WHERE chat_id = ?",
-        )
-        .bind(chat_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let conn = Arc::clone(&self.conn);
+        let buffer_size = self.buffer_size;
+        let chat_id = chat_id.to_string();
+        let sender_label = sender_label.to_string();
+        let prompt = prompt.to_string();
+        let agent_id = agent_id.to_string();
+        let response = response.to_string();
 
-        // Insert the new exchange
-        sqlx::query(
-            "INSERT INTO exchanges (chat_id, seq, sender_label, prompt, agent_id, response) 
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(chat_id)
-        .bind(next_seq)
-        .bind(sender_label)
-        .bind(prompt)
-        .bind(agent_id)
-        .bind(response)
-        .execute(&self.pool)
-        .await?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut conn = lock_conn(&conn)?;
+            let tx = conn.transaction()?;
 
-        // Update the agent's watermark
-        sqlx::query(
-            "INSERT OR REPLACE INTO watermarks (chat_id, agent_id, last_seen_seq) 
-             VALUES (?, ?, ?)",
-        )
-        .bind(chat_id)
-        .bind(agent_id)
-        .bind(next_seq)
-        .execute(&self.pool)
-        .await?;
+            let next_seq: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM exchanges WHERE chat_id = ?",
+                params![chat_id],
+                |row| row.get(0),
+            )?;
 
-        // Enforce ring buffer capacity by deleting oldest exchanges
-        if self.buffer_size > 0 {
-            sqlx::query(
-                "DELETE FROM exchanges 
-                 WHERE chat_id = ? AND seq < (
-                     SELECT seq FROM exchanges 
-                     WHERE chat_id = ? 
-                     ORDER BY seq DESC 
-                     LIMIT 1 OFFSET ?
-                 )",
-            )
-            .bind(chat_id)
-            .bind(chat_id)
-            .bind(self.buffer_size as i64 - 1)
-            .execute(&self.pool)
-            .await?;
-        }
+            tx.execute(
+                "INSERT INTO exchanges (chat_id, seq, sender_label, prompt, agent_id, response) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                params![chat_id, next_seq, sender_label, prompt, agent_id, response],
+            )?;
+
+            tx.execute(
+                "INSERT OR REPLACE INTO watermarks (chat_id, agent_id, last_seen_seq) \
+                 VALUES (?, ?, ?)",
+                params![chat_id, agent_id, next_seq],
+            )?;
+
+            if buffer_size > 0 {
+                tx.execute(
+                    "DELETE FROM exchanges \
+                     WHERE chat_id = ? AND seq < ( \
+                         SELECT seq FROM exchanges \
+                         WHERE chat_id = ? \
+                         ORDER BY seq DESC \
+                         LIMIT 1 OFFSET ? \
+                     )",
+                    params![chat_id, chat_id, buffer_size as i64 - 1],
+                )?;
+            }
+
+            tx.commit()?;
+            Ok(())
+        })
+        .await??;
 
         Ok(())
     }
@@ -200,41 +241,57 @@ impl PersistentContextStore {
             return Ok(None);
         }
 
-        // Get the agent's watermark (last seen sequence)
-        let watermark: Option<i64> = sqlx::query_scalar(
-            "SELECT last_seen_seq FROM watermarks WHERE chat_id = ? AND agent_id = ?",
-        )
-        .bind(chat_id)
-        .bind(agent_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let conn = Arc::clone(&self.conn);
+        let inject_depth = self.inject_depth;
+        let chat_id = chat_id.to_string();
+        let agent_id = agent_id.to_string();
 
-        // Query unseen exchanges (seq > watermark, or all if no watermark exists)
-        let unseen_exchanges: Vec<PersistentExchange> = if let Some(wm) = watermark {
-            sqlx::query_as(
-                "SELECT * FROM exchanges 
-                 WHERE chat_id = ? AND seq > ? 
-                 ORDER BY seq ASC 
-                 LIMIT ?",
-            )
-            .bind(chat_id)
-            .bind(wm)
-            .bind(self.inject_depth as i64)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            // No watermark exists - agent hasn't seen any exchanges in this chat
-            sqlx::query_as(
-                "SELECT * FROM exchanges 
-                 WHERE chat_id = ? 
-                 ORDER BY seq DESC 
-                 LIMIT ?",
-            )
-            .bind(chat_id)
-            .bind(self.inject_depth as i64)
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let unseen_exchanges = tokio::task::spawn_blocking(
+            move || -> Result<Vec<PersistentExchange>> {
+                let conn = lock_conn(&conn)?;
+
+                let watermark: Option<i64> = conn
+                    .query_row(
+                        "SELECT last_seen_seq FROM watermarks WHERE chat_id = ? AND agent_id = ?",
+                        params![chat_id, agent_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                if let Some(wm) = watermark {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, chat_id, seq, sender_label, prompt, agent_id, response, created_at \
+                         FROM exchanges \
+                         WHERE chat_id = ? AND seq > ? \
+                         ORDER BY seq ASC \
+                         LIMIT ?",
+                    )?;
+                    let rows = stmt.query_map(
+                        params![chat_id, wm, inject_depth as i64],
+                        PersistentExchange::try_from_row,
+                    )?;
+                    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+                } else {
+                    // No watermark exists - agent hasn't seen any exchanges in this chat.
+                    // Take the most recent N (ordered DESC), then re-sort ASC for display.
+                    let mut stmt = conn.prepare(
+                        "SELECT id, chat_id, seq, sender_label, prompt, agent_id, response, created_at \
+                         FROM exchanges \
+                         WHERE chat_id = ? \
+                         ORDER BY seq DESC \
+                         LIMIT ?",
+                    )?;
+                    let rows = stmt.query_map(
+                        params![chat_id, inject_depth as i64],
+                        PersistentExchange::try_from_row,
+                    )?;
+                    let mut v = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+                    v.sort_by_key(|e| e.seq);
+                    Ok(v)
+                }
+            },
+        )
+        .await??;
 
         if unseen_exchanges.is_empty() {
             return Ok(None);
@@ -251,38 +308,73 @@ impl PersistentContextStore {
         Ok(Some(lines.join("\n")))
     }
 
+    /// Build a context preamble and prepend it to `message`. If there is no
+    /// preamble (agent has seen everything, or `inject_depth = 0`), the
+    /// original message is returned unchanged.
+    pub async fn augment_message(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+        message: &str,
+    ) -> Result<String> {
+        match self.build_preamble(chat_id, agent_id).await? {
+            Some(preamble) => Ok(format!("{preamble}\n{message}")),
+            None => Ok(message.to_string()),
+        }
+    }
+
     /// Clear all exchanges and watermarks for a chat.
     pub async fn clear(&self, chat_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM exchanges WHERE chat_id = ?")
-            .bind(chat_id)
-            .execute(&self.pool)
-            .await?;
+        let conn = Arc::clone(&self.conn);
+        let chat_id = chat_id.to_string();
 
-        sqlx::query("DELETE FROM watermarks WHERE chat_id = ?")
-            .bind(chat_id)
-            .execute(&self.pool)
-            .await?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut conn = lock_conn(&conn)?;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM exchanges WHERE chat_id = ?", params![chat_id])?;
+            tx.execute("DELETE FROM watermarks WHERE chat_id = ?", params![chat_id])?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await??;
 
         Ok(())
     }
 
     /// Get the number of exchanges stored for a chat.
     pub async fn exchange_count(&self, chat_id: &str) -> Result<usize> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM exchanges WHERE chat_id = ?")
-            .bind(chat_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let conn = Arc::clone(&self.conn);
+        let chat_id = chat_id.to_string();
+
+        let count = tokio::task::spawn_blocking(move || -> Result<i64> {
+            let conn = lock_conn(&conn)?;
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM exchanges WHERE chat_id = ?",
+                params![chat_id],
+                |row| row.get(0),
+            )?)
+        })
+        .await??;
 
         Ok(count as usize)
     }
 
     /// Get all exchanges for a chat (for debugging/migration).
+    #[allow(dead_code)]
     pub async fn get_exchanges(&self, chat_id: &str) -> Result<Vec<PersistentExchange>> {
-        let exchanges =
-            sqlx::query_as("SELECT * FROM exchanges WHERE chat_id = ? ORDER BY seq ASC")
-                .bind(chat_id)
-                .fetch_all(&self.pool)
-                .await?;
+        let conn = Arc::clone(&self.conn);
+        let chat_id = chat_id.to_string();
+
+        let exchanges = tokio::task::spawn_blocking(move || -> Result<Vec<PersistentExchange>> {
+            let conn = lock_conn(&conn)?;
+            let mut stmt = conn.prepare(
+                "SELECT id, chat_id, seq, sender_label, prompt, agent_id, response, created_at \
+                     FROM exchanges WHERE chat_id = ? ORDER BY seq ASC",
+            )?;
+            let rows = stmt.query_map(params![chat_id], PersistentExchange::try_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await??;
 
         Ok(exchanges)
     }
@@ -295,22 +387,26 @@ impl PersistentContextStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use tempfile::{tempdir, TempDir};
 
-    async fn create_test_store() -> Result<PersistentContextStore> {
-        let temp_file = NamedTempFile::new()?;
+    fn fresh_db_path(dir: &TempDir) -> std::path::PathBuf {
+        dir.path().join("ctx.db")
+    }
+
+    async fn create_test_store() -> Result<(TempDir, PersistentContextStore)> {
+        let dir = tempdir()?;
         let store = PersistentContextStore::with_file_path(
-            temp_file.path(),
+            fresh_db_path(&dir),
             20, // buffer_size
             5,  // inject_depth
         )
         .await?;
-        Ok(store)
+        Ok((dir, store))
     }
 
     #[tokio::test]
     async fn test_push_and_retrieve() -> Result<()> {
-        let store = create_test_store().await?;
+        let (_dir, store) = create_test_store().await?;
 
         // Push an exchange
         store
@@ -326,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_preamble_for_new_agent() -> Result<()> {
-        let store = create_test_store().await?;
+        let (_dir, store) = create_test_store().await?;
 
         // Push some exchanges
         store
@@ -348,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_preamble_for_existing_agent() -> Result<()> {
-        let store = create_test_store().await?;
+        let (_dir, store) = create_test_store().await?;
 
         // Agent answers first exchange
         store
@@ -377,9 +473,9 @@ mod tests {
     #[tokio::test]
     async fn test_ring_buffer_capacity() -> Result<()> {
         // Create store with small buffer
-        let temp_file = NamedTempFile::new()?;
+        let dir = tempdir()?;
         let store = PersistentContextStore::with_file_path(
-            temp_file.path(),
+            fresh_db_path(&dir),
             3, // buffer_size = 3
             5, // inject_depth
         )
@@ -413,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_chat() -> Result<()> {
-        let store = create_test_store().await?;
+        let (_dir, store) = create_test_store().await?;
 
         store
             .push("chat:1", "Brian", "Q1", "librarian", "A1")
@@ -436,9 +532,9 @@ mod tests {
     #[tokio::test]
     async fn test_inject_depth_limit() -> Result<()> {
         // Create store with inject_depth = 2
-        let temp_file = NamedTempFile::new()?;
+        let dir = tempdir()?;
         let store = PersistentContextStore::with_file_path(
-            temp_file.path(),
+            fresh_db_path(&dir),
             20, // buffer_size
             2,  // inject_depth = 2
         )

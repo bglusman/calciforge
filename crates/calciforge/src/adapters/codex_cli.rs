@@ -492,6 +492,17 @@ printf 'event noise\n'
         writeln!(
             script,
             r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -)
+      cat >/dev/null
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 printf 'stdout fallback should not be used\n'
 "#
         )
