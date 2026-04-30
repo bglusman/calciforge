@@ -81,6 +81,11 @@
       Telegram, Matrix, and text channels
 - [ ] Prototype a native ACP client adapter using the `agent-client-protocol`
       Rust crate, with Zed's `codex-acp` as the first smoke target
+  - [ ] Update or extend the native ACP stack so `session/list` is available
+        for agents that advertise `sessionCapabilities.list`
+  - [ ] Reuse the existing `!sessions <agent>` and `!switch <agent> <session>`
+        UX for native ACP agents, not only `acpx`
+  - [ ] Smoke `@zed-industries/codex-acp` as the first real native ACP target
 - [ ] Evaluate ACP orchestrators such as AgentPool, cagent, and fast-agent as
       recipe-backed async work backends
 - [ ] Architecture decision records (ADRs)

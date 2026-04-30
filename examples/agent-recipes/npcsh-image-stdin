@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact_dir="${CALCIFORGE_ARTIFACT_DIR:?CALCIFORGE_ARTIFACT_DIR is required}"
+mkdir -p "$artifact_dir"
+
+prompt="$(cat)"
+image_path="$artifact_dir/npcsh-vixynt.png"
+transcript="$artifact_dir/npcsh-vixynt-transcript.txt"
+
+model="${CALCIFORGE_IMAGE_MODEL_OVERRIDE:-${NPCSH_IMAGE_GEN_MODEL:-}}"
+provider="${CALCIFORGE_IMAGE_PROVIDER_OVERRIDE:-${NPCSH_IMAGE_GEN_PROVIDER:-}}"
+width="${CALCIFORGE_IMAGE_WIDTH:-512}"
+height="${CALCIFORGE_IMAGE_HEIGHT:-512}"
+timeout_seconds="${CALCIFORGE_NPCSH_TIMEOUT_SECONDS:-120}"
+
+if [ "${CALCIFORGE_NPCSH_IMAGE_DEMO:-0}" = "1" ]; then
+  python3 - "$image_path" "$prompt" <<'PY'
+import hashlib
+import os
+import struct
+import sys
+import textwrap
+import zlib
+
+out_path, prompt = sys.argv[1], sys.argv[2]
+width, height = 768, 512
+seed = hashlib.sha256(prompt.encode("utf-8")).digest()
+bg = tuple(38 + (seed[i] % 95) for i in range(3))
+fg = tuple(170 + (seed[i + 3] % 65) for i in range(3))
+
+def chunk(kind, data):
+    body = kind + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+rows = []
+for y in range(height):
+    row = bytearray([0])
+    for x in range(width):
+        band = ((x // 48) + (y // 48)) % 2
+        pulse = (x * seed[6] + y * seed[7]) % 53
+        base = fg if band else bg
+        row.extend(min(255, c + pulse) for c in base)
+    rows.append(bytes(row))
+
+data = b"".join(rows)
+png = (
+    b"\x89PNG\r\n\x1a\n"
+    + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    + chunk(b"tEXt", b"Comment\0Calciforge npcsh image artifact demo")
+    + chunk(b"IDAT", zlib.compress(data, 9))
+    + chunk(b"IEND", b"")
+)
+with open(out_path, "wb") as f:
+    f.write(png)
+with open(os.path.splitext(out_path)[0] + ".txt", "w", encoding="utf-8") as f:
+    f.write("Demo image generated locally because no npcsh image backend was configured.\n\n")
+    f.write("Prompt:\n")
+    f.write("\n".join(textwrap.wrap(prompt, width=88)))
+    f.write("\n")
+PY
+  printf 'Created demo image artifact: %s\n' "$image_path"
+  exit 0
+fi
+
+if [ -z "$model" ] || [ -z "$provider" ]; then
+  cat >"$transcript" <<EOF
+npcsh vixynt image generation is not configured.
+
+Set NPCSH_IMAGE_GEN_MODEL and NPCSH_IMAGE_GEN_PROVIDER, or set
+CALCIFORGE_IMAGE_MODEL_OVERRIDE and CALCIFORGE_IMAGE_PROVIDER_OVERRIDE for this
+recipe. For local plumbing tests only, set CALCIFORGE_NPCSH_IMAGE_DEMO=1.
+EOF
+  cat "$transcript" >&2
+  exit 2
+fi
+
+set +e
+# npcsh's current vixynt entrypoint accepts `prompt=...` as argv. This wrapper
+# is a known-working artifact recipe, not a safe path for sensitive prompts.
+npc vixynt \
+  "prompt=$prompt" \
+  "model=$model" \
+  "provider=$provider" \
+  "output_name=$image_path" \
+  "width=$width" \
+  "height=$height" \
+  "n_images=1" \
+  >"$transcript" 2>&1 &
+pid=$!
+status=124
+for ((i = 0; i < timeout_seconds; i++)); do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid"
+    status=$?
+    break
+  fi
+  sleep 1
+done
+if kill -0 "$pid" 2>/dev/null; then
+  pkill -P "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  printf 'npcsh vixynt timed out after %s seconds\n' "$timeout_seconds" >>"$transcript"
+fi
+set -e
+
+if [ "$status" -ne 0 ]; then
+  tail -n 80 "$transcript" >&2 || true
+  exit "$status"
+fi
+
+if [ ! -s "$image_path" ]; then
+  tail -n 80 "$transcript" >&2 || true
+  printf 'npcsh vixynt completed without creating %s\n' "$image_path" >&2
+  exit 1
+fi
+
+printf 'Created image artifact: %s\n' "$image_path"
