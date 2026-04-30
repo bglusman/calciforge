@@ -99,9 +99,20 @@ id = "openclaw-codex"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
 api_key = "{{secret:OPENCLAW_GATEWAY_TOKEN}}"
+reply_auth_token = "{{secret:OPENCLAW_REPLY_TOKEN}}"
 openclaw_agent_id = "codex"
 timeout_ms = 600000
 aliases = ["oc-codex"]
+```
+
+For installer-managed OpenClaw hosts, pass the same token pair to
+`calciforge install` so the remote plugin is configured to authenticate
+Calciforge inbound requests and authenticate its `/hooks/reply` callbacks:
+
+```sh
+calciforge install \
+  --calciforge-host calciforge@calciforge.lan \
+  --claw 'name=openclaw-codex,adapter=openclaw-channel,host=root@openclaw.lan,endpoint=http://openclaw.lan:18789,auth_token=REPLACE_WITH_INBOUND_TOKEN,reply_webhook=http://calciforge.lan:18797/hooks/reply,reply_auth_token=REPLACE_WITH_REPLY_TOKEN'
 ```
 
 The older `openclaw-native` `/hooks/agent` path is for hook-style automation.

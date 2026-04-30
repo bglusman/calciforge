@@ -264,6 +264,8 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
 
         let adapter = collect_adapter_config(adapter_str)?;
         let (host, ssh_key, endpoint) = collect_connectivity(adapter_str, &adapter)?;
+        let (auth_token, reply_webhook, reply_auth_token) =
+            collect_managed_agent_auth(adapter_str)?;
 
         claws.push(ClawTarget {
             name,
@@ -272,6 +274,9 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
             ssh_key,
             endpoint,
             policy_endpoint: None,
+            auth_token,
+            reply_webhook,
+            reply_auth_token,
             proxy_endpoint: None,
             no_proxy: None,
         });
@@ -389,6 +394,33 @@ fn collect_connectivity(
     };
 
     Ok((host, ssh_key, endpoint))
+}
+
+fn collect_managed_agent_auth(
+    adapter_str: &str,
+) -> Result<(Option<String>, Option<String>, Option<String>)> {
+    if adapter_str != "openclaw-channel" {
+        return Ok((None, None, None));
+    }
+
+    let auth_token: String = Input::new()
+        .with_prompt("  Inbound bearer token (must match Calciforge agent api_key)")
+        .interact_text()
+        .context("failed to read inbound token")?;
+    let reply_webhook: String = Input::new()
+        .with_prompt("  Calciforge reply webhook URL")
+        .interact_text()
+        .context("failed to read reply webhook")?;
+    let reply_auth_token: String = Input::new()
+        .with_prompt("  Reply webhook bearer token (must match reply_auth_token)")
+        .interact_text()
+        .context("failed to read reply token")?;
+
+    Ok((
+        Some(auth_token.trim().to_string()),
+        Some(reply_webhook.trim().to_string()),
+        Some(reply_auth_token.trim().to_string()),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +645,9 @@ mod tests {
                     ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
                     endpoint: "http://10.0.0.20:18799".into(),
                     policy_endpoint: None,
+                    auth_token: None,
+                    reply_webhook: None,
+                    reply_auth_token: None,
                     proxy_endpoint: None,
                     no_proxy: None,
                 },
@@ -625,6 +660,9 @@ mod tests {
                     ssh_key: None,
                     endpoint: "http://llm/v1".into(),
                     policy_endpoint: None,
+                    auth_token: None,
+                    reply_webhook: None,
+                    reply_auth_token: None,
                     proxy_endpoint: None,
                     no_proxy: None,
                 },

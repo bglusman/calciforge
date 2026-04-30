@@ -1,0 +1,26 @@
+{
+  "id": "calciforge-channel",
+  "name": "Calciforge Channel",
+  "description": "Registers Calciforge as a native inbound channel so messages flow through OpenClaw's full agent runtime and replies are delivered back to Calciforge.",
+  "version": "0.1.0",
+  "channels": ["calciforge"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["authToken", "replyWebhook", "replyAuthToken"],
+    "properties": {
+      "authToken": {
+        "type": "string",
+        "description": "Bearer token Calciforge sends to /calciforge/inbound"
+      },
+      "replyWebhook": {
+        "type": "string",
+        "description": "URL to POST agent responses back to Calciforge, e.g. http://calciforge.lan:18797/hooks/reply"
+      },
+      "replyAuthToken": {
+        "type": "string",
+        "description": "Bearer token for authenticating callbacks to Calciforge's reply webhook"
+      }
+    }
+  }
+}

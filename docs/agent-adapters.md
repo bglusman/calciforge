@@ -151,6 +151,13 @@ OpenClaw exposes several surfaces that look similar but behave differently:
 - `POST /calciforge/inbound` plus the Calciforge reply callback is the intended
   channel/plugin style integration. Prefer this when OpenClaw should see
   Calciforge messages as native inbound channel turns.
+- `calciforge install` now treats OpenClaw as a first-class managed agent:
+  the non-interactive `openclaw-channel` spec requires inbound auth,
+  `reply_webhook`, and reply auth, then installs
+  `~/.openclaw/plugins/calciforge-channel`, writes
+  `plugins.entries.calciforge-channel`, and restarts `openclaw-gateway`.
+  ZeroClaw should follow the same managed-agent pattern when its config
+  patcher graduates from the current TOML stub.
 
 Operational guidance:
 

@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! --claw name=foo,adapter=zeroclaw-native,host=user@host,key=/path/id_rsa,endpoint=http://...
-//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...,policy_endpoint=http://clashd:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1;::1
+//! --claw name=bar,adapter=openclaw-channel,host=user@host,key=/path/id_ed25519,endpoint=http://...,auth_token=...,reply_webhook=http://calciforge.lan:18797/hooks/reply,reply_auth_token=...,policy_endpoint=http://clashd:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1;::1
 //! --claw name=baz,adapter=openai-compat,endpoint=http://some-claw/v1
 //! --claw name=qux,adapter=webhook,endpoint=http://custom/hook,format=json
 //! --claw name=bin,adapter=cli,command=/usr/local/bin/my-claw
@@ -107,7 +107,7 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 /// | Adapter | Required | Optional |
 /// |---------|----------|----------|
 /// | `zeroclaw-native` | `host`, `endpoint` | `key` |
-/// | `openclaw-channel` | `host`, `endpoint` | `key`, `policy_endpoint`, `proxy_endpoint`, `no_proxy` |
+/// | `openclaw-channel` | `host`, `endpoint`, `auth_token`, `reply_webhook`, `reply_auth_token` | `key`, `policy_endpoint`, `proxy_endpoint`, `no_proxy` |
 /// | `openai-compat` | `endpoint` | — |
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
 /// | `cli` | `command` | — |
@@ -129,6 +129,31 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
             adapter_str,
             spec
         );
+    }
+
+    let auth_token = kv.get("auth_token").or_else(|| kv.get("api_key")).cloned();
+    let reply_webhook = kv.get("reply_webhook").cloned();
+    let reply_auth_token = kv.get("reply_auth_token").cloned();
+
+    if matches!(adapter, ClawKind::OpenClawChannel) {
+        if auth_token.as_deref().is_none_or(str::is_empty) {
+            bail!(
+                "adapter 'openclaw-channel' requires 'auth_token=...' (or 'api_key=...') in spec: {}",
+                spec
+            );
+        }
+        if reply_webhook.as_deref().is_none_or(str::is_empty) {
+            bail!(
+                "adapter 'openclaw-channel' requires 'reply_webhook=http://<calciforge-host>:18797/hooks/reply' in spec: {}",
+                spec
+            );
+        }
+        if reply_auth_token.as_deref().is_none_or(str::is_empty) {
+            bail!(
+                "adapter 'openclaw-channel' requires 'reply_auth_token=...' in spec: {}",
+                spec
+            );
+        }
     }
 
     // Endpoint — required for everything except Cli.
@@ -154,6 +179,9 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         ssh_key,
         endpoint,
         policy_endpoint: kv.get("policy_endpoint").cloned(),
+        auth_token,
+        reply_webhook,
+        reply_auth_token,
         proxy_endpoint: kv.get("proxy_endpoint").cloned(),
         no_proxy: kv.get("no_proxy").map(|value| value.replace(';', ",")),
     })
@@ -296,18 +324,24 @@ mod tests {
 
     #[test]
     fn parse_openclaw_claw() {
-        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789";
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,auth_token=inbound-token,reply_webhook=http://calciforge.example.invalid:18797/hooks/reply,reply_auth_token=reply-token";
         let claw = parse_claw_spec(spec).unwrap();
         assert_eq!(claw.name, "custodian");
         assert!(matches!(claw.adapter, ClawKind::OpenClawChannel));
         assert!(claw.needs_ssh_config());
+        assert_eq!(claw.auth_token.as_deref(), Some("inbound-token"));
+        assert_eq!(
+            claw.reply_webhook.as_deref(),
+            Some("http://calciforge.example.invalid:18797/hooks/reply")
+        );
+        assert_eq!(claw.reply_auth_token.as_deref(), Some("reply-token"));
         assert!(claw.policy_endpoint.is_none());
         assert!(claw.proxy_endpoint.is_none());
     }
 
     #[test]
     fn parse_openclaw_claw_with_policy_endpoint() {
-        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,policy_endpoint=http://clashd.example.invalid:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1";
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,key=/keys/id_rsa,endpoint=http://openclaw.example.invalid:18789,auth_token=inbound-token,reply_webhook=http://calciforge.example.invalid:18797/hooks/reply,reply_auth_token=reply-token,policy_endpoint=http://clashd.example.invalid:9001/evaluate,proxy_endpoint=http://127.0.0.1:8888,no_proxy=localhost;127.0.0.1";
         let claw = parse_claw_spec(spec).unwrap();
         assert_eq!(
             claw.policy_endpoint.as_deref(),
@@ -318,6 +352,30 @@ mod tests {
             Some("http://127.0.0.1:8888")
         );
         assert_eq!(claw.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
+    }
+
+    #[test]
+    fn parse_openclaw_claw_requires_managed_channel_auth() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,endpoint=http://openclaw.example.invalid:18789";
+        let err = parse_claw_spec(spec).expect_err("missing inbound token should fail");
+        assert!(
+            err.to_string().contains("auth_token"),
+            "error should explain missing inbound token: {err}"
+        );
+
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,endpoint=http://openclaw.example.invalid:18789,auth_token=inbound-token";
+        let err = parse_claw_spec(spec).expect_err("missing reply webhook should fail");
+        assert!(
+            err.to_string().contains("reply_webhook"),
+            "error should explain missing reply webhook: {err}"
+        );
+
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,endpoint=http://openclaw.example.invalid:18789,auth_token=inbound-token,reply_webhook=http://calciforge.example.invalid:18797/hooks/reply";
+        let err = parse_claw_spec(spec).expect_err("missing reply auth should fail");
+        assert!(
+            err.to_string().contains("reply_auth_token"),
+            "error should explain missing reply auth token: {err}"
+        );
     }
 
     #[test]
@@ -581,10 +639,12 @@ mod tests {
                 format!("name={name},adapter=zeroclaw-native,host={host},endpoint={endpoint}")
             }
             _ => {
-                // openclaw: requires host and endpoint
+                // openclaw: requires host, endpoint, inbound auth, and reply callback auth
                 let host = format!("admin@192.168.1.{}", tc.draw(gs::integers::<u8>()));
                 let endpoint = format!("http://{name}.local:18789");
-                format!("name={name},adapter=openclaw-channel,host={host},endpoint={endpoint}")
+                format!(
+                    "name={name},adapter=openclaw-channel,host={host},endpoint={endpoint},auth_token=inbound-{name},reply_webhook=http://calciforge-{name}.local:18797/hooks/reply,reply_auth_token=reply-{name}"
+                )
             }
         };
 

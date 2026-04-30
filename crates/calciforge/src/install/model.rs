@@ -116,6 +116,21 @@ pub struct ClawTarget {
     /// legacy policy plugin entries and enables `calciforge-policy` in
     /// `openclaw.json`.
     pub policy_endpoint: Option<String>,
+    /// Bearer token the managed agent endpoint expects on inbound requests.
+    ///
+    /// For `openclaw-channel`, this configures the remote
+    /// `calciforge-channel` plugin's `authToken` and must match the Calciforge
+    /// agent `api_key` / `auth_token`.
+    pub auth_token: Option<String>,
+    /// Callback URL managed agents post replies to, usually
+    /// `http://<calciforge-lan-ip>:18797/hooks/reply`.
+    pub reply_webhook: Option<String>,
+    /// Bearer token managed agents send to Calciforge's `/hooks/reply`.
+    ///
+    /// For `openclaw-channel`, this configures the remote
+    /// `calciforge-channel` plugin's `replyAuthToken` and must match the
+    /// Calciforge agent `reply_auth_token`.
+    pub reply_auth_token: Option<String>,
     /// Optional HTTP proxy endpoint for managed agent outbound traffic.
     ///
     /// For `openclaw-channel`, the installer writes a systemd drop-in for the
@@ -320,6 +335,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/key")),
             endpoint: "http://host:18799".into(),
             policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -334,6 +352,9 @@ mod tests {
             ssh_key: None,
             endpoint: "http://host/v1".into(),
             policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -349,6 +370,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_rsa")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -365,6 +389,9 @@ mod tests {
             ssh_key: None,
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
         };
