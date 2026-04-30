@@ -161,6 +161,7 @@ impl AcpxAdapter {
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -189,6 +190,7 @@ impl AcpxAdapter {
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
