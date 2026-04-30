@@ -833,9 +833,14 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
             .map_err(|e| anyhow::anyhow!("written openclaw.json is not valid JSON: {}", e))?;
     }
 
+    let applied_detail = match claw.adapter {
+        ClawKind::OpenClawChannel => "Calciforge OpenClaw channel config updated",
+        ClawKind::ZeroClawNative => "Calciforge ZeroClaw upstream config updated",
+        _ => "Calciforge remote agent config updated",
+    };
     let mut details = vec![format!(
-        "patched {} on {} — Calciforge OpenClaw channel config updated",
-        config_path, claw.host
+        "patched {} on {} — {}",
+        config_path, claw.host, applied_detail
     )];
 
     if matches!(claw.adapter, ClawKind::OpenClawChannel) {
@@ -1841,10 +1846,10 @@ mod tests {
         );
     }
 
-    /// S1 integration test: apply_remote_config via mock SSH writes a config
-    /// that contains the hooks entry and the written content parses as valid JSON.
+    /// apply_remote_config via mock SSH writes the OpenClaw plugin entry and
+    /// the written content parses as valid JSON.
     #[tokio::test]
-    async fn apply_remote_config_via_mock_writes_hooks_entry() {
+    async fn apply_remote_config_via_mock_writes_openclaw_channel_plugin_entry() {
         let claw = ClawTarget {
             name: "calciforge".into(),
             adapter: ClawKind::OpenClawChannel,
@@ -1871,7 +1876,7 @@ mod tests {
         //
         // Since MockSshClient returns responses in order from a queue,
         // we push a valid patched JSON as the third response (read-back).
-        ssh.push_success(r#"{"version": "2026.3.13", "hooks": {"enabled": true, "entries": {"calciforge": {"enabled": true, "url": "http://calciforge.host:18799/webhook", "token": "abc123"}}}}"#);
+        ssh.push_success(r#"{"version": "2026.3.13", "plugins": {"enabled": true, "entries": {"calciforge-channel": {"enabled": true, "config": {"authToken": "inbound-token", "replyWebhook": "http://calciforge.host:18797/hooks/reply", "replyAuthToken": "reply-token"}}}}}"#);
         push_openclaw_channel_plugin_install(&ssh);
         push_openclaw_service_restart(&ssh);
 
@@ -1889,6 +1894,16 @@ mod tests {
         assert!(
             detail.contains("patched"),
             "detail should mention patching: {}",
+            detail
+        );
+        assert!(
+            detail.contains("OpenClaw channel config updated"),
+            "detail should name the OpenClaw channel config: {}",
+            detail
+        );
+        assert!(
+            detail.contains("installed Calciforge OpenClaw channel plugin"),
+            "detail should mention plugin installation: {}",
             detail
         );
     }
@@ -1937,6 +1952,41 @@ mod tests {
                 .command
                 .contains("systemctl --user restart openclaw-gateway.service")),
             "expected user service restart, got {calls:?}"
+        );
+    }
+
+    #[test]
+    fn apply_remote_config_zeroclaw_detail_names_zeroclaw() {
+        let claw = ClawTarget {
+            name: "librarianzero".into(),
+            adapter: ClawKind::ZeroClawNative,
+            host: "user@host".into(),
+            ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
+            endpoint: "http://zeroclaw.host:18799/webhook".into(),
+            policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
+            proxy_endpoint: None,
+            no_proxy: None,
+        };
+
+        let ssh = MockSshClient::new();
+        ssh.push_success("[agent]\nname = \"librarian\"\n");
+        ssh.push_success("");
+        ssh.push_success(
+            "[agent]\nname = \"librarian\"\n\n[calciforge]\nregistered = true\nagent = \"librarianzero\"\n",
+        );
+        let deps = ExecutorDeps::mock(ssh, MockHealthChecker::new());
+
+        let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
+        assert!(
+            detail.contains("ZeroClaw upstream config updated"),
+            "detail should name the ZeroClaw config: {detail}"
+        );
+        assert!(
+            !detail.contains("OpenClaw channel"),
+            "ZeroClaw detail must not mention OpenClaw channel config: {detail}"
         );
     }
 
