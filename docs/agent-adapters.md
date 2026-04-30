@@ -52,8 +52,9 @@ parsing or safety behavior.
 
 Use a recipe when an upstream tool is useful but its protocol is still just a
 documented command invocation. Recipes can still be security-aware: Calciforge
-owns identity checks, routing, proxy environment, per-run artifact directories,
-timeouts, output validation, and audit logs.
+owns identity checks, routing, per-run artifact directories, timeouts, output
+validation, audit logs, and tested network wrappers where the upstream runtime
+supports them.
 
 Use a named adapter when Calciforge needs upstream-specific parsing or safety
 defaults that cannot be expressed cleanly as a recipe. Dirac is the current
@@ -95,7 +96,6 @@ args = [
   "{message}",
 ]
 timeout_ms = 120000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 The command above must read the actual task from stdin. `{message}` is a safe
@@ -113,7 +113,6 @@ args = [
   "{artifact_dir}/image.png",
 ]
 timeout_ms = 180000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 Treat this npcsh command as a recipe to verify against the installed npcsh

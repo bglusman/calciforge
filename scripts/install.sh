@@ -1601,16 +1601,17 @@ agent_enabled zeroclaw && (zeroclaw status 2>/dev/null | grep -q "running" \
 agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
     && echo "  ✓ dirac" || echo "  ✗ dirac (run: npm install -g dirac-cli)")
 echo ""
-echo "Agent subprocess proxy:"
+echo "Optional external-agent proxy:"
 echo "  HTTP_PROXY=${SECURITY_PROXY_URL}"
 echo "  NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
 if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     echo "  Remote scanner=${REMOTE_SCANNER_URL} (fail_closed=${REMOTE_SCANNER_FAIL_CLOSED})"
 fi
 echo ""
-echo "Set this environment on manually started external agent daemons or"
-echo "per-agent subprocess configuration. Do not set it on the Calciforge service."
-echo "HTTPS content needs explicit tool/fetch integration; ambient HTTPS_PROXY is not a security boundary."
+echo "Use this only for manually started external agent daemons or tested wrappers."
+echo "Do not set it on the Calciforge service, and do not assume generic CLI agents"
+echo "work correctly behind HTTP_PROXY/HTTPS_PROXY."
+echo "HTTPS content needs explicit tool/fetch integration or a stronger OS/container boundary."
 echo ""
 echo "Logs:"
 echo "  clashd:         $LOG_DIR/"

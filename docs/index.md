@@ -205,6 +205,10 @@ tool permissions can be checked before traffic leaves the machine.
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection:
 standard HTTPS proxying uses CONNECT tunnels, so encrypted request bodies
 cannot be inspected or rewritten without a separate MITM design.
+For agents that do not work with cooperative proxy env, Calciforge's
+security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
+audited recipe wrappers, or future container/VM isolation profiles that deny
+egress except through Calciforge services.
 
 The gateway protects in three places:
 
@@ -507,9 +511,9 @@ correctly, for first-class adapter support. The working vocabulary is:
 
 - **Recipes** — documented, security-aware command configurations for
   local tools such as npcsh, opencode profiles, or one-off media agents.
-  Recipes can still use Calciforge identity checks, per-agent proxy
-  environment, timeouts, stdin prompt delivery, stderr redaction, audit
-  logs, and controlled artifact directories.
+  Recipes can still use Calciforge identity checks, timeouts, stdin prompt
+  delivery, stderr redaction, audit logs, controlled artifact directories,
+  and tested proxy wrappers where the upstream runtime supports them.
 - **Adapters** — first-class protocol integrations used when Calciforge
   must understand upstream-specific behavior, such as event streams,
   final-answer parsing, approval pauses, callbacks, or native session
@@ -542,7 +546,6 @@ kind = "artifact-cli"
 command = "/usr/local/bin/npcsh-vixynt-stdin"
 args = ["{artifact_dir}/image.png"]
 timeout_ms = 180000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 The command above is a recipe shape, not a promise that every npcsh
@@ -682,14 +685,16 @@ unverified, validates configured scanner policy files and rule syntax,
 and can probe configured endpoints.
 Use `calciforge doctor --no-network` when you want a local-only check.
 
-Calciforge-managed subprocess agents should get proxy environment from their
-agent config or installer-generated config. Do not put proxy variables in
-`~/.zshrc` for the Calciforge daemon itself; that can route Calciforge's own
-provider and control-plane traffic through its security proxy.
+Do not put proxy variables in `~/.zshrc` for the Calciforge daemon itself;
+that can route Calciforge's own provider and control-plane traffic through
+its security proxy. Do not assume CLI agents can be protected by generic
+`HTTP_PROXY` or `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and
+streaming clients may use CONNECT, WebSockets, or browser-backed auth flows
+that the current proxy cannot inspect and may break.
 
-For externally managed agent daemons that Calciforge does not launch, set
-plain HTTP proxying on the agent process or its service manager and validate
-it against `security-proxy` logs:
+For externally managed agent daemons that Calciforge does not launch, configure
+a tested proxy path on the agent process or its service manager and validate it
+against `security-proxy` logs:
 
 ```bash
 # External agent process environment

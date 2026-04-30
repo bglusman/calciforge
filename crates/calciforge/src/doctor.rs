@@ -383,23 +383,23 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
         (Some(http), Some(https)) => {
             if http == https {
                 report.warn(format!(
-                    "Current calciforge doctor process has ambient HTTP(S)_PROXY configured ({}); if the service runs with the same env, model-provider and control-plane traffic can route through security-proxy. Prefer explicit proxy env on agent subprocesses instead.",
+                    "Current calciforge doctor process has ambient HTTP(S)_PROXY configured ({}); if the service runs with the same env, model-provider, channel, and control-plane traffic can route through security-proxy. Prefer no ambient proxy on the Calciforge service.",
                     display_proxy_value(http)
                 ));
             } else {
                 report.warn(format!(
-                    "Current calciforge doctor process has ambient HTTP_PROXY and HTTPS_PROXY configured but they differ; HTTP_PROXY={}, HTTPS_PROXY={}. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+                    "Current calciforge doctor process has ambient HTTP_PROXY and HTTPS_PROXY configured but they differ; HTTP_PROXY={}, HTTPS_PROXY={}. Prefer no ambient proxy on the Calciforge service.",
                     display_proxy_value(http),
                     display_proxy_value(https)
                 ));
             }
         }
         (Some(http), None) => report.warn(format!(
-            "Current calciforge doctor process has ambient HTTP_PROXY set ({}). Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+            "Current calciforge doctor process has ambient HTTP_PROXY set ({}). Prefer no ambient proxy on the Calciforge service.",
             display_proxy_value(http)
         )),
         (None, Some(https)) => report.warn(format!(
-            "Current calciforge doctor process has ambient HTTPS_PROXY set ({}) but HTTP_PROXY is not set. Prefer no ambient proxy on the Calciforge service and explicit proxy env on agent subprocesses.",
+            "Current calciforge doctor process has ambient HTTPS_PROXY set ({}) but HTTP_PROXY is not set. Prefer no ambient proxy on the Calciforge service.",
             display_proxy_value(https)
         )),
         (None, None) => report.ok(
@@ -455,7 +455,7 @@ fn check_agent_proxy_coverage(
 
         if has_http_proxy(env) {
             report.warn(
-                "Current calciforge doctor process has ambient HTTP_PROXY; subprocess inheritance works if the service has the same env, but it also risks proxying Calciforge's own provider/control-plane calls. Move proxy env to agent-level config or wrappers.",
+                "Current calciforge doctor process has ambient HTTP_PROXY; subprocess inheritance works only if the service has the same env, and it can break CLI agents that use CONNECT, WebSockets, npm, or browser-backed auth. Prefer no ambient proxy and only wrap agents through tested recipes.",
             );
         }
 
@@ -467,28 +467,28 @@ fn check_agent_proxy_coverage(
 
         if incomplete_count > 0 {
             report.warn(format!(
-                "{incomplete_count} subprocess agent(s) define incomplete proxy env; set HTTP_PROXY to the intended security-proxy endpoint or clear proxy env keys"
+                "{incomplete_count} subprocess agent(s) define partial proxy env; either remove proxy env or use a tested wrapper that the agent supports"
             ));
         }
 
-        if complete_count == subprocess_count && clearing_count == 0 && incomplete_count == 0 {
-            report.ok(format!(
-                "{subprocess_count} subprocess agent(s) define explicit HTTP_PROXY env; verify these point at security-proxy and include NO_PROXY for loopback"
+        if complete_count > 0 {
+            report.warn(format!(
+                "{complete_count} subprocess agent(s) define explicit HTTP_PROXY env; verify the specific CLI supports that proxy path. HTTPS_PROXY/CONNECT traffic is not inspected by security-proxy and may break streaming agents."
             ));
-        } else {
-            let missing_count = subprocess_agents
-                .iter()
-                .filter(|agent| {
-                    !has_complete_agent_proxy_env(agent)
-                        && !has_incomplete_agent_proxy_env(agent)
-                        && !clears_agent_proxy_env(agent)
-                })
-                .count();
-            if missing_count > 0 {
-                report.warn(format!(
-                    "{missing_count} subprocess agent(s) lack explicit HTTP_PROXY env; Calciforge no longer supplies ambient proxy env"
-                ));
-            }
+        }
+
+        let missing_count = subprocess_agents
+            .iter()
+            .filter(|agent| {
+                !has_complete_agent_proxy_env(agent)
+                    && !has_incomplete_agent_proxy_env(agent)
+                    && !clears_agent_proxy_env(agent)
+            })
+            .count();
+        if missing_count > 0 {
+            report.ok(format!(
+                "{missing_count} subprocess agent(s) have no explicit proxy env; use explicit tool/fetch integration or a tested wrapper for traffic that must pass through security-proxy"
+            ));
         }
     }
 
@@ -1428,7 +1428,7 @@ mod tests {
     }
 
     #[test]
-    fn subprocess_agent_proxy_coverage_warns_without_complete_proxy_env() {
+    fn subprocess_agent_proxy_coverage_accepts_missing_proxy_env() {
         let mut config = base_config();
         config.agents = vec![AgentConfig {
             id: "codex".to_string(),
@@ -1448,13 +1448,13 @@ mod tests {
         );
 
         assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Warn
-                && finding.message.contains("lack explicit HTTP_PROXY env")
+            finding.severity == Severity::Ok
+                && finding.message.contains("have no explicit proxy env")
         }));
     }
 
     #[test]
-    fn subprocess_agent_proxy_coverage_accepts_complete_agent_proxy_env() {
+    fn subprocess_agent_proxy_coverage_warns_on_complete_agent_proxy_env() {
         let mut config = base_config();
         config.agents = vec![AgentConfig {
             id: "dirac".to_string(),
@@ -1484,7 +1484,7 @@ mod tests {
         );
 
         assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Ok
+            finding.severity == Severity::Warn
                 && finding.message.contains("define explicit HTTP_PROXY env")
         }));
     }
@@ -1515,7 +1515,7 @@ mod tests {
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
-                && finding.message.contains("define incomplete proxy env")
+                && finding.message.contains("define partial proxy env")
         }));
     }
 

@@ -83,7 +83,6 @@ args = [
     "--skip-git-repo-check",
     "-"
 ]
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 timeout_ms = 600000
 
 [agents.registry]
@@ -99,7 +98,6 @@ id = "dirac"
 kind = "dirac-cli"
 command = "dirac"
 args = ["--yolo", "--json"]
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 timeout_ms = 600000
 
 [agents.registry]

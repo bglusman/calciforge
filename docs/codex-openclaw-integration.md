@@ -30,7 +30,6 @@ id = "codex"
 kind = "codex-cli"
 model = "gpt-5.5"
 timeout_ms = 600000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 aliases = ["gpt", "openai"]
 
 [[routing]]
@@ -66,13 +65,14 @@ args = [
   "--skip-git-repo-check",
   "-",
 ]
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
-Do not assume ambient `HTTPS_PROXY` gives Calciforge visibility into encrypted
-model traffic. HTTPS clients normally use CONNECT tunnels; use explicit
-fetch/tool integration when encrypted content needs scanning or secret
-substitution.
+Do not wrap Codex CLI with generic `HTTP_PROXY`/`HTTPS_PROXY` unless you have
+validated that specific route. Codex uses streaming and browser/OAuth-backed
+control-plane calls; the current `security-proxy` does not inspect CONNECT
+tunnels and can break those flows. Use Calciforge's OpenAI-compatible gateway,
+exec models, or explicit fetch/tool integration for traffic that needs
+scanning or secret substitution.
 
 Keep chat-facing Codex agents conservative. `read-only` is the safer
 default for general messaging channels. Use `workspace-write` only for

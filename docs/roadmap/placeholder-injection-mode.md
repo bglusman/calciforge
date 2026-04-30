@@ -78,7 +78,7 @@ through PlaceholderMap before forwarding. Same code path as
 |---|---|---|
 | Agent never sees real secret | ✅ | ✅ |
 | Works without agent's awareness of Calciforge | ✅ | ✅ |
-| Kernel-enforced (agent can't bypass) | ✅ | ❌ (agent can unset HTTPS_PROXY, but then can't call out) |
+| Kernel-enforced (agent can't bypass) | ✅ | ❌ (agent can bypass cooperative proxy env unless paired with host/container egress controls) |
 | Linux only | yes | no — cross-platform |
 | Requires root | yes (CAP_BPF) | no |
 | Requires recent kernel | yes (5.x+) | no |
@@ -94,11 +94,9 @@ through PlaceholderMap before forwarding. Same code path as
 - Agent uploads its own env var to an untrusted endpoint → placeholder
 
 **Things only true eBPF catches:**
-- Agent intentionally bypasses HTTPS_PROXY env to talk directly →
-  placeholder is useless (no upstream knows what it means), but the
-  agent can't make ANY call. So the failure mode is "agent fails
-  loudly" rather than "agent leaks secret". Acceptable for our threat
-  model where the agent is mostly-trusted.
+- Agent intentionally bypasses cooperative proxy env to talk directly →
+  placeholder is useless because no upstream knows what it means. Pair this
+  mode with host/container egress controls when bypass resistance matters.
 
 **Things neither catches:**
 - Agent intentionally exfiltrates the placeholder + asks Calciforge
