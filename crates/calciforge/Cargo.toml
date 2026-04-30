@@ -32,9 +32,9 @@ harness = true
 [dependencies]
 axum = "0.7"
 
-# Embedded channel implementations (Signal + WhatsApp Web). The crate
-# brings its own SignalChannel that talks to signal-cli-rest-api, so we
-# no longer host a webhook receiver inside calciforge for Signal.
+# Embedded Signal channel implementation. The crate brings its own
+# SignalChannel that talks to signal-cli-rest-api, so we no longer host a
+# webhook receiver inside calciforge for Signal.
 zeroclawlabs = { workspace = true }
 
 # Secret resolution helpers
@@ -116,9 +116,8 @@ tiktoken-rs = { version = "0.11", optional = true }
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
 
 # SQLite for persistent session storage (optional feature). The `bundled`
-# feature compiles libsqlite3 in-tree, which keeps us aligned with whatever
-# `libsqlite3-sys` version `zeroclawlabs` (via `rusqlite`) ships and avoids
-# a `links = "sqlite3"` collision in the workspace.
+# feature compiles libsqlite3 in-tree so persistent context does not depend on
+# a system SQLite install.
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 
 [lints.rust]

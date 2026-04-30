@@ -112,16 +112,6 @@ fn lock_conn(conn: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>> {
         .map_err(|_| anyhow!("persistent context sqlite connection mutex poisoned"))
 }
 
-/// A watermark entry for an agent in a chat.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct Watermark {
-    pub chat_id: String,
-    pub agent_id: String,
-    pub last_seen_seq: i64,
-    pub updated_at: DateTime<Utc>,
-}
-
 // ---------------------------------------------------------------------------
 // PersistentContextStore
 // ---------------------------------------------------------------------------
@@ -141,7 +131,6 @@ pub struct PersistentContextStore {
     inject_depth: usize,
 }
 
-#[allow(dead_code)]
 impl PersistentContextStore {
     /// Create a new persistent context store.
     ///
@@ -173,6 +162,7 @@ impl PersistentContextStore {
     /// Create a persistent context store with a file path.
     ///
     /// This is a convenience method that accepts a file path instead of a full URL.
+    #[allow(dead_code)]
     pub async fn with_file_path<P: AsRef<Path>>(
         path: P,
         buffer_size: usize,
@@ -370,6 +360,7 @@ impl PersistentContextStore {
     }
 
     /// Get all exchanges for a chat (for debugging/migration).
+    #[allow(dead_code)]
     pub async fn get_exchanges(&self, chat_id: &str) -> Result<Vec<PersistentExchange>> {
         let conn = Arc::clone(&self.conn);
         let chat_id = chat_id.to_string();

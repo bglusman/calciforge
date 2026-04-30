@@ -521,7 +521,7 @@ where
 
     // Listener returned (channel closed); join it and surface runtime failures.
     match listener_handle.await {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(())) => Err(anyhow!("Signal listener exited unexpectedly")),
         Ok(Err(e)) => Err(e).context("Signal listener exited with error"),
         Err(e) => Err(anyhow!("Signal listener task failed: {e}")),
     }
@@ -763,6 +763,23 @@ mod tests {
         assert!(
             rendered.contains("listen failed"),
             "error should include listener failure: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_transport_loop_errors_on_clean_listener_exit() {
+        let config = make_test_config(|_| {});
+        let transport = Arc::new(MockChannel::new());
+        let bridge = dummy_bridge_with(config, Arc::clone(&transport));
+
+        let err = run_transport_loop(bridge.bridge, transport)
+            .await
+            .expect_err("clean listener exits are unexpected in production");
+
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("exited unexpectedly"),
+            "error should explain the listener stopped: {rendered}"
         );
     }
 
