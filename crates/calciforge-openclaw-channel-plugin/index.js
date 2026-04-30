@@ -163,7 +163,8 @@ async function handleInboundRequest({
       api,
       sessionKey,
     );
-    if (isSilentReply(replyText)) {
+    const attachments = normalizeAttachments(result.attachments);
+    if (isSilentReply(replyText) && attachments.length === 0) {
       log?.info?.("[calciforge-channel] silent reply - not forwarding");
       return true;
     }
@@ -173,6 +174,7 @@ async function handleInboundRequest({
       replyAuthToken,
       sessionKey,
       message: replyText,
+      attachments,
       channel,
       replyTo,
       log,
@@ -243,6 +245,7 @@ async function deliverReply({
   replyAuthToken,
   sessionKey,
   message,
+  attachments,
   channel,
   replyTo,
   log,
@@ -253,13 +256,18 @@ async function deliverReply({
   }
 
   try {
+    const payload = { sessionKey, message, channel, to: replyTo };
+    if (attachments?.length) {
+      payload.attachments = attachments;
+    }
+
     const resp = await fetch(replyWebhook, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${replyAuthToken}`,
       },
-      body: JSON.stringify({ sessionKey, message, channel, to: replyTo }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(30000),
     });
 
@@ -271,6 +279,25 @@ async function deliverReply({
   } catch (err) {
     log?.error?.(`[calciforge-channel] reply webhook error - ${err.message}`);
   }
+}
+
+function normalizeAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((attachment) => {
+      if (!attachment || typeof attachment !== "object") return null;
+      const dataBase64 = attachment.dataBase64 ?? attachment.data_base64;
+      const mimeType = attachment.mimeType ?? attachment.mime_type;
+      if (typeof dataBase64 !== "string" || !dataBase64) return null;
+      if (mimeType !== undefined && typeof mimeType !== "string") return null;
+      return {
+        ...(typeof attachment.name === "string" ? { name: attachment.name } : {}),
+        ...(typeof mimeType === "string" ? { mimeType } : {}),
+        ...(typeof attachment.caption === "string" ? { caption: attachment.caption } : {}),
+        dataBase64,
+      };
+    })
+    .filter(Boolean);
 }
 
 function json(res, status, body) {

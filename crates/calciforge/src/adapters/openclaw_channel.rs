@@ -5,8 +5,10 @@
 //! local reply webhook `POST /hooks/reply`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
+use crate::messages::{AttachmentKind, OutboundAttachment, OutboundMessage};
 use crate::sync::{Arc, AtomicBool, OnceLock, Ordering};
 
 use async_trait::async_trait;
@@ -18,16 +20,21 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex, Notify};
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_REPLY_PORT: u16 = 18_797;
+const MAX_REPLY_ATTACHMENTS: usize = 8;
+const MAX_REPLY_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+
+type ReplyResult = Result<OutboundMessage, String>;
 
 /// Correlates `sessionKey` callbacks to pending dispatch requests.
 #[derive(Clone, Default)]
 pub struct ReplyRouter {
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<ReplyResult>>>>,
 }
 
 impl ReplyRouter {
@@ -37,11 +44,11 @@ impl ReplyRouter {
         }
     }
 
-    pub async fn insert(&self, session_key: String, tx: oneshot::Sender<String>) {
+    pub async fn insert(&self, session_key: String, tx: oneshot::Sender<ReplyResult>) {
         self.pending.lock().await.insert(session_key, tx);
     }
 
-    pub async fn take(&self, session_key: &str) -> Option<oneshot::Sender<String>> {
+    pub async fn take(&self, session_key: &str) -> Option<oneshot::Sender<ReplyResult>> {
         self.pending.lock().await.remove(session_key)
     }
 
@@ -61,11 +68,31 @@ struct ReplyServerState {
 struct ReplyPayload {
     #[serde(rename = "sessionKey")]
     session_key: String,
-    message: String,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    attachments: Vec<ReplyAttachmentPayload>,
     #[allow(dead_code)]
     channel: Option<String>,
     #[allow(dead_code)]
     to: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ReplyAttachmentPayload {
+    /// Optional display filename. Calciforge sanitizes this before writing.
+    #[serde(default)]
+    name: Option<String>,
+    /// MIME type supplied by the agent bridge, for example `image/png`.
+    #[serde(default, rename = "mimeType", alias = "mime_type")]
+    mime_type: Option<String>,
+    /// Optional caption used by channel fallback renderers.
+    #[serde(default)]
+    caption: Option<String>,
+    /// Inline base64 data. URL fetching is intentionally not implemented here;
+    /// it needs a separate SSRF-safe policy surface.
+    #[serde(default, rename = "dataBase64", alias = "data_base64")]
+    data_base64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,11 +206,184 @@ async fn handle_reply(
     }
 
     if let Some(tx) = state.router.take(&payload.session_key).await {
-        let _ = tx.send(payload.message);
-        (StatusCode::OK, Json(AckResponse { ok: true }))
+        match payload.into_outbound_message() {
+            Ok(message) => {
+                let _ = tx.send(Ok(message));
+                (StatusCode::OK, Json(AckResponse { ok: true }))
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                (StatusCode::BAD_REQUEST, Json(AckResponse { ok: false }))
+            }
+        }
     } else {
         warn!(session_key = %payload.session_key, "openclaw-channel reply without pending request");
         (StatusCode::ACCEPTED, Json(AckResponse { ok: true }))
+    }
+}
+
+impl ReplyPayload {
+    fn into_outbound_message(self) -> Result<OutboundMessage, String> {
+        if self.attachments.len() > MAX_REPLY_ATTACHMENTS {
+            return Err(format!(
+                "openclaw-channel callback included {} attachments, limit is {}",
+                self.attachments.len(),
+                MAX_REPLY_ATTACHMENTS
+            ));
+        }
+
+        let run_dir = if self.attachments.is_empty() {
+            None
+        } else {
+            let path = std::env::temp_dir()
+                .join("calciforge-openclaw-artifacts")
+                .join(Uuid::new_v4().to_string());
+            std::fs::create_dir_all(&path)
+                .map_err(|e| format!("failed to create callback artifact directory: {e}"))?;
+            Some(path)
+        };
+
+        let mut attachments = Vec::with_capacity(self.attachments.len());
+        let run_dir = run_dir.as_deref();
+        for (index, attachment) in self.attachments.into_iter().enumerate() {
+            let run_dir = run_dir.ok_or_else(|| {
+                "openclaw-channel callback attachment storage was not initialized".to_string()
+            })?;
+            attachments.push(attachment.into_outbound_attachment(run_dir, index)?);
+        }
+
+        Ok(OutboundMessage {
+            text: self.message.filter(|message| !message.trim().is_empty()),
+            attachments,
+        })
+    }
+}
+
+impl ReplyAttachmentPayload {
+    fn into_outbound_attachment(
+        self,
+        run_dir: &Path,
+        index: usize,
+    ) -> Result<OutboundAttachment, String> {
+        let mime_type = self
+            .mime_type
+            .filter(|value| is_safe_mime_type(value))
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        let data_base64 = self
+            .data_base64
+            .ok_or_else(|| "openclaw-channel callback attachment missing dataBase64".to_string())?;
+        let data_base64 = strip_data_url_prefix(&data_base64);
+        let max_encoded_len = MAX_REPLY_ATTACHMENT_BYTES.div_ceil(3) * 4 + 4;
+        if data_base64.len() > max_encoded_len {
+            return Err(format!(
+                "openclaw-channel callback attachment base64 payload exceeds encoded limit of {max_encoded_len} bytes"
+            ));
+        }
+        let data = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(data_base64.as_bytes())
+                .map_err(|e| format!("openclaw-channel callback attachment base64 error: {e}"))?
+        };
+
+        if data.is_empty() {
+            return Err("openclaw-channel callback attachment is empty".to_string());
+        }
+        if data.len() > MAX_REPLY_ATTACHMENT_BYTES {
+            return Err(format!(
+                "openclaw-channel callback attachment is {} bytes, limit is {}",
+                data.len(),
+                MAX_REPLY_ATTACHMENT_BYTES
+            ));
+        }
+
+        let filename = sanitize_attachment_name(self.name.as_deref(), &mime_type, index);
+        let path = unique_attachment_path(run_dir, filename, index);
+        std::fs::write(&path, &data)
+            .map_err(|e| format!("failed to write callback attachment: {e}"))?;
+
+        Ok(OutboundAttachment {
+            kind: AttachmentKind::from_mime(&mime_type),
+            path,
+            mime_type,
+            caption: self.caption.filter(|caption| !caption.trim().is_empty()),
+            size_bytes: data.len() as u64,
+        })
+    }
+}
+
+fn strip_data_url_prefix(value: &str) -> &str {
+    value
+        .split_once(',')
+        .filter(|(prefix, _)| prefix.trim_start().starts_with("data:"))
+        .map(|(_, data)| data)
+        .unwrap_or(value)
+        .trim()
+}
+
+fn is_safe_mime_type(value: &str) -> bool {
+    let Some((top, sub)) = value.split_once('/') else {
+        return false;
+    };
+    !top.is_empty()
+        && !sub.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '+' | '-' | '.'))
+}
+
+fn sanitize_attachment_name(name: Option<&str>, mime_type: &str, index: usize) -> String {
+    let raw = name.unwrap_or("").rsplit(['/', '\\']).next().unwrap_or("");
+    let mut sanitized = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    while sanitized.starts_with('.') {
+        sanitized.remove(0);
+    }
+    if sanitized.is_empty() {
+        sanitized = format!("attachment-{}", index + 1);
+    }
+    if sanitized.len() > 128 {
+        sanitized.truncate(128);
+        sanitized = sanitized.trim_end_matches('.').to_string();
+    }
+    if !sanitized.contains('.') {
+        sanitized.push_str(default_extension_for_mime(mime_type));
+    }
+    sanitized
+}
+
+fn unique_attachment_path(run_dir: &Path, filename: String, index: usize) -> std::path::PathBuf {
+    let candidate = run_dir.join(&filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    let disambiguated = format!("attachment-{}-{}", index + 1, filename);
+    run_dir.join(disambiguated)
+}
+
+fn default_extension_for_mime(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "audio/mpeg" => ".mp3",
+        "audio/wav" => ".wav",
+        "video/mp4" => ".mp4",
+        "text/plain" => ".txt",
+        "application/pdf" => ".pdf",
+        _ => ".bin",
     }
 }
 
@@ -309,11 +509,20 @@ impl AgentAdapter for OpenClawChannelAdapter {
         &self,
         ctx: DispatchContext<'_>,
     ) -> Result<String, AdapterError> {
+        self.dispatch_message_with_context(ctx)
+            .await
+            .map(|message| message.render_text_fallback())
+    }
+
+    async fn dispatch_message_with_context(
+        &self,
+        ctx: DispatchContext<'_>,
+    ) -> Result<OutboundMessage, AdapterError> {
         self.ensure_reply_server_started().await?;
 
         let sender = ctx.sender.unwrap_or("unknown");
         let session_key = self.session_key_for(sender);
-        let (tx, rx) = oneshot::channel::<String>();
+        let (tx, rx) = oneshot::channel::<ReplyResult>();
         self.reply_server
             .shared
             .router
@@ -365,7 +574,8 @@ impl AgentAdapter for OpenClawChannelAdapter {
         }
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(reply)) => Ok(reply),
+            Ok(Ok(Ok(reply))) => Ok(reply),
+            Ok(Ok(Err(e))) => Err(AdapterError::Protocol(e)),
             Ok(Err(_)) => {
                 self.reply_server.shared.router.remove(&session_key).await;
                 Err(AdapterError::Protocol(
@@ -398,6 +608,7 @@ mod tests {
         last_body: Arc<TokioMutex<Option<Value>>>,
         reply_webhook: Option<String>,
         reply_auth: Option<String>,
+        reply_attachments: Option<Value>,
     }
 
     async fn inbound_handler(
@@ -413,14 +624,17 @@ mod tests {
                 .unwrap_or_default()
                 .to_string();
 
-            let mut req = reqwest::Client::new()
-                .post(webhook)
-                .json(&serde_json::json!({
-                    "sessionKey": session_key,
-                    "message": "reply from openclaw",
-                    "channel": "whatsapp",
-                    "to": "+15555550001"
-                }));
+            let mut reply = serde_json::json!({
+                "sessionKey": session_key,
+                "message": "reply from openclaw",
+                "channel": "whatsapp",
+                "to": "+15555550001"
+            });
+            if let Some(attachments) = state.reply_attachments {
+                reply["attachments"] = attachments;
+            }
+
+            let mut req = reqwest::Client::new().post(webhook).json(&reply);
 
             if let Some(token) = state.reply_auth {
                 req = req.bearer_auth(token);
@@ -479,6 +693,7 @@ mod tests {
             last_body: captured.clone(),
             reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
             reply_auth: Some("reply-secret".to_string()),
+            reply_attachments: None,
         };
         let inbound_port = start_inbound_server(state).await;
 
@@ -527,6 +742,7 @@ mod tests {
             last_body: captured,
             reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
             reply_auth: None,
+            reply_attachments: None,
         };
         let inbound_port = start_inbound_server(state).await;
 
@@ -554,6 +770,7 @@ mod tests {
             last_body: captured,
             reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
             reply_auth: Some("reply-secret".to_string()),
+            reply_attachments: None,
         };
         let inbound_port = start_inbound_server(state).await;
         let endpoint = format!("http://127.0.0.1:{inbound_port}");
@@ -615,6 +832,156 @@ mod tests {
         assert!(err
             .to_string()
             .contains("already registered with a different reply_auth_token"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_preserves_callback_attachments() {
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: None,
+            reply_attachments: Some(serde_json::json!([
+                {
+                    "name": "../diagram.png",
+                    "mimeType": "image/png",
+                    "caption": "Generated diagram",
+                    "dataBase64": "iVBORw0KGgo="
+                }
+            ])),
+        };
+        let inbound_port = start_inbound_server(state).await;
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+
+        let reply = adapter
+            .dispatch_message_with_context(DispatchContext {
+                message: "make a diagram",
+                sender: Some("brian"),
+                model_override: None,
+                session: None,
+            })
+            .await
+            .expect("dispatch should preserve callback attachment");
+
+        assert_eq!(reply.text.as_deref(), Some("reply from openclaw"));
+        assert_eq!(reply.attachments.len(), 1);
+        let attachment = &reply.attachments[0];
+        assert_eq!(attachment.kind, crate::messages::AttachmentKind::Image);
+        assert_eq!(attachment.mime_type, "image/png");
+        assert_eq!(attachment.caption.as_deref(), Some("Generated diagram"));
+        assert_eq!(attachment.size_bytes, 8);
+        assert_eq!(
+            attachment.path.file_name().and_then(|name| name.to_str()),
+            Some("diagram.png")
+        );
+        assert!(
+            attachment
+                .path
+                .starts_with(std::env::temp_dir().join("calciforge-openclaw-artifacts")),
+            "attachment should be copied into Calciforge-owned storage: {:?}",
+            attachment.path
+        );
+        assert!(std::fs::metadata(&attachment.path).unwrap().is_file());
+
+        let fallback = reply.render_text_fallback();
+        assert!(fallback.contains("diagram.png"));
+        assert!(
+            !fallback.contains("calciforge-openclaw-artifacts"),
+            "fallback must not expose local artifact storage path: {fallback}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_malformed_callback_attachment_fails_dispatch() {
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: None,
+            reply_attachments: Some(serde_json::json!([
+                {
+                    "name": "diagram.png",
+                    "mimeType": "image/png"
+                }
+            ])),
+        };
+        let inbound_port = start_inbound_server(state).await;
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+
+        let err = adapter
+            .dispatch_message_with_context(DispatchContext {
+                message: "make a diagram",
+                sender: Some("brian"),
+                model_override: None,
+                session: None,
+            })
+            .await
+            .expect_err("missing dataBase64 should fail the waiting dispatch");
+
+        assert!(
+            err.to_string().contains("missing dataBase64"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_callback_attachment_names_are_disambiguated() {
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: None,
+            reply_attachments: Some(serde_json::json!([
+                {
+                    "name": "diagram.png",
+                    "mimeType": "image/png",
+                    "dataBase64": "iVBORw0KGgo="
+                },
+                {
+                    "name": "diagram.png",
+                    "mimeType": "image/png",
+                    "dataBase64": "iVBORw0KGgo="
+                }
+            ])),
+        };
+        let inbound_port = start_inbound_server(state).await;
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+
+        let reply = adapter
+            .dispatch_message_with_context(DispatchContext {
+                message: "make two diagrams",
+                sender: Some("brian"),
+                model_override: None,
+                session: None,
+            })
+            .await
+            .expect("duplicate names should be disambiguated");
+
+        assert_eq!(reply.attachments.len(), 2);
+        assert_ne!(reply.attachments[0].path, reply.attachments[1].path);
+        assert_eq!(
+            reply.attachments[0]
+                .path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("diagram.png")
+        );
+        assert_eq!(
+            reply.attachments[1]
+                .path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("attachment-2-diagram.png")
+        );
     }
 
     #[tokio::test]
