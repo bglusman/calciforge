@@ -247,7 +247,7 @@ included example wraps an OpenAI-compatible classifier with an editable
 prompt for foreign-language, poetry/style-shift, fictional-framing, and
 multi-step manipulation cases that are too semantic for local regexes.
 
-See the [security gateway docs](security-gateway.md) for configuration
+See the [security gateway docs](security-gateway.html) for configuration
 details and the
 [red-team fixtures](https://github.com/bglusman/calciforge/tree/main/examples/red-team)
 for the contributor-friendly suite used to harden detection over time.
@@ -315,7 +315,7 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 `what is your api key`). Generic high-entropy secret-shape detection
 (JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
 during the channel-integration cut and is on the
-[roadmap](roadmap/outbound-sensitive-data-detection.md).
+[roadmap](roadmap/outbound-sensitive-data-detection.html).
 
 The scanner pipeline is configurable. The default policy now runs through
 `builtin:calciforge/default-scanner.star`, so the rule set can be copied,
@@ -473,10 +473,10 @@ context_window = 262144
 ```
 
 The full gateway reference is
-[`docs/model-gateway.md`](model-gateway.md).
+[`docs/model-gateway.md`](model-gateway.html).
 Named cascades, dispatchers, and token-window fit checks are captured
 in
-[`docs/rfcs/model-gateway-primitives.md`](rfcs/model-gateway-primitives.md).
+[`docs/rfcs/model-gateway-primitives.md`](rfcs/model-gateway-primitives.html).
 
 ### Subscription-backed agents and models
 
@@ -495,8 +495,8 @@ terms change; operators should validate the installed CLI version and
 subscription terms before making an exec model part of their default
 route.
 
-Read the [agent adapter notes](agent-adapters.md) and
-[Codex/OpenClaw integration guide](codex-openclaw-integration.md) for
+Read the [agent adapter notes](agent-adapters.html) and
+[Codex/OpenClaw integration guide](codex-openclaw-integration.html) for
 direct `codex-cli`, `openclaw-channel`, `cli`, `acpx`, and exec-model
 examples.
 
@@ -553,7 +553,7 @@ weaker process-listing tradeoff.
 
 The broader plan for async orchestrators, native media delivery, and richer
 agent outputs is tracked in the
-[agent recipes and orchestrators roadmap](roadmap/agent-recipes-orchestrators.md).
+[agent recipes and orchestrators roadmap](roadmap/agent-recipes-orchestrators.html).
 
 ### Agent-facing tools (MCP and CLI)
 
@@ -567,7 +567,7 @@ Today, discovery is process-scoped: it sees the fnox names available
 to the MCP server or CLI process. Calciforge enforces per-secret
 destination allowlists at substitution time, but does not yet enforce
 per-agent secret discovery/use ACLs. That policy layer is on the
-[roadmap](roadmap/agent-secret-access-policy.md).
+[roadmap](roadmap/agent-secret-access-policy.html).
 
 ```json
 // ~/.claude/mcp-config.json
@@ -595,14 +595,14 @@ voice input, push-to-talk channels, and audio artifacts remain roadmap work.
 Per-channel setup guides (config reference + TOML examples tested against
 the live schema in CI):
 
-- [Telegram](channels/telegram.md) — long-poll, no open port required
-- [Matrix](channels/matrix.md) — HTTP long-poll; note: no E2EE
-- [Signal](channels/signal.md) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
-- [WhatsApp](channels/whatsapp.md) — embedded WhatsApp Web session
-- [Text/iMessage](channels/sms.md) — Linq webhook receiver for iMessage/RCS/SMS
+- [Telegram](channels/telegram.html) — long-poll, no open port required
+- [Matrix](channels/matrix.html) — HTTP long-poll; note: no E2EE
+- [Signal](channels/signal.html) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
+- [WhatsApp](channels/whatsapp.html) — embedded WhatsApp Web session
+- [Text/iMessage](channels/sms.html) — Linq webhook receiver for iMessage/RCS/SMS
 
 Agent backends, identities, and routing rules are documented in the
-[Agents, Identities, and Routing](agents.md) guide.
+[Agents, Identities, and Routing](agents.html) guide.
 
 ```toml
 # /etc/calciforge/config.toml — channel configuration
@@ -709,7 +709,7 @@ gateway providers, and synthetic model routes pass smoke tests.
 
 The status summary above is the site-facing snapshot of what works today and
 what is still in flight. Public roadmap ideas live in
-the [roadmap notes](roadmap/v3-ideas.md).
+the [roadmap notes](roadmap/v3-ideas.html).
 
 <footer>
 <div class="name-origin">

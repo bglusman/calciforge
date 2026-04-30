@@ -313,7 +313,9 @@ pub struct RoutingRule {
 /// For Matrix: set `homeserver`, `access_token_file`, `room_id`, and optionally `allowed_users`.
 /// For WhatsApp: set `whatsapp_session_path` and `allowed_numbers`.
 /// For Signal: set `signal_cli_url`, `signal_account`, and `allowed_numbers`.
-/// For text/iMessage: set `sms_linq_api_token_file`, `sms_from_phone`, and `allowed_numbers`.
+/// For text/iMessage: set `sms_linq_api_token_file`, `sms_from_phone`, and `allowed_numbers`;
+/// configure inbound webhooks with `sms_webhook_listen` and `sms_webhook_path`; and prefer
+/// `sms_linq_signing_secret_file` or `sms_linq_signing_secret` for webhook signature checks.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelConfig {
     pub kind: String,

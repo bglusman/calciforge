@@ -90,6 +90,13 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                 );
             }
             Err(e) => {
+                telemetry::reply_failed(
+                    "sms",
+                    recipient,
+                    "reply",
+                    start.elapsed().as_millis() as u64,
+                    &e,
+                );
                 warn!(recipient = %recipient, error = %e, "Text/iMessage: failed to send reply");
             }
         }
@@ -122,7 +129,7 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
 
         telemetry::authorized_message("sms", &identity.id, &from, text.len(), delivery_lag_ms);
 
-        let chat_key = format!("sms-{}", identity.id);
+        let chat_key = conversation_chat_key(&identity.id, &reply_target);
 
         if self.scan_enabled() {
             let verdict = self
@@ -383,6 +390,10 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             }
         });
     }
+}
+
+fn conversation_chat_key(identity_id: &str, reply_target: &str) -> String {
+    format!("sms-{identity_id}-{reply_target}")
 }
 
 #[derive(Clone)]
@@ -732,5 +743,97 @@ mod tests {
         let sent = transport.drain();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].recipient, "chat_123");
+    }
+
+    #[tokio::test]
+    async fn test_conversation_ids_do_not_share_context_between_agents() {
+        let mut config = (*make_test_config()).clone();
+        config.agents = vec![
+            AgentConfig {
+                id: "librarian".to_string(),
+                kind: "artifact-cli".to_string(),
+                command: Some("/bin/sh".to_string()),
+                args: Some(vec!["-c".to_string(), "cat".to_string()]),
+                ..Default::default()
+            },
+            AgentConfig {
+                id: "critic".to_string(),
+                kind: "artifact-cli".to_string(),
+                command: Some("/bin/sh".to_string()),
+                args: Some(vec!["-c".to_string(), "cat".to_string()]),
+                ..Default::default()
+            },
+        ];
+        config.routing[0].allowed_agents = vec!["librarian".to_string(), "critic".to_string()];
+        let transport = Arc::new(MockChannel::new());
+        let bridge = dummy_bridge_with(Arc::new(config), transport.clone());
+
+        bridge
+            .bridge
+            .clone()
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+15555550100".into(),
+                reply_target: "chat_123".into(),
+                content: "alpha private context".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+        transport.wait_for_sent_len(1).await;
+        let first = transport.drain();
+        assert_eq!(first[0].recipient, "chat_123");
+        assert!(first[0].content.contains("alpha private context"));
+
+        bridge
+            .bridge
+            .clone()
+            .handle_message(ChannelMessage {
+                id: "2".into(),
+                sender: "+15555550100".into(),
+                reply_target: "chat_456".into(),
+                content: "!switch critic".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+        transport.wait_for_sent_len(1).await;
+        let switch_reply = transport.drain();
+        assert_eq!(switch_reply[0].recipient, "chat_456");
+
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "3".into(),
+                sender: "+15555550100".into(),
+                reply_target: "chat_456".into(),
+                content: "beta fresh prompt".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+        transport.wait_for_sent_len(1).await;
+        let second = transport.drain();
+        assert_eq!(second[0].recipient, "chat_456");
+        assert!(second[0].content.contains("beta fresh prompt"));
+        assert!(
+            !second[0].content.contains("alpha private context"),
+            "chat_456 must not receive chat_123 context: {}",
+            second[0].content
+        );
+        assert!(
+            !second[0].content.contains("[Recent context:"),
+            "new conversation/agent pair should start without another chat's preamble: {}",
+            second[0].content
+        );
     }
 }

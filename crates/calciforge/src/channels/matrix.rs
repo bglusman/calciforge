@@ -325,10 +325,7 @@ async fn send_matrix_message(
         }
         if status.as_u16() == 429 && attempt < MAX_RETRIES {
             let body_text = resp.text().await.unwrap_or_default();
-            let retry_ms = serde_json::from_str::<serde_json::Value>(&body_text)
-                .ok()
-                .and_then(|value| value["retry_after_ms"].as_u64())
-                .unwrap_or(1000);
+            let retry_ms = matrix_retry_after_ms(&body_text);
             tracing::debug!(
                 attempt,
                 retry_ms,
@@ -341,6 +338,17 @@ async fn send_matrix_message(
         let err = resp.text().await.unwrap_or_default();
         anyhow::bail!("Matrix send failed ({status}): {err}");
     }
+}
+
+fn matrix_retry_after_ms(body_text: &str) -> u64 {
+    const DEFAULT_RETRY_AFTER_MS: u64 = 1_000;
+    const MAX_RETRY_AFTER_MS: u64 = 30_000;
+
+    serde_json::from_str::<serde_json::Value>(body_text)
+        .ok()
+        .and_then(|value| value["retry_after_ms"].as_u64())
+        .unwrap_or(DEFAULT_RETRY_AFTER_MS)
+        .min(MAX_RETRY_AFTER_MS)
 }
 
 async fn send_matrix_outbound_message(
@@ -1000,6 +1008,16 @@ mod tests {
         assert!(!lookup.contains("event0"));
         assert!(!lookup.contains("event1"));
         assert!(lookup.contains("event2049"));
+    }
+
+    #[test]
+    fn test_matrix_retry_after_ms_clamps_untrusted_server_delay() {
+        assert_eq!(matrix_retry_after_ms(r#"{"retry_after_ms":250}"#), 250);
+        assert_eq!(
+            matrix_retry_after_ms(r#"{"retry_after_ms":999999999999}"#),
+            30_000
+        );
+        assert_eq!(matrix_retry_after_ms(r#"{}"#), 1_000);
     }
 
     #[tokio::test]

@@ -319,4 +319,4 @@ Good sources for new fixture families include:
   cases: comments, hidden DOM nodes, microtext, ARIA, data attributes, alt text,
   off-screen content, and zero-width text.
 - scurl-style sanitized-fetch middleware; see the
-  [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.md).
+  [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.html).
