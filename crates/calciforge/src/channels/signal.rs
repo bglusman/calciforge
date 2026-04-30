@@ -45,6 +45,7 @@ use crate::{
     commands::CommandHandler,
     config::CalciforgeConfig,
     context::ContextStore,
+    messages::OutboundMessage,
     router::Router,
 };
 
@@ -122,6 +123,11 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
                 warn!(recipient = %recipient, error = %e, "Signal: failed to send reply");
             }
         }
+    }
+
+    async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
+        self.send_reply(recipient, &message.render_text_fallback())
+            .await;
     }
 
     /// Handle a single inbound `ChannelMessage` end-to-end.
@@ -209,6 +215,7 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             && !CommandHandler::is_default_command(&text)
             && !CommandHandler::is_sessions_command(&text)
             && !CommandHandler::is_model_command(&text)
+            && !CommandHandler::is_secure_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
@@ -280,6 +287,33 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             return;
         }
 
+        // !secure
+        if CommandHandler::is_secure_command(&text) {
+            debug!(identity = %identity.id, "Signal: handling !secure command");
+            if CommandHandler::is_secure_set_command(&text)
+                && !crate::config::channel_allows_chat_secret_set(&self.config, "signal")
+            {
+                let reply = CommandHandler::secure_set_disabled_reply("Signal");
+                let channel = self.clone();
+                let target = reply_target.clone();
+                tokio::spawn(async move {
+                    channel.send_reply(&target, &reply).await;
+                });
+                return;
+            }
+
+            let reply = self
+                .command_handler
+                .handle_secure(&text, &identity.id)
+                .await;
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
+        }
+
         // !context clear
         if text.trim().eq_ignore_ascii_case("!context clear") {
             self.context_store.clear(&chat_key);
@@ -329,6 +363,9 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
 
         let identity_id = identity.id.clone();
         let model_override = self.command_handler.active_model_for_identity(&identity_id);
+        let selected_session = self
+            .command_handler
+            .active_session_for(&identity_id, &agent_id);
         let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
         tokio::spawn(async move {
@@ -345,32 +382,33 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             let dispatch_start = std::time::Instant::now();
             match self
                 .router
-                .dispatch_with_sender_and_model(
+                .dispatch_message_with_sender_model_and_session(
                     &augmented,
                     &agent,
                     &self.config,
                     Some(&identity_id),
                     model_override.as_deref(),
+                    selected_session.as_deref(),
                 )
                 .await
             {
                 Ok(response) => {
                     let latency_ms = dispatch_start.elapsed().as_millis() as u64;
+                    let final_response = response.render_text_fallback();
                     self.command_handler.record_dispatch(latency_ms);
                     telemetry::agent_dispatch_succeeded(
                         "signal",
                         &identity_id,
                         &agent_id,
                         latency_ms,
-                        response.len(),
+                        response.response_len(),
                     );
-
-                    let final_response = response;
 
                     debug!(
                         identity = %identity_id,
                         agent_id = %agent_id,
                         response_len = %final_response.len(),
+                        attachments = response.attachments.len(),
                         "Signal: got agent response"
                     );
 
@@ -383,7 +421,7 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
                         preserve_native_commands,
                     );
 
-                    self.send_reply(&reply_target, &final_response).await;
+                    self.send_outbound(&reply_target, &response).await;
                 }
                 Err(e) => {
                     warn!(identity = %identity_id, error = %e, "Signal: agent dispatch failed");
@@ -617,26 +655,11 @@ mod tests {
     fn make_test_config<F: FnOnce(&mut ChannelConfig)>(mutate: F) -> Arc<CalciforgeConfig> {
         let mut channel = ChannelConfig {
             kind: "signal".to_string(),
-            bot_token_file: None,
             enabled: true,
-            homeserver: None,
-            access_token_file: None,
-            room_id: None,
-            allowed_users: vec![],
-            zeroclaw_endpoint: None,
-            zeroclaw_auth_token: None,
-            webhook_listen: None,
-            webhook_path: None,
-            webhook_secret: None,
             allowed_numbers: vec!["+15555550100".to_string()],
             signal_cli_url: Some("http://127.0.0.1:8080".to_string()),
             signal_account: Some("+15555550001".to_string()),
-            signal_group_id: None,
-            signal_ignore_attachments: false,
-            signal_ignore_stories: false,
-            control_port: None,
-            scan_messages: false,
-            allow_chat_secret_set: false,
+            ..Default::default()
         };
         mutate(&mut channel);
 

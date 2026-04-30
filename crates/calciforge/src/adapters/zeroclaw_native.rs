@@ -194,6 +194,7 @@ impl AgentAdapter for ZeroClawNativeAdapter {
             message: &full_message,
             sender: ctx.sender,
             model_override: ctx.model_override,
+            session: ctx.session,
         };
 
         match self.inner.dispatch_with_context(inner_ctx).await {
@@ -398,6 +399,7 @@ mod tests {
                 message: "what is 2+2?",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await;
         assert!(r1.is_ok(), "first dispatch failed: {:?}", r1);
@@ -408,6 +410,7 @@ mod tests {
                 message: "and 3+3?",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await;
         assert!(r2.is_ok(), "second dispatch failed: {:?}", r2);
@@ -496,6 +499,7 @@ mod tests {
                 message: "brian first message",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await;
 
@@ -505,6 +509,7 @@ mod tests {
                 message: "renee first message",
                 sender: Some("renee"),
                 model_override: None,
+                session: None,
             })
             .await;
 
@@ -514,6 +519,7 @@ mod tests {
                 message: "brian second message",
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             })
             .await;
 

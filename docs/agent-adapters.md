@@ -24,7 +24,7 @@ and failure modes.
 
 | Agent | Calciforge path | Notes |
 |---|---|---|
-| Codex CLI | `kind = "codex-cli"` or `[[exec_models]]` | Good fit when the Unix account running Calciforge owns Codex credentials. Keep chat-facing agents conservative unless the channel is trusted. |
+| Codex CLI | `kind = "codex-cli"`, `[[exec_models]]`, or future ACP via `codex-acp` | Good fit when the Unix account running Calciforge owns Codex credentials. Zed's Apache-2.0 `codex-acp` adapter is the better reference path for richer Codex sessions because it exposes ACP features such as images, tool-call permission requests, edit review, TODO lists, slash commands, MCP server forwarding, and Codex auth methods. Keep chat-facing agents conservative unless the channel is trusted. |
 | Claude Code | `kind = "cli"` or `acpx` | Use `claude -p` for simple subscription-backed prompt execution. Use `acpx` when ACP sessions are needed. |
 | OpenClaw | `openclaw-channel` | Preferred path for richer agent runtime, skills, plugins, provider routing, and slash commands. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
 | OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
@@ -52,8 +52,9 @@ parsing or safety behavior.
 
 Use a recipe when an upstream tool is useful but its protocol is still just a
 documented command invocation. Recipes can still be security-aware: Calciforge
-owns identity checks, routing, proxy environment, per-run artifact directories,
-timeouts, output validation, and audit logs.
+owns identity checks, routing, per-run artifact directories, timeouts, output
+validation, audit logs, and tested network wrappers where the upstream runtime
+supports them.
 
 Use a named adapter when Calciforge needs upstream-specific parsing or safety
 defaults that cannot be expressed cleanly as a recipe. Dirac is the current
@@ -95,7 +96,6 @@ args = [
   "{message}",
 ]
 timeout_ms = 120000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 The command above must read the actual task from stdin. `{message}` is a safe
@@ -113,7 +113,6 @@ args = [
   "{artifact_dir}/image.png",
 ]
 timeout_ms = 180000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 Treat this npcsh command as a recipe to verify against the installed npcsh
@@ -127,6 +126,8 @@ Before promoting a recipe, run:
 
 ```bash
 scripts/agent-recipe-smoke.sh
+# or include it in the local Docker deploy smoke:
+CALCIFORGE_AGENT_RECIPE_SMOKE=1 scripts/manual-docker-test.sh
 ```
 
 The smoke script installs npcsh, OmO/oh-my-opencode, and Gas Town in disposable

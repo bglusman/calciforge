@@ -20,6 +20,9 @@ Run:
 
 - `cargo test -p <crate>` for touched crates.
 - `scripts/manual-docker-test.sh` for the multi-service smoke stack.
+- `CALCIFORGE_AGENT_RECIPE_SMOKE=1 scripts/manual-docker-test.sh` when the
+  release candidate changes agent recipes, artifact delivery, or orchestrator
+  guidance.
 - Optional targeted e2e tests with mocked dependencies.
 
 Scope:

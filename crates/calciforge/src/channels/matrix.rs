@@ -310,18 +310,45 @@ async fn send_matrix_message(
         "msgtype": "m.text",
         "body": body,
     });
-    let resp = http
-        .put(&url)
-        .header("Authorization", auth_header)
-        .json(&payload)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
+    const MAX_RETRIES: u32 = 4;
+    let mut attempt = 0u32;
+    loop {
+        let resp = http
+            .put(&url)
+            .header("Authorization", auth_header)
+            .json(&payload)
+            .send()
+            .await?;
         let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        if status.as_u16() == 429 && attempt < MAX_RETRIES {
+            let body_text = resp.text().await.unwrap_or_default();
+            let retry_ms = matrix_retry_after_ms(&body_text);
+            tracing::debug!(
+                attempt,
+                retry_ms,
+                "Matrix send rate-limited (429); retrying"
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(retry_ms + 50)).await;
+            attempt += 1;
+            continue;
+        }
         let err = resp.text().await.unwrap_or_default();
         anyhow::bail!("Matrix send failed ({status}): {err}");
     }
-    Ok(())
+}
+
+fn matrix_retry_after_ms(body_text: &str) -> u64 {
+    const DEFAULT_RETRY_AFTER_MS: u64 = 1_000;
+    const MAX_RETRY_AFTER_MS: u64 = 30_000;
+
+    serde_json::from_str::<serde_json::Value>(body_text)
+        .ok()
+        .and_then(|value| value["retry_after_ms"].as_u64())
+        .unwrap_or(DEFAULT_RETRY_AFTER_MS)
+        .min(MAX_RETRY_AFTER_MS)
 }
 
 async fn send_matrix_outbound_message(
@@ -813,14 +840,16 @@ async fn handle_message(
     );
     let dispatch_start = std::time::Instant::now();
     let model_override = cmd_handler.active_model_for_identity(identity_id);
+    let selected_session = cmd_handler.active_session_for(identity_id, &agent_id);
 
     match router
-        .dispatch_message_with_sender_and_model(
+        .dispatch_message_with_sender_model_and_session(
             &augmented,
             &agent,
             config,
             Some(identity_id),
             model_override.as_deref(),
+            selected_session.as_deref(),
         )
         .await
     {
@@ -979,6 +1008,16 @@ mod tests {
         assert!(!lookup.contains("event0"));
         assert!(!lookup.contains("event1"));
         assert!(lookup.contains("event2049"));
+    }
+
+    #[test]
+    fn test_matrix_retry_after_ms_clamps_untrusted_server_delay() {
+        assert_eq!(matrix_retry_after_ms(r#"{"retry_after_ms":250}"#), 250);
+        assert_eq!(
+            matrix_retry_after_ms(r#"{"retry_after_ms":999999999999}"#),
+            30_000
+        );
+        assert_eq!(matrix_retry_after_ms(r#"{}"#), 1_000);
     }
 
     #[tokio::test]

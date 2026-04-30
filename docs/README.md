@@ -5,6 +5,7 @@ that should be reasonably stable:
 
 - `index.md` — GitHub Pages feature tour
 - `agent-adapters.md` — agent adapter selection and evaluation notes
+- `agents.md` — agent backends, identities, and routing rules
 - `agent-adapters.md` also covers secured recipes, artifact-producing
   CLI integrations, and the early orchestrator support model for async
   work systems.
@@ -22,5 +23,5 @@ Manual candidate-adapter smoke checks live in
 Gas Town in disposable Docker containers to verify current CLI surfaces before
 turning a recipe into first-class support.
 
-Internal reviews, audit scratchpads, vendor comparisons, and session
-planning notes live under [`../research/`](../research/) instead.
+Internal reviews, audit scratchpads, vendor comparisons, and session planning
+notes should stay outside the public documentation tree.

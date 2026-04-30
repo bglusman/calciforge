@@ -371,12 +371,20 @@ async fn main() -> Result<()> {
         .iter()
         .any(|c| c.kind == "signal" && c.enabled);
 
+    let has_sms = config.channels.iter().any(|c| c.kind == "sms" && c.enabled);
+
     let has_mock = config
         .channels
         .iter()
         .any(|c| c.kind == "mock" && c.enabled);
 
-    if !args.proxy_only && !has_telegram && !has_matrix && !has_whatsapp && !has_signal && !has_mock
+    if !args.proxy_only
+        && !has_telegram
+        && !has_matrix
+        && !has_whatsapp
+        && !has_signal
+        && !has_sms
+        && !has_mock
     {
         error!("no enabled channels found in config — nothing to do");
         std::process::exit(1);
@@ -418,7 +426,7 @@ async fn main() -> Result<()> {
 
     let whatsapp_fut = async {
         if !args.proxy_only && has_whatsapp {
-            info!("starting WhatsApp channel (webhook receiver)");
+            info!("starting WhatsApp channel (embedded WhatsApp Web client)");
             channels::whatsapp::run(
                 config.clone(),
                 router.clone(),
@@ -435,7 +443,7 @@ async fn main() -> Result<()> {
 
     let signal_fut = async {
         if !args.proxy_only && has_signal {
-            info!("starting Signal channel (webhook receiver)");
+            info!("starting Signal channel (embedded signal-cli-rest-api bridge)");
             channels::signal::run(
                 config.clone(),
                 router.clone(),
@@ -445,6 +453,23 @@ async fn main() -> Result<()> {
             )
             .await
             .context("Signal channel error")
+        } else {
+            Ok(())
+        }
+    };
+
+    let sms_fut = async {
+        if !args.proxy_only && has_sms {
+            info!("starting Text/iMessage channel (Linq webhook receiver)");
+            channels::sms::run(
+                config.clone(),
+                router.clone(),
+                command_handler.clone(),
+                context_store.clone(),
+                channel_scanner.clone(),
+            )
+            .await
+            .context("Text/iMessage channel error")
         } else {
             Ok(())
         }
@@ -510,11 +535,12 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (tg_result, mx_result, wa_result, sig_result, mock_result, proxy_result) = tokio::join!(
+    let (tg_result, mx_result, wa_result, sig_result, sms_result, mock_result, proxy_result) = tokio::join!(
         telegram_fut,
         matrix_fut,
         whatsapp_fut,
         signal_fut,
+        sms_fut,
         mock_fut,
         proxy_fut
     );
@@ -523,6 +549,7 @@ async fn main() -> Result<()> {
     mx_result?;
     wa_result?;
     sig_result?;
+    sms_result?;
     mock_result?;
 
     Ok(())

@@ -104,9 +104,16 @@ systemctl enable adversary-detector security-gateway clashd
 systemctl start adversary-detector security-gateway clashd
 ```
 
-## Step 5: Set up proxy env vars
+## Step 5: Configure optional external-agent proxy env
 
-Create `/etc/profile.d/calciforge-proxy.sh`:
+Do not set `HTTP_PROXY` or `HTTPS_PROXY` globally for Calciforge itself. The
+Calciforge service should call providers, channels, and control-plane endpoints
+directly unless a stronger host/container boundary is configured.
+
+For an external agent daemon that you have tested with `security-proxy`, set
+proxy environment in that daemon's service manager instead of in
+`/etc/profile.d`. For example:
+
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8080
 export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
@@ -115,11 +122,8 @@ export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 `HTTPS_PROXY` is intentionally omitted from the basic setup because standard
 HTTPS proxying uses CONNECT tunnels that Calciforge cannot inspect without a
 separate MITM design. Use explicit Calciforge fetch/tool integration for HTTPS
-content that must be scanned or rewritten.
-
-```bash
-chmod +x /etc/profile.d/calciforge-proxy.sh
-```
+content that must be scanned or rewritten, or run the agent inside a controlled
+container/VM profile that forces egress through Calciforge services.
 
 ## Step 6: Set API credentials
 

@@ -74,13 +74,24 @@ impl Router {
         model_override: Option<&str>,
     ) -> Result<String> {
         let response = self
-            .dispatch_message_with_sender_and_model(text, agent, _config, sender, model_override)
+            .dispatch_message_with_sender_model_and_session(
+                text,
+                agent,
+                _config,
+                sender,
+                model_override,
+                None,
+            )
             .await?;
         Ok(response.render_text_fallback())
     }
 
     /// Dispatch a message and preserve attachments/artifacts for channels that
     /// know how to render richer outbound messages.
+    #[expect(
+        dead_code,
+        reason = "kept for callers that need sender/model context without downstream session selection"
+    )]
     pub async fn dispatch_message_with_sender_and_model(
         &self,
         text: &str,
@@ -88,6 +99,28 @@ impl Router {
         _config: &CalciforgeConfig,
         sender: Option<&str>,
         model_override: Option<&str>,
+    ) -> Result<OutboundMessage> {
+        self.dispatch_message_with_sender_model_and_session(
+            text,
+            agent,
+            _config,
+            sender,
+            model_override,
+            None,
+        )
+        .await
+    }
+
+    /// Dispatch a message with sender/model context and an optional downstream
+    /// session selected by the authenticated user.
+    pub async fn dispatch_message_with_sender_model_and_session(
+        &self,
+        text: &str,
+        agent: &AgentConfig,
+        _config: &CalciforgeConfig,
+        sender: Option<&str>,
+        model_override: Option<&str>,
+        session: Option<&str>,
     ) -> Result<OutboundMessage> {
         let adapter = build_adapter(agent).map_err(|e| {
             anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
@@ -116,6 +149,7 @@ impl Router {
             endpoint = %agent.endpoint,
             configured_model = ?agent.model,
             model_override = ?effective_model_override,
+            session = ?session,
             sender = ?sender,
             "routing message via {} adapter",
             adapter.kind()
@@ -125,6 +159,7 @@ impl Router {
             message: text,
             sender,
             model_override: effective_model_override,
+            session,
         };
         adapter
             .dispatch_message_with_context(ctx)

@@ -134,17 +134,18 @@ systemctl daemon-reload
 systemctl enable adversary-detector security-gateway clashd
 systemctl restart adversary-detector security-gateway clashd" 2>&1
 
-    # Setup proxy env vars
-    run_on "$host" "cat > /etc/profile.d/calciforge-proxy.sh << 'EOF'
-# Calciforge Security Gateway — Tier 1 Enforcement
-# All HTTP/HTTPS traffic is routed through the security gateway
+    # Write a reference env file for manually started external agents.
+    run_on "$host" "cat > $CONFIG_DIR/agent-proxy.env << 'EOF'
+# Calciforge Security Gateway — external agent environment
+# Plain HTTP traffic is routed through the security gateway.
+# HTTPS content needs explicit tool/fetch integration; CONNECT tunnels are not inspected.
 export HTTP_PROXY=http://127.0.0.1:$GATEWAY_PORT
-export HTTPS_PROXY=http://127.0.0.1:$GATEWAY_PORT
 export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 EOF
-chmod +x /etc/profile.d/calciforge-proxy.sh" 2>&1
+chmod 0644 $CONFIG_DIR/agent-proxy.env" 2>&1
 
     echo "  ✅ Deployed to $host"
+    echo "     External agent env sample: $CONFIG_DIR/agent-proxy.env"
 }
 
 verify_host() {

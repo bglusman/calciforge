@@ -14,6 +14,9 @@ use tracing::{debug, info};
 
 use crate::adapters::{AdapterError, AgentAdapter, DispatchContext};
 
+/// Shared cwd for ACPX sessions created through Calciforge.
+pub const ACPX_SESSION_DIR: &str = "/tmp/acpx-sessions";
+
 /// ACPX adapter — wraps acpx CLI for ACP agent communication
 pub struct AcpxAdapter {
     agent_name: String,
@@ -36,7 +39,7 @@ impl AcpxAdapter {
             _args: args.unwrap_or_default(),
             env: env.unwrap_or_default(),
             timeout_ms: timeout_ms.unwrap_or(300_000),
-            session_dir: PathBuf::from("/tmp/acpx-sessions"),
+            session_dir: PathBuf::from(ACPX_SESSION_DIR),
         }
     }
 
@@ -92,7 +95,9 @@ impl AcpxAdapter {
         let output = Command::new("acpx")
             .arg(&self.agent_name)
             .arg("sessions")
-            .arg("new")
+            .arg("ensure")
+            .arg("--name")
+            .arg(session_name)
             .current_dir(&self.session_dir)
             .envs(&self.env)
             .output()
@@ -142,6 +147,35 @@ impl AcpxAdapter {
             .to_string()
     }
 
+    async fn run_session_prompt(
+        &self,
+        message: &str,
+        session: Option<&str>,
+    ) -> Result<std::process::Output, AdapterError> {
+        let mut cmd = Command::new("acpx");
+        cmd.arg("--format").arg("text").arg(&self.agent_name);
+        if let Some(session) = session {
+            cmd.arg("--session").arg(session);
+        }
+        cmd.arg("prompt")
+            .arg(message)
+            .current_dir(&self.session_dir)
+            .envs(&self.env)
+            .kill_on_drop(true)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let timeout = std::time::Duration::from_millis(self.timeout_ms);
+        let child = cmd
+            .spawn()
+            .map_err(|e| AdapterError::Unavailable(format!("Failed to spawn acpx: {}", e)))?;
+
+        tokio::time::timeout(timeout, child.wait_with_output())
+            .await
+            .map_err(|_| AdapterError::Unavailable("acpx prompt timed out".to_string()))?
+            .map_err(|e| AdapterError::Unavailable(format!("Failed to run acpx: {}", e)))
+    }
+
     /// Execute one-shot prompt (no session persistence)
     async fn exec_prompt(&self, message: &str) -> Result<String, AdapterError> {
         self.ensure_session_dir().await?;
@@ -156,6 +190,7 @@ impl AcpxAdapter {
             .arg(message)
             .current_dir(&self.session_dir)
             .envs(&self.env)
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -190,40 +225,38 @@ impl AcpxAdapter {
     }
 
     /// Send prompt to persistent session
-    async fn session_prompt(&self, message: &str) -> Result<String, AdapterError> {
+    async fn session_prompt(
+        &self,
+        message: &str,
+        session: Option<&str>,
+    ) -> Result<String, AdapterError> {
         self.ensure_session_dir().await?;
 
         // Use cwd session (default session name)
-        info!(agent = %self.agent_name, "Running acpx prompt with session");
+        info!(
+            agent = %self.agent_name,
+            session = ?session,
+            "Running acpx prompt with session"
+        );
 
-        let mut cmd = Command::new("acpx");
-        cmd.arg("--format")
-            .arg("text")
-            .arg(&self.agent_name)
-            .arg("prompt")
-            .arg(message)
-            .current_dir(&self.session_dir)
-            .envs(&self.env)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let timeout = std::time::Duration::from_millis(self.timeout_ms);
-        let child = cmd
-            .spawn()
-            .map_err(|e| AdapterError::Unavailable(format!("Failed to spawn acpx: {}", e)))?;
-
-        let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
-
-        match result {
-            Ok(Ok(output)) => {
+        match self.run_session_prompt(message, session).await {
+            Ok(output) => {
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     // Session might not exist — try creating it
                     if stderr.contains("session") || stderr.contains("not found") {
                         info!("Session not found, creating...");
-                        self.ensure_session("cwd").await?;
-                        // Retry
-                        return self.exec_prompt(message).await;
+                        self.ensure_session(session.unwrap_or("cwd")).await?;
+                        let retry = self.run_session_prompt(message, session).await?;
+                        if retry.status.success() {
+                            let stdout = String::from_utf8_lossy(&retry.stdout);
+                            return Ok(Self::strip_acpx_noise(&stdout));
+                        }
+                        let retry_stderr = String::from_utf8_lossy(&retry.stderr);
+                        return Err(AdapterError::Protocol(format!(
+                            "acpx prompt failed: {}",
+                            retry_stderr
+                        )));
                     }
                     return Err(AdapterError::Protocol(format!(
                         "acpx prompt failed: {}",
@@ -233,13 +266,7 @@ impl AcpxAdapter {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 Ok(Self::strip_acpx_noise(&stdout))
             }
-            Ok(Err(e)) => Err(AdapterError::Unavailable(format!(
-                "Failed to run acpx: {}",
-                e
-            ))),
-            Err(_) => Err(AdapterError::Unavailable(
-                "acpx prompt timed out".to_string(),
-            )),
+            Err(e) => Err(e),
         }
     }
 }
@@ -262,8 +289,9 @@ impl AgentAdapter for AcpxAdapter {
         };
 
         // Try session mode first, fall back to exec
-        match self.session_prompt(&message).await {
+        match self.session_prompt(&message, ctx.session).await {
             Ok(response) => Ok(response),
+            Err(e @ AdapterError::Protocol(_)) if ctx.session.is_some() => Err(e),
             Err(AdapterError::Protocol(_)) => {
                 // Session error — try one-shot exec
                 self.exec_prompt(&message).await

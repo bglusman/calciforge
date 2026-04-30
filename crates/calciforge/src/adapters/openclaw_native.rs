@@ -463,6 +463,7 @@ mod tests {
             message: "hello",
             sender: Some("brian"),
             model_override: None,
+            session: None,
         };
         let result = a.dispatch_with_context(ctx).await;
 
@@ -597,6 +598,7 @@ mod tests {
                 message: msg,
                 sender: Some("brian"),
                 model_override: None,
+                session: None,
             };
             let _ = a.dispatch_with_context(ctx).await;
         }
@@ -667,6 +669,7 @@ mod tests {
             message: "status check",
             sender: Some("renee"),
             model_override: None,
+            session: None,
         };
         let _ = a.dispatch_with_context(ctx).await;
 

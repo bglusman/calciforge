@@ -451,6 +451,7 @@ fn handle_message_nonblocking(
         .unwrap_or(&identity.id)
         .to_string();
     let model_override = command_handler.active_model_for_identity(&identity.id);
+    let selected_session = command_handler.active_session_for(&identity.id, &agent_id);
     let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
     // Spawn the agent dispatch — handler returns immediately.
@@ -479,12 +480,13 @@ fn handle_message_nonblocking(
 
         let dispatch_start = std::time::Instant::now();
         match router
-            .dispatch_message_with_sender_and_model(
+            .dispatch_message_with_sender_model_and_session(
                 &augmented_text,
                 &agent,
                 &config,
                 Some(&identity.id),
                 model_override.as_deref(),
+                selected_session.as_deref(),
             )
             .await
         {
@@ -830,6 +832,7 @@ async fn handle_message(
         .unwrap_or(&identity.id)
         .to_string();
     let model_override = command_handler.active_model_for_identity(&identity.id);
+    let selected_session = command_handler.active_session_for(&identity.id, &agent_id);
     let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
 
     // Augment message with conversation context (unseen exchanges for this agent).
@@ -854,16 +857,18 @@ async fn handle_message(
     // Dispatch to agent
     let dispatch_start = std::time::Instant::now();
     match router
-        .dispatch_with_sender_and_model(
+        .dispatch_message_with_sender_model_and_session(
             &augmented_text,
             &agent,
             &config,
             Some(&identity.id),
             model_override.as_deref(),
+            selected_session.as_deref(),
         )
         .await
     {
-        Ok(response) => {
+        Ok(response_message) => {
+            let response = response_message.render_text_fallback();
             let latency_ms = dispatch_start.elapsed().as_millis() as u64;
             command_handler.record_dispatch(latency_ms);
             debug!(
@@ -883,14 +888,7 @@ async fn handle_message(
                 preserve_native_commands,
             );
 
-            // Send response — try MarkdownV2 first, fall back to plain text.
-            let send_result = bot
-                .send_message(chat_id, &response)
-                .parse_mode(ParseMode::MarkdownV2)
-                .await;
-            if send_result.is_err() {
-                let _ = bot.send_message(chat_id, &response).await;
-            }
+            send_outbound_reply(bot, chat_id, response_message, "agent_response").await;
         }
         Err(e) => {
             warn!(identity = %identity.id, error = %e, "agent dispatch failed");

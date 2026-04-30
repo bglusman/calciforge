@@ -23,7 +23,7 @@ being treated as daily-driver infrastructure.
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
-| Telegram, Matrix, WhatsApp, and Signal routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
+| Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
@@ -65,8 +65,8 @@ again after editing config or moving services. It
 validates config, checks referenced secret files without printing
 values, flags stale active-agent/model state, detects suspicious
 self-routing into the local model gateway, warns if the Calciforge
-service itself has ambient proxy env, checks whether subprocess agents
-define explicit proxy env, warns about externally managed agent daemons
+service itself has ambient proxy env, flags subprocess agents that explicitly
+set proxy env, warns about externally managed agent daemons
 whose outbound proxy environment cannot be proven,
 validates configured scanner policy files and rule syntax, and can probe
 configured agent endpoints. Use `--no-network` for a purely local check.
@@ -75,10 +75,18 @@ Channel-based secret input is intentionally being de-emphasized because
 chat transports can retain plaintext values. Prefer the local paste UI
 or direct `fnox` input for new secrets.
 
-Route Claude Code or another HTTP-speaking agent process through the gateway.
-The installer and examples bias toward setting this on managed subprocess
-agents directly; for external daemons, set it on the agent process or its
-service manager, not on the Calciforge daemon:
+Do not put proxy variables on the Calciforge daemon itself; that can route
+Calciforge's own provider and control-plane traffic through its security proxy.
+Do not assume CLI agents can be wrapped by setting `HTTP_PROXY` or
+`HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and streaming clients
+may use CONNECT, WebSockets, or browser-backed auth flows that the current
+proxy cannot inspect and may break. Use OpenAI-compatible gateway routes,
+explicit fetch/tool integrations, or tested wrappers for traffic that must pass
+through `security-proxy`.
+
+For externally managed agent daemons that Calciforge does not launch, proxying
+has to be configured on that daemon or its service manager and validated
+against `security-proxy` logs:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8888
@@ -105,7 +113,6 @@ id = "codex"
 kind = "codex-cli"
 model = "gpt-5.5"
 timeout_ms = 600000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 
 [[routing]]
 identity = "owner"
@@ -181,7 +188,6 @@ bash scripts/install-git-hooks.sh
 - [Roadmap](docs/roadmap/)
 - [Staging test matrix](docs/staging-test-matrix.md)
 - [Channel secret-input deprecation note](docs/roadmap/channel-secret-input-deprecation.md)
-- [Internal research and planning notes](research/)
 
 ## License
 

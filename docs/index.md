@@ -178,8 +178,8 @@ raw API keys or trusting the agent's own restraint.</p>
 
 <div class="nav">
 <a href="https://github.com/bglusman/calciforge">GitHub</a>
-<a href="https://github.com/bglusman/calciforge/blob/main/README.md">README</a>
-<a href="https://github.com/bglusman/calciforge/tree/main/docs">Docs</a>
+<a href="#quick-install-mac">Install</a>
+<a href="agents.md">Agents</a>
 </div>
 
 </div>
@@ -205,6 +205,10 @@ tool permissions can be checked before traffic leaves the machine.
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection:
 standard HTTPS proxying uses CONNECT tunnels, so encrypted request bodies
 cannot be inspected or rewritten without a separate MITM design.
+For agents that do not work with cooperative proxy env, Calciforge's
+security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
+audited recipe wrappers, or future container/VM isolation profiles that deny
+egress except through Calciforge services.
 
 The gateway protects in three places:
 
@@ -247,7 +251,7 @@ included example wraps an OpenAI-compatible classifier with an editable
 prompt for foreign-language, poetry/style-shift, fictional-framing, and
 multi-step manipulation cases that are too semantic for local regexes.
 
-See the [security gateway docs](security-gateway.md) for configuration
+See the [security gateway docs](security-gateway.html) for configuration
 details and the
 [red-team fixtures](https://github.com/bglusman/calciforge/tree/main/examples/red-team)
 for the contributor-friendly suite used to harden detection over time.
@@ -315,7 +319,7 @@ Outbound bodies are also scanned for *exfiltration-attempt* patterns
 `what is your api key`). Generic high-entropy secret-shape detection
 (JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
 during the channel-integration cut and is on the
-[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/outbound-sensitive-data-detection.md).
+[roadmap](roadmap/outbound-sensitive-data-detection.html).
 
 The scanner pipeline is configurable. The default policy now runs through
 `builtin:calciforge/default-scanner.star`, so the rule set can be copied,
@@ -473,10 +477,10 @@ context_window = 262144
 ```
 
 The full gateway reference is
-[`docs/model-gateway.md`](https://github.com/bglusman/calciforge/blob/main/docs/model-gateway.md).
+[`docs/model-gateway.md`](model-gateway.html).
 Named cascades, dispatchers, and token-window fit checks are captured
 in
-[`docs/rfcs/model-gateway-primitives.md`](https://github.com/bglusman/calciforge/blob/main/docs/rfcs/model-gateway-primitives.md).
+[`docs/rfcs/model-gateway-primitives.md`](rfcs/model-gateway-primitives.html).
 
 ### Subscription-backed agents and models
 
@@ -495,8 +499,8 @@ terms change; operators should validate the installed CLI version and
 subscription terms before making an exec model part of their default
 route.
 
-Read the [agent adapter notes](agent-adapters.md) and
-[Codex/OpenClaw integration guide](codex-openclaw-integration.md) for
+Read the [agent adapter notes](agent-adapters.html) and
+[Codex/OpenClaw integration guide](codex-openclaw-integration.html) for
 direct `codex-cli`, `openclaw-channel`, `cli`, `acpx`, and exec-model
 examples.
 
@@ -507,9 +511,9 @@ correctly, for first-class adapter support. The working vocabulary is:
 
 - **Recipes** — documented, security-aware command configurations for
   local tools such as npcsh, opencode profiles, or one-off media agents.
-  Recipes can still use Calciforge identity checks, per-agent proxy
-  environment, timeouts, stdin prompt delivery, stderr redaction, audit
-  logs, and controlled artifact directories.
+  Recipes can still use Calciforge identity checks, timeouts, stdin prompt
+  delivery, stderr redaction, audit logs, controlled artifact directories,
+  and tested proxy wrappers where the upstream runtime supports them.
 - **Adapters** — first-class protocol integrations used when Calciforge
   must understand upstream-specific behavior, such as event streams,
   final-answer parsing, approval pauses, callbacks, or native session
@@ -542,7 +546,6 @@ kind = "artifact-cli"
 command = "/usr/local/bin/npcsh-vixynt-stdin"
 args = ["{artifact_dir}/image.png"]
 timeout_ms = 180000
-env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
 ```
 
 The command above is a recipe shape, not a promise that every npcsh
@@ -553,7 +556,7 @@ weaker process-listing tradeoff.
 
 The broader plan for async orchestrators, native media delivery, and richer
 agent outputs is tracked in the
-[agent recipes and orchestrators roadmap](roadmap/agent-recipes-orchestrators.md).
+[agent recipes and orchestrators roadmap](roadmap/agent-recipes-orchestrators.html).
 
 ### Agent-facing tools (MCP and CLI)
 
@@ -567,7 +570,7 @@ Today, discovery is process-scoped: it sees the fnox names available
 to the MCP server or CLI process. Calciforge enforces per-secret
 destination allowlists at substitution time, but does not yet enforce
 per-agent secret discovery/use ACLs. That policy layer is on the
-[roadmap](https://github.com/bglusman/calciforge/blob/main/docs/roadmap/agent-secret-access-policy.md).
+[roadmap](roadmap/agent-secret-access-policy.html).
 
 ```json
 // ~/.claude/mcp-config.json
@@ -588,16 +591,21 @@ calciforge-secrets ref BRAVE_API_KEY
 
 ### Multi-channel chat
 
-Today: Telegram, Matrix, WhatsApp, Signal. Optional voice forwarding
-on channels that support it.
+Today: Telegram, Matrix, WhatsApp, Signal, and text/iMessage. Voice is a separate
+proxy passthrough surface today, not a settled per-chat-channel capability; richer
+voice input, push-to-talk channels, and audio artifacts remain roadmap work.
 
 Per-channel setup guides (config reference + TOML examples tested against
 the live schema in CI):
 
-- [Telegram](channels/telegram) — long-poll, no open port required
-- [Matrix](channels/matrix) — HTTP long-poll; note: no E2EE
-- [Signal](channels/signal) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
-- [WhatsApp](channels/whatsapp) — webhook via ZeroClaw/OpenClaw gateway
+- [Telegram](channels/telegram.html) — long-poll, no open port required
+- [Matrix](channels/matrix.html) — HTTP long-poll; note: no E2EE
+- [Signal](channels/signal.html) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
+- [WhatsApp](channels/whatsapp.html) — embedded WhatsApp Web session
+- [Text/iMessage](channels/sms.html) — Linq webhook receiver for iMessage/RCS/SMS
+
+Agent backends, identities, and routing rules are documented in the
+[Agents, Identities, and Routing](agents.html) guide.
 
 ```toml
 # /etc/calciforge/config.toml — channel configuration
@@ -618,8 +626,16 @@ allowed_users = ["@alice:example.com"]
 [[channels]]
 kind = "whatsapp"
 enabled = true
-zeroclaw_endpoint = "http://127.0.0.1:18789"
-zeroclaw_auth_token = "{% raw %}{{secret:OPENCLAW_HOOK_TOKEN}}{% endraw %}"
+whatsapp_session_path = "/var/lib/calciforge/whatsapp/session.db"
+allowed_numbers = ["+15555550100"]
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_linq_api_token_file = "/etc/calciforge/secrets/linq-token"
+sms_from_phone = "+15555550001"
+sms_webhook_listen = "0.0.0.0:18798"
+sms_webhook_path = "/webhooks/sms"
 allowed_numbers = ["+15555550100"]
 ```
 
@@ -669,13 +685,19 @@ unverified, validates configured scanner policy files and rule syntax,
 and can probe configured endpoints.
 Use `calciforge doctor --no-network` when you want a local-only check.
 
-Route Claude Code through the gateway. The installer and examples bias
-toward setting this on managed subprocess agents directly; for external
-daemons, set it on the agent process or its service manager, not on the
-Calciforge daemon:
+Do not put proxy variables in `~/.zshrc` for the Calciforge daemon itself;
+that can route Calciforge's own provider and control-plane traffic through
+its security proxy. Do not assume CLI agents can be protected by generic
+`HTTP_PROXY` or `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and
+streaming clients may use CONNECT, WebSockets, or browser-backed auth flows
+that the current proxy cannot inspect and may break.
+
+For externally managed agent daemons that Calciforge does not launch, configure
+a tested proxy path on the agent process or its service manager and validate it
+against `security-proxy` logs:
 
 ```bash
-# ~/.zshrc
+# External agent process environment
 export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
@@ -690,10 +712,9 @@ macOS and a headless Linux service host). Treat new deployments as
 operator-reviewed until their channel credentials, fnox store, model
 gateway providers, and synthetic model routes pass smoke tests.
 
-The list of what works today and what's still in flight lives in the
-[README's status table](https://github.com/bglusman/calciforge/blob/main/README.md#what-works-today).
-Public roadmap ideas live in
-[`docs/roadmap/`](https://github.com/bglusman/calciforge/tree/main/docs/roadmap).
+The status summary above is the site-facing snapshot of what works today and
+what is still in flight. Public roadmap ideas live in
+the [roadmap notes](roadmap/v3-ideas.html).
 
 <footer>
 <div class="name-origin">

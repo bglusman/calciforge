@@ -23,19 +23,28 @@ security proxy unnecessarily.
 
 ## 🚀 Deployment & Enforcement
 
-The gateway can be enforced at three tiers:
+The gateway has several enforcement modes. They are not interchangeable; pick
+the strongest mode the target agent can actually run under.
 
-| Tier | Method | Level | Description |
-|------|---------|--------|-------------|
-| 1 | **Cooperative** | App | Set `HTTP_PROXY` for plaintext HTTP, and use explicit fetch/tool integration for HTTPS. |
-| 2 | **Enforced** | OS | `iptables` redirect of ports 80/443 to gateway. |
-| 3 | **Isolated** | Net | Network namespaces restricting all traffic to the gateway. |
+| Mode | Level | Status | Description |
+|------|-------|--------|-------------|
+| Model gateway | API | Working | Route OpenAI-compatible model calls through Calciforge's gateway. This is the most reliable path for providers and local dispatcher routes because Calciforge owns the HTTP request. |
+| Explicit tools/fetch | App | Working/expanding | Give agents Calciforge-provided fetch, MCP, or recipe wrappers for network actions that need scanning or secret substitution. |
+| Cooperative HTTP proxy | App | Limited | Set `HTTP_PROXY` only for agents and tools that have been tested with the proxy. This is useful for plaintext HTTP and simple HTTP clients. |
+| HTTPS MITM | App/host trust | Roadmap | Trust a Calciforge CA and terminate CONNECT traffic for clients that support custom trust stores. This would add inspection but increases operational and legal/safety burden. |
+| OS redirect | Host | Roadmap | Use firewall rules such as Linux `iptables`/`nftables` or macOS `pf` to redirect outbound traffic from a controlled UID/process group to the gateway. |
+| Container or VM isolation | Runtime | Roadmap | Run the agent in Docker, a Linux namespace, LXC, or a VM where egress is denied except through Calciforge-managed gateways. This is the likely path for agents that ignore proxy env or use complex transports. |
+| Placeholder injection | Secret boundary | Roadmap | Give off-the-shelf agents fake env credentials and substitute real secrets only at the gateway. This keeps raw secrets out of agent memory but still needs a network enforcement path. |
 
 The unified installer starts `security-proxy`, but it does not put
-`HTTP_PROXY`/`HTTPS_PROXY` on the Calciforge service itself. CLI and
-exec-backed agents must receive proxy environment explicitly through agent
-configuration or wrapper scripts. The shipped examples bias toward this
-protected default by setting proxy env on subprocess agents directly.
+`HTTP_PROXY`/`HTTPS_PROXY` on the Calciforge service itself. Do not assume
+CLI or exec-backed agents can be protected by generic proxy environment:
+Codex, Claude, ACPX, npm-backed adapters, and streaming clients may use
+CONNECT, WebSockets, or browser-backed authentication flows that the current
+proxy cannot inspect and may break. Keep those agents unproxied unless you
+have a tested wrapper for that specific runtime, and prefer OpenAI-compatible
+gateway routes or explicit fetch/tool integrations for traffic that must be
+scanned.
 
 `HTTPS_PROXY` is not a complete protection story for Calciforge today. Standard
 HTTPS proxying uses CONNECT tunnels; without a trusted MITM CA, the proxy cannot
@@ -45,10 +54,10 @@ scanned.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
-manager must be launched with the proxy environment in that service manager, or
-enforced with an OS/network tier. Registering Calciforge webhooks lets those
-agents talk back to Calciforge, but it does not by itself prove their outbound
-HTTP is going through `security-proxy`.
+manager must be launched with a tested proxy configuration in that service
+manager, or enforced with an OS/network tier. Registering Calciforge webhooks
+lets those agents talk back to Calciforge, but it does not by itself prove
+their outbound HTTP is going through `security-proxy`.
 
 For a manually started daemon:
 
@@ -60,8 +69,28 @@ export NO_PROXY=localhost,127.0.0.1,::1
 Use service-manager environment blocks for persistent daemons, and validate by
 checking `security-proxy` logs while the agent makes a known outbound request.
 `calciforge doctor` warns if the Calciforge daemon itself has ambient proxy
-environment, verifies explicit proxy env on configured subprocess agents, and
-warns when configured HTTP/native agent daemons need separate validation.
+environment, flags explicit subprocess proxy env for verification, and warns
+when configured HTTP/native agent daemons need separate validation.
+
+### Choosing A Boundary
+
+For agents Calciforge launches as subprocesses, start with direct channel
+routing plus conservative CLI flags. Add gateway coverage only through a path
+that has been tested for that specific runtime:
+
+- use `kind = "openai-compat"` or `[[exec_models]]` when the work is really a
+  model call;
+- use artifact or recipe wrappers when the network action is a known command
+  Calciforge can run and audit;
+- use MCP/fetch tools when the agent can delegate web access to Calciforge;
+- use container or VM isolation when the agent has broad network behavior that
+  cannot be reliably proxied.
+
+For externally managed daemons, Calciforge can authenticate inbound callbacks
+and gate channel access, but it cannot prove outbound network policy unless the
+daemon is launched in a controlled environment. The practical future path is a
+local-lab profile that can run selected agents inside a container or VM with
+egress limited to Calciforge services.
 
 ## ⚙️ Configuration
 
@@ -319,4 +348,4 @@ Good sources for new fixture families include:
   cases: comments, hidden DOM nodes, microtext, ARIA, data attributes, alt text,
   off-screen content, and zero-width text.
 - scurl-style sanitized-fetch middleware; see the
-  [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.md).
+  [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.html).
