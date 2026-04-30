@@ -500,6 +500,61 @@ Read the [agent adapter notes](agent-adapters.md) and
 direct `codex-cli`, `openclaw-channel`, `cli`, `acpx`, and exec-model
 examples.
 
+### Secured recipes and orchestrators
+
+Calciforge can also wrap tools that are not stable enough, or not shaped
+correctly, for first-class adapter support. The working vocabulary is:
+
+- **Recipes** — documented, security-aware command configurations for
+  local tools such as npcsh, opencode profiles, or one-off media agents.
+  Recipes can still use Calciforge identity checks, per-agent proxy
+  environment, timeouts, stdin prompt delivery, stderr redaction, audit
+  logs, and controlled artifact directories.
+- **Adapters** — first-class protocol integrations used when Calciforge
+  must understand upstream-specific behavior, such as event streams,
+  final-answer parsing, approval pauses, callbacks, or native session
+  state.
+- **Orchestrators** — planned async work backends where Calciforge submits
+  work, monitors status, relays progress, and delivers final summaries or
+  artifacts instead of pretending every request is a synchronous chat
+  completion.
+
+This is the path for a more "batteries included" agent ecosystem without
+making every upstream CLI a permanent support burden. Operators can start
+with a recipe, then promote it to a named adapter only if the upstream
+protocol proves stable and the extra code buys safety or usability.
+
+The first working piece is `kind = "artifact-cli"` for tools that produce
+files: images from npcsh-style multimodal workflows, screenshots from
+orchestrators, test reports, logs, PDFs, or generated patch summaries.
+Calciforge creates a per-run artifact directory, writes the user task on
+stdin, exposes the directory as `{artifact_dir}` and
+`CALCIFORGE_ARTIFACT_DIR`, validates produced files, and sends a text
+fallback through existing channels. Telegram and Matrix already use the
+new internal outbound-message envelope; the text fallback names attachments
+without exposing local filesystem paths, and native media upload can be added
+channel by channel.
+
+```toml
+[[agents]]
+id = "npcsh-image"
+kind = "artifact-cli"
+command = "/usr/local/bin/npcsh-vixynt-stdin"
+args = ["{artifact_dir}/image.png"]
+timeout_ms = 180000
+env = { HTTP_PROXY = "http://127.0.0.1:8888", HTTPS_PROXY = "http://127.0.0.1:8888", NO_PROXY = "localhost,127.0.0.1,::1" }
+```
+
+The command above is a recipe shape, not a promise that every npcsh
+subcommand has stable flags. The Calciforge contract is the secured
+stdin/artifact wrapper and channel delivery path. If an upstream tool
+only accepts prompts in argv, use a small local wrapper and document the
+weaker process-listing tradeoff.
+
+The broader plan for async orchestrators, native media delivery, and richer
+agent outputs is tracked in the
+[agent recipes and orchestrators roadmap](roadmap/agent-recipes-orchestrators.md).
+
 ### Agent-facing tools (MCP and CLI)
 
 A built-in MCP server and small CLI expose secret *names* to agents

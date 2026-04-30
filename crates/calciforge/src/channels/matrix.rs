@@ -28,6 +28,7 @@ use crate::{
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
+    messages::OutboundMessage,
     router::Router,
 };
 
@@ -321,6 +322,25 @@ async fn send_matrix_message(
         anyhow::bail!("Matrix send failed ({status}): {err}");
     }
     Ok(())
+}
+
+async fn send_matrix_outbound_message(
+    homeserver: &str,
+    http: &reqwest::Client,
+    auth_header: &str,
+    room_id: &str,
+    message: &OutboundMessage,
+) -> Result<()> {
+    // First prototype: preserve attachments through the internal envelope and
+    // render a text fallback. Native Matrix media upload can be added here.
+    send_matrix_message(
+        homeserver,
+        http,
+        auth_header,
+        room_id,
+        &message.render_text_fallback(),
+    )
+    .await
 }
 
 async fn join_matrix_room(
@@ -642,6 +662,34 @@ async fn handle_message(
             }
         }
     };
+    let send_outbound = |message: OutboundMessage, reply_kind: &'static str| {
+        let homeserver = homeserver.to_string();
+        let http = http.clone();
+        let auth_header = auth_header.to_string();
+        let room_id = room_id.to_string();
+        async move {
+            let start = std::time::Instant::now();
+            let response_len = message.response_len();
+            match send_matrix_outbound_message(&homeserver, &http, &auth_header, &room_id, &message)
+                .await
+            {
+                Ok(()) => telemetry::reply_sent(
+                    "matrix",
+                    &room_id,
+                    reply_kind,
+                    response_len,
+                    start.elapsed().as_millis() as u64,
+                ),
+                Err(e) => telemetry::reply_failed(
+                    "matrix",
+                    &room_id,
+                    reply_kind,
+                    start.elapsed().as_millis() as u64,
+                    e,
+                ),
+            }
+        }
+    };
 
     // --- Command fast-path ---
     if let Some(reply) = cmd_handler.handle(body) {
@@ -767,7 +815,7 @@ async fn handle_message(
     let model_override = cmd_handler.active_model_for_identity(identity_id);
 
     match router
-        .dispatch_with_sender_and_model(
+        .dispatch_message_with_sender_and_model(
             &augmented,
             &agent,
             config,
@@ -776,7 +824,8 @@ async fn handle_message(
         )
         .await
     {
-        Ok(response) => {
+        Ok(response_message) => {
+            let response = response_message.render_text_fallback();
             let latency_ms = dispatch_start.elapsed().as_millis() as u64;
             cmd_handler.record_dispatch(latency_ms);
             telemetry::agent_dispatch_succeeded(
@@ -784,12 +833,13 @@ async fn handle_message(
                 identity_id,
                 &agent_id,
                 latency_ms,
-                response.len(),
+                response_message.response_len(),
             );
             debug!(
                 identity = %identity_id,
                 agent_id = %agent_id,
-                response_len = response.len(),
+                response_len = response_message.response_len(),
+                attachments = response_message.attachments.len(),
                 "Matrix: got agent response"
             );
             ctx_store.push_with_options(
@@ -800,7 +850,7 @@ async fn handle_message(
                 &response,
                 preserve_native_commands,
             );
-            send(response, "agent_response").await;
+            send_outbound(response_message, "agent_response").await;
         }
         Err(e) => {
             // Clash approval flow

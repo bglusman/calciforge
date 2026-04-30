@@ -22,6 +22,7 @@ use std::fmt;
 
 pub mod acp;
 pub mod acpx;
+pub mod artifact_cli;
 pub mod cli;
 pub mod codex_cli;
 pub mod dirac_cli;
@@ -35,6 +36,7 @@ pub mod zeroclaw_native;
 
 pub use acp::AcpAdapter;
 pub use acpx::AcpxAdapter;
+pub use artifact_cli::ArtifactCliAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
 pub use dirac_cli::DiracCliAdapter;
@@ -45,6 +47,7 @@ pub use zeroclaw::ZeroClawAdapter;
 pub use zeroclaw_native::ZeroClawNativeAdapter;
 
 use crate::config::AgentConfig;
+use crate::messages::OutboundMessage;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -161,6 +164,20 @@ pub trait AgentAdapter: Send + Sync {
         self.dispatch(ctx.message).await
     }
 
+    /// Dispatch and return a channel-agnostic outbound envelope.
+    ///
+    /// Text-only adapters inherit this compatibility wrapper. Artifact-aware
+    /// adapters override it so channels can render media natively where
+    /// supported, or fall back to text paths elsewhere.
+    async fn dispatch_message_with_context(
+        &self,
+        ctx: DispatchContext<'_>,
+    ) -> Result<OutboundMessage, AdapterError> {
+        self.dispatch_with_context(ctx)
+            .await
+            .map(OutboundMessage::text)
+    }
+
     /// Short name for logs and `!agents` output (e.g. "openclaw-channel", "zeroclaw", "cli").
     fn kind(&self) -> &'static str;
 
@@ -193,7 +210,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 
     matches!(
         agent.kind.as_str(),
-        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "codex-cli"
+        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "artifact-cli" | "codex-cli"
     )
 }
 
@@ -216,6 +233,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 /// | `zeroclaw-native`  | `/webhook` + history | ✅ in-process ring buffer | ✅ |
 /// | `zeroclaw`         | `/webhook`          | per-ZeroClaw-config | n/a |
 /// | `cli`              | subprocess stdin    | ❌ one-shot         | n/a |
+/// | `artifact-cli`     | subprocess stdin + artifact dir | ❌ one-shot | n/a |
 /// | `codex-cli`        | `codex exec`        | ❌ one-shot         | n/a |
 /// | `dirac-cli`        | `dirac --yolo --json` | ❌ one-shot       | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
@@ -309,6 +327,18 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 .clone()
                 .ok_or_else(|| format!("agent '{}': kind='cli' requires command", agent.id))?;
             Ok(Box::new(CliAdapter::with_model(
+                command,
+                agent.args.clone(),
+                agent.env.clone().unwrap_or_default(),
+                agent.model.clone(),
+                agent.timeout_ms,
+            )))
+        }
+        "artifact-cli" => {
+            let command = agent.command.clone().ok_or_else(|| {
+                format!("agent '{}': kind='artifact-cli' requires command", agent.id)
+            })?;
+            Ok(Box::new(ArtifactCliAdapter::new(
                 command,
                 agent.args.clone(),
                 agent.env.clone().unwrap_or_default(),
@@ -487,6 +517,15 @@ mod tests {
         let agent = cli_agent();
         let adapter = build_adapter(&agent).expect("should build cli adapter");
         assert_eq!(adapter.kind(), "cli");
+    }
+
+    #[test]
+    fn test_build_artifact_cli_adapter() {
+        let mut agent = cli_agent();
+        agent.id = "test-artifact-cli".to_string();
+        agent.kind = "artifact-cli".to_string();
+        let adapter = build_adapter(&agent).expect("should build artifact-cli adapter");
+        assert_eq!(adapter.kind(), "artifact-cli");
     }
 
     #[test]
@@ -720,6 +759,9 @@ mod tests {
         agent.allow_model_override = None;
 
         agent.kind = "cli".to_string();
+        assert!(agent_supports_model_override(&agent));
+
+        agent.kind = "artifact-cli".to_string();
         assert!(agent_supports_model_override(&agent));
 
         agent.kind = "acpx".to_string();
