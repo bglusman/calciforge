@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 const MESSAGE_PLACEHOLDER: &str = "{message}";
+static NEXT_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Adapter for the official OpenAI Codex CLI.
 pub struct CodexCliAdapter {
@@ -87,8 +89,11 @@ impl CodexCliAdapter {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        self.output_dir
-            .join(format!("codex-last-message-{nanos}.txt"))
+        let seq = NEXT_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
+        self.output_dir.join(format!(
+            "codex-last-message-{}-{nanos}-{seq}.txt",
+            std::process::id()
+        ))
     }
 
     fn configured_output_path(args: &[String]) -> Result<Option<PathBuf>, AdapterError> {
@@ -474,6 +479,62 @@ printf 'event noise\n'
 
         let response = adapter.dispatch("hello").await.unwrap();
         assert_eq!(response, "final:hello");
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatches_use_distinct_generated_output_files() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("fake-codex-output-path");
+        let mut script = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o755)
+            .open(&script_path)
+            .unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|--output-last-message)
+      out="$2"
+      shift 2
+      ;;
+    -)
+      prompt="$(cat)"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf 'path:%s prompt:%s\n' "$out" "$prompt" > "$out"
+"#
+        )
+        .unwrap();
+        script.sync_all().unwrap();
+        drop(script);
+
+        let adapter = CodexCliAdapter::new(
+            Some(script_path.to_string_lossy().to_string()),
+            Some(vec!["exec".to_string(), "-".to_string()]),
+            None,
+            None,
+            Some(5_000),
+        );
+
+        let (first, second) = tokio::join!(adapter.dispatch("one"), adapter.dispatch("two"));
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.contains("prompt:one"));
+        assert!(second.contains("prompt:two"));
     }
 
     #[tokio::test]
