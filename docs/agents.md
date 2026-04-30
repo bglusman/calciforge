@@ -58,7 +58,16 @@ HTTP adapter that talks to an OpenClaw or Calciforge gateway running the
 channel plugin. The gateway maintains the agent session; Calciforge acts as
 the routing and security layer in front of it.
 
-Required: `endpoint`. Recommended: `api_key` or `api_key_file`.
+Required at runtime: `endpoint`, plus `api_key` or `api_key_file` unless the
+deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`.
+
+For installer-managed OpenClaw hosts, `calciforge install` also requires the
+matching `auth_token`/`api_key`, `reply_webhook`, and `reply_auth_token` in the
+`--claw` spec. The installer writes those into the remote
+`calciforge-channel` plugin entry, installs the plugin files under
+`~/.openclaw/extensions/calciforge-channel`, adds the plugin to
+`plugins.allow` when an allowlist is present, and restarts the OpenClaw gateway
+service.
 
 ```toml
 [[agents]]
@@ -66,6 +75,7 @@ id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
 api_key_file = "~/.calciforge/secrets/librarian-token"
+reply_auth_token = "{{secret:LIBRARIAN_REPLY_TOKEN}}"
 timeout_ms = 120000
 aliases = ["lib", "main"]
 registry = { display_name = "Librarian", specialties = ["general", "homelab-ops"] }
@@ -80,6 +90,17 @@ asynchronously instead of returning them synchronously.
 
 `reply_auth_token` (optional) — bearer token required on incoming
 `/hooks/reply` callbacks.
+
+Installer example:
+
+```sh
+calciforge install \
+  --calciforge-host calciforge@calciforge.lan \
+  --claw 'name=librarian,adapter=openclaw-channel,host=root@openclaw.lan,endpoint=http://openclaw.lan:18789,auth_token=REPLACE_WITH_INBOUND_TOKEN,reply_webhook=http://calciforge.lan:18797/hooks/reply,reply_auth_token=REPLACE_WITH_REPLY_TOKEN'
+```
+
+Use the same inbound token in the Calciforge agent `api_key`/`api_key_file`,
+and the same reply token in `reply_auth_token`.
 
 ### `kind = "openai-compat"`
 

@@ -1,0 +1,10 @@
+{
+  "name": "@openclaw/calciforge-channel",
+  "version": "0.1.0",
+  "description": "Calciforge native channel plugin for OpenClaw",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": {
+    "openclaw": "*"
+  }
+}

@@ -113,6 +113,13 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                         agent.id
                     ));
                 }
+                if agent.model.as_deref().is_some_and(is_openclaw_model_id) {
+                    result.add_error(format!(
+                        "Agent '{}' uses openai-compat with OpenClaw model '{}'; OpenClaw agent chat must use kind='openclaw-channel'",
+                        agent.id,
+                        agent.model.as_deref().unwrap_or_default()
+                    ));
+                }
                 if agent.model.is_none() && agent.allow_model_override != Some(true) {
                     result.add_error(format!(
                         "Agent '{}' uses openai-compat without a configured model; set model or allow_model_override = true to forward !model overrides",
@@ -181,6 +188,11 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
             }
         }
     }
+}
+
+fn is_openclaw_model_id(model: &str) -> bool {
+    let trimmed = model.trim();
+    trimmed == "openclaw" || trimmed.starts_with("openclaw/")
 }
 
 /// Check for duplicate IDs across all config sections.
@@ -581,6 +593,35 @@ model = "local-kimi-gpt55"
         assert!(
             result.is_valid(),
             "openai-compat should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openai_compat_rejects_openclaw_model_ids() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "librarian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:18789"
+api_key = "test-gateway-token"
+model = "openclaw/main"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "OpenClaw model IDs should require openclaw-channel"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("OpenClaw") && e.contains("openclaw-channel")),
+            "error should point to openclaw-channel; errors: {:?}",
             result.errors
         );
     }

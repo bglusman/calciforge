@@ -49,6 +49,14 @@ use super::{
 };
 
 const DEFAULT_AGENT_NO_PROXY: &str = "localhost,127.0.0.1,::1";
+const OPENCLAW_CHANNEL_PLUGIN_ID: &str = "calciforge-channel";
+const OPENCLAW_CHANNEL_PLUGIN_DIR: &str = "~/.openclaw/extensions/calciforge-channel";
+const OPENCLAW_CHANNEL_PLUGIN_MANIFEST: &str =
+    include_str!("../../../calciforge-openclaw-channel-plugin/openclaw.plugin.json");
+const OPENCLAW_CHANNEL_PLUGIN_INDEX: &str =
+    include_str!("../../../calciforge-openclaw-channel-plugin/index.js");
+const OPENCLAW_CHANNEL_PLUGIN_PACKAGE: &str =
+    include_str!("../../../calciforge-openclaw-channel-plugin/package.json");
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -711,7 +719,7 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawChannel => format!(
             "Will update Calciforge OpenClaw integration config on {} \
-             ({}{})",
+             (installs calciforge-channel plugin, restarts openclaw-gateway, {}{})",
             claw.host,
             if claw.policy_endpoint.is_some() {
                 "calciforge-policy enabled"
@@ -746,7 +754,7 @@ fn describe_proposed_changes(claw: &ClawTarget) -> String {
 fn describe_apply_changes(claw: &ClawTarget) -> String {
     match &claw.adapter {
         ClawKind::OpenClawChannel => format!(
-            "would patch openclaw.json on {} for Calciforge OpenClaw integration{}{}",
+            "would patch openclaw.json on {} for Calciforge OpenClaw integration, install calciforge-channel plugin, and restart openclaw-gateway{}{}",
             claw.host,
             if claw.policy_endpoint.is_some() {
                 " with policy plugin entry"
@@ -791,7 +799,9 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
         ClawKind::OpenClawChannel => patch_openclaw_config(
             &current,
             &claw.name,
-            &claw.endpoint,
+            claw.auth_token.as_deref(),
+            claw.reply_webhook.as_deref(),
+            claw.reply_auth_token.as_deref(),
             claw.policy_endpoint.as_deref(),
         )
         .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
@@ -825,18 +835,68 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
             .map_err(|e| anyhow::anyhow!("written openclaw.json is not valid JSON: {}", e))?;
     }
 
+    let applied_detail = match claw.adapter {
+        ClawKind::OpenClawChannel => "Calciforge OpenClaw channel config updated",
+        ClawKind::ZeroClawNative => "Calciforge ZeroClaw upstream config updated",
+        _ => "Calciforge remote agent config updated",
+    };
     let mut details = vec![format!(
-        "patched {} on {} — Calciforge OpenClaw policy config updated",
-        config_path, claw.host
+        "patched {} on {} — {}",
+        config_path, claw.host, applied_detail
     )];
 
     if matches!(claw.adapter, ClawKind::OpenClawChannel) {
-        if let Some(detail) = configure_remote_openclaw_proxy_env(claw, deps)? {
-            details.push(detail);
+        install_remote_openclaw_channel_plugin(claw, deps)?;
+        details.push("installed Calciforge OpenClaw channel plugin".to_string());
+
+        let restarted_by_proxy =
+            if let Some(detail) = configure_remote_openclaw_proxy_env(claw, deps)? {
+                details.push(detail);
+                true
+            } else {
+                false
+            };
+        if !restarted_by_proxy {
+            details.push(restart_remote_openclaw_service(claw, deps)?);
         }
     }
 
     Ok(details.join("; "))
+}
+
+fn install_remote_openclaw_channel_plugin(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<()> {
+    let key = claw.ssh_key.as_deref();
+    let mkdir = format!(
+        "mkdir -p {}",
+        remote_path_shell(OPENCLAW_CHANNEL_PLUGIN_DIR)
+    );
+    let mkdir_out = deps.ssh.run(&claw.host, key, &mkdir)?;
+    if !mkdir_out.success {
+        bail!(
+            "failed to create OpenClaw channel plugin directory on {}: {}",
+            claw.host,
+            mkdir_out.stderr.trim()
+        );
+    }
+
+    let manifest_path = format!("{OPENCLAW_CHANNEL_PLUGIN_DIR}/openclaw.plugin.json");
+    let index_path = format!("{OPENCLAW_CHANNEL_PLUGIN_DIR}/index.js");
+    let package_path = format!("{OPENCLAW_CHANNEL_PLUGIN_DIR}/package.json");
+    deps.ssh.write_file(
+        &claw.host,
+        key,
+        &manifest_path,
+        OPENCLAW_CHANNEL_PLUGIN_MANIFEST,
+    )?;
+    deps.ssh
+        .write_file(&claw.host, key, &index_path, OPENCLAW_CHANNEL_PLUGIN_INDEX)?;
+    deps.ssh.write_file(
+        &claw.host,
+        key,
+        &package_path,
+        OPENCLAW_CHANNEL_PLUGIN_PACKAGE,
+    )?;
+    Ok(())
 }
 
 fn configure_remote_openclaw_proxy_env(
@@ -884,20 +944,7 @@ fn configure_remote_openclaw_proxy_env(
         );
     }
 
-    let detect = deps.ssh.run(
-        &claw.host,
-        key,
-        "if systemctl is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo user; elif systemctl cat openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then echo user; else echo missing; exit 42; fi",
-    )?;
-    if !detect.success {
-        bail!(
-            "could not find openclaw-gateway.service on {} for proxy env install: {}",
-            claw.host,
-            detect.stderr.trim()
-        );
-    }
-
-    let service_mode = detect.stdout.trim();
+    let service_mode = detect_openclaw_service_mode(claw, deps)?;
     let (dropin_dir, dropin_path, reload_restart) = match service_mode {
         "user" => (
             "~/.config/systemd/user/openclaw-gateway.service.d",
@@ -955,6 +1002,56 @@ fn configure_remote_openclaw_proxy_env(
     )))
 }
 
+fn restart_remote_openclaw_service(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String> {
+    let key = claw.ssh_key.as_deref();
+    let service_mode = detect_openclaw_service_mode(claw, deps)?;
+    let restart = match service_mode {
+        "user" => {
+            "systemctl --user daemon-reload && systemctl --user restart openclaw-gateway.service"
+        }
+        "system" => "systemctl daemon-reload && systemctl restart openclaw-gateway.service",
+        other => bail!(
+            "unexpected OpenClaw service mode from {}: {}",
+            claw.host,
+            other
+        ),
+    };
+    let out = deps.ssh.run(&claw.host, key, restart)?;
+    if !out.success {
+        bail!(
+            "failed to restart OpenClaw gateway service on {}: {}",
+            claw.host,
+            out.stderr.trim()
+        );
+    }
+    Ok(format!("restarted OpenClaw {} service", service_mode))
+}
+
+fn detect_openclaw_service_mode(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<&'static str> {
+    let key = claw.ssh_key.as_deref();
+    let detect = deps.ssh.run(
+        &claw.host,
+        key,
+        "if systemctl is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo user; elif systemctl cat openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then echo user; else echo missing; exit 42; fi",
+    )?;
+    if !detect.success {
+        bail!(
+            "could not find openclaw-gateway.service on {}: {}",
+            claw.host,
+            detect.stderr.trim()
+        );
+    }
+    match detect.stdout.trim() {
+        "user" => Ok("user"),
+        "system" => Ok("system"),
+        other => bail!(
+            "unexpected OpenClaw service mode from {}: {}",
+            claw.host,
+            other
+        ),
+    }
+}
+
 fn systemd_environment_line(key: &str, value: &str) -> Result<String> {
     if key.contains('=') || key.contains('\n') || key.contains('\r') {
         bail!("invalid environment key");
@@ -977,7 +1074,9 @@ fn systemd_environment_line(key: &str, value: &str) -> Result<String> {
 fn patch_openclaw_config(
     current_content: &str,
     _claw_name: &str,
-    _calciforge_endpoint: &str,
+    auth_token: Option<&str>,
+    reply_webhook: Option<&str>,
+    reply_auth_token: Option<&str>,
     policy_endpoint: Option<&str>,
 ) -> Result<String> {
     // Parse the existing config (handles JSON5 / JSONC comments).
@@ -989,11 +1088,86 @@ fn patch_openclaw_config(
         .ok_or_else(|| anyhow::anyhow!("openclaw.json root is not a JSON object"))?;
 
     remove_legacy_openclaw_hook_entries(config_obj)?;
+    patch_openclaw_channel_plugin(config_obj, auth_token, reply_webhook, reply_auth_token)?;
     patch_openclaw_policy_plugin(config_obj, policy_endpoint)?;
 
     // Serialize back to pretty JSON (no comments — they were stripped on read).
     serde_json::to_string_pretty(&config)
         .map_err(|e| anyhow::anyhow!("failed to serialize patched config: {}", e))
+}
+
+fn patch_openclaw_channel_plugin(
+    config_obj: &mut serde_json::Map<String, serde_json::Value>,
+    auth_token: Option<&str>,
+    reply_webhook: Option<&str>,
+    reply_auth_token: Option<&str>,
+) -> Result<()> {
+    let auth_token = required_single_line(auth_token, "auth_token")?;
+    let reply_webhook = required_single_line(reply_webhook, "reply_webhook")?;
+    let reply_auth_token = required_single_line(reply_auth_token, "reply_auth_token")?;
+
+    let plugins = config_obj
+        .entry("plugins")
+        .or_insert_with(|| serde_json::json!({}));
+    let plugins_obj = plugins
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("plugins field is not a JSON object"))?;
+    plugins_obj.insert("enabled".to_string(), serde_json::json!(true));
+    add_openclaw_plugin_allow_entry_if_present(plugins_obj)?;
+
+    let entries = plugins_obj
+        .entry("entries")
+        .or_insert_with(|| serde_json::json!({}));
+    let entries_obj = entries
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("plugins.entries is not a JSON object"))?;
+
+    for stale in ["polyclaw", "calciforge"] {
+        entries_obj.remove(stale);
+    }
+
+    entries_obj.insert(
+        OPENCLAW_CHANNEL_PLUGIN_ID.to_string(),
+        serde_json::json!({
+            "enabled": true,
+            "config": {
+                "authToken": auth_token,
+                "replyWebhook": reply_webhook,
+                "replyAuthToken": reply_auth_token,
+            },
+        }),
+    );
+
+    Ok(())
+}
+
+fn add_openclaw_plugin_allow_entry_if_present(
+    plugins_obj: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let Some(allow) = plugins_obj.get_mut("allow") else {
+        return Ok(());
+    };
+    let allow_arr = allow
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("plugins.allow is not an array"))?;
+    if !allow_arr
+        .iter()
+        .any(|entry| entry.as_str() == Some(OPENCLAW_CHANNEL_PLUGIN_ID))
+    {
+        allow_arr.push(serde_json::json!(OPENCLAW_CHANNEL_PLUGIN_ID));
+    }
+    Ok(())
+}
+
+fn required_single_line<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str> {
+    let value = value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("openclaw-channel install requires {field}"))?;
+    if value.contains('\n') || value.contains('\r') {
+        bail!("{field} must be a single-line value");
+    }
+    Ok(value)
 }
 
 fn remove_legacy_openclaw_hook_entries(
@@ -1102,6 +1276,30 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    const TEST_AUTH_TOKEN: &str = "inbound-token";
+    const TEST_REPLY_WEBHOOK: &str = "http://calciforge.host:18797/hooks/reply";
+    const TEST_REPLY_AUTH_TOKEN: &str = "reply-token";
+
+    fn push_openclaw_channel_plugin_install(ssh: &MockSshClient) {
+        ssh.push_success(""); // mkdir extension dir
+        ssh.push_success(""); // write openclaw.plugin.json
+        ssh.push_success(""); // write index.js
+        ssh.push_success(""); // write package.json
+    }
+
+    fn push_openclaw_service_restart(ssh: &MockSshClient) {
+        ssh.push_success("user\n"); // detect openclaw-gateway.service mode
+        ssh.push_success(""); // restart service
+    }
+
+    fn push_openclaw_proxy_dropin(ssh: &MockSshClient) {
+        ssh.push_success(""); // security-proxy /health from OpenClaw host
+        ssh.push_success("user\n"); // detect openclaw-gateway.service mode
+        ssh.push_success(""); // mkdir drop-in dir
+        ssh.push_success(""); // write drop-in
+        ssh.push_success(""); // reload/restart service
+    }
+
     fn make_openclaw_claw(healthy: bool) -> (ClawTarget, MockSshClient, MockHealthChecker) {
         let claw = ClawTarget {
             name: "test-claw".into(),
@@ -1110,6 +1308,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1130,6 +1331,8 @@ mod tests {
         ssh.push_success("");
         // apply: read-back verify (new in S1 implementation)
         ssh.push_success(r#"{"version": "2026.3.13", "hooks": {"enabled": true, "entries": {"test-claw": {"enabled": true, "url": "http://host:18789", "token": "tok"}}}}"#);
+        push_openclaw_channel_plugin_install(&ssh);
+        push_openclaw_service_restart(&ssh);
 
         // Use sequential health responses for both baseline and post-apply checks.
         let health = MockHealthChecker::new();
@@ -1153,6 +1356,9 @@ mod tests {
             ssh_key: None,
             endpoint: "http://llm.internal/v1".into(),
             policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1168,7 +1374,11 @@ mod tests {
     async fn successful_openclaw_install() {
         let (claw, ssh, health) = make_openclaw_claw(true);
         let args = InstallArgs::default();
-        let deps = ExecutorDeps::mock(ssh, health);
+        let ssh = Arc::new(ssh);
+        let deps = ExecutorDeps {
+            ssh: ssh.clone(),
+            health: Arc::new(health),
+        };
 
         let result = install_claw(&claw, &args, &deps).await;
         assert!(
@@ -1193,7 +1403,10 @@ mod tests {
                 "adapter=openclaw-channel,",
                 "host=openclaw@ephemeral-runner.invalid,",
                 "key=/tmp/calciforge-ephemeral/openclaw_id_ed25519,",
-                "endpoint=http://127.0.0.1:18080/hooks/calciforge"
+                "endpoint=http://127.0.0.1:18080,",
+                "auth_token=inbound-token,",
+                "reply_webhook=http://127.0.0.1:18797/hooks/reply,",
+                "reply_auth_token=reply-token"
             )
             .to_string()],
             dry_run: false,
@@ -1220,6 +1433,8 @@ mod tests {
         ssh.push_success(
             r#"{"version":"2026.3.13","hooks":{"enabled":true,"entries":{"matrix-e2e-openclaw":{"enabled":true,"url":"http://127.0.0.1:18080/hooks/calciforge","token":"tok"}}}}"#,
         );
+        push_openclaw_channel_plugin_install(&ssh);
+        push_openclaw_service_restart(&ssh);
 
         let health = MockHealthChecker::new();
         health.push_ok();
@@ -1288,6 +1503,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1302,6 +1520,8 @@ mod tests {
         ssh.push_success(""); // write config
                               // read-back verify after write
         ssh.push_success(r#"{"version": "2026.3.13", "hooks": {"enabled": true, "entries": {"bad-claw": {"enabled": true, "url": "http://host:18789", "token": "tok"}}}}"#);
+        push_openclaw_channel_plugin_install(&ssh);
+        push_openclaw_service_restart(&ssh);
         ssh.push_success(""); // rollback: restore_backup
 
         // Use sequential health responses:
@@ -1334,6 +1554,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1366,6 +1589,9 @@ mod tests {
             ssh_key: None,
             endpoint: "http://unreachable:18789".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1396,6 +1622,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://host:18789".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1526,15 +1755,60 @@ mod tests {
     #[test]
     fn patch_openclaw_config_does_not_add_legacy_hook_entry() {
         let input = r#"{"version": "2026.3.13"}"#;
-        let patched =
-            patch_openclaw_config(input, "calciforge", "http://calciforge.host/hook", None)
-                .expect("patch should succeed");
+        let patched = patch_openclaw_config(
+            input,
+            "calciforge",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
+            None,
+        )
+        .expect("patch should succeed");
 
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         assert!(
             v.get("hooks").is_none(),
             "modern OpenClaw rejects hooks.entries; installer must not add it"
         );
+        assert_eq!(
+            v["plugins"]["entries"]["calciforge-channel"]["config"]["authToken"],
+            TEST_AUTH_TOKEN
+        );
+        assert_eq!(
+            v["plugins"]["entries"]["calciforge-channel"]["config"]["replyWebhook"],
+            TEST_REPLY_WEBHOOK
+        );
+        assert_eq!(
+            v["plugins"]["entries"]["calciforge-channel"]["config"]["replyAuthToken"],
+            TEST_REPLY_AUTH_TOKEN
+        );
+        assert!(
+            v["plugins"].get("allow").is_none(),
+            "installer must not create a restrictive allowlist when OpenClaw was auto-loading plugins"
+        );
+    }
+
+    #[test]
+    fn patch_openclaw_config_extends_existing_plugin_allowlist() {
+        let input = r#"{"plugins": {"allow": ["calciforge-policy"]}}"#;
+        let patched = patch_openclaw_config(
+            input,
+            "calciforge",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
+            None,
+        )
+        .expect("patch should succeed");
+
+        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
+        let allow = v["plugins"]["allow"].as_array().unwrap();
+        assert!(allow
+            .iter()
+            .any(|entry| entry.as_str() == Some("calciforge-policy")));
+        assert!(allow
+            .iter()
+            .any(|entry| entry.as_str() == Some("calciforge-channel")));
     }
 
     /// patch_openclaw_config preserves existing hooks fields without mutation.
@@ -1542,8 +1816,15 @@ mod tests {
     fn patch_openclaw_config_preserves_existing_hooks() {
         let input =
             r#"{"hooks": {"enabled": false, "entries": {"calciforge": {"enabled": true}}}}"#;
-        let patched = patch_openclaw_config(input, "calciforge", "http://pc/hook", None)
-            .expect("should patch");
+        let patched = patch_openclaw_config(
+            input,
+            "calciforge",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
+            None,
+        )
+        .expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         assert!(
             v.get("hooks").is_none(),
@@ -1554,8 +1835,14 @@ mod tests {
     /// patch_openclaw_config fails gracefully on invalid JSON.
     #[test]
     fn patch_openclaw_config_invalid_json_returns_error() {
-        let result =
-            patch_openclaw_config("{ not valid json", "calciforge", "http://pc/hook", None);
+        let result = patch_openclaw_config(
+            "{ not valid json",
+            "calciforge",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
+            None,
+        );
         assert!(result.is_err());
     }
 
@@ -1576,7 +1863,9 @@ mod tests {
         let patched = patch_openclaw_config(
             input,
             "custodian",
-            "http://calciforge.internal/hooks/calciforge",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
             Some("http://clashd.internal:9001/evaluate"),
         )
         .expect("patch succeeds");
@@ -1617,10 +1906,10 @@ mod tests {
         );
     }
 
-    /// S1 integration test: apply_remote_config via mock SSH writes a config
-    /// that contains the hooks entry and the written content parses as valid JSON.
+    /// apply_remote_config via mock SSH writes the OpenClaw plugin entry and
+    /// the written content parses as valid JSON.
     #[tokio::test]
-    async fn apply_remote_config_via_mock_writes_hooks_entry() {
+    async fn apply_remote_config_via_mock_writes_openclaw_channel_plugin_entry() {
         let claw = ClawTarget {
             name: "calciforge".into(),
             adapter: ClawKind::OpenClawChannel,
@@ -1628,6 +1917,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://calciforge.host:18799/webhook".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1644,10 +1936,16 @@ mod tests {
         //
         // Since MockSshClient returns responses in order from a queue,
         // we push a valid patched JSON as the third response (read-back).
-        ssh.push_success(r#"{"version": "2026.3.13", "hooks": {"enabled": true, "entries": {"calciforge": {"enabled": true, "url": "http://calciforge.host:18799/webhook", "token": "abc123"}}}}"#);
+        ssh.push_success(r#"{"version": "2026.3.13", "plugins": {"enabled": true, "entries": {"calciforge-channel": {"enabled": true, "config": {"authToken": "inbound-token", "replyWebhook": "http://calciforge.host:18797/hooks/reply", "replyAuthToken": "reply-token"}}}}}"#);
+        push_openclaw_channel_plugin_install(&ssh);
+        push_openclaw_service_restart(&ssh);
 
         let health = MockHealthChecker::new();
-        let deps = ExecutorDeps::mock(ssh, health);
+        let ssh = Arc::new(ssh);
+        let deps = ExecutorDeps {
+            ssh: ssh.clone(),
+            health: Arc::new(health),
+        };
 
         let result = apply_remote_config(&claw, &deps);
         assert!(
@@ -1662,6 +1960,24 @@ mod tests {
             "detail should mention patching: {}",
             detail
         );
+        assert!(
+            detail.contains("OpenClaw channel config updated"),
+            "detail should name the OpenClaw channel config: {}",
+            detail
+        );
+        assert!(
+            detail.contains("installed Calciforge OpenClaw channel plugin"),
+            "detail should mention plugin installation: {}",
+            detail
+        );
+
+        let calls = ssh.recorded_calls();
+        assert!(
+            calls.iter().any(|c| c
+                .command
+                .contains(".openclaw/extensions/calciforge-channel/package.json")),
+            "expected write to plugin package.json under OpenClaw extensions, got {calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -1673,6 +1989,9 @@ mod tests {
             ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
             endpoint: "http://calciforge.host:18799/webhook".into(),
             policy_endpoint: Some("http://calciforge.host:9001/evaluate".into()),
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: Some("http://127.0.0.1:8888".into()),
             no_proxy: Some("localhost,127.0.0.1,::1,calciforge.host".into()),
         };
@@ -1683,11 +2002,8 @@ mod tests {
         ssh.push_success(
             r#"{"version":"2026.3.13","hooks":{"enabled":true,"entries":{"calciforge":{"enabled":true,"url":"http://calciforge.host:18799/webhook","token":"abc123"}}},"plugins":{"enabled":true,"entries":{"calciforge-policy":{"enabled":true,"config":{"clashdEndpoint":"http://calciforge.host:9001/evaluate"}}}}}"#,
         );
-        ssh.push_success("");
-        ssh.push_success("user\n");
-        ssh.push_success("");
-        ssh.push_success("");
-        ssh.push_success("");
+        push_openclaw_channel_plugin_install(&ssh);
+        push_openclaw_proxy_dropin(&ssh);
 
         let deps = ExecutorDeps {
             ssh: ssh.clone(),
@@ -1711,13 +2027,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn apply_remote_config_zeroclaw_detail_names_zeroclaw() {
+        let claw = ClawTarget {
+            name: "librarianzero".into(),
+            adapter: ClawKind::ZeroClawNative,
+            host: "user@host".into(),
+            ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
+            endpoint: "http://zeroclaw.host:18799/webhook".into(),
+            policy_endpoint: None,
+            auth_token: None,
+            reply_webhook: None,
+            reply_auth_token: None,
+            proxy_endpoint: None,
+            no_proxy: None,
+        };
+
+        let ssh = MockSshClient::new();
+        ssh.push_success("[agent]\nname = \"librarian\"\n");
+        ssh.push_success("");
+        ssh.push_success(
+            "[agent]\nname = \"librarian\"\n\n[calciforge]\nregistered = true\nagent = \"librarianzero\"\n",
+        );
+        let deps = ExecutorDeps::mock(ssh, MockHealthChecker::new());
+
+        let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
+        assert!(
+            detail.contains("ZeroClaw upstream config updated"),
+            "detail should name the ZeroClaw config: {detail}"
+        );
+        assert!(
+            !detail.contains("OpenClaw channel"),
+            "ZeroClaw detail must not mention OpenClaw channel config: {detail}"
+        );
+    }
+
     /// S1 test: written config remains valid JSON and preserves existing fields.
     #[test]
     fn patch_openclaw_config_written_json_preserves_existing_fields() {
         let original = r#"{"version": "2026.3.13", "gateway": {"port": 18789}}"#;
-        let endpoint = "http://calciforge.internal:18799/hooks/calciforge";
-        let patched =
-            patch_openclaw_config(original, "calciforge", endpoint, None).expect("patch succeeds");
+        let patched = patch_openclaw_config(
+            original,
+            "calciforge",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
+            None,
+        )
+        .expect("patch succeeds");
 
         // Must parse as valid JSON.
         let v: serde_json::Value =
@@ -1738,6 +2095,9 @@ mod tests {
             ssh_key: None,
             endpoint: "http://h".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };
@@ -1753,6 +2113,9 @@ mod tests {
             ssh_key: None,
             endpoint: "http://h".into(),
             policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
         };

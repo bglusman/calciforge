@@ -31,6 +31,11 @@ three-part vocabulary:
 - Add retention and cleanup policy for artifact directories.
 - Add recipe examples for npcsh, opencode/OmO profiles, and other local agent
   CLIs after smoke-testing installed versions.
+- Promote first-class managed agents through one installer pattern: remote
+  config patching, inbound auth, reply callbacks, policy/proxy configuration,
+  health checks, and rollback notes. OpenClaw is the first concrete
+  implementation; ZeroClaw and future first-class agents should use the same
+  shape instead of bespoke setup instructions.
 - Evaluate Zed's Apache-2.0 ACP work as the reference implementation path for
   richer coding-agent sessions. In particular, `codex-acp` already wraps Codex
   CLI behind ACP with images, tool-call permission requests, edit review, TODO
