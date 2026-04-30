@@ -80,7 +80,8 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
         .iter()
         .enumerate()
         .map(|(i, spec)| {
-            parse_claw_spec(spec).with_context(|| format!("--claw[{}] '{}': parse error", i, spec))
+            parse_claw_spec(spec)
+                .with_context(|| format!("--claw[{}] '{}': parse error", i, redact_claw_spec(spec)))
         })
         .collect::<Result<_>>()?;
 
@@ -112,12 +113,13 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
 /// | `cli` | `command` | — |
 pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
+    let redacted_spec = redact_claw_spec(spec);
     let kv = parse_kv_pairs(spec)?;
 
-    let name = require_key(&kv, "name", spec)?;
-    let adapter_str = require_key(&kv, "adapter", spec)?;
+    let name = require_key(&kv, "name", &redacted_spec)?;
+    let adapter_str = require_key(&kv, "adapter", &redacted_spec)?;
 
-    let adapter = parse_adapter(&adapter_str, &kv, spec)?;
+    let adapter = parse_adapter(&adapter_str, &kv, &redacted_spec)?;
 
     // SSH fields — only required for remotely-configurable adapters.
     let host = kv.get("host").cloned().unwrap_or_default();
@@ -127,7 +129,7 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         bail!(
             "adapter '{}' requires 'host=user@hostname' in spec: {}",
             adapter_str,
-            spec
+            redacted_spec
         );
     }
 
@@ -139,19 +141,19 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         if auth_token.as_deref().is_none_or(str::is_empty) {
             bail!(
                 "adapter 'openclaw-channel' requires 'auth_token=...' (or 'api_key=...') in spec: {}",
-                spec
+                redacted_spec
             );
         }
         if reply_webhook.as_deref().is_none_or(str::is_empty) {
             bail!(
                 "adapter 'openclaw-channel' requires 'reply_webhook=http://<calciforge-host>:18797/hooks/reply' in spec: {}",
-                spec
+                redacted_spec
             );
         }
         if reply_auth_token.as_deref().is_none_or(str::is_empty) {
             bail!(
                 "adapter 'openclaw-channel' requires 'reply_auth_token=...' in spec: {}",
-                spec
+                redacted_spec
             );
         }
     }
@@ -166,7 +168,7 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
             kv.get("endpoint").cloned().with_context(|| {
                 format!(
                     "adapter '{}' requires 'endpoint=...' in spec: {}",
-                    adapter_str, spec
+                    adapter_str, redacted_spec
                 )
             })?
         }
@@ -243,20 +245,41 @@ fn parse_kv_pairs(spec: &str) -> Result<std::collections::HashMap<String, String
         if part.is_empty() {
             continue;
         }
-        let idx = part.find('=').with_context(|| {
-            format!(
-                "expected 'key=value' pair, got '{}' in spec: {}",
-                part, spec
-            )
-        })?;
+        let idx = part
+            .find('=')
+            .context("expected 'key=value' pair in --claw spec")?;
         let key = part[..idx].trim().to_string();
         let value = part[idx + 1..].to_string();
         if key.is_empty() {
-            bail!("empty key in spec: {}", spec);
+            bail!("empty key in --claw spec");
         }
         map.insert(key, value);
     }
     Ok(map)
+}
+
+fn redact_claw_spec(spec: &str) -> String {
+    spec.split(',')
+        .map(|part| {
+            let Some((key, _value)) = part.split_once('=') else {
+                return part.to_string();
+            };
+            let trimmed_key = key.trim();
+            if is_secret_spec_key(trimmed_key) {
+                format!("{trimmed_key}=<redacted>")
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn is_secret_spec_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "auth_token" | "api_key" | "reply_auth_token" | "token" | "bearer_token"
+    )
 }
 
 /// Extract a required key from the KV map.
@@ -296,10 +319,14 @@ mod tests {
 
     #[test]
     fn parse_kv_missing_equals_errors() {
-        let result = parse_kv_pairs("name,adapter=zeroclaw-native");
+        let result = parse_kv_pairs("secret-token-without-key,adapter=zeroclaw-native");
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("key=value"), "got: {}", msg);
+        assert!(
+            !msg.contains("secret-token-without-key"),
+            "malformed input should not be echoed: {msg}"
+        );
     }
 
     #[test]
@@ -375,6 +402,40 @@ mod tests {
         assert!(
             err.to_string().contains("reply_auth_token"),
             "error should explain missing reply auth token: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_openclaw_claw_errors_redact_secret_values() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,endpoint=http://openclaw.example.invalid:18789,AUTH_TOKEN=secret-inbound-token";
+        let err = parse_claw_spec(spec).expect_err("missing later field should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("AUTH_TOKEN=<redacted>"),
+            "error should include redacted spec: {msg}"
+        );
+        assert!(
+            !msg.contains("secret-inbound-token"),
+            "error must not leak auth token: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_install_target_context_redacts_secret_values() {
+        let args = InstallArgs {
+            calciforge_host: Some("calciforge@example.invalid".to_string()),
+            claw_specs: vec!["name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,endpoint=http://openclaw.example.invalid:18789,auth_token=secret-inbound-token,reply_webhook=http://calciforge.example.invalid:18797/hooks/reply".to_string()],
+            ..Default::default()
+        };
+        let err = parse_install_target(&args).expect_err("missing reply token should fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("auth_token=<redacted>"),
+            "context should include redacted spec: {msg}"
+        );
+        assert!(
+            !msg.contains("secret-inbound-token"),
+            "context must not leak auth token: {msg}"
         );
     }
 

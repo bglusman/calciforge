@@ -22,7 +22,7 @@
 
 use anyhow::{bail, Context, Result};
 use console::style;
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -403,17 +403,17 @@ fn collect_managed_agent_auth(
         return Ok((None, None, None));
     }
 
-    let auth_token: String = Input::new()
+    let auth_token: String = Password::new()
         .with_prompt("  Inbound bearer token (must match Calciforge agent api_key)")
-        .interact_text()
+        .interact()
         .context("failed to read inbound token")?;
     let reply_webhook: String = Input::new()
         .with_prompt("  Calciforge reply webhook URL")
         .interact_text()
         .context("failed to read reply webhook")?;
-    let reply_auth_token: String = Input::new()
+    let reply_auth_token: String = Password::new()
         .with_prompt("  Reply webhook bearer token (must match reply_auth_token)")
-        .interact_text()
+        .interact()
         .context("failed to read reply token")?;
 
     Ok((

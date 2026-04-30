@@ -8,23 +8,11 @@
  */
 
 async function getLegacyRegisterPluginHttpRoute() {
-  const mod = await import("/usr/lib/node_modules/openclaw/dist/http-registry-Cbhawt2w.js");
-  return mod.t;
+  const mod = await import("/usr/lib/node_modules/openclaw/dist/plugin-sdk/plugin-runtime.js");
+  return mod.registerPluginHttpRoute;
 }
 
 async function registerHttpRoute(api, route, log) {
-  if (typeof api.registerHttpRoute === "function") {
-    const unregister = api.registerHttpRoute({
-      ...route,
-      auth: "plugin",
-      replaceExisting: true,
-    });
-    return {
-      unregister: typeof unregister === "function" ? unregister : () => {},
-      source: "api.registerHttpRoute",
-    };
-  }
-
   const registerLegacyRoute = await getLegacyRegisterPluginHttpRoute();
   const unregister = registerLegacyRoute({
     ...route,
@@ -41,9 +29,36 @@ export default function register(api) {
   const pluginConfig = api.pluginConfig ?? {};
   const { authToken, replyWebhook, replyAuthToken } = pluginConfig;
 
-  api.logger.info(
-    `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook ?? "(none)"}`,
-  );
+  if (authToken && replyWebhook && replyAuthToken) {
+    api.logger.info(
+      `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook}`,
+    );
+
+    registerHttpRoute(api, {
+      path: "/calciforge/inbound",
+      match: "exact",
+      handler: async (req, res) =>
+        handleInboundRequest({
+          api,
+          req,
+          res,
+          authToken,
+          replyWebhook,
+          replyAuthToken,
+          log: api.logger,
+        }),
+    }, api.logger)
+      .then(({ source }) => {
+        api.logger.info(
+          `[calciforge-channel] registered POST /calciforge/inbound via ${source}`,
+        );
+      })
+      .catch((err) => {
+        api.logger.error(
+          `[calciforge-channel] failed to register HTTP route: ${err.message}`,
+        );
+      });
+  }
 
   api.registerChannel({
     plugin: {
@@ -64,39 +79,11 @@ export default function register(api) {
 
       gateway: {
         startAccount: async (ctx) => {
-          const { log, signal } = ctx;
-
-          let registration;
-          try {
-            registration = await registerHttpRoute(api, {
-              path: "/calciforge/inbound",
-              match: "exact",
-              handler: async (req, res) =>
-                handleInboundRequest({
-                  api,
-                  req,
-                  res,
-                  authToken,
-                  replyWebhook,
-                  replyAuthToken,
-                  log,
-                }),
-            }, log);
-          } catch (err) {
-            log?.error?.(
-              `[calciforge-channel] failed to register HTTP route: ${err.message}`,
-            );
-            return;
-          }
-
-          const { unregister, source } = registration;
-          log?.info?.(
-            `[calciforge-channel] registered POST /calciforge/inbound via ${source}`,
-          );
+          const { abortSignal, log } = ctx;
+          log?.info?.("[calciforge-channel] channel account active");
 
           await new Promise((resolve) => {
-            signal?.addEventListener("abort", () => {
-              unregister();
+            abortSignal?.addEventListener("abort", () => {
               log?.info?.("[calciforge-channel] channel stopped");
               resolve();
             });

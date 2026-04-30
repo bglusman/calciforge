@@ -290,28 +290,20 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_parses_json_stream() {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("fake-dirac");
-        let mut script = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o755)
-            .open(&script_path)
-            .unwrap();
-        writeln!(
-            script,
+        std::fs::write(
+            &script_path,
             r#"#!/bin/sh
 cat >/dev/null
-printf '%s\n' '{{"type":"say","text":"step","partial":true}}'
-printf '%s\n' '{{"type":"say","say":"completion_result","text":"done","partial":false}}'
-"#
+printf '%s\n' '{"type":"say","text":"step","partial":true}'
+printf '%s\n' '{"type":"say","say":"completion_result","text":"done","partial":false}'
+"#,
         )
         .unwrap();
-        script.sync_all().unwrap();
-        drop(script);
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let adapter = DiracCliAdapter::new(
             Some(script_path.to_string_lossy().to_string()),

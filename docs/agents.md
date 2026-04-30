@@ -64,8 +64,10 @@ deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`.
 For installer-managed OpenClaw hosts, `calciforge install` also requires the
 matching `auth_token`/`api_key`, `reply_webhook`, and `reply_auth_token` in the
 `--claw` spec. The installer writes those into the remote
-`calciforge-channel` plugin entry, installs the plugin files, and restarts the
-OpenClaw gateway service.
+`calciforge-channel` plugin entry, installs the plugin files under
+`~/.openclaw/extensions/calciforge-channel`, adds the plugin to
+`plugins.allow` when an allowlist is present, and restarts the OpenClaw gateway
+service.
 
 ```toml
 [[agents]]

@@ -7,7 +7,6 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["authToken", "replyWebhook", "replyAuthToken"],
     "properties": {
       "authToken": {
         "type": "string",
