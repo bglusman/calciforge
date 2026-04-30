@@ -7,9 +7,34 @@
  * /hooks/reply endpoint.
  */
 
-async function getRegisterPluginHttpRoute() {
+async function getLegacyRegisterPluginHttpRoute() {
   const mod = await import("/usr/lib/node_modules/openclaw/dist/http-registry-Cbhawt2w.js");
   return mod.t;
+}
+
+async function registerHttpRoute(api, route, log) {
+  if (typeof api.registerHttpRoute === "function") {
+    const unregister = api.registerHttpRoute({
+      ...route,
+      auth: "plugin",
+      replaceExisting: true,
+    });
+    return {
+      unregister: typeof unregister === "function" ? unregister : () => {},
+      source: "api.registerHttpRoute",
+    };
+  }
+
+  const registerLegacyRoute = await getLegacyRegisterPluginHttpRoute();
+  const unregister = registerLegacyRoute({
+    ...route,
+    auth: "none",
+    pluginId: "calciforge-channel",
+    source: "calciforge-channel-plugin",
+    replaceExisting: true,
+    log: (msg) => log?.warn?.(msg),
+  });
+  return { unregister, source: "legacy route registry" };
 }
 
 export default function register(api) {
@@ -41,117 +66,33 @@ export default function register(api) {
         startAccount: async (ctx) => {
           const { log, signal } = ctx;
 
-          let registerRoute;
+          let registration;
           try {
-            registerRoute = await getRegisterPluginHttpRoute();
+            registration = await registerHttpRoute(api, {
+              path: "/calciforge/inbound",
+              match: "exact",
+              handler: async (req, res) =>
+                handleInboundRequest({
+                  api,
+                  req,
+                  res,
+                  authToken,
+                  replyWebhook,
+                  replyAuthToken,
+                  log,
+                }),
+            }, log);
           } catch (err) {
             log?.error?.(
-              `[calciforge-channel] failed to load route registry: ${err.message}`,
+              `[calciforge-channel] failed to register HTTP route: ${err.message}`,
             );
             return;
           }
 
-          const unregister = registerRoute({
-            path: "/calciforge/inbound",
-            auth: "none",
-            match: "exact",
-            pluginId: "calciforge-channel",
-            source: "calciforge-channel-plugin",
-            replaceExisting: true,
-            log: (msg) => log?.warn?.(msg),
-            handler: async (req, res) => {
-              if (req.method !== "POST") {
-                json(res, 405, { error: "Method not allowed" });
-                return true;
-              }
-
-              if (!isAuthorized(req, authToken)) {
-                json(res, 401, { error: "Unauthorized" });
-                return true;
-              }
-
-              let body;
-              try {
-                body = await readJsonBody(req);
-              } catch {
-                json(res, 400, { error: "Invalid JSON body" });
-                return true;
-              }
-
-              const { message, sessionKey, channel, replyTo, agentId } = body;
-              if (!message || !sessionKey) {
-                json(res, 400, { error: "message and sessionKey are required" });
-                return true;
-              }
-
-              json(res, 200, { ok: true });
-
-              try {
-                const { runId } = await api.runtime.subagent.run({
-                  sessionKey,
-                  message,
-                  idempotencyKey: `calciforge:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-                  ...(agentId ? { lane: agentId } : {}),
-                  deliver: false,
-                });
-
-                const result = await api.runtime.subagent.waitForRun({
-                  runId,
-                  timeoutMs: 300000,
-                });
-
-                if (result.status !== "ok") {
-                  log?.warn?.(
-                    `[calciforge-channel] agent run ${result.status} - runId=${runId}`,
-                  );
-                  await deliverReply({
-                    replyWebhook,
-                    replyAuthToken,
-                    sessionKey,
-                    message: `OpenClaw run ${result.status}`,
-                    channel,
-                    replyTo,
-                    log,
-                  });
-                  return true;
-                }
-
-                const replyText = await readLatestAssistantText(
-                  api,
-                  sessionKey,
-                );
-                if (isSilentReply(replyText)) {
-                  log?.info?.("[calciforge-channel] silent reply - not forwarding");
-                  return true;
-                }
-
-                await deliverReply({
-                  replyWebhook,
-                  replyAuthToken,
-                  sessionKey,
-                  message: replyText,
-                  channel,
-                  replyTo,
-                  log,
-                });
-              } catch (err) {
-                log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
-                await deliverReply({
-                  replyWebhook,
-                  replyAuthToken,
-                  sessionKey,
-                  message: `OpenClaw dispatch failed: ${err.message}`,
-                  channel,
-                  replyTo,
-                  log,
-                });
-              }
-
-              return true;
-            },
-          });
-
-          log?.info?.("[calciforge-channel] registered POST /calciforge/inbound");
+          const { unregister, source } = registration;
+          log?.info?.(
+            `[calciforge-channel] registered POST /calciforge/inbound via ${source}`,
+          );
 
           await new Promise((resolve) => {
             signal?.addEventListener("abort", () => {
@@ -164,6 +105,105 @@ export default function register(api) {
       },
     },
   });
+}
+
+async function handleInboundRequest({
+  api,
+  req,
+  res,
+  authToken,
+  replyWebhook,
+  replyAuthToken,
+  log,
+}) {
+  if (req.method !== "POST") {
+    json(res, 405, { error: "Method not allowed" });
+    return true;
+  }
+
+  if (!isAuthorized(req, authToken)) {
+    json(res, 401, { error: "Unauthorized" });
+    return true;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    json(res, 400, { error: "Invalid JSON body" });
+    return true;
+  }
+
+  const { message, sessionKey, channel, replyTo, agentId } = body;
+  if (!message || !sessionKey) {
+    json(res, 400, { error: "message and sessionKey are required" });
+    return true;
+  }
+
+  json(res, 200, { ok: true });
+
+  try {
+    const { runId } = await api.runtime.subagent.run({
+      sessionKey,
+      message,
+      idempotencyKey: `calciforge:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      ...(agentId ? { lane: agentId } : {}),
+      deliver: false,
+    });
+
+    const result = await api.runtime.subagent.waitForRun({
+      runId,
+      timeoutMs: 300000,
+    });
+
+    if (result.status !== "ok") {
+      log?.warn?.(
+        `[calciforge-channel] agent run ${result.status} - runId=${runId}`,
+      );
+      await deliverReply({
+        replyWebhook,
+        replyAuthToken,
+        sessionKey,
+        message: `OpenClaw run ${result.status}`,
+        channel,
+        replyTo,
+        log,
+      });
+      return true;
+    }
+
+    const replyText = await readLatestAssistantText(
+      api,
+      sessionKey,
+    );
+    if (isSilentReply(replyText)) {
+      log?.info?.("[calciforge-channel] silent reply - not forwarding");
+      return true;
+    }
+
+    await deliverReply({
+      replyWebhook,
+      replyAuthToken,
+      sessionKey,
+      message: replyText,
+      channel,
+      replyTo,
+      log,
+    });
+  } catch (err) {
+    log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
+    await deliverReply({
+      replyWebhook,
+      replyAuthToken,
+      sessionKey,
+      message: `OpenClaw dispatch failed: ${err.message}`,
+      channel,
+      replyTo,
+      log,
+    });
+  }
+
+  return true;
 }
 
 function isAuthorized(req, expectedToken) {
