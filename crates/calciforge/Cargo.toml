@@ -13,7 +13,7 @@ path = "src/main.rs"
 default = ["helicone", "traceloop"]
 channel-matrix = []
 hegel = ["dep:hegeltest"]
-persistent-context = ["dep:sqlx"]
+persistent-context = ["dep:rusqlite"]
 helicone = []
 traceloop = []
 tiktoken-estimator = ["dep:tiktoken-rs"]
@@ -110,8 +110,11 @@ tiktoken-rs = { version = "0.11", optional = true }
 # Property-based testing (optional)
 hegeltest = { git = "https://github.com/hegeldev/hegel-rust", optional = true }
 
-# SQLite for persistent session storage (optional feature)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono"], optional = true }
+# SQLite for persistent session storage (optional feature). The `bundled`
+# feature compiles libsqlite3 in-tree, which keeps us aligned with whatever
+# `libsqlite3-sys` version `zeroclawlabs` (via `rusqlite`) ships and avoids
+# a `links = "sqlite3"` collision in the workspace.
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
