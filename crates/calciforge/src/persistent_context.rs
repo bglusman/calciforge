@@ -339,9 +339,11 @@ impl PersistentContextStore {
         let chat_id = chat_id.to_string();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let conn = lock_conn(&conn)?;
-            conn.execute("DELETE FROM exchanges WHERE chat_id = ?", params![chat_id])?;
-            conn.execute("DELETE FROM watermarks WHERE chat_id = ?", params![chat_id])?;
+            let mut conn = lock_conn(&conn)?;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM exchanges WHERE chat_id = ?", params![chat_id])?;
+            tx.execute("DELETE FROM watermarks WHERE chat_id = ?", params![chat_id])?;
+            tx.commit()?;
             Ok(())
         })
         .await??;

@@ -577,6 +577,8 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(1), async {
                 loop {
                     let notified = self.sent_notify.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
                     if self.sent.lock().unwrap().len() >= expected {
                         return;
                     }
