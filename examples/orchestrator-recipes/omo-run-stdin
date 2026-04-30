@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact_dir="${CALCIFORGE_ARTIFACT_DIR:?CALCIFORGE_ARTIFACT_DIR is required}"
+mkdir -p "$artifact_dir"
+
+task="$(cat)"
+result_json="$artifact_dir/omo-result.json"
+stderr_log="$artifact_dir/omo-stderr.txt"
+
+omo_bin="${CALCIFORGE_OMO_BIN:-oh-my-opencode}"
+args=(run --json)
+
+if [ -n "${CALCIFORGE_OMO_AGENT:-}" ]; then
+  args+=(--agent "$CALCIFORGE_OMO_AGENT")
+fi
+if [ -n "${CALCIFORGE_OMO_MODEL:-}" ]; then
+  args+=(--model "$CALCIFORGE_OMO_MODEL")
+fi
+if [ -n "${CALCIFORGE_OMO_DIRECTORY:-}" ]; then
+  args+=(--directory "$CALCIFORGE_OMO_DIRECTORY")
+fi
+if [ -n "${CALCIFORGE_OMO_ATTACH:-}" ]; then
+  args+=(--attach "$CALCIFORGE_OMO_ATTACH")
+fi
+if [ -n "${CALCIFORGE_OMO_SESSION_ID:-}" ]; then
+  args+=(--session-id "$CALCIFORGE_OMO_SESSION_ID")
+fi
+if [ -n "${CALCIFORGE_OMO_ON_COMPLETE:-}" ]; then
+  args+=(--on-complete "$CALCIFORGE_OMO_ON_COMPLETE")
+fi
+
+# oh-my-opencode currently requires the message as argv. Keep this wrapper out
+# of sensitive channels until upstream grows stdin/file-backed prompting.
+set +e
+"$omo_bin" "${args[@]}" "$task" >"$result_json" 2>"$stderr_log"
+status=$?
+set -e
+
+if [ "$status" -ne 0 ]; then
+  tail -n 80 "$stderr_log" >&2 || true
+  exit "$status"
+fi
+
+if [ ! -s "$result_json" ]; then
+  printf 'oh-my-opencode completed without JSON output\n' >&2
+  exit 1
+fi
+
+printf 'OmO run completed; see omo-result.json artifact.\n'

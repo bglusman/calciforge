@@ -31,6 +31,9 @@ three-part vocabulary:
 - Add retention and cleanup policy for artifact directories.
 - Add recipe examples for npcsh, opencode/OmO profiles, and other local agent
   CLIs after smoke-testing installed versions.
+- Use `examples/agent-recipes/` for synchronous artifact-producing recipes and
+  `examples/orchestrator-recipes/` for submit/status/final-result patterns such
+  as Gas Town and OmO.
 - Promote first-class managed agents through one installer pattern: remote
   config patching, inbound auth, reply callbacks, policy/proxy configuration,
   health checks, and rollback notes. OpenClaw is the first concrete
@@ -63,6 +66,40 @@ That path fits both direct agents and orchestrators. Orchestrators such as
 AgentPool, cagent, or fast-agent can sit behind ACP and present one session
 surface to Calciforge while coordinating their own worker teams internally.
 
+### Codex ACP Smoke Notes
+
+`@zed-industries/codex-acp` is a practical first smoke target for native ACP
+work. A local protocol smoke against version 0.12.0 initialized cleanly and
+advertised:
+
+- `loadSession = true`,
+- prompt image support and embedded context support,
+- HTTP MCP support,
+- auth through ChatGPT, `CODEX_API_KEY`, or `OPENAI_API_KEY`,
+- newer `sessionCapabilities.list` and `sessionCapabilities.close` fields.
+
+A raw `session/list` request returned an empty `sessions` array rather than an
+error. That means session discovery should not stay limited to the `acpx`
+adapter long term. The current native `kind = "acp"` implementation uses the
+pinned `sacp` schema, which supports `session/load` but does not expose the
+newer `session/list` capability in its typed API. The likely next step is to
+either update the ACP/SACP dependency or add a narrow raw JSON-RPC extension for
+`session/list` while keeping typed handling for `initialize`, `session/new`,
+`session/load`, and `session/prompt`.
+
+Implementation direction:
+
+- preserve `!sessions <agent>` for `acpx`,
+- add the same command surface for native ACP agents when they advertise
+  `sessionCapabilities.list`,
+- store selected native ACP session IDs per identity and agent, as ACPX already
+  does for session names,
+- load selected sessions with `session/load` instead of creating one global
+  adapter session,
+- keep channel-facing responses conservative: show title, cwd, updated time,
+  and stable session identifier, but do not expose raw protocol metadata by
+  default.
+
 ## Orchestrator Direction
 
 Orchestrators need a control plane separate from normal chat adapters:
@@ -76,6 +113,17 @@ default, discover available targets, submit or nudge work through normal Gas
 Town commands, relay progress, and deliver final summaries or artifacts. Direct
 crew or task-worker targeting should be discoverable and policy-gated rather
 than treated as ordinary chat routing.
+
+The first repository examples model this as wrapper recipes rather than
+first-class adapters:
+
+- `examples/orchestrator-recipes/gastown-sling-stdin` submits stdin to
+  `gt sling` and captures a transcript artifact. It requires a real Gas Town
+  workspace plus an existing bead or formula.
+- `examples/orchestrator-recipes/omo-run-stdin` wraps `oh-my-opencode run
+  --json` and captures its structured result artifact. It currently has a
+  prompt-in-argv caveat because OmO's CLI accepts the task as a positional
+  message.
 
 Useful orchestrator outputs may include:
 

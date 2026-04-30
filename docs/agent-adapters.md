@@ -65,7 +65,8 @@ Use an orchestrator when the upstream owns async work state. Gas Town is the
 best candidate: Calciforge should talk to the Mayor by default, submit work,
 poll or receive progress, and relay final summaries/artifacts. Direct crew or
 polecat targeting should be discoverable and policy-gated rather than treated
-as ordinary chat routing.
+as ordinary chat routing. Example starting points live under
+`examples/orchestrator-recipes/`.
 
 ## Artifact CLI Prototype
 
@@ -102,25 +103,27 @@ The command above must read the actual task from stdin. `{message}` is a safe
 argv marker that expands to "Read the user task from stdin.", not to the
 request text.
 
-npcsh image-generation recipe sketch:
+npcsh image-generation recipe:
 
 ```toml
 [[agents]]
 id = "npcsh-image"
 kind = "artifact-cli"
-command = "/usr/local/bin/npcsh-vixynt-stdin"
-args = [
-  "{artifact_dir}/image.png",
-]
+command = "/opt/calciforge/examples/agent-recipes/npcsh-image-stdin"
 timeout_ms = 180000
+
+[agents.env]
+NPCSH_IMAGE_GEN_MODEL = "x/z-image-turbo"
+NPCSH_IMAGE_GEN_PROVIDER = "ollama"
+CALCIFORGE_NPCSH_TIMEOUT_SECONDS = "120"
 ```
 
-Treat this npcsh command as a recipe to verify against the installed npcsh
-version; the contract Calciforge provides is the secured stdin/artifact
-wrapper, not a guarantee that every npcsh subcommand has stable flags or
-stdin-native prompting. If the installed npcsh command only accepts prompts in
-argv, use a local wrapper and document that weaker process-listing tradeoff in
-the recipe.
+The working wrapper lives in `examples/agent-recipes/npcsh-image-stdin`, with a
+text/transcript sibling in `examples/agent-recipes/npcsh-npc-stdin`. The image
+recipe has been smoke-tested with local Ollama `x/z-image-turbo` through npcsh's
+`vixynt` jinx and produced a real PNG artifact. Treat it as a known-working
+example to adapt, not as a default install target: local image models, provider
+credentials, and policy should remain operator-owned.
 
 Before promoting a recipe, run:
 

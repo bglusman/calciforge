@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact_dir="${CALCIFORGE_ARTIFACT_DIR:?CALCIFORGE_ARTIFACT_DIR is required}"
+mkdir -p "$artifact_dir"
+
+task="$(cat)"
+model="${CALCIFORGE_MODEL_OVERRIDE:-${NPCSH_CHAT_MODEL:-qwen3.6:27b}}"
+provider="${NPCSH_CHAT_PROVIDER:-ollama}"
+transcript="$artifact_dir/npcsh-transcript.txt"
+
+export NPCSH_ENGINE="${NPCSH_ENGINE:-python}"
+export NPCSH_CHAT_MODEL="$model"
+export NPCSH_CHAT_PROVIDER="$provider"
+export NPCSH_VISION_MODEL="${NPCSH_VISION_MODEL:-$model}"
+export NPCSH_VISION_PROVIDER="${NPCSH_VISION_PROVIDER:-$provider}"
+export NPCSH_REASONING_MODEL="${NPCSH_REASONING_MODEL:-$model}"
+export NPCSH_REASONING_PROVIDER="${NPCSH_REASONING_PROVIDER:-$provider}"
+export NPCSH_DEFAULT_MODE="${NPCSH_DEFAULT_MODE:-agent}"
+
+set +e
+# npcsh's current `npc` CLI accepts prompts as argv. This wrapper preserves the
+# Calciforge stdin contract, but do not use it for sensitive prompts until npcsh
+# exposes stdin/file-backed prompting or a stable non-CLI API.
+npc "$task" --model "$model" --provider "$provider" >"$transcript" 2>&1
+status=$?
+set -e
+
+if [ "$status" -ne 0 ]; then
+  tail -n 40 "$transcript" >&2 || true
+  exit "$status"
+fi
+
+awk '
+  {
+    line = $0
+    gsub(/\033\[[0-9;]*[A-Za-z]/, "", line)
+    gsub(/\r/, "", line)
+    sub(/^[[:space:]]+/, "", line)
+    sub(/[[:space:]]+$/, "", line)
+  }
+  line == "" { next }
+  line ~ /^Warning:/ { next }
+  line ~ /^chromadb / { next }
+  line ~ /^Internet connection detected\./ { next }
+  line ~ /^NPC .* loaded / { next }
+  line ~ /^\[TEAM\] / { next }
+  line ~ /^\.npcshrc / { next }
+  line ~ /^Setting up npcsh / { next }
+  line ~ /^NPCSH initialization / { next }
+  line ~ /^Setup complete\./ { next }
+  line ~ /^Processing prompt:/ { next }
+  line ~ /^\[iter / { next }
+  line ~ /^[[:space:]]*\[[0-9]+ iterations?,/ { next }
+  line ~ /^Disposed SQLAlchemy engine\./ { next }
+  { last = line }
+  END {
+    if (last == "") {
+      print "npcsh completed; see transcript artifact."
+    } else {
+      print last
+    }
+  }
+' "$transcript"

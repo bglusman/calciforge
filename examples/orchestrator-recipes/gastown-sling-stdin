@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact_dir="${CALCIFORGE_ARTIFACT_DIR:?CALCIFORGE_ARTIFACT_DIR is required}"
+mkdir -p "$artifact_dir"
+
+transcript="$artifact_dir/gastown-sling-transcript.txt"
+task="$(cat)"
+
+work="${CALCIFORGE_GASTOWN_WORK:?CALCIFORGE_GASTOWN_WORK must name a bead or formula}"
+target="${CALCIFORGE_GASTOWN_TARGET:-mayor}"
+merge="${CALCIFORGE_GASTOWN_MERGE:-local}"
+gt_bin="${CALCIFORGE_GASTOWN_BIN:-gt}"
+
+args=(sling "$work" "$target" --stdin --merge "$merge")
+
+if [ -n "${CALCIFORGE_GASTOWN_AGENT:-}" ]; then
+  args+=(--agent "$CALCIFORGE_GASTOWN_AGENT")
+fi
+if [ "${CALCIFORGE_GASTOWN_DRY_RUN:-0}" = "1" ]; then
+  args+=(--dry-run)
+fi
+if [ "${CALCIFORGE_GASTOWN_NO_CONVOY:-0}" = "1" ]; then
+  args+=(--no-convoy)
+fi
+
+set +e
+printf '%s' "$task" | "$gt_bin" "${args[@]}" >"$transcript" 2>&1
+status=$?
+set -e
+
+if [ "$status" -ne 0 ]; then
+  tail -n 80 "$transcript" >&2 || true
+  exit "$status"
+fi
+
+cat "$transcript"
