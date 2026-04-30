@@ -17,6 +17,7 @@ use crate::{
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
+    messages::OutboundMessage,
     router::Router,
 };
 
@@ -478,7 +479,7 @@ fn handle_message_nonblocking(
 
         let dispatch_start = std::time::Instant::now();
         match router
-            .dispatch_with_sender_and_model(
+            .dispatch_message_with_sender_and_model(
                 &augmented_text,
                 &agent,
                 &config,
@@ -487,7 +488,8 @@ fn handle_message_nonblocking(
             )
             .await
         {
-            Ok(response) => {
+            Ok(response_message) => {
+                let response = response_message.render_text_fallback();
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                 command_handler.record_dispatch(latency_ms);
                 telemetry::agent_dispatch_succeeded(
@@ -495,12 +497,13 @@ fn handle_message_nonblocking(
                     &identity.id,
                     &agent_id,
                     latency_ms,
-                    response.len(),
+                    response_message.response_len(),
                 );
                 debug!(
                     identity = %identity.id,
                     agent_id = %agent_id,
-                    response_len = %response.len(),
+                    response_len = %response_message.response_len(),
+                    attachments = response_message.attachments.len(),
                     "got agent response"
                 );
 
@@ -514,8 +517,7 @@ fn handle_message_nonblocking(
                     preserve_native_commands,
                 );
 
-                // Send response — try MarkdownV2 first, fall back to plain text.
-                send_markdown_reply(bot, chat_id, response, "agent_response").await;
+                send_outbound_reply(bot, chat_id, response_message, "agent_response").await;
             }
             Err(e) => {
                 // ── Clash approval flow ─────────────────────────────────────
@@ -565,6 +567,18 @@ fn handle_message_nonblocking(
             }
         }
     });
+}
+
+async fn send_outbound_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: OutboundMessage,
+    reply_kind: &'static str,
+) {
+    // First prototype: preserve artifacts through the envelope and use the
+    // text fallback for all Telegram replies. Native photo/document sending can
+    // plug in here without changing adapter/orchestrator contracts.
+    send_markdown_reply(bot, chat_id, reply.render_text_fallback(), reply_kind).await;
 }
 
 async fn send_plain_reply(

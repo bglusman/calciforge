@@ -13,6 +13,7 @@ use crate::adapters::{
 };
 use crate::config::{AgentConfig, CalciforgeConfig};
 use crate::context::is_native_agent_command;
+use crate::messages::OutboundMessage;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -72,6 +73,22 @@ impl Router {
         sender: Option<&str>,
         model_override: Option<&str>,
     ) -> Result<String> {
+        let response = self
+            .dispatch_message_with_sender_and_model(text, agent, _config, sender, model_override)
+            .await?;
+        Ok(response.render_text_fallback())
+    }
+
+    /// Dispatch a message and preserve attachments/artifacts for channels that
+    /// know how to render richer outbound messages.
+    pub async fn dispatch_message_with_sender_and_model(
+        &self,
+        text: &str,
+        agent: &AgentConfig,
+        _config: &CalciforgeConfig,
+        sender: Option<&str>,
+        model_override: Option<&str>,
+    ) -> Result<OutboundMessage> {
         let adapter = build_adapter(agent).map_err(|e| {
             anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
         })?;
@@ -109,25 +126,28 @@ impl Router {
             sender,
             model_override: effective_model_override,
         };
-        adapter.dispatch_with_context(ctx).await.map_err(|e| {
-            let msg = match &e {
-                AdapterError::Timeout => format!("agent '{}' timed out", agent.id),
-                AdapterError::Unavailable(s) => {
-                    warn!(agent_id = %agent.id, detail = %s, "agent unavailable");
-                    format!("agent '{}' unavailable: {}", agent.id, s)
-                }
-                AdapterError::Protocol(s) => {
-                    warn!(agent_id = %agent.id, detail = %s, "agent protocol error");
-                    format!("agent '{}' protocol error: {}", agent.id, s)
-                }
-                AdapterError::ApprovalPending(req) => {
-                    // Re-wrap as anyhow error so callers can downcast and
-                    // extract the ZeroClawApprovalRequest for user notification.
-                    return anyhow::Error::new(AdapterError::ApprovalPending(req.clone()));
-                }
-            };
-            anyhow::anyhow!("{}", msg)
-        })
+        adapter
+            .dispatch_message_with_context(ctx)
+            .await
+            .map_err(|e| {
+                let msg = match &e {
+                    AdapterError::Timeout => format!("agent '{}' timed out", agent.id),
+                    AdapterError::Unavailable(s) => {
+                        warn!(agent_id = %agent.id, detail = %s, "agent unavailable");
+                        format!("agent '{}' unavailable: {}", agent.id, s)
+                    }
+                    AdapterError::Protocol(s) => {
+                        warn!(agent_id = %agent.id, detail = %s, "agent protocol error");
+                        format!("agent '{}' protocol error: {}", agent.id, s)
+                    }
+                    AdapterError::ApprovalPending(req) => {
+                        // Re-wrap as anyhow error so callers can downcast and
+                        // extract the ZeroClawApprovalRequest for user notification.
+                        return anyhow::Error::new(AdapterError::ApprovalPending(req.clone()));
+                    }
+                };
+                anyhow::anyhow!("{}", msg)
+            })
     }
 }
 
