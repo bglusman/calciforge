@@ -28,7 +28,7 @@ use crate::{
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
-    messages::OutboundMessage,
+    messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
 };
 
@@ -296,6 +296,26 @@ async fn send_matrix_message(
     room_id: &str,
     body: &str,
 ) -> Result<()> {
+    send_matrix_room_message(
+        homeserver,
+        http,
+        auth_header,
+        room_id,
+        serde_json::json!({
+            "msgtype": "m.text",
+            "body": body,
+        }),
+    )
+    .await
+}
+
+async fn send_matrix_room_message(
+    homeserver: &str,
+    http: &reqwest::Client,
+    auth_header: &str,
+    room_id: &str,
+    payload: serde_json::Value,
+) -> Result<()> {
     let encoded_room = encode_path_segment(room_id);
     let txn_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -306,10 +326,6 @@ async fn send_matrix_message(
         "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
         homeserver, encoded_room, txn_id
     );
-    let payload = serde_json::json!({
-        "msgtype": "m.text",
-        "body": body,
-    });
     const MAX_RETRIES: u32 = 4;
     let mut attempt = 0u32;
     loop {
@@ -340,6 +356,102 @@ async fn send_matrix_message(
     }
 }
 
+async fn upload_matrix_attachment(
+    homeserver: &str,
+    http: &reqwest::Client,
+    auth_header: &str,
+    attachment: &OutboundAttachment,
+) -> Result<String> {
+    const MAX_MATRIX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+
+    let metadata = tokio::fs::metadata(&attachment.path)
+        .await
+        .with_context(|| {
+            format!(
+                "reading artifact metadata for {}",
+                attachment.path.display()
+            )
+        })?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "Matrix artifact path is not a file: {}",
+            attachment.path.display()
+        );
+    }
+    if metadata.len() > MAX_MATRIX_UPLOAD_BYTES {
+        anyhow::bail!(
+            "Matrix artifact is {} bytes, limit is {}",
+            metadata.len(),
+            MAX_MATRIX_UPLOAD_BYTES
+        );
+    }
+
+    let bytes = tokio::fs::read(&attachment.path)
+        .await
+        .with_context(|| format!("reading artifact {}", attachment.path.display()))?;
+    let filename = attachment
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let url = format!(
+        "{}/_matrix/media/v3/upload?filename={}",
+        homeserver,
+        encode_path_segment(filename)
+    );
+    let resp = http
+        .post(&url)
+        .header("Authorization", auth_header)
+        .header("Content-Type", &attachment.mime_type)
+        .body(bytes)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Matrix media upload failed ({status}): {err}");
+    }
+
+    #[derive(Deserialize)]
+    struct UploadResponse {
+        content_uri: String,
+    }
+
+    Ok(resp.json::<UploadResponse>().await?.content_uri)
+}
+
+fn matrix_media_event_payload(
+    attachment: &OutboundAttachment,
+    content_uri: String,
+) -> serde_json::Value {
+    let filename = attachment
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let body = attachment
+        .caption
+        .as_deref()
+        .filter(|caption| !caption.trim().is_empty())
+        .unwrap_or(filename);
+    let msgtype = match attachment.kind {
+        AttachmentKind::Image => "m.image",
+        AttachmentKind::Audio => "m.audio",
+        AttachmentKind::Video => "m.video",
+        AttachmentKind::File => "m.file",
+    };
+
+    serde_json::json!({
+        "msgtype": msgtype,
+        "body": body,
+        "url": content_uri,
+        "info": {
+            "mimetype": attachment.mime_type,
+            "size": attachment.size_bytes,
+        },
+    })
+}
+
 fn matrix_retry_after_ms(body_text: &str) -> u64 {
     const DEFAULT_RETRY_AFTER_MS: u64 = 1_000;
     const MAX_RETRY_AFTER_MS: u64 = 30_000;
@@ -358,16 +470,53 @@ async fn send_matrix_outbound_message(
     room_id: &str,
     message: &OutboundMessage,
 ) -> Result<()> {
-    // First prototype: preserve attachments through the internal envelope and
-    // render a text fallback. Native Matrix media upload can be added here.
-    send_matrix_message(
-        homeserver,
-        http,
-        auth_header,
-        room_id,
-        &message.render_text_fallback(),
-    )
-    .await
+    if message.attachments.is_empty() {
+        return send_matrix_message(
+            homeserver,
+            http,
+            auth_header,
+            room_id,
+            &message.render_text_fallback(),
+        )
+        .await;
+    }
+
+    if let Some(text) = message
+        .text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        send_matrix_message(homeserver, http, auth_header, room_id, text).await?;
+    }
+
+    for attachment in &message.attachments {
+        let content_uri = match upload_matrix_attachment(homeserver, http, auth_header, attachment)
+            .await
+            .with_context(|| format!("uploading Matrix artifact {}", attachment.path.display()))
+        {
+            Ok(uri) => uri,
+            Err(e) => {
+                warn!(
+                    path = %attachment.path.display(),
+                    error = %e,
+                    "Matrix native artifact upload failed; sending text fallback"
+                );
+                send_matrix_message(
+                    homeserver,
+                    http,
+                    auth_header,
+                    room_id,
+                    &message.render_text_fallback(),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let payload = matrix_media_event_payload(attachment, content_uri);
+        send_matrix_room_message(homeserver, http, auth_header, room_id, payload).await?;
+    }
+
+    Ok(())
 }
 
 async fn join_matrix_room(
@@ -1018,6 +1167,226 @@ mod tests {
             30_000
         );
         assert_eq!(matrix_retry_after_ms(r#"{}"#), 1_000);
+    }
+
+    #[test]
+    fn matrix_media_event_payload_uses_native_message_type() {
+        let payload = matrix_media_event_payload(
+            &OutboundAttachment {
+                kind: AttachmentKind::Image,
+                path: std::path::PathBuf::from("/tmp/run/diagram.png"),
+                mime_type: "image/png".to_string(),
+                caption: Some("Generated diagram".to_string()),
+                size_bytes: 42,
+            },
+            "mxc://example.test/media-id".to_string(),
+        );
+
+        assert_eq!(payload["msgtype"], "m.image");
+        assert_eq!(payload["body"], "Generated diagram");
+        assert_eq!(payload["url"], "mxc://example.test/media-id");
+        assert_eq!(payload["info"]["mimetype"], "image/png");
+        assert_eq!(payload["info"]["size"], 42);
+    }
+
+    #[tokio::test]
+    async fn send_matrix_outbound_message_uploads_and_sends_native_media() {
+        use axum::{
+            body::Bytes,
+            extract::{Path, Query, State},
+            http::HeaderMap,
+            routing::{post, put},
+            Json, Router as AxumRouter,
+        };
+        use serde_json::{json, Value};
+        use std::{collections::HashMap, net::SocketAddr};
+        use tempfile::TempDir;
+        use tokio::{net::TcpListener, sync::Mutex};
+
+        #[derive(Clone, Default)]
+        struct UploadRecord {
+            filename: String,
+            mime_type: String,
+            body: Vec<u8>,
+        }
+
+        #[derive(Clone, Default)]
+        struct MockMatrixState {
+            uploads: Arc<Mutex<Vec<UploadRecord>>>,
+            events: Arc<Mutex<Vec<Value>>>,
+        }
+
+        async fn upload_media(
+            State(state): State<MockMatrixState>,
+            Query(params): Query<HashMap<String, String>>,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Json<Value> {
+            state.uploads.lock().await.push(UploadRecord {
+                filename: params.get("filename").cloned().unwrap_or_default(),
+                mime_type: headers
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string(),
+                body: body.to_vec(),
+            });
+            Json(json!({ "content_uri": "mxc://example.test/media1" }))
+        }
+
+        async fn send_message(
+            State(state): State<MockMatrixState>,
+            Path((_room_id, _txn_id)): Path<(String, String)>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            state.events.lock().await.push(payload);
+            Json(json!({ "event_id": "$reply1" }))
+        }
+
+        let temp = TempDir::new().unwrap();
+        let artifact_path = temp.path().join("diagram.png");
+        tokio::fs::write(&artifact_path, b"png-bytes")
+            .await
+            .unwrap();
+
+        let state = MockMatrixState::default();
+        let app = AxumRouter::new()
+            .route("/_matrix/media/v3/upload", post(upload_media))
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/send/m.room.message/:txn_id",
+                put(send_message),
+            )
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let message = OutboundMessage {
+            text: Some("done".to_string()),
+            attachments: vec![OutboundAttachment {
+                kind: AttachmentKind::Image,
+                path: artifact_path,
+                mime_type: "image/png".to_string(),
+                caption: Some("Generated diagram".to_string()),
+                size_bytes: 9,
+            }],
+        };
+
+        let result = send_matrix_outbound_message(
+            &format!("http://{addr}"),
+            &reqwest::Client::new(),
+            "Bearer token",
+            "!room:example.test",
+            &message,
+        )
+        .await;
+        server_handle.abort();
+        result.unwrap();
+
+        let uploads = state.uploads.lock().await;
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].filename, "diagram.png");
+        assert_eq!(uploads[0].mime_type, "image/png");
+        assert_eq!(uploads[0].body, b"png-bytes");
+
+        let events = state.events.lock().await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["msgtype"], "m.text");
+        assert_eq!(events[0]["body"], "done");
+        assert_eq!(events[1]["msgtype"], "m.image");
+        assert_eq!(events[1]["body"], "Generated diagram");
+        assert_eq!(events[1]["url"], "mxc://example.test/media1");
+        assert_eq!(events[1]["info"]["mimetype"], "image/png");
+        assert_eq!(events[1]["info"]["size"], 9);
+    }
+
+    #[tokio::test]
+    async fn send_matrix_outbound_message_falls_back_when_media_upload_fails() {
+        use axum::{
+            extract::{Path, State},
+            http::StatusCode,
+            routing::{post, put},
+            Json, Router as AxumRouter,
+        };
+        use serde_json::{json, Value};
+        use std::net::SocketAddr;
+        use tempfile::TempDir;
+        use tokio::{net::TcpListener, sync::Mutex};
+
+        #[derive(Clone, Default)]
+        struct MockMatrixState {
+            events: Arc<Mutex<Vec<Value>>>,
+        }
+
+        async fn reject_upload() -> StatusCode {
+            StatusCode::PAYLOAD_TOO_LARGE
+        }
+
+        async fn send_message(
+            State(state): State<MockMatrixState>,
+            Path((_room_id, _txn_id)): Path<(String, String)>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            state.events.lock().await.push(payload);
+            Json(json!({ "event_id": "$reply1" }))
+        }
+
+        let temp = TempDir::new().unwrap();
+        let artifact_path = temp.path().join("diagram.png");
+        tokio::fs::write(&artifact_path, b"png-bytes")
+            .await
+            .unwrap();
+
+        let state = MockMatrixState::default();
+        let app = AxumRouter::new()
+            .route("/_matrix/media/v3/upload", post(reject_upload))
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/send/m.room.message/:txn_id",
+                put(send_message),
+            )
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let message = OutboundMessage {
+            text: Some("done".to_string()),
+            attachments: vec![OutboundAttachment {
+                kind: AttachmentKind::Image,
+                path: artifact_path,
+                mime_type: "image/png".to_string(),
+                caption: Some("Generated diagram".to_string()),
+                size_bytes: 9,
+            }],
+        };
+
+        let result = send_matrix_outbound_message(
+            &format!("http://{addr}"),
+            &reqwest::Client::new(),
+            "Bearer token",
+            "!room:example.test",
+            &message,
+        )
+        .await;
+        server_handle.abort();
+        result.unwrap();
+
+        let events = state.events.lock().await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["body"], "done");
+        let fallback = events[1]["body"].as_str().unwrap();
+        assert!(fallback.contains("Attachments:"));
+        assert!(fallback.contains("diagram.png"));
+        assert!(
+            !fallback.contains(temp.path().to_str().unwrap()),
+            "fallback must not leak local artifact path: {fallback}"
+        );
     }
 
     #[tokio::test]

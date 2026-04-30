@@ -22,12 +22,12 @@ three-part vocabulary:
   should be written.
 - Calciforge validates that artifacts remain under the run directory and stay
   below the current size limit.
-- Telegram and Matrix use the internal outbound-message envelope and currently
-  render text fallback with attachment names and sizes.
+- Telegram and Matrix use the internal outbound-message envelope and send
+  supported artifacts through native media APIs. Channels without native media
+  support render text fallback with attachment names and sizes.
 
 ## Near-Term Work
 
-- Add native outbound media sending for Telegram and Matrix.
 - Add retention and cleanup policy for artifact directories.
 - Add recipe examples for npcsh, opencode/OmO profiles, and other local agent
   CLIs after smoke-testing installed versions.
@@ -148,15 +148,15 @@ validate, and deliver artifacts through the same channel envelope.
 
 OpenClaw is the most important early target because it is a first-class managed
 agent path rather than a niche media CLI. The current `openclaw-channel` bridge
-sends text into OpenClaw and receives a text-only callback:
+sends text into OpenClaw and receives a correlated callback:
 
 ```json
 { "sessionKey": "calciforge:librarian:brian", "message": "done" }
 ```
 
-That is enough for chat, but not enough for diagrams, memes, screenshots,
-reports, or generated files. A richer callback should allow OpenClaw to return
-structured attachments while Calciforge still owns the security boundary:
+For diagrams, memes, screenshots, reports, or generated files, the callback can
+also include inline base64 attachments while Calciforge still owns the security
+boundary:
 
 ```json
 {
@@ -164,22 +164,21 @@ structured attachments while Calciforge still owns the security boundary:
   "message": "I made a diagram.",
   "attachments": [
     {
-      "kind": "image",
       "mimeType": "image/png",
       "name": "diagram.png",
-      "url": "http://openclaw.local/artifacts/run-123/diagram.png"
+      "caption": "Generated diagram",
+      "dataBase64": "..."
     }
   ]
 }
 ```
 
-Calciforge should not blindly forward those URLs. It should fetch or copy the
-artifact into a Calciforge-owned run directory, enforce type and size limits,
-record audit metadata, and then deliver through Matrix, Telegram, SMS fallback,
-or any future channel. URL ingestion needs its own SSRF-safe policy: allowed
-origins, no ambient credentials, bounded redirects, content sniffing, byte
-limits before full reads, and a preference for local push/upload or short-lived
-signed URLs over arbitrary fetches.
+Calciforge copies callback artifacts into a Calciforge-owned run directory,
+enforces type and size limits, and then delivers through Matrix, Telegram, SMS
+fallback, or any future channel. URL ingestion remains future work and needs
+its own SSRF-safe policy: allowed origins, no ambient credentials, bounded
+redirects, content sniffing, byte limits before full reads, and a preference
+for local push/upload or short-lived signed URLs over arbitrary fetches.
 
 There are two complementary integration shapes:
 

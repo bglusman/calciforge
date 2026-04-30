@@ -80,9 +80,9 @@ such as npcsh. It is intentionally conservative:
   tree, and the same path is exposed as `CALCIFORGE_ARTIFACT_DIR`.
 - Calciforge rejects artifacts that escape the run directory or exceed the
   current size limit.
-- Telegram and Matrix receive an internal outbound message envelope; current
-  rendering is text fallback with attachment names and sizes, ready for native
-  media send support.
+- Telegram and Matrix receive the internal outbound message envelope and send
+  image/file artifacts through native channel media APIs when possible. Other
+  channels render a text fallback with attachment names and sizes.
 
 Generic artifact recipe:
 
