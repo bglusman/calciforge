@@ -22,13 +22,15 @@ three-part vocabulary:
   should be written.
 - Calciforge validates that artifacts remain under the run directory and stay
   below the current size limit.
+- Artifact CLI and OpenClaw callback artifacts use the same Calciforge-owned
+  local storage helpers; new runs opportunistically clean up artifact run
+  directories older than 24 hours.
 - Telegram and Matrix use the internal outbound-message envelope and send
   supported artifacts through native media APIs. Channels without native media
   support render text fallback with attachment names and sizes.
 
 ## Near-Term Work
 
-- Add retention and cleanup policy for artifact directories.
 - Add recipe examples for npcsh, opencode/OmO profiles, and other local agent
   CLIs after smoke-testing installed versions.
 - Use `examples/agent-recipes/` for synchronous artifact-producing recipes and
