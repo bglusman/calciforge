@@ -59,12 +59,30 @@ impl OpenAiCompatAdapter {
         &'a self,
         ctx: &'a DispatchContext<'_>,
     ) -> Result<&'a str, AdapterError> {
-        ctx.model_override.or(self.model.as_deref()).ok_or_else(|| {
-            AdapterError::Protocol(
-                "openai-compat requires a configured model or active model override".to_string(),
-            )
-        })
+        let model = ctx
+            .model_override
+            .or(self.model.as_deref())
+            .ok_or_else(|| {
+                AdapterError::Protocol(
+                    "openai-compat requires a configured model or active model override"
+                        .to_string(),
+                )
+            })?;
+
+        if is_openclaw_model_id(model) {
+            return Err(AdapterError::Protocol(
+                "openai-compat cannot dispatch OpenClaw agent models; use kind='openclaw-channel'"
+                    .to_string(),
+            ));
+        }
+
+        Ok(model)
     }
+}
+
+fn is_openclaw_model_id(model: &str) -> bool {
+    let trimmed = model.trim();
+    trimmed == "openclaw" || trimmed.starts_with("openclaw/")
 }
 
 #[derive(Debug, Serialize)]
@@ -284,6 +302,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response, "model=override; message=hello");
+    }
+
+    #[tokio::test]
+    async fn openclaw_model_override_is_protocol_error() {
+        let (endpoint, _server) = spawn_chat_server().await;
+        let adapter = OpenAiCompatAdapter::new(
+            endpoint,
+            String::new(),
+            Some("configured".to_string()),
+            None,
+        );
+
+        let err = adapter
+            .dispatch_with_context(DispatchContext {
+                message: "hello",
+                sender: Some("brian"),
+                model_override: Some("openclaw/main"),
+                session: None,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("openclaw-channel"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn configured_openclaw_model_is_protocol_error() {
+        let (endpoint, _server) = spawn_chat_server().await;
+        let adapter =
+            OpenAiCompatAdapter::new(endpoint, String::new(), Some("openclaw".to_string()), None);
+
+        let err = adapter.dispatch("hello").await.unwrap_err().to_string();
+        assert!(err.contains("openclaw-channel"), "got: {err}");
     }
 
     #[tokio::test]

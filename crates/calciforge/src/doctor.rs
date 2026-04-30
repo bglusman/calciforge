@@ -925,6 +925,16 @@ async fn check_agent_wiring(
                 ));
             }
 
+            if agent.kind == "openai-compat"
+                && agent.model.as_deref().is_some_and(is_openclaw_model_id)
+            {
+                report.error(format!(
+                    "agent '{}' uses openai-compat with OpenClaw model '{}'; OpenClaw agent chat must use kind='openclaw-channel'",
+                    agent.id,
+                    agent.model.as_deref().unwrap_or_default()
+                ));
+            }
+
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
             }
@@ -987,6 +997,11 @@ fn is_proxy_env_key(key: &str) -> bool {
 fn is_external_agent_daemon(agent: &AgentConfig, proxy_bind: Option<&str>) -> bool {
     is_http_agent(agent)
         && !proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind))
+}
+
+fn is_openclaw_model_id(model: &str) -> bool {
+    let trimmed = model.trim();
+    trimmed == "openclaw" || trimmed.starts_with("openclaw/")
 }
 
 async fn check_endpoint_reachable(agent: &AgentConfig, report: &mut DoctorReport) {
@@ -1244,6 +1259,32 @@ mod tests {
             finding.severity == Severity::Error
                 && finding.message.contains("openai-compat")
                 && finding.message.contains("allow_model_override")
+        }));
+    }
+
+    #[test]
+    fn rejects_openai_compat_openclaw_model_ids() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "librarian".to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            api_key: Some("test-token".to_string()),
+            model: Some("openclaw/main".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("OpenClaw")
+                && finding.message.contains("openclaw-channel")
         }));
     }
 

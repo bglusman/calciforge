@@ -12,6 +12,12 @@ Set `allow_model_override = true` only for OpenAI-compatible agents that should
 accept Calciforge `!model` selections and synthetic model IDs. Leave it unset
 for endpoints with their own restricted model namespace.
 
+From a user-experience perspective, keep model routes separate from agents.
+Agents own runtime identity, commands, tools, sessions, approvals, memory, and
+artifacts. Model routes are just chat/model endpoints. They can be useful for a
+simple chatbot lane or dispatcher testing, but they should be shown as "models"
+or "chat routes" rather than as full agents in user-facing lists.
+
 ## What Exists Today
 
 | Feature | Status | Notes |
