@@ -35,7 +35,7 @@
 //! ```
 
 use crate::sync::Arc;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use tracing::{debug, info, warn};
 use zeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
 use zeroclaw::channels::SignalChannel as ZclSignalChannel;
@@ -498,15 +498,18 @@ pub async fn run(
         transport.clone(),
     ));
 
+    run_transport_loop(bridge, transport).await
+}
+
+async fn run_transport_loop<C>(bridge: Arc<SignalChannel<C>>, transport: Arc<C>) -> Result<()>
+where
+    C: Channel + ?Sized + 'static,
+{
     // Create the inbound channel and start the listener.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(64);
 
-    let listener_transport = transport.clone();
-    let listener_handle = tokio::spawn(async move {
-        if let Err(e) = listener_transport.listen(tx).await {
-            warn!(error = %e, "Signal: listener exited with error");
-        }
-    });
+    let listener_transport = Arc::clone(&transport);
+    let listener_handle = tokio::spawn(async move { listener_transport.listen(tx).await });
 
     // Drain inbound messages.
     while let Some(msg) = rx.recv().await {
@@ -516,9 +519,12 @@ pub async fn run(
         });
     }
 
-    // Listener returned (channel closed); join it for cleanup.
-    let _ = listener_handle.await;
-    Ok(())
+    // Listener returned (channel closed); join it and surface runtime failures.
+    match listener_handle.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e).context("Signal listener exited with error"),
+        Err(e) => Err(anyhow!("Signal listener task failed: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -535,23 +541,50 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::mpsc;
+    use tokio::sync::Notify;
 
     /// Test double for `zeroclawlabs::Channel`. Records every `send` call so
     /// tests can assert routing decisions without standing up a real
     /// signal-cli daemon.
     struct MockChannel {
         sent: StdMutex<Vec<SendMessage>>,
+        sent_notify: Notify,
+        listen_error: StdMutex<Option<String>>,
     }
 
     impl MockChannel {
         fn new() -> Self {
             Self {
                 sent: StdMutex::new(Vec::new()),
+                sent_notify: Notify::new(),
+                listen_error: StdMutex::new(None),
+            }
+        }
+
+        fn with_listen_error(error: &str) -> Self {
+            Self {
+                sent: StdMutex::new(Vec::new()),
+                sent_notify: Notify::new(),
+                listen_error: StdMutex::new(Some(error.to_string())),
             }
         }
 
         fn drain(&self) -> Vec<SendMessage> {
             std::mem::take(&mut *self.sent.lock().unwrap())
+        }
+
+        async fn wait_for_sent_len(&self, expected: usize) {
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    let notified = self.sent_notify.notified();
+                    if self.sent.lock().unwrap().len() >= expected {
+                        return;
+                    }
+                    notified.await;
+                }
+            })
+            .await
+            .expect("timed out waiting for Signal mock send");
         }
     }
 
@@ -563,10 +596,14 @@ mod tests {
 
         async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
             self.sent.lock().unwrap().push(message.clone());
+            self.sent_notify.notify_waiters();
             Ok(())
         }
 
         async fn listen(&self, _tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+            if let Some(error) = self.listen_error.lock().unwrap().take() {
+                return Err(anyhow::anyhow!(error));
+            }
             // Tests drive `handle_message` directly; listen() is a no-op.
             Ok(())
         }
@@ -646,28 +683,30 @@ mod tests {
         Arc::new(ChannelScanner::new(scanner, audit_logger, security_config))
     }
 
-    fn dummy_bridge_with(
-        config: Arc<CalciforgeConfig>,
-        transport: Arc<MockChannel>,
-    ) -> Arc<SignalChannel<MockChannel>> {
+    struct TestBridge {
+        bridge: Arc<SignalChannel<MockChannel>>,
+        _state_dir: tempfile::TempDir,
+    }
+
+    fn dummy_bridge_with(config: Arc<CalciforgeConfig>, transport: Arc<MockChannel>) -> TestBridge {
         let router = Arc::new(Router::new());
         let tmp = tempfile::tempdir().expect("tempdir for signal test state isolation");
         let command_handler = Arc::new(CommandHandler::with_state_dir(
             config.clone(),
             tmp.path().to_path_buf(),
         ));
-        // Leak tmp so the dir survives for the lifetime of the test (state
-        // dir paths are cached inside CommandHandler).
-        std::mem::forget(tmp);
         let context_store = ContextStore::new(20, 5);
-        Arc::new(SignalChannel::<MockChannel>::new(
-            config,
-            router,
-            command_handler,
-            context_store,
-            make_scanner(),
-            transport,
-        ))
+        TestBridge {
+            bridge: Arc::new(SignalChannel::<MockChannel>::new(
+                config,
+                router,
+                command_handler,
+                context_store,
+                make_scanner(),
+                transport,
+            )),
+            _state_dir: tmp,
+        }
     }
 
     /// `run` should refuse to start with the legacy webhook fields and surface
@@ -708,6 +747,23 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_transport_loop_propagates_listener_error() {
+        let config = make_test_config(|_| {});
+        let transport = Arc::new(MockChannel::with_listen_error("listen failed"));
+        let bridge = dummy_bridge_with(config, Arc::clone(&transport));
+
+        let err = run_transport_loop(bridge.bridge, transport)
+            .await
+            .expect_err("listener errors must surface from Signal run loop");
+
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("listen failed"),
+            "error should include listener failure: {rendered}"
+        );
+    }
+
     /// Unknown senders (no matching identity alias) must be silently dropped —
     /// no reply is sent.
     #[tokio::test]
@@ -728,10 +784,7 @@ mod tests {
             attachments: vec![],
         };
 
-        bridge.handle_message(msg).await;
-
-        // Allow any spawned tasks to settle (none should produce sends).
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        bridge.bridge.handle_message(msg).await;
 
         assert!(
             transport.drain().is_empty(),
@@ -759,15 +812,9 @@ mod tests {
             attachments: vec![],
         };
 
-        bridge.handle_message(msg).await;
+        bridge.bridge.handle_message(msg).await;
 
-        // !ping is dispatched on a spawned task; give it a beat to land.
-        for _ in 0..20 {
-            if !transport.sent.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        transport.wait_for_sent_len(1).await;
 
         let sent = transport.drain();
         assert_eq!(sent.len(), 1, "expected exactly one reply, got {sent:?}");

@@ -9,12 +9,12 @@
 //! so the async caller stays unblocked. The mutex is only held within the
 //! blocking closures, never across an `.await`.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 // ---------------------------------------------------------------------------
 // Database schema
@@ -69,10 +69,11 @@ pub struct PersistentExchange {
 impl PersistentExchange {
     fn try_from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         // SQLite's CURRENT_TIMESTAMP yields "YYYY-MM-DD HH:MM:SS" (UTC, no tz).
+        let created_at_idx = row.as_ref().column_index("created_at")?;
         let created_at_str: String = row.get("created_at")?;
         let created_at = parse_sqlite_timestamp(&created_at_str).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
-                7,
+                created_at_idx,
                 rusqlite::types::Type::Text,
                 Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
             )
@@ -104,6 +105,11 @@ fn parse_sqlite_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
         return Ok(dt.with_timezone(&Utc));
     }
     Err(format!("unrecognized timestamp format: {s}"))
+}
+
+fn lock_conn(conn: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>> {
+    conn.lock()
+        .map_err(|_| anyhow!("persistent context sqlite connection mutex poisoned"))
 }
 
 /// A watermark entry for an agent in a chat.
@@ -193,29 +199,30 @@ impl PersistentContextStore {
         let agent_id = agent_id.to_string();
         let response = response.to_string();
 
-        tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
-            let conn = conn.lock().unwrap();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut conn = lock_conn(&conn)?;
+            let tx = conn.transaction()?;
 
-            let next_seq: i64 = conn.query_row(
+            let next_seq: i64 = tx.query_row(
                 "SELECT COALESCE(MAX(seq), -1) + 1 FROM exchanges WHERE chat_id = ?",
                 params![chat_id],
                 |row| row.get(0),
             )?;
 
-            conn.execute(
+            tx.execute(
                 "INSERT INTO exchanges (chat_id, seq, sender_label, prompt, agent_id, response) \
                  VALUES (?, ?, ?, ?, ?, ?)",
                 params![chat_id, next_seq, sender_label, prompt, agent_id, response],
             )?;
 
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO watermarks (chat_id, agent_id, last_seen_seq) \
                  VALUES (?, ?, ?)",
                 params![chat_id, agent_id, next_seq],
             )?;
 
             if buffer_size > 0 {
-                conn.execute(
+                tx.execute(
                     "DELETE FROM exchanges \
                      WHERE chat_id = ? AND seq < ( \
                          SELECT seq FROM exchanges \
@@ -227,6 +234,7 @@ impl PersistentContextStore {
                 )?;
             }
 
+            tx.commit()?;
             Ok(())
         })
         .await??;
@@ -249,8 +257,8 @@ impl PersistentContextStore {
         let agent_id = agent_id.to_string();
 
         let unseen_exchanges = tokio::task::spawn_blocking(
-            move || -> rusqlite::Result<Vec<PersistentExchange>> {
-                let conn = conn.lock().unwrap();
+            move || -> Result<Vec<PersistentExchange>> {
+                let conn = lock_conn(&conn)?;
 
                 let watermark: Option<i64> = conn
                     .query_row(
@@ -272,7 +280,7 @@ impl PersistentContextStore {
                         params![chat_id, wm, inject_depth as i64],
                         PersistentExchange::try_from_row,
                     )?;
-                    rows.collect::<rusqlite::Result<Vec<_>>>()
+                    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
                 } else {
                     // No watermark exists - agent hasn't seen any exchanges in this chat.
                     // Take the most recent N (ordered DESC), then re-sort ASC for display.
@@ -330,8 +338,8 @@ impl PersistentContextStore {
         let conn = Arc::clone(&self.conn);
         let chat_id = chat_id.to_string();
 
-        tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
-            let conn = conn.lock().unwrap();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_conn(&conn)?;
             conn.execute("DELETE FROM exchanges WHERE chat_id = ?", params![chat_id])?;
             conn.execute("DELETE FROM watermarks WHERE chat_id = ?", params![chat_id])?;
             Ok(())
@@ -346,13 +354,13 @@ impl PersistentContextStore {
         let conn = Arc::clone(&self.conn);
         let chat_id = chat_id.to_string();
 
-        let count = tokio::task::spawn_blocking(move || -> rusqlite::Result<i64> {
-            let conn = conn.lock().unwrap();
-            conn.query_row(
+        let count = tokio::task::spawn_blocking(move || -> Result<i64> {
+            let conn = lock_conn(&conn)?;
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM exchanges WHERE chat_id = ?",
                 params![chat_id],
                 |row| row.get(0),
-            )
+            )?)
         })
         .await??;
 
@@ -364,17 +372,16 @@ impl PersistentContextStore {
         let conn = Arc::clone(&self.conn);
         let chat_id = chat_id.to_string();
 
-        let exchanges =
-            tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<PersistentExchange>> {
-                let conn = conn.lock().unwrap();
-                let mut stmt = conn.prepare(
-                    "SELECT id, chat_id, seq, sender_label, prompt, agent_id, response, created_at \
+        let exchanges = tokio::task::spawn_blocking(move || -> Result<Vec<PersistentExchange>> {
+            let conn = lock_conn(&conn)?;
+            let mut stmt = conn.prepare(
+                "SELECT id, chat_id, seq, sender_label, prompt, agent_id, response, created_at \
                      FROM exchanges WHERE chat_id = ? ORDER BY seq ASC",
-                )?;
-                let rows = stmt.query_map(params![chat_id], PersistentExchange::try_from_row)?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .await??;
+            )?;
+            let rows = stmt.query_map(params![chat_id], PersistentExchange::try_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await??;
 
         Ok(exchanges)
     }

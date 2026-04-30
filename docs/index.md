@@ -541,7 +541,7 @@ the live schema in CI):
 
 - [Telegram](channels/telegram) — long-poll, no open port required
 - [Matrix](channels/matrix) — HTTP long-poll; note: no E2EE
-- [Signal](channels/signal) — webhook via ZeroClaw/OpenClaw gateway
+- [Signal](channels/signal) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
 - [WhatsApp](channels/whatsapp) — webhook via ZeroClaw/OpenClaw gateway
 
 ```toml
