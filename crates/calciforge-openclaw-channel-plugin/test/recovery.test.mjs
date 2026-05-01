@@ -220,6 +220,20 @@ test("does not recover text from before the run start marker", () => {
   assert.equal(recovered, false);
 });
 
+test("does not recover changed text without timestamp when baseline exists", () => {
+  const recovered = testInternals.isRecoverableReply(
+    {
+      key: "other-run",
+      text: "changed concurrent reply",
+    },
+    { key: "old-id", text: "previous reply" },
+    [],
+    Date.parse("2026-05-01T12:00:00Z"),
+  );
+
+  assert.equal(recovered, false);
+});
+
 test("recovers new text after the run start marker", () => {
   const runStartedAtMs = Date.parse("2026-05-01T12:00:00Z");
   const recovered = testInternals.isRecoverableReply(

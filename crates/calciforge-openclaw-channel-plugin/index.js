@@ -380,7 +380,7 @@ function isRecoverableReply(reply, baselineReply, attachments, runStartedAtMs) {
 
 function replyMatchesRunWindow(reply, runStartedAtMs) {
   if (!Number.isFinite(runStartedAtMs)) return true;
-  if (!Number.isFinite(reply?.createdAtMs)) return true;
+  if (!Number.isFinite(reply?.createdAtMs)) return false;
   return reply.createdAtMs >= runStartedAtMs;
 }
 

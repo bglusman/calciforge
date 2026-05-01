@@ -36,6 +36,7 @@ type ReplyResult = Result<OutboundMessage, String>;
 #[derive(Clone)]
 struct PendingReply {
     request_id: String,
+    session_key: String,
     tx: Arc<Mutex<Option<oneshot::Sender<ReplyResult>>>>,
 }
 
@@ -60,11 +61,23 @@ impl ReplyRouter {
     ) {
         let entry = PendingReply {
             request_id: request_id.clone(),
+            session_key: session_key.clone(),
             tx: Arc::new(Mutex::new(Some(tx))),
         };
         let mut pending = self.pending.lock().await;
+        let has_other_pending_for_session = pending.values().any(|candidate| {
+            candidate.session_key == session_key && candidate.request_id != request_id
+        });
         pending.insert(request_id, entry.clone());
-        pending.insert(session_key, entry);
+        if has_other_pending_for_session {
+            // Legacy callbacks only carry the stable session key. Once more
+            // than one request is pending for that session, routing by
+            // session key can cross-deliver replies, so fail closed for the
+            // legacy path until requestId-capable plugins are installed.
+            pending.remove(&session_key);
+        } else {
+            pending.insert(session_key, entry);
+        }
     }
 
     pub async fn take(&self, correlation_key: &str) -> Option<oneshot::Sender<ReplyResult>> {
@@ -867,6 +880,50 @@ mod tests {
             .expect("legacy callback should still route by sessionKey");
 
         assert_eq!(reply, "legacy reply");
+    }
+
+    #[tokio::test]
+    async fn test_legacy_session_key_callback_is_ambiguous_for_overlapping_dispatches() {
+        let router = ReplyRouter::new();
+        let (first_tx, first_rx) = oneshot::channel::<ReplyResult>();
+        let (second_tx, second_rx) = oneshot::channel::<ReplyResult>();
+        let session_key = "calciforge:main:brian".to_string();
+
+        router
+            .insert("request-1".to_string(), session_key.clone(), first_tx)
+            .await;
+        router
+            .insert("request-2".to_string(), session_key.clone(), second_tx)
+            .await;
+
+        assert!(
+            router.take(&session_key).await.is_none(),
+            "legacy sessionKey-only callback must fail closed once the session has overlapping requests"
+        );
+
+        let first = router
+            .take("request-1")
+            .await
+            .expect("requestId correlation for first request should remain available");
+        first
+            .send(Ok(OutboundMessage::text("first")))
+            .expect("first receiver should still be live");
+        assert_eq!(
+            first_rx.await.unwrap().unwrap().render_text_fallback(),
+            "first"
+        );
+
+        let second = router
+            .take("request-2")
+            .await
+            .expect("requestId correlation for second request should remain available");
+        second
+            .send(Ok(OutboundMessage::text("second")))
+            .expect("second receiver should still be live");
+        assert_eq!(
+            second_rx.await.unwrap().unwrap().render_text_fallback(),
+            "second"
+        );
     }
 
     #[tokio::test]

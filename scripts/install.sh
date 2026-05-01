@@ -1940,6 +1940,12 @@ REMOTE_MITM_CA
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${service_name}"
             local launchd_env=("CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" "PATH=${remote_service_path}")
+            if [[ "$bin" == "clashd" ]]; then
+                launchd_env+=(
+                    "CLASHD_POLICY=${config_dir}/policy.star"
+                    "CLASHD_AGENTS=${config_dir}/agents.json"
+                )
+            fi
             if [[ "$bin" == "calciforge" ]]; then
                 launchd_env+=(
                     "CALCIFORGE_CONFIG_HOME=${config_dir}"
