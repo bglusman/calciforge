@@ -11,11 +11,15 @@ interface PolicyConfig {
   fallbackOnError: "allow" | "deny";
 }
 
+interface PolicyLogger {
+  warn(message: string): void;
+}
+
 const DEFAULT_CONFIG: PolicyConfig = {
   clashdEndpoint:
     process.env.CLASHD_ENDPOINT || "http://localhost:9001/evaluate",
   timeoutMs: parseInt(process.env.CLASHD_TIMEOUT_MS || "500", 10),
-  fallbackOnError: (process.env.CLASHD_FALLBACK as "allow" | "deny") || "deny",
+  fallbackOnError: normalizeFallbackOnError(process.env.CLASHD_FALLBACK),
 };
 
 /**
@@ -40,10 +44,16 @@ export default definePluginEntry({
     "Enforces tool call policies via clashd sidecar - requires OpenClaw >= 2026.3.24-beta.2",
 
   register(api) {
+    const pluginConfig =
+      (api as { pluginConfig?: Partial<PolicyConfig> }).pluginConfig ?? {};
     const config: PolicyConfig = {
       ...DEFAULT_CONFIG,
-      // Could load from plugin config store in future
+      ...pluginConfig,
     };
+    config.fallbackOnError = normalizeFallbackOnError(
+      config.fallbackOnError,
+      api.logger,
+    );
 
     api.logger.info("[calciforge-policy] Initializing policy enforcement");
     api.logger.info(
@@ -117,7 +127,7 @@ export default definePluginEntry({
           );
 
           // Fail-safe: configurable fallback
-          if (config.fallbackOnError === "deny") {
+          if (config.fallbackOnError !== "allow") {
             api.logger.warn(
               `[calciforge-policy] Falling back to DENY due to clashd error`,
             );
@@ -139,6 +149,21 @@ export default definePluginEntry({
   },
 });
 
+function normalizeFallbackOnError(
+  value: unknown,
+  logger?: PolicyLogger,
+): "allow" | "deny" {
+  if (value === "allow" || value === "deny") {
+    return value;
+  }
+  if (value !== undefined && value !== null && value !== "") {
+    logger?.warn(
+      `[calciforge-policy] Invalid fallbackOnError=${String(value)}; defaulting to deny`,
+    );
+  }
+  return "deny";
+}
+
 async function evaluateWithClashd(
   config: PolicyConfig,
   toolName: string,
@@ -146,7 +171,10 @@ async function evaluateWithClashd(
   identity: string,
 ): Promise<ClashdResponse> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    Number.isFinite(config.timeoutMs) ? config.timeoutMs : 500,
+  );
 
   try {
     const response = await fetch(config.clashdEndpoint, {
@@ -158,14 +186,12 @@ async function evaluateWithClashd(
         tool: toolName,
         args,
         context: {
-          identity,
+          agent_id: identity,
           timestamp: new Date().toISOString(),
         },
       }),
       signal: controller.signal,
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(
@@ -175,20 +201,19 @@ async function evaluateWithClashd(
 
     const result: ClashdResponse = await response.json();
     return result;
-  } catch (error) {
+  } finally {
     clearTimeout(timeoutId);
-    throw error;
   }
 }
 
 async function checkClashdHealth(endpoint: string): Promise<boolean> {
   try {
-    const healthUrl = endpoint.replace("/evaluate", "/health");
+    const healthUrl = endpoint.replace(/\/evaluate\/?$/, "/health");
     const response = await fetch(healthUrl, {
       method: "GET",
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(1000),
     });
-    return response.ok && (await response.text()) === "OK";
+    return response.ok;
   } catch {
     return false;
   }

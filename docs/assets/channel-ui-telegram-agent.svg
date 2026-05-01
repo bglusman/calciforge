@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="560" viewBox="0 0 720 560" role="img" aria-labelledby="title desc">
+  <title id="title">Telegram agent selection buttons</title>
+  <desc id="desc">A Calciforge Telegram chat showing an agent list with inline buttons for Research, Builder, and Reviewer agents.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dbeafe"/>
+      <stop offset="1" stop-color="#f8fafc"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect width="720" height="560" rx="28" fill="url(#bg)"/>
+  <g filter="url(#shadow)">
+    <rect x="132" y="46" width="456" height="468" rx="28" fill="#ffffff"/>
+  </g>
+  <rect x="132" y="46" width="456" height="68" rx="28" fill="#2aabee"/>
+  <rect x="132" y="86" width="456" height="28" fill="#2aabee"/>
+  <circle cx="174" cy="81" r="18" fill="#ffffff" opacity="0.92"/>
+  <text x="208" y="78" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#ffffff">Calciforge</text>
+  <text x="208" y="98" font-family="Inter, Arial, sans-serif" font-size="12" fill="#e0f2fe">bot online</text>
+
+  <rect x="338" y="146" width="210" height="42" rx="18" fill="#dbeafe"/>
+  <text x="364" y="172" font-family="Inter, Arial, sans-serif" font-size="15" fill="#0f172a">!agents</text>
+
+  <rect x="172" y="214" width="376" height="156" rx="18" fill="#f1f5f9"/>
+  <text x="196" y="244" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Choose an agent</text>
+  <text x="196" y="273" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">Active: Research</text>
+  <text x="196" y="299" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">Tap a button or type:</text>
+  <text x="196" y="323" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">!agent switch &lt;name&gt;</text>
+
+  <g font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="middle">
+    <rect x="172" y="388" width="116" height="42" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+    <text x="230" y="414" fill="#1d4ed8">Research</text>
+    <rect x="302" y="388" width="116" height="42" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+    <text x="360" y="414" fill="#1d4ed8">Builder</text>
+    <rect x="432" y="388" width="116" height="42" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+    <text x="490" y="414" fill="#1d4ed8">Reviewer</text>
+  </g>
+
+  <text x="360" y="480" font-family="Inter, Arial, sans-serif" font-size="13" text-anchor="middle" fill="#64748b">Telegram inline keyboard, with text command fallback</text>
+</svg>

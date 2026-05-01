@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="560" viewBox="0 0 720 560" role="img" aria-labelledby="title desc">
+  <title id="title">Telegram model selection buttons</title>
+  <desc id="desc">A Calciforge Telegram chat showing model choices as inline buttons for a local model, a balanced dispatcher, and a cloud coding route.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ecfccb"/>
+      <stop offset="1" stop-color="#f8fafc"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect width="720" height="560" rx="28" fill="url(#bg)"/>
+  <g filter="url(#shadow)">
+    <rect x="132" y="46" width="456" height="468" rx="28" fill="#ffffff"/>
+  </g>
+  <rect x="132" y="46" width="456" height="68" rx="28" fill="#22c55e"/>
+  <rect x="132" y="86" width="456" height="28" fill="#22c55e"/>
+  <circle cx="174" cy="81" r="18" fill="#ffffff" opacity="0.92"/>
+  <text x="208" y="78" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#ffffff">Calciforge</text>
+  <text x="208" y="98" font-family="Inter, Arial, sans-serif" font-size="12" fill="#dcfce7">model gateway</text>
+
+  <rect x="336" y="146" width="212" height="42" rx="18" fill="#dcfce7"/>
+  <text x="363" y="172" font-family="Inter, Arial, sans-serif" font-size="15" fill="#0f172a">!model list</text>
+
+  <rect x="172" y="214" width="376" height="158" rx="18" fill="#f1f5f9"/>
+  <text x="196" y="244" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Choose a model route</text>
+  <text x="196" y="273" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">Active: local-cloud-balanced</text>
+  <text x="196" y="299" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">Tap a route or type:</text>
+  <text x="196" y="323" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">!model use &lt;id&gt;</text>
+
+  <g font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="middle">
+    <rect x="172" y="390" width="176" height="42" rx="11" fill="#f0fdf4" stroke="#86efac"/>
+    <text x="260" y="415" fill="#15803d">qwen3.6 local</text>
+    <rect x="372" y="390" width="176" height="42" rx="11" fill="#f0fdf4" stroke="#86efac"/>
+    <text x="460" y="415" fill="#15803d">balanced</text>
+    <rect x="222" y="446" width="276" height="42" rx="11" fill="#f0fdf4" stroke="#86efac"/>
+    <text x="360" y="471" fill="#15803d">cloud coding fallback</text>
+  </g>
+
+  <text x="360" y="520" font-family="Inter, Arial, sans-serif" font-size="13" text-anchor="middle" fill="#64748b">Buttons call the same backend as text commands</text>
+</svg>

@@ -128,6 +128,10 @@ pre {
   line-height: 1.5;
 }
 pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+.channel-ui-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; margin: 1.2rem 0; }
+.channel-ui-grid figure { margin: 0; }
+.channel-ui-grid img { display: block; width: 100%; height: auto; border: 1px solid var(--calci-line); border-radius: 8px; background: #fafaf9; }
+.channel-ui-grid figcaption { margin-top: 0.45rem; color: var(--calci-stone-soft); font-size: 0.9rem; line-height: 1.4; }
 .muted { color: var(--calci-stone-soft); }
 hr { border: 0; border-top: 1px solid var(--calci-line); margin: 2.5rem 0; }
 footer {
@@ -638,6 +642,28 @@ the live schema in CI):
 - [Signal](channels/signal.html) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
 - [WhatsApp](channels/whatsapp.html) — embedded WhatsApp Web session
 - [Text/iMessage](channels/sms.html) — Linq webhook receiver for iMessage/RCS/SMS
+
+Calciforge treats channel UI and chat transport separately. You can use
+Telegram as a dependable control surface for agent/model selection and secret
+paste forms while carrying the main conversation in Matrix, WhatsApp, Signal,
+or another channel. State is keyed by identity, so a model or active-agent
+selection made in one channel applies to the same operator in other channels.
+
+See [Channel-Native UI](channel-ui.html) for visual examples of current
+Telegram buttons, bridge-safe Matrix text fallback, and the WhatsApp/RCS/iMessage
+capability targets. The examples are rendered mockups unless explicitly labeled
+as captured client screenshots.
+
+<div class="channel-ui-grid">
+  <figure>
+    <img src="assets/channel-ui-telegram-agent.svg" alt="Telegram agent selection buttons">
+    <figcaption>Use Telegram as a compact Calciforge control panel.</figcaption>
+  </figure>
+  <figure>
+    <img src="assets/channel-ui-matrix-fallback.svg" alt="Matrix text fallback selection">
+    <figcaption>Keep the conversation in a bridge-safe text channel.</figcaption>
+  </figure>
+</div>
 
 Agent backends, identities, and routing rules are documented in the
 [Agents, Identities, and Routing](agents.html) guide.

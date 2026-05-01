@@ -126,6 +126,18 @@ Use `ui_mode = "text"` in `[[channels]]` to force plain text for a channel;
 `ui_mode = "auto"` is reserved for channel-native affordances once the Matrix
 adapter can expose them without breaking bridged clients.
 
+You can still use a richer channel, such as Telegram, as the Calciforge control
+surface for agent/model selection while keeping Matrix as the main chat room.
+Selections are keyed by Calciforge identity and apply across that operator's
+channels.
+
+<div class="channel-ui-grid">
+  <figure>
+    <img src="../assets/channel-ui-matrix-fallback.svg" alt="Matrix text fallback for agent and model selection">
+    <figcaption>Matrix currently favors bridge-safe text fallback.</figcaption>
+  </figure>
+</div>
+
 Agent replies that include artifacts are uploaded through the Matrix media API
 and sent as native `m.image`, `m.audio`, `m.video`, or `m.file` events. If media
 upload fails, Calciforge sends the safe text fallback with artifact names and

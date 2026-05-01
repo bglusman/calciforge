@@ -8,6 +8,7 @@
       "arch": "x86_64-unknown-linux-gnu",
       "os": "linux",
       "services": ["clashd", "security-proxy"],
+      "security_proxy_bind": "0.0.0.0",
       "install_dir": "/usr/local/bin",
       "config_dir": "/etc/calciforge"
     },
@@ -19,6 +20,7 @@
       "arch": "x86_64-unknown-linux-gnu",
       "os": "linux",
       "services": ["clashd", "security-proxy", "calciforge"],
+      "security_proxy_bind": "127.0.0.1",
       "install_dir": "/usr/local/bin",
       "config_dir": "/etc/calciforge"
     },
@@ -30,6 +32,7 @@
       "arch": "aarch64-apple-darwin",
       "os": "macos",
       "services": ["clashd", "security-proxy"],
+      "security_proxy_bind": "127.0.0.1",
       "install_dir": "/usr/local/bin",
       "config_dir": "/Users/admin/.clash"
     }

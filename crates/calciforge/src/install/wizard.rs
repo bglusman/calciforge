@@ -241,7 +241,7 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
         // Adapter selection.
         let adapter_options = &[
             "zeroclaw          — ZeroClaw native (SSH-configurable)",
-            "openclaw-channel — OpenClaw Calciforge channel plugin (SSH-configurable)",
+            "openclaw-channel — OpenClaw Calciforge bridge plugin (SSH-configurable)",
             "openai-compat — OpenAI-compatible endpoint (endpoint-only)",
             "webhook      — Generic HTTP webhook (endpoint-only)",
             "cli          — Local binary (no network)",

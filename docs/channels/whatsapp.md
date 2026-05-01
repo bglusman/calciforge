@@ -71,6 +71,26 @@ Send `!ping` from an allowed WhatsApp number. Replies go to the transport
 `reply_target`, so direct chats and group chats reply to the original
 conversation.
 
+## Channel UI
+
+The embedded WhatsApp Web channel is text/media-first today. It should keep the
+same deterministic text commands as Matrix and Signal until the backend exposes
+WhatsApp interactive messages safely. If a future WhatsApp Business API or
+provider-backed channel supports lists or reply buttons, Calciforge can render
+the same agent/model choices natively while preserving text fallback.
+
+Operators can use Telegram as the Calciforge control surface for buttons while
+continuing the main chat in WhatsApp. Active agent/model selections are keyed by
+Calciforge identity, so choices made through Telegram apply to the same
+operator's WhatsApp route.
+
+<div class="channel-ui-grid">
+  <figure>
+    <img src="../assets/channel-ui-whatsapp-target.svg" alt="WhatsApp native selection target requiring a compatible backend">
+    <figcaption>Native WhatsApp lists/buttons are a backend-dependent target, not the embedded channel behavior today.</figcaption>
+  </figure>
+</div>
+
 ## Migration
 
 The legacy webhook fields are rejected for `kind = "whatsapp"`:

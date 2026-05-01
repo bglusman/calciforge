@@ -104,3 +104,19 @@ commands, and `!secret input NAME` / `!secret bulk` replies include an
 `Open paste form` URL button. The plain text command remains in every reply so
 operators can disable buttons with `ui_mode = "text"` without losing
 functionality.
+
+Telegram also works well as a Calciforge control surface even if the main agent
+conversation happens somewhere else. Because active agent/model choices are
+stored by Calciforge identity, a selection made with Telegram buttons applies
+to the same operator's Matrix, WhatsApp, Signal, or SMS route.
+
+<div class="channel-ui-grid">
+  <figure>
+    <img src="../assets/channel-ui-telegram-agent.svg" alt="Telegram agent selection buttons">
+    <figcaption>Agent selection with inline buttons.</figcaption>
+  </figure>
+  <figure>
+    <img src="../assets/channel-ui-telegram-model.svg" alt="Telegram model selection buttons">
+    <figcaption>Model route selection with the same backend as text commands.</figcaption>
+  </figure>
+</div>

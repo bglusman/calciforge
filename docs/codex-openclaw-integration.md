@@ -94,9 +94,11 @@ OpenClaw distinguishes three OpenAI-family paths:
 | `codex/gpt-5.4` | OpenClaw bundled Codex harness | You want OpenClaw to run an embedded Codex app-server turn. |
 
 For Calciforge, those routes normally sit behind an OpenClaw adapter. Prefer
-`openclaw-channel` when the OpenClaw Calciforge plugin is installed and can
-callback to Calciforge. Calciforge intentionally does not support OpenClaw
-agent chat through the OpenAI-compatible `/v1/chat/completions` endpoint.
+`openclaw-channel` when the Calciforge bridge plugin is installed in OpenClaw
+and can callback to Calciforge. The name is historical: Calciforge owns the
+human-facing channel, while OpenClaw owns the selected agent lane and runtime.
+Calciforge intentionally does not support OpenClaw agent chat through the
+OpenAI-compatible `/v1/chat/completions` endpoint.
 
 ```toml
 [[agents]]

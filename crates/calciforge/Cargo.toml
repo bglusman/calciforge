@@ -59,6 +59,7 @@ toml = "0.8"
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+url = "2"
 
 # Telegram
 teloxide = { version = "0.13", default-features = false, features = ["macros", "ctrlc_handler", "rustls"] }

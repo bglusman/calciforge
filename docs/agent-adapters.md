@@ -37,7 +37,7 @@ proxy, model-gateway, or future Calciforge API surfaces.
 |---|---|---|
 | Codex CLI | `kind = "codex-cli"`, `[[exec_models]]`, or future ACP via `codex-acp` | Good fit when the Unix account running Calciforge owns Codex credentials. Zed's Apache-2.0 `codex-acp` adapter is the better reference path for richer Codex sessions because it exposes ACP features such as images, tool-call permission requests, edit review, TODO lists, slash commands, MCP server forwarding, and Codex auth methods. Keep chat-facing agents conservative unless the channel is trusted. |
 | Claude Code | `kind = "cli"` or `acpx` | Use `claude -p` for simple subscription-backed prompt execution. Use `acpx` when ACP sessions are needed. |
-| OpenClaw | `openclaw-channel` | Preferred path for richer OpenClaw runtime, skills, plugins, provider routing, and slash commands. It talks to the Calciforge channel plugin inside OpenClaw, not to another Calciforge gateway. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
+| OpenClaw | `openclaw-channel` | Preferred path for richer OpenClaw runtime, skills, plugins, provider routing, and slash commands. It talks to the Calciforge bridge plugin inside OpenClaw, not to another Calciforge gateway. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
 | OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
 | Artifact-producing CLI | `kind = "artifact-cli"` | Prototype path for tools such as npcsh media workflows. Calciforge sends the task on stdin, exposes `{artifact_dir}` and `CALCIFORGE_ARTIFACT_DIR`, validates produced files, and returns a text fallback that names attachments without exposing local paths. Telegram and Matrix already use the richer internal envelope; native media upload can be added channel by channel. |
 | opencode | `acpx` or generic CLI | Model-agnostic terminal agent with a mature CLI/TUI surface. Prefer ACP when available. |
@@ -165,9 +165,9 @@ OpenClaw exposes several surfaces that look similar but behave differently:
   so Calciforge must not treat a bare `{ ok: true, runId }` response as an
   agent reply.
 - `POST /calciforge/inbound` plus the Calciforge reply callback is the intended
-  channel/plugin style integration. This route lives inside OpenClaw via the
-  Calciforge channel plugin. Prefer it when OpenClaw should see Calciforge
-  messages as native inbound channel turns.
+  bridge integration. This route lives inside OpenClaw via the Calciforge
+  plugin. Prefer it when Calciforge should own the human channel while
+  OpenClaw still sees each request as a native gateway/subagent turn.
 - `calciforge install` now treats OpenClaw as a first-class managed agent:
   the non-interactive `openclaw-channel` spec requires inbound auth,
   `reply_webhook`, and reply auth, then installs
@@ -188,7 +188,7 @@ Operational guidance:
   endpoint.
 - Treat any remaining `openclaw-http` config as stale and broken. Run
   `calciforge doctor` after install or config edits to catch it before startup.
-- Treat outbound security as a separate axis from channel routing. The channel
+- Treat outbound security as a separate axis from channel routing. The bridge
   plugin gets messages into OpenClaw and replies back out; OpenClaw's own
   provider/tool egress still needs a tested proxy, MCP/fetch/tool integration,
   or container/VM boundary when network enforcement matters.
