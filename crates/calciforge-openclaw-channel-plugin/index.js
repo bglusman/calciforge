@@ -152,7 +152,7 @@ async function handleInboundRequest({
     return true;
   }
 
-  const { message, sessionKey, channel, replyTo, agentId } = body;
+  const { message, sessionKey, requestId, channel, replyTo, agentId } = body;
   if (!message || !sessionKey) {
     json(res, 400, { error: "message and sessionKey are required" });
     return true;
@@ -204,6 +204,7 @@ async function handleInboundRequest({
           replyWebhook,
           replyAuthToken,
           sessionKey,
+          requestId,
           message: recovered.replyText,
           attachments: recovered.attachments,
           channel,
@@ -217,6 +218,7 @@ async function handleInboundRequest({
         replyWebhook,
         replyAuthToken,
         sessionKey,
+        requestId,
         message: `OpenClaw run ${result.status}`,
         channel,
         replyTo,
@@ -238,6 +240,7 @@ async function handleInboundRequest({
       replyWebhook,
       replyAuthToken,
       sessionKey,
+      requestId,
       message: reply.text,
       attachments,
       channel,
@@ -250,6 +253,7 @@ async function handleInboundRequest({
       replyWebhook,
       replyAuthToken,
       sessionKey,
+      requestId,
       message: `OpenClaw dispatch failed: ${err.message}`,
       channel,
       replyTo,
@@ -463,6 +467,7 @@ async function deliverReply({
   replyWebhook,
   replyAuthToken,
   sessionKey,
+  requestId,
   message,
   attachments,
   channel,
@@ -476,6 +481,9 @@ async function deliverReply({
 
   try {
     const payload = { sessionKey, message, channel, to: replyTo };
+    if (requestId) {
+      payload.requestId = requestId;
+    }
     if (attachments?.length) {
       payload.attachments = attachments;
     }

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex, Notify};
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use super::{AdapterError, AgentAdapter, DispatchContext};
 
@@ -32,10 +33,16 @@ const MAX_REPLY_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
 
 type ReplyResult = Result<OutboundMessage, String>;
 
-/// Correlates `sessionKey` callbacks to pending dispatch requests.
+#[derive(Clone)]
+struct PendingReply {
+    request_id: String,
+    tx: Arc<Mutex<Option<oneshot::Sender<ReplyResult>>>>,
+}
+
+/// Correlates OpenClaw callbacks to pending dispatch requests.
 #[derive(Clone, Default)]
 pub struct ReplyRouter {
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<ReplyResult>>>>,
+    pending: Arc<Mutex<HashMap<String, PendingReply>>>,
 }
 
 impl ReplyRouter {
@@ -45,16 +52,38 @@ impl ReplyRouter {
         }
     }
 
-    pub async fn insert(&self, session_key: String, tx: oneshot::Sender<ReplyResult>) {
-        self.pending.lock().await.insert(session_key, tx);
+    pub async fn insert(
+        &self,
+        request_id: String,
+        session_key: String,
+        tx: oneshot::Sender<ReplyResult>,
+    ) {
+        let entry = PendingReply {
+            request_id: request_id.clone(),
+            tx: Arc::new(Mutex::new(Some(tx))),
+        };
+        let mut pending = self.pending.lock().await;
+        pending.insert(request_id, entry.clone());
+        pending.insert(session_key, entry);
     }
 
-    pub async fn take(&self, session_key: &str) -> Option<oneshot::Sender<ReplyResult>> {
-        self.pending.lock().await.remove(session_key)
+    pub async fn take(&self, correlation_key: &str) -> Option<oneshot::Sender<ReplyResult>> {
+        let entry = {
+            let mut pending = self.pending.lock().await;
+            let entry = pending.remove(correlation_key)?;
+            pending.retain(|_, candidate| candidate.request_id != entry.request_id);
+            entry
+        };
+
+        let tx = entry.tx.lock().await.take();
+        tx
     }
 
-    pub async fn remove(&self, session_key: &str) {
-        self.pending.lock().await.remove(session_key);
+    pub async fn remove(&self, request_id: &str) {
+        self.pending
+            .lock()
+            .await
+            .retain(|_, entry| entry.request_id != request_id);
     }
 }
 
@@ -69,6 +98,8 @@ struct ReplyServerState {
 struct ReplyPayload {
     #[serde(rename = "sessionKey")]
     session_key: String,
+    #[serde(default, rename = "requestId")]
+    request_id: Option<String>,
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
@@ -206,7 +237,13 @@ async fn handle_reply(
         }
     }
 
-    if let Some(tx) = state.router.take(&payload.session_key).await {
+    let correlation_key = payload
+        .request_id
+        .as_deref()
+        .unwrap_or(&payload.session_key)
+        .to_string();
+
+    if let Some(tx) = state.router.take(&correlation_key).await {
         match payload.into_outbound_message() {
             Ok(message) => {
                 let _ = tx.send(Ok(message));
@@ -218,7 +255,11 @@ async fn handle_reply(
             }
         }
     } else {
-        warn!(session_key = %payload.session_key, "openclaw-channel reply without pending request");
+        warn!(
+            session_key = %payload.session_key,
+            correlation_key = %correlation_key,
+            "openclaw-channel reply without pending request"
+        );
         (StatusCode::ACCEPTED, Json(AckResponse { ok: true }))
     }
 }
@@ -284,6 +325,8 @@ struct InboundPayload<'a> {
     message: &'a str,
     #[serde(rename = "sessionKey")]
     session_key: String,
+    #[serde(rename = "requestId")]
+    request_id: String,
     sender: &'a str,
     #[serde(rename = "channel")]
     channel: Option<&'a str>,
@@ -315,6 +358,7 @@ impl OpenClawChannelAdapter {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(timeout)
+            .no_proxy()
             .build()
             .expect("reqwest client");
 
@@ -414,16 +458,18 @@ impl AgentAdapter for OpenClawChannelAdapter {
 
         let sender = ctx.sender.unwrap_or("unknown");
         let session_key = self.session_key_for(sender);
+        let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel::<ReplyResult>();
         self.reply_server
             .shared
             .router
-            .insert(session_key.clone(), tx)
+            .insert(request_id.clone(), session_key.clone(), tx)
             .await;
 
         let body = InboundPayload {
             message: ctx.message,
             session_key: session_key.clone(),
+            request_id: request_id.clone(),
             sender,
             // DispatchContext does not currently carry channel-specific routing metadata.
             channel: None,
@@ -432,7 +478,13 @@ impl AgentAdapter for OpenClawChannelAdapter {
         };
 
         let url = self.inbound_url();
-        debug!(endpoint = %url, sender, session_key = %session_key, "openclaw-channel dispatch");
+        debug!(
+            endpoint = %url,
+            sender,
+            session_key = %session_key,
+            request_id = %request_id,
+            "openclaw-channel dispatch"
+        );
 
         let mut req = self.client.post(&url).json(&body);
         if !self.auth_token.is_empty() {
@@ -450,7 +502,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
         let inbound_resp = match inbound_resp {
             Ok(r) => r,
             Err(e) => {
-                self.reply_server.shared.router.remove(&session_key).await;
+                self.reply_server.shared.router.remove(&request_id).await;
                 return Err(e);
             }
         };
@@ -458,7 +510,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
         if !inbound_resp.status().is_success() {
             let status = inbound_resp.status();
             let body = inbound_resp.text().await.unwrap_or_default();
-            self.reply_server.shared.router.remove(&session_key).await;
+            self.reply_server.shared.router.remove(&request_id).await;
             return Err(AdapterError::Protocol(format!(
                 "openclaw-channel inbound HTTP {}: {}",
                 status, body
@@ -469,13 +521,13 @@ impl AgentAdapter for OpenClawChannelAdapter {
             Ok(Ok(Ok(reply))) => Ok(reply),
             Ok(Ok(Err(e))) => Err(AdapterError::Protocol(e)),
             Ok(Err(_)) => {
-                self.reply_server.shared.router.remove(&session_key).await;
+                self.reply_server.shared.router.remove(&request_id).await;
                 Err(AdapterError::Protocol(
-                    "openclaw-channel reply receiver dropped".to_string(),
+                    "openclaw-channel reply correlation dropped".to_string(),
                 ))
             }
             Err(_) => {
-                self.reply_server.shared.router.remove(&session_key).await;
+                self.reply_server.shared.router.remove(&request_id).await;
                 Err(AdapterError::Timeout)
             }
         }
@@ -526,9 +578,15 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            let request_id = body
+                .get("requestId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
 
             let mut reply = serde_json::json!({
                 "sessionKey": session_key,
+                "requestId": request_id,
                 "message": "reply from openclaw",
                 "channel": "whatsapp",
                 "to": "+15555550001"
@@ -537,7 +595,12 @@ mod tests {
                 reply["attachments"] = attachments;
             }
 
-            let mut req = reqwest::Client::new().post(webhook).json(&reply);
+            let mut req = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("test reqwest client")
+                .post(webhook)
+                .json(&reply);
 
             if let Some(token) = state.reply_auth {
                 req = req.bearer_auth(token);
@@ -587,6 +650,41 @@ mod tests {
         )
     }
 
+    static ENV_LOCK: TokioMutex<()> = TokioMutex::const_new(());
+
+    struct EnvRestore {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvRestore {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: this test serializes its own environment mutations. The
+            // bogus proxy is scoped by restore guards and the test suite keeps
+            // local HTTP clients explicit about proxy behavior.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            // SAFETY: see EnvRestore::set.
+            unsafe {
+                match &self.value {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_dispatch_sends_expected_inbound_payload() {
         let captured = Arc::new(TokioMutex::new(None));
@@ -632,6 +730,12 @@ mod tests {
             body.get("sessionKey").and_then(|v| v.as_str()),
             Some("calciforge:main:brian")
         );
+        let request_id = body
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .expect("requestId should be present");
+        assert_ne!(request_id, "calciforge:main:brian");
+        uuid::Uuid::parse_str(request_id).expect("requestId should be a UUID");
         assert_eq!(body.get("sender").and_then(|v| v.as_str()), Some("brian"));
         assert_eq!(body.get("agentId").and_then(|v| v.as_str()), Some("main"));
     }
@@ -662,6 +766,218 @@ mod tests {
             .expect("dispatch should return reply callback");
 
         assert_eq!(reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_ignores_ambient_proxy_for_agent_control_plane() {
+        let _env_lock = ENV_LOCK.lock().await;
+        let _http_proxy = EnvRestore::set("HTTP_PROXY", "http://127.0.0.1:9");
+        let _http_proxy_lower = EnvRestore::set("http_proxy", "http://127.0.0.1:9");
+        let _no_proxy = EnvRestore::set("NO_PROXY", "");
+        let _no_proxy_lower = EnvRestore::set("no_proxy", "");
+
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: None,
+            reply_attachments: None,
+        };
+        let app = Router::new()
+            .route("/calciforge/inbound", post(inbound_handler))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inbound_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+        let reply = adapter
+            .dispatch_with_context(DispatchContext {
+                message: "route this without ambient proxy",
+                sender: Some("renee"),
+                model_override: None,
+                session: None,
+            })
+            .await
+            .expect("agent control-plane HTTP must bypass ambient proxy settings");
+
+        assert_eq!(reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_accepts_legacy_session_key_only_callback() {
+        #[derive(Clone)]
+        struct LegacyState {
+            reply_webhook: String,
+        }
+
+        async fn legacy_inbound_handler(
+            State(state): State<LegacyState>,
+            Json(body): Json<Value>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            let session_key = body
+                .get("sessionKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let reply = serde_json::json!({
+                "sessionKey": session_key,
+                "message": "legacy reply",
+            });
+
+            tokio::spawn(async move {
+                let _ = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("test reqwest client")
+                    .post(state.reply_webhook)
+                    .json(&reply)
+                    .send()
+                    .await;
+            });
+
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+        }
+
+        let reply_port = free_port();
+        let app = Router::new()
+            .route("/calciforge/inbound", post(legacy_inbound_handler))
+            .with_state(LegacyState {
+                reply_webhook: format!("http://127.0.0.1:{reply_port}/hooks/reply"),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inbound_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+        let reply = adapter
+            .dispatch_with_context(DispatchContext {
+                message: "route this",
+                sender: Some("renee"),
+                model_override: None,
+                session: None,
+            })
+            .await
+            .expect("legacy callback should still route by sessionKey");
+
+        assert_eq!(reply, "legacy reply");
+    }
+
+    #[tokio::test]
+    async fn test_overlapping_dispatches_same_session_are_correlated_by_request_id() {
+        #[derive(Clone)]
+        struct OverlapState {
+            reply_webhook: String,
+        }
+
+        async fn overlap_inbound_handler(
+            State(state): State<OverlapState>,
+            Json(body): Json<Value>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            let session_key = body
+                .get("sessionKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let request_id = body
+                .get("requestId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let message = body
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let webhook = state.reply_webhook.clone();
+            tokio::spawn(async move {
+                if message == "first" {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+
+                let reply = serde_json::json!({
+                    "sessionKey": session_key,
+                    "requestId": request_id,
+                    "message": format!("reply to {message}"),
+                });
+                let _ = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("test reqwest client")
+                    .post(webhook)
+                    .json(&reply)
+                    .send()
+                    .await;
+            });
+
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+        }
+
+        let reply_port = free_port();
+        let overlap_state = OverlapState {
+            reply_webhook: format!("http://127.0.0.1:{reply_port}/hooks/reply"),
+        };
+        let app = Router::new()
+            .route("/calciforge/inbound", post(overlap_inbound_handler))
+            .with_state(overlap_state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inbound_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = Arc::new(make_adapter(
+            format!("http://127.0.0.1:{inbound_port}"),
+            reply_port,
+            None,
+        ));
+        let first = {
+            let adapter = adapter.clone();
+            tokio::spawn(async move {
+                adapter
+                    .dispatch_with_context(DispatchContext {
+                        message: "first",
+                        sender: Some("brian"),
+                        model_override: None,
+                        session: None,
+                    })
+                    .await
+            })
+        };
+        let second = {
+            let adapter = adapter.clone();
+            tokio::spawn(async move {
+                adapter
+                    .dispatch_with_context(DispatchContext {
+                        message: "second",
+                        sender: Some("brian"),
+                        model_override: None,
+                        session: None,
+                    })
+                    .await
+            })
+        };
+
+        let (first_reply, second_reply) = tokio::join!(first, second);
+        assert_eq!(
+            first_reply
+                .expect("first task should not panic")
+                .expect("first dispatch should receive its own reply"),
+            "reply to first"
+        );
+        assert_eq!(
+            second_reply
+                .expect("second task should not panic")
+                .expect("second dispatch should receive its own reply"),
+            "reply to second"
+        );
     }
 
     #[tokio::test]
