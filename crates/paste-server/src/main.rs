@@ -5,7 +5,7 @@
 //! Two modes:
 //!   - Single (default): `paste-server NAME [DESCRIPTION]`
 //!     — one secret, single-line input.
-//!   - Bulk: `paste-server --bulk LABEL [DESCRIPTION]`
+//!   - Bulk: `paste-server --bulk [LABEL] [DESCRIPTION]`
 //!     — multi-line `.env` dump, per-key result page.
 
 use paste_server::{PasteConfig, spawn_bulk_request, spawn_request};
@@ -26,10 +26,15 @@ async fn main() -> anyhow::Result<()> {
     if bulk {
         args.remove(0);
     }
-    let name_or_label = args
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("usage: paste-server [--bulk] NAME [DESCRIPTION]"))?;
+    let name_or_label = if bulk {
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| "env-import".to_string())
+    } else {
+        args.first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("usage: paste-server [--bulk] NAME [DESCRIPTION]"))?
+    };
     let description = args.get(1).cloned().unwrap_or_default();
 
     // Demo escape hatch: PASTE_INSECURE_NO_ORIGIN=1 disables the

@@ -324,6 +324,10 @@ pub struct ChannelConfig {
     pub bot_token_file: Option<String>,
     #[serde(default)]
     pub enabled: bool,
+    /// Channel UI affordance mode. `auto` enables native controls where the
+    /// channel adapter has a safe fallback; `text` forces plain-text replies.
+    #[serde(default)]
+    pub ui_mode: ChannelUiMode,
 
     // --- Matrix-specific fields ---
     /// Matrix homeserver URL, e.g. `"https://matrix.org"`.
@@ -466,6 +470,26 @@ pub struct ChannelConfig {
     /// values do not land in chat/provider history.
     #[serde(default)]
     pub allow_chat_secret_set: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelUiMode {
+    #[default]
+    Auto,
+    Text,
+}
+
+pub fn channel_allows_rich_ui(config: &CalciforgeConfig, kind: &str) -> bool {
+    let mut matches = config
+        .channels
+        .iter()
+        .filter(|c| c.kind == kind && c.enabled);
+
+    match (matches.next(), matches.next()) {
+        (Some(channel), None) => channel.ui_mode != ChannelUiMode::Text,
+        _ => false,
+    }
 }
 
 /// Returns true when exactly one enabled channel of this kind explicitly opts
@@ -1376,6 +1400,51 @@ enabled = true
         .expect("parse duplicate channel kind config");
 
         assert!(!channel_allows_chat_secret_set(&cfg, "telegram"));
+    }
+
+    #[test]
+    fn rich_ui_defaults_to_auto_and_can_be_disabled_per_channel() {
+        let cfg: CalciforgeConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+
+[[channels]]
+kind = "matrix"
+enabled = true
+ui_mode = "text"
+"#,
+        )
+        .expect("parse channel UI config");
+
+        assert!(channel_allows_rich_ui(&cfg, "telegram"));
+        assert!(!channel_allows_rich_ui(&cfg, "matrix"));
+    }
+
+    #[test]
+    fn rich_ui_fails_closed_for_duplicate_channel_kind() {
+        let cfg: CalciforgeConfig = toml::from_str(
+            r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+
+[[channels]]
+kind = "telegram"
+enabled = true
+ui_mode = "text"
+"#,
+        )
+        .expect("parse duplicate channel UI config");
+
+        assert!(!channel_allows_rich_ui(&cfg, "telegram"));
     }
 
     #[test]

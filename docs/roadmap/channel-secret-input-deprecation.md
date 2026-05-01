@@ -10,9 +10,10 @@ Status: proposed direction
 Calciforge should treat chat-based secret value entry as a last-resort
 path, not as the normal onboarding flow. The preferred paths are:
 
-- `!secret input NAME` or `!secret bulk LABEL` (`!secure` aliases also
+- `!secret input NAME` or `!secret bulk` (`!secure` aliases also
   work), which returns a short-lived LAN paste URL without sending the
-  value through chat
+  value through chat. Bulk paste accepts `.env`-style `KEY=VALUE`
+  lines; each key becomes its own stored secret.
 - `paste-server NAME` or `paste-server --bulk ...` for short-lived
   local browser input
 - `fnox set NAME` on the host, when fnox is installed/configured

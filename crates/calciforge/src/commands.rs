@@ -321,6 +321,94 @@ impl CommandHandler {
             .and_then(|manager| manager.active_for_identity(identity_id))
     }
 
+    /// Return agent choices the identity may activate, with display labels.
+    pub fn agent_choices_for_identity(&self, identity_id: &str) -> Vec<(String, String)> {
+        let Some(routing_rule) = self
+            .config
+            .routing
+            .iter()
+            .find(|r| r.identity == identity_id)
+        else {
+            return Vec::new();
+        };
+
+        let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
+            self.config
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect()
+        } else {
+            routing_rule
+                .allowed_agents
+                .iter()
+                .map(String::as_str)
+                .collect()
+        };
+
+        allowed
+            .into_iter()
+            .filter_map(|agent_id| {
+                let agent = self
+                    .config
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == agent_id)?;
+                let label = agent
+                    .registry
+                    .as_ref()
+                    .and_then(|registry| registry.display_name.as_deref())
+                    .unwrap_or(&agent.id)
+                    .to_string();
+                Some((agent.id.clone(), label))
+            })
+            .collect()
+    }
+
+    /// Return model choices that can be activated with `!model use <id>`.
+    pub fn activatable_model_choices(&self) -> Vec<(String, String)> {
+        let mut choices = Vec::new();
+        if let Some(manager) = self.alloy_manager.as_ref() {
+            choices.extend(
+                manager
+                    .list()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (alloy)", model.name))),
+            );
+            choices.extend(
+                manager
+                    .list_cascades()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (cascade)", model.name))),
+            );
+            choices.extend(
+                manager
+                    .list_dispatchers()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (dispatcher)", model.name))),
+            );
+            choices.extend(
+                manager
+                    .list_exec_models()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (exec)", model.name))),
+            );
+        }
+        if let Some(manager) = self.local_manager.as_ref() {
+            choices.extend(manager.models().iter().map(|model| {
+                (
+                    model.id.clone(),
+                    model
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| format!("{} (local)", model.id)),
+                )
+            }));
+        }
+        choices.sort_by(|left, right| left.0.cmp(&right.0));
+        choices
+    }
+
     /// Record that a message was routed to an agent.
     ///
     /// Call this after a successful agent dispatch with the measured latency.
@@ -1136,7 +1224,7 @@ impl CommandHandler {
     /// Subcommands:
     ///   - `!secure set NAME=value`  — store a secret via chat (legacy/caution)
     ///   - `!secure input NAME` / `!secret input NAME` — create a paste URL
-    ///   - `!secure bulk LABEL` / `!secret bulk LABEL` — create a `.env` paste URL
+    ///   - `!secure bulk [description]` / `!secret bulk [description]` — create a `.env` paste URL
     ///   - `!secure list` / `!secret list`             — list stored secret names
     ///   - `!secure help` / `!secret help`             — usage string
     ///
@@ -1562,7 +1650,7 @@ fn secure_help() -> String {
     [
         "!secret subcommands (alias: !secure):",
         "  !secret input NAME [desc] — create a one-shot local-network paste link",
-        "  !secret bulk LABEL [desc] — create a one-shot local-network .env paste link",
+        "  !secret bulk [desc]     — create a one-shot local-network .env paste link",
         "  !secret list              — list stored secret names (not values)",
         "  !secret help              — show this help",
         "",
@@ -1592,15 +1680,12 @@ fn secure_help() -> String {
 }
 
 async fn secure_input(rest: &str, bulk: bool) -> String {
-    let mut parts = rest.split_whitespace();
-    let Some(name_or_label) = parts.next() else {
-        return if bulk {
-            "⚠️ Usage: `!secret bulk LABEL [description]`".to_string()
-        } else {
-            "⚠️ Usage: `!secret input NAME [description]`".to_string()
-        };
+    let (name_or_label, description) = match secure_input_target(rest, bulk) {
+        Ok(target) => target,
+        Err(usage) => {
+            return usage;
+        }
     };
-    let description = parts.collect::<Vec<_>>().join(" ");
 
     let mut command = tokio::process::Command::new("paste-server");
     if bulk {
@@ -1664,6 +1749,26 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
          Open it from a browser that can reach the Calciforge host. The link expires quickly and stores through the configured local secret backend. \
          For phone/off-network use, use a short-lived authenticated proxy/tunnel; do not expose this paste server directly to the open internet."
     )
+}
+
+fn secure_input_target(rest: &str, bulk: bool) -> Result<(String, String), String> {
+    if bulk {
+        let description = rest.trim();
+        return Ok((
+            "env-import".to_string(),
+            if description.is_empty() {
+                "Paste .env lines; each KEY=VALUE line becomes its own secret.".to_string()
+            } else {
+                description.to_string()
+            },
+        ));
+    }
+
+    let mut parts = rest.split_whitespace();
+    let Some(name) = parts.next() else {
+        return Err("⚠️ Usage: `!secret input NAME [description]`".to_string());
+    };
+    Ok((name.to_string(), parts.collect::<Vec<_>>().join(" ")))
 }
 
 fn configure_paste_server_env(command: &mut tokio::process::Command) {
@@ -2865,6 +2970,34 @@ mod tests {
             help.contains("CALCIFORGE_PASTE_PUBLIC_BASE_URL"),
             "help should name the reverse-proxy/tunnel override: {help}"
         );
+        assert!(
+            help.contains("!secret bulk [desc]"),
+            "bulk paste should not require an abstract label in chat help: {help}"
+        );
+        assert!(
+            !help.contains("!secret bulk LABEL"),
+            "chat help should not expose LABEL as a required concept: {help}"
+        );
+    }
+
+    #[test]
+    fn secure_bulk_uses_default_label_and_env_description() {
+        let (label, description) = secure_input_target("", true).expect("bulk target");
+
+        assert_eq!(label, "env-import");
+        assert!(
+            description.contains("KEY=VALUE"),
+            "default bulk description should explain .env semantics: {description}"
+        );
+    }
+
+    #[test]
+    fn secure_bulk_treats_remainder_as_description_not_required_label() {
+        let (label, description) =
+            secure_input_target("GitHub project secrets", true).expect("bulk target");
+
+        assert_eq!(label, "env-import");
+        assert_eq!(description, "GitHub project secrets");
     }
 
     #[test]

@@ -55,6 +55,7 @@ Optional fields:
 | Field | Default | Description |
 |---|---|---|
 | `scan_messages` | `false` | Enable inbound adversarial content scanning via the security proxy |
+| `ui_mode` | `"auto"` | Enable Telegram inline buttons for supported choices such as agent/model selection and paste-form links. Set `"text"` to force plain text replies. |
 | `allow_chat_secret_set` | `false` | Allow `!secret set NAME=value` / `!secure set NAME=value` via Telegram chat (not recommended — the value appears in chat history and provider logs) |
 
 ## Step 3: Identity config
@@ -95,3 +96,11 @@ Agent replies that include artifacts are sent through Telegram's native media
 APIs: images are sent as photos, and other artifact types are sent as documents.
 If native media delivery fails, Calciforge sends the safe text fallback with
 artifact names and sizes instead of exposing local artifact paths.
+
+When `ui_mode = "auto"`, Telegram replies can include inline buttons for
+bounded channel-native actions. `!agent list` and `!model list` show buttons
+that select an agent/model through the same backend handlers as the text
+commands, and `!secret input NAME` / `!secret bulk` replies include an
+`Open paste form` URL button. The plain text command remains in every reply so
+operators can disable buttons with `ui_mode = "text"` without losing
+functionality.

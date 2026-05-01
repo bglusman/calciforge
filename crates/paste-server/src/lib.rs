@@ -503,6 +503,7 @@ async fn get_bulk_form(
 
 #[derive(Deserialize)]
 struct BulkSubmitForm {
+    label: Option<String>,
     dump: String,
 }
 
@@ -626,7 +627,14 @@ async fn post_bulk_submit(
         let _ = tx.send(());
     }
 
-    Html(render_bulk_results(&req.label, &results)).into_response()
+    let result_label = form
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&req.label);
+
+    Html(render_bulk_results(result_label, &results)).into_response()
 }
 
 fn is_valid_name(name: &str) -> bool {
@@ -990,7 +998,7 @@ fn render_bulk_form(label: &str, description: &str, token: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Bulk paste — {label}</title>
 <style>body {{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1rem;color:#1a1a1a}}
-h1 {{font-size:1.2rem}} textarea {{width:100%;min-height:280px;padding:.6rem;font-family:ui-monospace,Menlo,monospace;font-size:.95rem;border:1px solid #888;border-radius:4px}}
+h1 {{font-size:1.2rem}} label {{display:block;margin:.8rem 0 .3rem}} input[type=text] {{width:100%;padding:.6rem;font-size:1rem;border:1px solid #888;border-radius:4px}} textarea {{width:100%;min-height:280px;padding:.6rem;font-family:ui-monospace,Menlo,monospace;font-size:.95rem;border:1px solid #888;border-radius:4px}}
 button {{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-radius:4px;background:#0a6;color:#fff;cursor:pointer}}
 .warn {{background:#ffe;border:1px solid #cc8;padding:.6rem;border-radius:4px;font-size:.9rem;margin-top:1rem}}
 .help {{color:#555;font-size:.9rem;margin:.4rem 0 .8rem}}</style>
@@ -998,6 +1006,8 @@ button {{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-rad
 <h1>Bulk-set secrets — <code>{label}</code></h1>
 <p>{description}</p>
 <form method="POST" action="/bulk/{token}">
+<label>Import label:</label>
+<input type="text" name="label" value="{label}" autocomplete="off">
 <label>Paste a <code>.env</code>-style dump. One <code>KEY=VALUE</code> per line. Comments (<code>#</code>) and blank lines are ignored. <code>export KEY=…</code> prefixes are stripped. Surrounding quotes are stripped from values.</label>
 <p class="help">By default, existing secrets are NOT overwritten — they'll appear in the result page as <em>already exists</em>. To intentionally rotate, append <code>?update=1</code> to this URL.</p>
 <textarea name="dump" autofocus required placeholder="DATABASE_URL=postgres://localhost/app
@@ -1596,6 +1606,20 @@ mod tests {
     }
 
     // ── Bulk-paste tests ──────────────────────────────────────────────
+
+    #[test]
+    fn bulk_form_has_label_field_and_key_value_guidance() {
+        let html = render_bulk_form("env-import", "Project secrets", "abc123");
+
+        assert!(
+            html.contains("name=\"label\""),
+            "bulk form should let users rename the import batch in the browser: {html}"
+        );
+        assert!(
+            html.contains("One <code>KEY=VALUE</code> per line"),
+            "bulk form should explain that each .env key becomes a secret: {html}"
+        );
+    }
 
     /// Pure-function test: the .env parser should skip blanks and
     /// `#` comments, accept `export KEY=…` prefixes, and strip

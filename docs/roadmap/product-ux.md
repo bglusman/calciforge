@@ -80,6 +80,13 @@ but model richer controls as optional channel capabilities:
 - State signals: reactions, read receipts, typing indicators, status
   updates, or pinned summaries when those affordances exist and do not
   leak sensitive information.
+
+Expose these capabilities through configuration, not channel assumptions.
+`ui_mode = "auto"` can enable safe native controls for a direct channel while
+`ui_mode = "text"` keeps bridge-heavy setups, such as WhatsApp through Matrix
+or Beeper, on the plain text interface. Button presses should always call the
+same command handlers as text input so both modes stay behaviorally identical.
+
 - Forms/deep links: local web forms for secret input, policy review, or
   dispatcher configuration when chat controls are too limited.
 
