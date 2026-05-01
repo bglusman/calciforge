@@ -27,6 +27,7 @@ CLAUDE_DIR="$HOME/.claude"
 CALCIFORGE_CONFIG_HOME="${CALCIFORGE_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/calciforge}"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
+SECURITY_PROXY_BIND="${SECURITY_PROXY_BIND:-127.0.0.1}"
 SECURITY_PROXY_URL="${SECURITY_PROXY_URL:-http://127.0.0.1:${SECURITY_PROXY_PORT}}"
 SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
 SECURITY_PROXY_MITM_ENABLED="${SECURITY_PROXY_MITM_ENABLED:-true}"
@@ -319,6 +320,15 @@ die()  { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
 hdr()  { echo -e "\n${CYAN}━━ $* ━━${NC}"; }
 
 agent_enabled() { [[ ",$AGENTS," == *",$1,"* ]]; }
+
+validate_security_proxy_bind() {
+    local value="$1" label="$2"
+    [[ -n "$value" ]] || die "$label must not be empty"
+    [[ "$value" =~ ^[A-Za-z0-9_.:-]+$ ]] || \
+        die "$label contains unsupported characters; use a host or IP such as 127.0.0.1 or 0.0.0.0"
+}
+
+validate_security_proxy_bind "$SECURITY_PROXY_BIND" "SECURITY_PROXY_BIND"
 
 if [[ "$NODES_ONLY" != "true" ]] && [[ -e /etc/pve/.version || -d /etc/pve/nodes ]]; then
     die "refusing to install Calciforge/OpenClaw directly on a Proxmox host node; target a VM/LXC guest instead"
@@ -988,6 +998,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>ProgramArguments</key><array><string>${BIN_DIR}/security-proxy</string></array>
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
+        <key>SECURITY_PROXY_BIND</key><string>${SECURITY_PROXY_BIND}</string>
         <key>SECURITY_PROXY_MITM_ENABLED</key><string>${SECURITY_PROXY_MITM_ENABLED}</string>
         <key>SECURITY_PROXY_CA_CERT</key><string>${SECURITY_PROXY_CA_CERT}</string>
         <key>SECURITY_PROXY_CA_KEY</key><string>${SECURITY_PROXY_CA_KEY}</string>
@@ -1014,6 +1025,7 @@ After=network.target
 Type=simple
 ExecStart=${BIN_DIR}/security-proxy
 Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
+Environment=SECURITY_PROXY_BIND=${SECURITY_PROXY_BIND}
 Environment=SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}
 Environment=SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}
 Environment=SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}
@@ -1331,11 +1343,11 @@ if [[ -n "$NODES_FILE" ]]; then
     command -v python3 &>/dev/null || die "python3 required for node deployment"
 
     mkdir -p "$(dirname "$INSTALL_NODES_STATE")"
-    python3 - "$NODES_FILE" "$INSTALL_NODES_STATE" <<'PYEOF'
+    python3 - "$NODES_FILE" "$INSTALL_NODES_STATE" "$SECURITY_PROXY_BIND" <<'PYEOF'
 import json
 import sys
 
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, default_bind = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(src) as f:
     data = json.load(f)
 nodes = []
@@ -1350,6 +1362,7 @@ for node in data.get("nodes", []):
         "services": node.get("services", ["clashd", "security-proxy"]),
         "install_dir": node.get("install_dir", "/usr/local/bin"),
         "config_dir": node.get("config_dir", "/etc/calciforge"),
+        "security_proxy_bind": node.get("security_proxy_bind", default_bind),
     })
 with open(dst, "w") as f:
     json.dump({"nodes": nodes}, f, indent=2)
@@ -1678,7 +1691,7 @@ REMOTE_PREFLIGHT
     # ── deploy one service to one node ───────────────────────────────────────
     deploy_service() {
         local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" os="$6"
-        local bin="$7" install_dir="$8" config_dir="$9"
+        local bin="$7" install_dir="$8" config_dir="$9" security_proxy_bind="${10:-127.0.0.1}"
 
         local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
         [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
@@ -1808,7 +1821,7 @@ REMOTE_MITM_CA
             local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
-                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
             exec_args=""
@@ -1843,6 +1856,7 @@ REMOTE_MITM_CA
             fi
             if [[ "$bin" == "security-proxy" ]]; then
                 launchd_env+=(
+                    "SECURITY_PROXY_BIND=${security_proxy_bind}"
                     "SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}"
                     "SECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}"
                     "SECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}"
@@ -1860,8 +1874,9 @@ REMOTE_MITM_CA
     }
 
     # ── iterate nodes from JSON ───────────────────────────────────────────────
-    python3 - "$NODES_FILE" <<'PYEOF' | while IFS='|' read -r name host user ssh_key arch os services install_dir config_dir; do
+    python3 - "$NODES_FILE" "$SECURITY_PROXY_BIND" <<'PYEOF' | while IFS='|' read -r name host user ssh_key arch os services install_dir config_dir security_proxy_bind; do
 import json, sys
+default_bind = sys.argv[2]
 with open(sys.argv[1]) as f:
     data = json.load(f)
 for n in data.get("nodes", []):
@@ -1875,10 +1890,12 @@ for n in data.get("nodes", []):
         ",".join(n.get("services", ["clashd","security-proxy"])),
         n.get("install_dir", "/usr/local/bin"),
         n.get("config_dir", "/etc/calciforge"),
+        n.get("security_proxy_bind", default_bind),
     ]))
 PYEOF
         echo ""
         echo "  Node: $name ($user@$host, $arch, $os)"
+        validate_security_proxy_bind "$security_proxy_bind" "security_proxy_bind for node $name"
         preflight_node "$name" "$host" "$user" "$ssh_key" "$os" "$services" "$install_dir" "$config_dir"
         ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" "$config_dir" || \
             warn "  [$name] fnox not ready — secret resolution may fail on that node"
@@ -1888,7 +1905,7 @@ PYEOF
         IFS=',' read -ra svc_list <<< "$services"
         for svc in "${svc_list[@]}"; do
             deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \
-                "$svc" "$install_dir" "$config_dir"
+                "$svc" "$install_dir" "$config_dir" "$security_proxy_bind"
         done
     done
 fi

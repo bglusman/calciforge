@@ -55,6 +55,13 @@ have a tested wrapper for that specific runtime, and prefer OpenAI-compatible
 gateway routes or explicit fetch/tool integrations for traffic that must be
 scanned.
 
+By default `security-proxy` binds to `127.0.0.1`. Keep that default for a
+single-host install. For a trusted LAN deployment where other agent hosts must
+use one shared proxy, set `SECURITY_PROXY_BIND=0.0.0.0` for the local installer
+run, or add `"security_proxy_bind": "0.0.0.0"` to that host's node entry in
+`deploy/nodes.json`. Pair a LAN bind with host firewall rules or equivalent
+network restrictions when the LAN is not fully trusted.
+
 Ambient `HTTPS_PROXY` is not a complete protection story unless it points at a
 Calciforge MITM listener and the client trusts the Calciforge CA. Standard
 HTTPS proxying uses CONNECT tunnels; without MITM, the proxy can only see the
