@@ -328,7 +328,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         }
 
         if CommandHandler::is_secure_command(&text) {
-            debug!(identity = %identity.id, "WhatsApp: handling !secure command");
+            debug!(identity = %identity.id, "WhatsApp: handling secret command");
             if CommandHandler::is_secure_set_command(&text)
                 && !crate::config::channel_allows_chat_secret_set(&self.config, "whatsapp")
             {

@@ -292,7 +292,7 @@ paste-server --bulk env-import "bulk .env import"
 # prints http://127.0.0.1:PORT/bulk/<token>
 ```
 
-From chat, `!secret input NAME` and `!secret bulk LABEL` start the same
+From chat, `!secret input NAME` and `!secret bulk` start the same
 short-lived paste server and bind to the detected LAN interface when possible
 so the link can be opened from a browser that can reach the Calciforge host.
 `!secure input` and `!secure bulk` remain supported aliases. If LAN detection

@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use teloxide::{
     prelude::*,
-    types::{ChatId, InputFile, Me, ParseMode},
+    types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Me, ParseMode},
 };
 use tracing::{debug, info, warn};
 
@@ -14,8 +14,8 @@ use crate::sync::Arc;
 
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
-    commands::CommandHandler,
-    config::{expand_tilde, CalciforgeConfig},
+    commands::{AgentChoiceError, CommandHandler},
+    config::{channel_allows_rich_ui, expand_tilde, CalciforgeConfig},
     context::ContextStore,
     messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
@@ -58,7 +58,10 @@ pub async fn run(
     let cmd_handler_clone = command_handler.clone();
     let ctx_store_clone = context_store.clone();
 
-    let handler =
+    let callback_config = config.clone();
+    let callback_cmd_handler = command_handler.clone();
+
+    let message_handler =
         Update::filter_message().branch(dptree::entry().endpoint(move |bot: Bot, msg: Message| {
             let cfg = config_clone.clone();
             let rtr = router_clone.clone();
@@ -72,6 +75,21 @@ pub async fn run(
                 respond(())
             }
         }));
+
+    let callback_handler = Update::filter_callback_query().branch(dptree::entry().endpoint(
+        move |bot: Bot, query: CallbackQuery| {
+            let cfg = callback_config.clone();
+            let cmd = callback_cmd_handler.clone();
+            async move {
+                handle_callback_query(bot, query, cfg, cmd).await;
+                respond(())
+            }
+        },
+    ));
+
+    let handler = dptree::entry()
+        .branch(message_handler)
+        .branch(callback_handler);
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
@@ -158,6 +176,66 @@ fn handle_message_nonblocking(
     // Command fast-path — all handled synchronously, reply spawned immediately.
     // These return before the handler, keeping the Teloxide dispatcher free.
     // -----------------------------------------------------------------------
+
+    if channel_allows_rich_ui(&config, "telegram") && is_agent_choice_request(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "showing agent choice buttons");
+        let choices = command_handler.agent_choices_for_identity(&identity.id);
+        let base_reply = command_handler
+            .handle(&text)
+            .unwrap_or_else(|| "Configured agents unavailable.".to_string());
+        let reply = agent_choice_prompt(base_reply, &choices);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "agent_choices",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
+        let bot2 = bot.clone();
+        tokio::spawn(async move {
+            send_choice_reply(
+                bot2,
+                chat_id,
+                reply,
+                choices
+                    .as_ref()
+                    .ok()
+                    .and_then(|choices| agent_choice_keyboard(choices)),
+                "agent_choices",
+            )
+            .await;
+        });
+        return;
+    }
+
+    if channel_allows_rich_ui(&config, "telegram") && is_model_choice_request(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "showing model choice buttons");
+        let choices = command_handler.activatable_model_choices();
+        let reply = command_handler
+            .handle(&text)
+            .unwrap_or_else(|| model_choice_prompt(&choices));
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "model_choices",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
+        let bot2 = bot.clone();
+        tokio::spawn(async move {
+            send_choice_reply(
+                bot2,
+                chat_id,
+                reply,
+                model_choice_keyboard(&choices),
+                "model_choices",
+            )
+            .await;
+        });
+        return;
+    }
 
     // Pre-auth-safe commands — no identity context needed.
     if let Some(reply) = command_handler.handle(&text) {
@@ -309,17 +387,17 @@ fn handle_message_nonblocking(
         return;
     }
 
-    // !secure — store/list secrets without ever routing the value to an
+    // !secret / !secure — store/list secrets without ever routing the value to an
     // agent. Runs post-auth so we can audit who set what; doesn't yet
     // gate by role (open for any authenticated identity). The handler
     // is async because it shells out to `fnox`.
     //
     // We deliberately do NOT log `text` here or in the handler — the
-    // `!secure set NAME=value` form contains a secret value that must
-    // not appear in ops logs. debug! logs only that a !secure command
+    // chat `set` form contains a secret value that must
+    // not appear in ops logs. debug! logs only that a secret command
     // was handled; the handler never logs `text` either.
     if CommandHandler::is_secure_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling secret command");
         if CommandHandler::is_secure_set_command(&text)
             && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
         {
@@ -334,7 +412,14 @@ fn handle_message_nonblocking(
             );
             let bot2 = bot.clone();
             tokio::spawn(async move {
-                send_plain_reply(bot2, chat_id, reply, "secure_disabled").await;
+                send_secret_reply(
+                    bot2,
+                    chat_id,
+                    reply,
+                    "secure_disabled",
+                    channel_allows_rich_ui(&config, "telegram"),
+                )
+                .await;
             });
             return;
         }
@@ -355,7 +440,14 @@ fn handle_message_nonblocking(
                 command_start.elapsed().as_millis() as u64,
                 reply.len(),
             );
-            send_plain_reply(bot2, chat_id, reply, "secure").await;
+            send_secret_reply(
+                bot2,
+                chat_id,
+                reply,
+                "secure",
+                channel_allows_rich_ui(&config, "telegram"),
+            )
+            .await;
         });
         return;
     }
@@ -727,6 +819,297 @@ async fn send_plain_reply(
     }
 }
 
+async fn send_choice_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: impl Into<String>,
+    keyboard: Option<InlineKeyboardMarkup>,
+    reply_kind: &'static str,
+) {
+    let reply = reply.into();
+    let response_len = reply.len();
+    let start = std::time::Instant::now();
+    let mut request = bot.send_message(chat_id, &reply);
+    if let Some(keyboard) = keyboard {
+        request = request.reply_markup(keyboard);
+    }
+
+    match request.await {
+        Ok(_) => telemetry::reply_sent(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            response_len,
+            start.elapsed().as_millis() as u64,
+        ),
+        Err(e) => telemetry::reply_failed(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            start.elapsed().as_millis() as u64,
+            e,
+        ),
+    }
+}
+
+async fn send_secret_reply(
+    bot: Bot,
+    chat_id: ChatId,
+    reply: impl Into<String>,
+    reply_kind: &'static str,
+    rich_ui: bool,
+) {
+    let reply = reply.into();
+    let response_len = reply.len();
+    let start = std::time::Instant::now();
+    let mut request = bot.send_message(chat_id, &reply);
+    if rich_ui {
+        if let Some(url) = first_http_url(&reply) {
+            let keyboard = InlineKeyboardMarkup::default()
+                .append_row(vec![InlineKeyboardButton::url("Open paste form", url)]);
+            request = request.reply_markup(keyboard);
+        }
+    }
+
+    match request.await {
+        Ok(_) => telemetry::reply_sent(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            response_len,
+            start.elapsed().as_millis() as u64,
+        ),
+        Err(e) => telemetry::reply_failed(
+            "telegram",
+            &chat_id.to_string(),
+            reply_kind,
+            start.elapsed().as_millis() as u64,
+            e,
+        ),
+    }
+}
+
+async fn handle_callback_query(
+    bot: Bot,
+    query: CallbackQuery,
+    config: Arc<CalciforgeConfig>,
+    command_handler: Arc<CommandHandler>,
+) {
+    let sender_id = query.from.id.0 as i64;
+    let identity = match resolve_telegram_sender(sender_id, &config) {
+        Some(identity) => identity,
+        None => {
+            warn!(sender_id = %sender_id, "unknown Telegram callback sender — dropping");
+            let _ = bot
+                .answer_callback_query(query.id)
+                .text("This Telegram user is not allowed.")
+                .await;
+            return;
+        }
+    };
+
+    if !channel_allows_rich_ui(&config, "telegram") {
+        let _ = bot
+            .answer_callback_query(query.id)
+            .text("Buttons are disabled for this channel.")
+            .await;
+        return;
+    }
+
+    let data = query.data.as_deref().unwrap_or_default();
+    let Some(action) = parse_callback_action(data) else {
+        let _ = bot
+            .answer_callback_query(query.id)
+            .text("Unknown Calciforge action.")
+            .await;
+        return;
+    };
+
+    let reply = match action {
+        TelegramCallbackAction::Agent(agent_id) => {
+            command_handler.handle_switch(&format!("!agent switch {agent_id}"), &identity.id)
+        }
+        TelegramCallbackAction::Model(model_id) => {
+            command_handler.handle_model(&format!("!model use {model_id}"), &identity.id)
+        }
+    };
+
+    let chat_id = query.message.as_ref().map(|message| message.chat().id);
+    let feedback = callback_feedback(&reply, chat_id.is_some());
+    let mut answer = bot.answer_callback_query(query.id).text(feedback.text);
+    if feedback.show_alert {
+        answer = answer.show_alert(true);
+    }
+    let _ = answer.await;
+
+    if let Some(chat_id) = chat_id {
+        send_plain_reply(bot, chat_id, reply, "callback_action").await;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TelegramCallbackAction<'a> {
+    Agent(&'a str),
+    Model(&'a str),
+}
+
+fn parse_callback_action(data: &str) -> Option<TelegramCallbackAction<'_>> {
+    let mut parts = data.splitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("cf"), Some("agent"), Some(agent_id)) if !agent_id.trim().is_empty() => {
+            Some(TelegramCallbackAction::Agent(agent_id))
+        }
+        (Some("cf"), Some("model"), Some(model_id)) if !model_id.trim().is_empty() => {
+            Some(TelegramCallbackAction::Model(model_id))
+        }
+        _ => None,
+    }
+}
+
+fn is_agent_choice_request(text: &str) -> bool {
+    let tokens: Vec<String> = text
+        .split_whitespace()
+        .map(|token| token.to_lowercase())
+        .collect();
+    matches!(
+        tokens.as_slice(),
+        [cmd] if cmd == "!agents"
+    ) || matches!(
+        tokens.as_slice(),
+        [cmd] if cmd == "!agent"
+    ) || matches!(
+        tokens.as_slice(),
+        [cmd, sub] if cmd == "!agent" && matches!(sub.as_str(), "list" | "ls" | "agents")
+    )
+}
+
+fn is_model_choice_request(text: &str) -> bool {
+    let tokens: Vec<String> = text
+        .split_whitespace()
+        .map(|token| token.to_lowercase())
+        .collect();
+    matches!(
+        tokens.as_slice(),
+        [cmd] if cmd == "!model"
+    ) || matches!(
+        tokens.as_slice(),
+        [cmd, sub] if cmd == "!model" && matches!(sub.as_str(), "list" | "ls" | "models")
+    )
+}
+
+fn agent_choice_prompt(
+    base_reply: String,
+    choices: &Result<Vec<(String, String)>, AgentChoiceError>,
+) -> String {
+    if let Err(err) = choices {
+        return format!("{base_reply}\n\nButton choices unavailable: {err}.");
+    }
+    base_reply
+}
+
+fn model_choice_prompt(choices: &[(String, String)]) -> String {
+    if choices.is_empty() {
+        return "No activatable model choices are configured. Type `!model` for configured shortcuts."
+            .to_string();
+    }
+    format!(
+        "Choose a model, or type `!model use <id>`:\n{}",
+        choices
+            .iter()
+            .map(|(id, label)| format!("  - {id} ({label})"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn agent_choice_keyboard(choices: &[(String, String)]) -> Option<InlineKeyboardMarkup> {
+    choice_keyboard("agent", choices)
+}
+
+fn model_choice_keyboard(choices: &[(String, String)]) -> Option<InlineKeyboardMarkup> {
+    choice_keyboard("model", choices)
+}
+
+fn choice_keyboard(kind: &str, choices: &[(String, String)]) -> Option<InlineKeyboardMarkup> {
+    const MAX_TELEGRAM_CALLBACK_BYTES: usize = 64;
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    for (id, label) in choices.iter().take(20) {
+        let data = format!("cf:{kind}:{id}");
+        if data.len() > MAX_TELEGRAM_CALLBACK_BYTES {
+            continue;
+        }
+        row.push(InlineKeyboardButton::callback(label.clone(), data));
+        if row.len() == 2 {
+            rows.push(std::mem::take(&mut row));
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    if rows.is_empty() {
+        None
+    } else {
+        Some(InlineKeyboardMarkup::new(rows))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallbackFeedback {
+    text: String,
+    show_alert: bool,
+}
+
+fn callback_feedback(reply: &str, chat_will_receive_reply: bool) -> CallbackFeedback {
+    let success = callback_reply_succeeded(reply);
+    if chat_will_receive_reply {
+        return CallbackFeedback {
+            text: if success {
+                "Updated.".to_string()
+            } else {
+                "Action was not applied.".to_string()
+            },
+            show_alert: !success,
+        };
+    }
+
+    CallbackFeedback {
+        text: truncate_callback_text(reply.trim()),
+        show_alert: !success,
+    }
+}
+
+fn callback_reply_succeeded(reply: &str) -> bool {
+    let reply = reply.trim_start();
+    reply.starts_with('✅') || reply.starts_with('🔄')
+}
+
+fn truncate_callback_text(text: &str) -> String {
+    const MAX_CALLBACK_ANSWER_CHARS: usize = 200;
+    let char_count = text.chars().count();
+    if char_count <= MAX_CALLBACK_ANSWER_CHARS {
+        return text.to_string();
+    }
+    let mut truncated = text
+        .chars()
+        .take(MAX_CALLBACK_ANSWER_CHARS.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn first_http_url(text: &str) -> Option<reqwest::Url> {
+    text.split_whitespace().find_map(|token| {
+        let candidate = token.trim_matches(|c: char| {
+            matches!(c, '<' | '>' | '(' | ')' | '[' | ']' | ',' | '.' | '"')
+        });
+        reqwest::Url::parse(candidate).ok().filter(|url| {
+            let scheme = url.scheme();
+            scheme == "http" || scheme == "https"
+        })
+    })
+}
+
 async fn send_markdown_reply(
     bot: Bot,
     chat_id: ChatId,
@@ -888,24 +1271,34 @@ async fn handle_message(
         return;
     }
 
-    // !secure — store/list secrets without routing the value to an
+    // !secret / !secure — store/list secrets without routing the value to an
     // agent. Logged debug-level with no text to keep the value out of
-    // ops logs (`!secure set NAME=value` would otherwise be visible).
+    // ops logs (the chat `set` form would otherwise be visible).
     if CommandHandler::is_secure_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling secret command");
         if CommandHandler::is_secure_set_command(&text)
             && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
         {
             let reply = CommandHandler::secure_set_disabled_reply("Telegram");
-            if let Err(e) = bot.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send !secure disabled reply");
-            }
+            send_secret_reply(
+                bot,
+                chat_id,
+                reply,
+                "secure_disabled",
+                channel_allows_rich_ui(&config, "telegram"),
+            )
+            .await;
             return;
         }
         let reply = command_handler.handle_secure(&text, &identity.id).await;
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
-        }
+        send_secret_reply(
+            bot,
+            chat_id,
+            reply,
+            "secure",
+            channel_allows_rich_ui(&config, "telegram"),
+        )
+        .await;
         return;
     }
 
@@ -1177,6 +1570,105 @@ mod tests {
             .and_then(|i| i.display_name.as_deref())
             .unwrap_or("brian");
         assert_eq!(label, "Brian");
+    }
+
+    #[test]
+    fn telegram_choice_requests_accept_legacy_and_noun_commands() {
+        assert!(is_agent_choice_request("!agents"));
+        assert!(is_agent_choice_request("!agent list"));
+        assert!(is_agent_choice_request("!agent\tls"));
+        assert!(!is_agent_choice_request("!agent switch librarian"));
+
+        assert!(is_model_choice_request("!model"));
+        assert!(is_model_choice_request("!model list"));
+        assert!(is_model_choice_request("!model\tmodels"));
+        assert!(!is_model_choice_request("!model use dispatcher"));
+    }
+
+    #[test]
+    fn telegram_callback_actions_are_bounded_and_typed() {
+        assert_eq!(
+            parse_callback_action("cf:agent:librarian"),
+            Some(TelegramCallbackAction::Agent("librarian"))
+        );
+        assert_eq!(
+            parse_callback_action("cf:model:dispatcher-test"),
+            Some(TelegramCallbackAction::Model("dispatcher-test"))
+        );
+        assert_eq!(parse_callback_action("agent:librarian"), None);
+        assert_eq!(parse_callback_action("cf:agent:"), None);
+    }
+
+    #[test]
+    fn telegram_callback_feedback_reflects_success_and_failure() {
+        assert_eq!(
+            callback_feedback("✅ Switched active agent to Librarian.", true),
+            CallbackFeedback {
+                text: "Updated.".to_string(),
+                show_alert: false,
+            }
+        );
+        assert_eq!(
+            callback_feedback("⚠️ Agent 'custodian' is not available to you.", true),
+            CallbackFeedback {
+                text: "Action was not applied.".to_string(),
+                show_alert: true,
+            }
+        );
+
+        let no_chat = callback_feedback("⚠️ Agent 'custodian' is not available to you.", false);
+        assert!(no_chat.text.contains("custodian"), "{no_chat:?}");
+        assert!(no_chat.show_alert, "{no_chat:?}");
+    }
+
+    #[test]
+    fn telegram_callback_feedback_truncates_inline_only_replies() {
+        let long_reply = format!("⚠️ {}", "x".repeat(250));
+        let feedback = callback_feedback(&long_reply, false);
+
+        assert_eq!(feedback.text.chars().count(), 200);
+        assert!(feedback.text.ends_with('…'), "{feedback:?}");
+        assert!(feedback.show_alert, "{feedback:?}");
+    }
+
+    #[test]
+    fn telegram_agent_choice_prompt_preserves_existing_output_when_choices_work() {
+        let base_reply = "Configured agents:\n  librarian".to_string();
+        let choices = Ok(vec![("librarian".to_string(), "Librarian".to_string())]);
+
+        assert_eq!(
+            agent_choice_prompt(base_reply.clone(), &choices),
+            base_reply
+        );
+    }
+
+    #[test]
+    fn telegram_agent_choice_prompt_surfaces_button_misconfig() {
+        let base_reply = "Configured agents:\n  librarian".to_string();
+        let choices = Err(AgentChoiceError::UnknownAllowedAgents {
+            identity_id: "brian".to_string(),
+            unknown_agents: vec!["typo".to_string()],
+        });
+        let reply = agent_choice_prompt(base_reply, &choices);
+
+        assert!(reply.contains("Configured agents:"), "{reply}");
+        assert!(reply.contains("Button choices unavailable"), "{reply}");
+        assert!(reply.contains("typo"), "{reply}");
+    }
+
+    #[test]
+    fn telegram_choice_keyboard_skips_callbacks_too_large_for_telegram() {
+        let long_id = "x".repeat(80);
+        let choices = vec![
+            ("short".to_string(), "Short".to_string()),
+            (long_id, "Long".to_string()),
+        ];
+
+        let keyboard = choice_keyboard("agent", &choices).expect("one valid button");
+        let buttons: Vec<_> = keyboard.inline_keyboard.into_iter().flatten().collect();
+
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].text, "Short");
     }
 
     #[test]

@@ -76,6 +76,7 @@ allowed_users = ["@operator:example.com"]
 | `access_token_file` | yes | Path to file containing the bot's access token |
 | `room_id` | yes | Internal room ID (starts with `!`) |
 | `allowed_users` | yes | Matrix user IDs permitted to send commands; use `["*"]` to allow all room members; empty list is rejected at startup |
+| `ui_mode` | no | `"auto"` by default; set `"text"` to disable channel-native UI experiments and keep text-only replies for bridged clients |
 | `scan_messages` | no (`false`) | Enable inbound adversarial content scanning |
 | `allow_chat_secret_set` | no (`false`) | Allow `!secret set` / `!secure set` via Matrix (not recommended) |
 
@@ -117,6 +118,13 @@ The bot responds to commands (`!help`, `!ping`, `!agent list`,
 `!agent switch <agent>`, `!model list`, `!secret input NAME`, etc.) and routes
 other messages to the default agent for the sender's identity. Legacy shortcuts
 such as `!agents`, `!switch`, and `!secure` remain supported.
+
+Matrix support currently treats text commands as the portable interface.
+Some Matrix clients and bridges expose buttons or polls differently, and
+bridges such as Beeper may not support the downstream app's native controls.
+Use `ui_mode = "text"` in `[[channels]]` to force plain text for a channel;
+`ui_mode = "auto"` is reserved for channel-native affordances once the Matrix
+adapter can expose them without breaking bridged clients.
 
 Agent replies that include artifacts are uploaded through the Matrix media API
 and sent as native `m.image`, `m.audio`, `m.video`, or `m.file` events. If media

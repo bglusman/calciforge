@@ -914,12 +914,12 @@ async fn handle_message(
         return;
     }
 
-    // !secure — set/list secrets without surfacing the value to any
+    // !secret / !secure — set/list secrets without surfacing the value to any
     // agent. Same dispatch shape as !sessions: post-auth, async, no
     // logging of the message body (which contains the value for
-    // `!secure set NAME=value`).
+    // the chat `set` form).
     if CommandHandler::is_secure_command(body) {
-        debug!(sender = %sender, "Matrix: handling !secure command");
+        debug!(sender = %sender, "Matrix: handling secret command");
         if CommandHandler::is_secure_set_command(body)
             && !crate::config::channel_allows_chat_secret_set(config, "matrix")
         {

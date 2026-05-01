@@ -253,7 +253,7 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
         }
 
         if CommandHandler::is_secure_command(&text) {
-            debug!(identity = %identity.id, "Text/iMessage: handling !secure command");
+            debug!(identity = %identity.id, "Text/iMessage: handling secret command");
             if CommandHandler::is_secure_set_command(&text)
                 && !crate::config::channel_allows_chat_secret_set(&self.config, "sms")
             {

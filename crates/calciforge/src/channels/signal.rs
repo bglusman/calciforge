@@ -287,9 +287,9 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             return;
         }
 
-        // !secure
+        // !secret / !secure
         if CommandHandler::is_secure_command(&text) {
-            debug!(identity = %identity.id, "Signal: handling !secure command");
+            debug!(identity = %identity.id, "Signal: handling secret command");
             if CommandHandler::is_secure_set_command(&text)
                 && !crate::config::channel_allows_chat_secret_set(&self.config, "signal")
             {

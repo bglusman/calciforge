@@ -15,6 +15,7 @@
 //! [`CommandHandler::cmd_status_for_identity`] respectively.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -52,6 +53,35 @@ fn first_arg(text: &str) -> Option<&str> {
 
 fn command_token(text: &str) -> &str {
     text.split_whitespace().next().unwrap_or("")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentChoiceError {
+    MissingRoutingRule {
+        identity_id: String,
+    },
+    UnknownAllowedAgents {
+        identity_id: String,
+        unknown_agents: Vec<String>,
+    },
+}
+
+impl fmt::Display for AgentChoiceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentChoiceError::MissingRoutingRule { identity_id } => {
+                write!(f, "no routing rule found for identity '{identity_id}'")
+            }
+            AgentChoiceError::UnknownAllowedAgents {
+                identity_id,
+                unknown_agents,
+            } => write!(
+                f,
+                "identity '{identity_id}' references unknown allowed_agents: {}",
+                unknown_agents.join(", ")
+            ),
+        }
+    }
 }
 
 fn command_suggestion(cmd: &str) -> Option<&'static str> {
@@ -321,6 +351,107 @@ impl CommandHandler {
             .and_then(|manager| manager.active_for_identity(identity_id))
     }
 
+    /// Return agent choices the identity may activate, with display labels.
+    pub fn agent_choices_for_identity(
+        &self,
+        identity_id: &str,
+    ) -> Result<Vec<(String, String)>, AgentChoiceError> {
+        let Some(routing_rule) = self
+            .config
+            .routing
+            .iter()
+            .find(|r| r.identity == identity_id)
+        else {
+            return Err(AgentChoiceError::MissingRoutingRule {
+                identity_id: identity_id.to_string(),
+            });
+        };
+
+        let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
+            self.config
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect()
+        } else {
+            routing_rule
+                .allowed_agents
+                .iter()
+                .map(String::as_str)
+                .collect()
+        };
+
+        let mut unknown_agents = Vec::new();
+        let mut choices = Vec::new();
+        for agent_id in allowed {
+            match self.config.agents.iter().find(|agent| agent.id == agent_id) {
+                Some(agent) => {
+                    let label = agent
+                        .registry
+                        .as_ref()
+                        .and_then(|registry| registry.display_name.as_deref())
+                        .unwrap_or(&agent.id)
+                        .to_string();
+                    choices.push((agent.id.clone(), label));
+                }
+                None => unknown_agents.push(agent_id.to_string()),
+            }
+        }
+
+        if unknown_agents.is_empty() {
+            Ok(choices)
+        } else {
+            Err(AgentChoiceError::UnknownAllowedAgents {
+                identity_id: identity_id.to_string(),
+                unknown_agents,
+            })
+        }
+    }
+
+    /// Return model choices that can be activated with `!model use <id>`.
+    pub fn activatable_model_choices(&self) -> Vec<(String, String)> {
+        let mut choices = Vec::new();
+        if let Some(manager) = self.alloy_manager.as_ref() {
+            choices.extend(
+                manager
+                    .list()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (alloy)", model.name))),
+            );
+            choices.extend(
+                manager
+                    .list_cascades()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (cascade)", model.name))),
+            );
+            choices.extend(
+                manager
+                    .list_dispatchers()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (dispatcher)", model.name))),
+            );
+            choices.extend(
+                manager
+                    .list_exec_models()
+                    .into_iter()
+                    .map(|model| (model.id.clone(), format!("{} (exec)", model.name))),
+            );
+        }
+        if let Some(manager) = self.local_manager.as_ref() {
+            choices.extend(manager.models().iter().map(|model| {
+                (
+                    model.id.clone(),
+                    model
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| format!("{} (local)", model.id)),
+                )
+            }));
+        }
+        choices.sort_by(|left, right| left.0.cmp(&right.0));
+        choices
+    }
+
     /// Record that a message was routed to an agent.
     ///
     /// Call this after a successful agent dispatch with the measured latency.
@@ -475,15 +606,15 @@ impl CommandHandler {
         text.trim().starts_with('!')
     }
 
-    /// Returns `true` if the text is a `!secure` command (case-insensitive).
+    /// Returns `true` if the text is a `!secret` / `!secure` command (case-insensitive).
     ///
-    /// `!secure` is intercepted at the channel layer **before** any agent
+    /// Secret commands are intercepted at the channel layer **before** any agent
     /// sees the message, so the raw value passed to
-    /// `!secure set NAME=value` is never routed to an agent's context.
+    /// `!secret set NAME=value` / `!secure set NAME=value` is never routed to an agent's context.
     /// It is still seen by the chat transport (Telegram/Matrix/WhatsApp
     /// logs), which is the retention-leak tradeoff the user has to
     /// accept (or use an out-of-band path). Document this in any UX
-    /// that advertises `!secure`.
+    /// that advertises secret commands.
     pub fn is_secure_command(text: &str) -> bool {
         let trimmed = text.trim();
         let cmd = command_token(trimmed).to_lowercase();
@@ -491,7 +622,7 @@ impl CommandHandler {
     }
 
     /// Returns `true` only for the chat-value entry form
-    /// `!secure set ...`. This is the risky subcommand that channel
+    /// `!secret set ...` / `!secure set ...`. This is the risky subcommand that channel
     /// handlers gate behind `allow_chat_secret_set`.
     pub fn is_secure_set_command(text: &str) -> bool {
         let mut parts = text.split_whitespace();
@@ -1129,14 +1260,14 @@ impl CommandHandler {
         format!("✅ Switched to default agent: {}", default_agent_id)
     }
 
-    /// Handle `!secure <subcommand>`. Secret values never transit an
+    /// Handle `!secret <subcommand>` / `!secure <subcommand>`. Secret values never transit an
     /// agent's context. `set` is the legacy chat-retained path;
     /// `input`/`bulk` mint short-lived paste URLs.
     ///
     /// Subcommands:
     ///   - `!secure set NAME=value`  — store a secret via chat (legacy/caution)
     ///   - `!secure input NAME` / `!secret input NAME` — create a paste URL
-    ///   - `!secure bulk LABEL` / `!secret bulk LABEL` — create a `.env` paste URL
+    ///   - `!secure bulk [description]` / `!secret bulk [description]` — create a `.env` paste URL
     ///   - `!secure list` / `!secret list`             — list stored secret names
     ///   - `!secure help` / `!secret help`             — usage string
     ///
@@ -1147,7 +1278,7 @@ impl CommandHandler {
     /// `!secure input NAME` or run `paste-server NAME` locally.
     pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        // `!secure ...` — split off the subcommand word using
+        // `!secret ...` / `!secure ...` — split off the subcommand word using
         // split_whitespace so multiple spaces / tabs don't end up as
         // empty middle tokens (the prior splitn(' ') treated
         // "!secure  set NAME=v" as sub="" with the rest mis-shaped).
@@ -1155,7 +1286,7 @@ impl CommandHandler {
         let lead = parts.next().unwrap_or("!secure").to_lowercase();
         let sub = parts.next().map(|s| s.to_lowercase()).unwrap_or_default();
         // Reconstruct the rest by joining remaining tokens with single
-        // spaces. For !secure set, the value goes through to fnox set
+        // spaces. For chat `set`, the value goes through to fnox set
         // (now via stdin) so internal whitespace shape is preserved by
         // the caller that builds it as `NAME=value`.
         let rest_owned: String = parts.collect::<Vec<_>>().join(" ");
@@ -1554,7 +1685,7 @@ impl CommandHandler {
 }
 
 // ---------------------------------------------------------------------------
-// !secure subcommand implementations (free functions so tests can drive
+// !secret / !secure subcommand implementations (free functions so tests can drive
 // them without constructing a full CommandHandler).
 // ---------------------------------------------------------------------------
 
@@ -1562,7 +1693,7 @@ fn secure_help() -> String {
     [
         "!secret subcommands (alias: !secure):",
         "  !secret input NAME [desc] — create a one-shot local-network paste link",
-        "  !secret bulk LABEL [desc] — create a one-shot local-network .env paste link",
+        "  !secret bulk [desc]     — create a one-shot local-network .env paste link",
         "  !secret list              — list stored secret names (not values)",
         "  !secret help              — show this help",
         "",
@@ -1592,15 +1723,12 @@ fn secure_help() -> String {
 }
 
 async fn secure_input(rest: &str, bulk: bool) -> String {
-    let mut parts = rest.split_whitespace();
-    let Some(name_or_label) = parts.next() else {
-        return if bulk {
-            "⚠️ Usage: `!secret bulk LABEL [description]`".to_string()
-        } else {
-            "⚠️ Usage: `!secret input NAME [description]`".to_string()
-        };
+    let (name_or_label, description) = match secure_input_target(rest, bulk) {
+        Ok(target) => target,
+        Err(usage) => {
+            return usage;
+        }
     };
-    let description = parts.collect::<Vec<_>>().join(" ");
 
     let mut command = tokio::process::Command::new("paste-server");
     if bulk {
@@ -1664,6 +1792,26 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
          Open it from a browser that can reach the Calciforge host. The link expires quickly and stores through the configured local secret backend. \
          For phone/off-network use, use a short-lived authenticated proxy/tunnel; do not expose this paste server directly to the open internet."
     )
+}
+
+fn secure_input_target(rest: &str, bulk: bool) -> Result<(String, String), String> {
+    if bulk {
+        let description = rest.trim();
+        return Ok((
+            "env-import".to_string(),
+            if description.is_empty() {
+                "Paste .env lines; each KEY=VALUE line becomes its own secret.".to_string()
+            } else {
+                description.to_string()
+            },
+        ));
+    }
+
+    let mut parts = rest.split_whitespace();
+    let Some(name) = parts.next() else {
+        return Err("⚠️ Usage: `!secret input NAME [description]`".to_string());
+    };
+    Ok((name.to_string(), parts.collect::<Vec<_>>().join(" ")))
 }
 
 fn configure_paste_server_env(command: &mut tokio::process::Command) {
@@ -2226,6 +2374,49 @@ mod tests {
         assert!(
             uppercase.contains("librarian"),
             "uppercase alias should also list agents: {uppercase}"
+        );
+    }
+
+    #[test]
+    fn agent_choices_report_missing_routing_rule() {
+        let h = make_handler();
+        let err = h
+            .agent_choices_for_identity("unknown_identity")
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentChoiceError::MissingRoutingRule { identity_id }
+                if identity_id == "unknown_identity"
+        ));
+    }
+
+    #[test]
+    fn agent_choices_report_unknown_allowed_agents() {
+        let mut config = make_config();
+        config.routing.push(RoutingRule {
+            identity: "typoed".to_string(),
+            default_agent: "librarian".to_string(),
+            allowed_agents: vec!["missing-agent".to_string()],
+        });
+        let h = CommandHandler::new(Arc::new(config));
+
+        let err = h.agent_choices_for_identity("typoed").unwrap_err();
+        assert!(matches!(
+            err,
+            AgentChoiceError::UnknownAllowedAgents {
+                identity_id,
+                unknown_agents
+            } if identity_id == "typoed" && unknown_agents == vec!["missing-agent"]
+        ));
+    }
+
+    #[test]
+    fn agent_choices_return_allowed_display_labels() {
+        let h = make_handler();
+        let choices = h.agent_choices_for_identity("david").unwrap();
+        assert_eq!(
+            choices,
+            vec![("librarian".to_string(), "Librarian".to_string())]
         );
     }
 
@@ -2865,6 +3056,34 @@ mod tests {
             help.contains("CALCIFORGE_PASTE_PUBLIC_BASE_URL"),
             "help should name the reverse-proxy/tunnel override: {help}"
         );
+        assert!(
+            help.contains("!secret bulk [desc]"),
+            "bulk paste should not require an abstract label in chat help: {help}"
+        );
+        assert!(
+            !help.contains("!secret bulk LABEL"),
+            "chat help should not expose LABEL as a required concept: {help}"
+        );
+    }
+
+    #[test]
+    fn secure_bulk_uses_default_label_and_env_description() {
+        let (label, description) = secure_input_target("", true).expect("bulk target");
+
+        assert_eq!(label, "env-import");
+        assert!(
+            description.contains("KEY=VALUE"),
+            "default bulk description should explain .env semantics: {description}"
+        );
+    }
+
+    #[test]
+    fn secure_bulk_treats_remainder_as_description_not_required_label() {
+        let (label, description) =
+            secure_input_target("GitHub project secrets", true).expect("bulk target");
+
+        assert_eq!(label, "env-import");
+        assert_eq!(description, "GitHub project secrets");
     }
 
     #[test]

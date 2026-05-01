@@ -83,7 +83,7 @@ configured agent endpoints. Use `--no-network` for a purely local check.
 
 Channel-based secret input is intentionally being de-emphasized because
 chat transports can retain plaintext values. Prefer the paste UI
-(`!secret input NAME` / `!secret bulk LABEL` from chat, aliases of
+(`!secret input NAME` / `!secret bulk` from chat, aliases of
 `!secure input` / `!secure bulk`, or
 `paste-server NAME` on the host) or direct `fnox` input for new secrets.
 Chat-started paste links are intended for browsers on the same local
