@@ -15,7 +15,8 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::artifacts::{
-    collect_run_artifacts, create_run_dir, DEFAULT_MAX_ARTIFACTS, DEFAULT_MAX_ARTIFACT_BYTES,
+    artifact_root, collect_run_artifacts, create_run_dir, create_run_dir_under,
+    DEFAULT_MAX_ARTIFACTS, DEFAULT_MAX_ARTIFACT_BYTES,
 };
 use crate::messages::{OutboundAttachment, OutboundMessage};
 
@@ -119,18 +120,76 @@ impl ArtifactCliAdapter {
     }
 
     fn run_artifact_dir(&self) -> Result<PathBuf, AdapterError> {
-        if self.artifact_root == crate::artifacts::artifact_root(ARTIFACT_ROOT_NAME) {
+        if self.uses_default_artifact_root() {
             return create_run_dir(ARTIFACT_ROOT_NAME).map_err(AdapterError::Unavailable);
         }
 
-        let run_dir = self.artifact_root.join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&run_dir).map_err(|e| {
-            AdapterError::Unavailable(format!(
-                "failed to create artifact directory {}: {e}",
-                run_dir.display()
-            ))
-        })?;
-        Ok(run_dir)
+        create_run_dir_under(&self.artifact_root).map_err(AdapterError::Unavailable)
+    }
+
+    fn uses_default_artifact_root(&self) -> bool {
+        let default_root = artifact_root(ARTIFACT_ROOT_NAME);
+        Self::paths_equivalent(&self.artifact_root, &default_root)
+    }
+
+    fn paths_equivalent(configured_root: &Path, default_root: &Path) -> bool {
+        if configured_root == default_root {
+            return true;
+        }
+
+        if let (Ok(configured), Ok(default)) =
+            (configured_root.canonicalize(), default_root.canonicalize())
+        {
+            return configured == default;
+        }
+
+        match (
+            Self::best_effort_absolute_path(configured_root),
+            Self::best_effort_absolute_path(default_root),
+        ) {
+            (Some(configured), Some(default)) => configured == default,
+            _ => false,
+        }
+    }
+
+    fn best_effort_absolute_path(path: &Path) -> Option<PathBuf> {
+        let candidate = match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = std::fs::read_link(path).ok()?;
+                if target.is_absolute() {
+                    target
+                } else {
+                    path.parent().unwrap_or_else(|| Path::new("")).join(target)
+                }
+            }
+            _ => path.to_path_buf(),
+        };
+
+        let absolute = if candidate.is_absolute() {
+            candidate
+        } else {
+            std::env::current_dir().ok()?.join(candidate)
+        };
+
+        Some(Self::normalize_path(absolute))
+    }
+
+    fn normalize_path(path: PathBuf) -> PathBuf {
+        let mut normalized = PathBuf::new();
+
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if !normalized.pop() {
+                        normalized.push(component.as_os_str());
+                    }
+                }
+                _ => normalized.push(component.as_os_str()),
+            }
+        }
+
+        normalized
     }
 
     fn stderr_preview(stderr: &[u8]) -> String {
@@ -401,6 +460,98 @@ mod tests {
         match err {
             AdapterError::Protocol(msg) => assert!(msg.contains("artifact count exceeds")),
             other => panic!("expected protocol error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_artifact_root_detection_handles_equivalent_paths() {
+        use std::os::unix::fs::symlink;
+
+        let default_root = artifact_root(ARTIFACT_ROOT_NAME);
+        std::fs::create_dir_all(&default_root).expect("default root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let linked_root = temp.path().join("linked-default");
+        symlink(&default_root, &linked_root).expect("symlink default root");
+
+        let adapter = ArtifactCliAdapter::with_artifact_root(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(5000),
+            linked_root,
+            DEFAULT_MAX_ARTIFACT_BYTES,
+        );
+
+        assert!(adapter.uses_default_artifact_root());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_artifact_root_detection_handles_missing_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let default_root = temp.path().join("default-root");
+        let linked_root = temp.path().join("linked-default");
+        symlink(&default_root, &linked_root).expect("symlink missing default root");
+
+        assert!(ArtifactCliAdapter::paths_equivalent(
+            &linked_root,
+            &default_root
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_artifact_root_uses_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let custom_root = temp.path().join("custom-artifacts");
+        let adapter = ArtifactCliAdapter::with_artifact_root(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(5000),
+            custom_root.clone(),
+            DEFAULT_MAX_ARTIFACT_BYTES,
+        );
+
+        let run_dir = adapter.run_artifact_dir().expect("run artifact dir");
+
+        let root_mode = std::fs::metadata(custom_root).unwrap().permissions().mode() & 0o777;
+        let run_mode = std::fs::metadata(run_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(root_mode, 0o700);
+        assert_eq!(run_mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_artifact_root_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let linked_root = temp.path().join("linked-root");
+        symlink(temp.path(), &linked_root).expect("symlink root");
+        let adapter = ArtifactCliAdapter::with_artifact_root(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(5000),
+            linked_root,
+            DEFAULT_MAX_ARTIFACT_BYTES,
+        );
+
+        let err = adapter
+            .run_artifact_dir()
+            .expect_err("symlinked artifact root should fail");
+        match err {
+            AdapterError::Unavailable(msg) => assert!(msg.contains("must not be a symlink")),
+            other => panic!("expected unavailable error, got {other:?}"),
         }
     }
 }
