@@ -4,7 +4,7 @@
 //! delivery should see one constrained shape: local files under a per-run
 //! Calciforge directory with known MIME, size, and path-containment checks.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -38,39 +38,27 @@ pub fn create_run_dir_under(root: &Path) -> Result<PathBuf, String> {
 
 fn ensure_artifact_root(root: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(root) {
-        Ok(metadata) => validate_artifact_root(root, &metadata)?,
+        Ok(metadata) => validate_artifact_root(&metadata)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => match create_private_dir(root) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let metadata = std::fs::symlink_metadata(root).map_err(|e| {
-                    format!("failed to inspect artifact root {}: {e}", root.display())
-                })?;
-                validate_artifact_root(root, &metadata)?;
+                let metadata = std::fs::symlink_metadata(root)
+                    .map_err(|e| format!("failed to inspect artifact root: {e}"))?;
+                validate_artifact_root(&metadata)?;
             }
             Err(e) => return Err(format!("failed to create artifact root: {e}")),
         },
-        Err(e) => {
-            return Err(format!(
-                "failed to inspect artifact root {}: {e}",
-                root.display()
-            ));
-        }
+        Err(e) => return Err(format!("failed to inspect artifact root: {e}")),
     }
     set_private_dir_permissions(root)
 }
 
-fn validate_artifact_root(root: &Path, metadata: &std::fs::Metadata) -> Result<(), String> {
+fn validate_artifact_root(metadata: &std::fs::Metadata) -> Result<(), String> {
     if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "artifact root {} must not be a symlink",
-            root.display()
-        ));
+        return Err("artifact root must not be a symlink".to_string());
     }
     if !metadata.is_dir() {
-        return Err(format!(
-            "artifact root {} exists but is not a directory",
-            root.display()
-        ));
+        return Err("artifact root exists but is not a directory".to_string());
     }
     Ok(())
 }
@@ -91,12 +79,8 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 fn set_private_dir_permissions(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-        format!(
-            "failed to set private artifact directory permissions on {}: {e}",
-            path.display()
-        )
-    })
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("failed to set private artifact directory permissions: {e}"))
 }
 
 #[cfg(not(unix))]
@@ -111,12 +95,15 @@ pub fn cleanup_old_run_dirs(root: &Path, retention: Duration) {
 
     for entry in entries.flatten() {
         let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || !is_uuid_run_dir(&path) {
+            continue;
+        }
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        if !metadata.is_dir() {
-            continue;
-        }
         let Ok(modified) = metadata.modified() else {
             continue;
         };
@@ -124,6 +111,12 @@ pub fn cleanup_old_run_dirs(root: &Path, retention: Duration) {
             let _ = std::fs::remove_dir_all(path);
         }
     }
+}
+
+fn is_uuid_run_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| Uuid::parse_str(name).is_ok())
 }
 
 pub fn collect_run_artifacts(
@@ -137,6 +130,7 @@ pub fn collect_run_artifacts(
 
     let mut attachments = Vec::new();
     let mut total_artifact_bytes: u64 = 0;
+    let mut visited_dirs = HashSet::from([base.clone()]);
     let mut pending = VecDeque::from([base.clone()]);
     while let Some(dir) = pending.pop_front() {
         let entries = std::fs::read_dir(&dir)
@@ -166,7 +160,9 @@ pub fn collect_run_artifacts(
                 )
             })?;
             if metadata.is_dir() {
-                pending.push_back(canonical);
+                if visited_dirs.insert(canonical.clone()) {
+                    pending.push_back(canonical);
+                }
                 continue;
             }
             if !metadata.is_file() {
@@ -429,9 +425,11 @@ mod tests {
     #[test]
     fn cleanup_old_run_dirs_removes_only_directories() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let run = temp.path().join("old-run");
+        let run = temp.path().join(Uuid::new_v4().to_string());
+        let non_run_dir = temp.path().join("old-run");
         let file = temp.path().join("keep.txt");
         std::fs::create_dir(&run).expect("create run");
+        std::fs::create_dir(&non_run_dir).expect("create non-run dir");
         std::fs::write(&file, "not a run dir").expect("write file");
         std::thread::sleep(Duration::from_millis(5));
 
@@ -441,6 +439,30 @@ mod tests {
         assert!(
             file.exists(),
             "non-directory files under the root should remain"
+        );
+        assert!(
+            non_run_dir.exists(),
+            "non-UUID directories under the root should remain"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_old_run_dirs_ignores_uuid_named_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = tempfile::tempdir().expect("target");
+        let link = temp.path().join(Uuid::new_v4().to_string());
+        symlink(target.path(), &link).expect("symlink target dir");
+        std::thread::sleep(Duration::from_millis(5));
+
+        cleanup_old_run_dirs(temp.path(), Duration::ZERO);
+
+        assert!(link.exists(), "UUID-named symlinks should not be removed");
+        assert!(
+            target.path().exists(),
+            "cleanup must not touch symlink targets"
         );
     }
 
@@ -505,6 +527,26 @@ mod tests {
             !err.contains(&temp.path().display().to_string()),
             "error leaked temp path: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_artifacts_skips_directory_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("reply.txt"), "hello").expect("write artifact");
+        symlink(".", temp.path().join("self")).expect("symlink to run dir");
+
+        let attachments = collect_run_artifacts(
+            temp.path(),
+            DEFAULT_MAX_ARTIFACT_BYTES,
+            DEFAULT_MAX_ARTIFACTS,
+        )
+        .expect("artifact collection should terminate");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].mime_type, "text/plain");
     }
 
     #[cfg(unix)]

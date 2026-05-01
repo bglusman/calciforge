@@ -129,17 +129,67 @@ impl ArtifactCliAdapter {
 
     fn uses_default_artifact_root(&self) -> bool {
         let default_root = artifact_root(ARTIFACT_ROOT_NAME);
-        if self.artifact_root == default_root {
+        Self::paths_equivalent(&self.artifact_root, &default_root)
+    }
+
+    fn paths_equivalent(configured_root: &Path, default_root: &Path) -> bool {
+        if configured_root == default_root {
             return true;
         }
 
+        if let (Ok(configured), Ok(default)) =
+            (configured_root.canonicalize(), default_root.canonicalize())
+        {
+            return configured == default;
+        }
+
         match (
-            self.artifact_root.canonicalize(),
-            default_root.canonicalize(),
+            Self::best_effort_absolute_path(configured_root),
+            Self::best_effort_absolute_path(default_root),
         ) {
-            (Ok(configured), Ok(default)) => configured == default,
+            (Some(configured), Some(default)) => configured == default,
             _ => false,
         }
+    }
+
+    fn best_effort_absolute_path(path: &Path) -> Option<PathBuf> {
+        let candidate = match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = std::fs::read_link(path).ok()?;
+                if target.is_absolute() {
+                    target
+                } else {
+                    path.parent().unwrap_or_else(|| Path::new("")).join(target)
+                }
+            }
+            _ => path.to_path_buf(),
+        };
+
+        let absolute = if candidate.is_absolute() {
+            candidate
+        } else {
+            std::env::current_dir().ok()?.join(candidate)
+        };
+
+        Some(Self::normalize_path(absolute))
+    }
+
+    fn normalize_path(path: PathBuf) -> PathBuf {
+        let mut normalized = PathBuf::new();
+
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if !normalized.pop() {
+                        normalized.push(component.as_os_str());
+                    }
+                }
+                _ => normalized.push(component.as_os_str()),
+            }
+        }
+
+        normalized
     }
 
     fn stderr_preview(stderr: &[u8]) -> String {
@@ -435,6 +485,22 @@ mod tests {
         );
 
         assert!(adapter.uses_default_artifact_root());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_artifact_root_detection_handles_missing_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let default_root = temp.path().join("default-root");
+        let linked_root = temp.path().join("linked-default");
+        symlink(&default_root, &linked_root).expect("symlink missing default root");
+
+        assert!(ArtifactCliAdapter::paths_equivalent(
+            &linked_root,
+            &default_root
+        ));
     }
 
     #[cfg(unix)]
