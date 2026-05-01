@@ -41,6 +41,10 @@ allowed_numbers = ["+15555550001"]
 
 # Optional security scan for inbound messages.
 # scan_messages = true
+
+# Optional: force plain text choice rendering. Default "auto".
+# The current embedded WhatsApp backend is text-first either way.
+# ui_mode = "text"
 ```
 
 ```toml
@@ -76,10 +80,12 @@ conversation.
 The embedded WhatsApp Web channel is text/media-first today. Agent choices,
 model choices, session lists, and approval decisions all render through the
 shared choice model, but the embedded channel sends the text fallback because
-`zeroclawlabs::Channel::SendMessage` does not expose WhatsApp interactive
-messages. If a future WhatsApp Business API or provider-backed channel supports
-lists or reply buttons, Calciforge can render the same choices natively while
-preserving text fallback.
+`zeroclawlabs::Channel::SendMessage` exposes text, recipient, threading,
+cancellation, and attachments, but not WhatsApp interactive messages. If a
+future WhatsApp Business API or provider-backed channel supports lists or reply
+buttons, Calciforge can render the same choices natively while preserving text
+fallback. Set `ui_mode = "text"` to keep this channel text-only for bridged or
+constrained clients.
 
 Operators can use Telegram as the Calciforge control surface for buttons while
 continuing the main chat in WhatsApp. Active agent/model selections are keyed by

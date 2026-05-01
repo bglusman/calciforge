@@ -1685,6 +1685,49 @@ mod tests {
     }
 
     #[test]
+    fn telegram_choice_keyboard_renders_session_and_approval_controls() {
+        let message = OutboundMessage::text("Choose")
+            .with_control(crate::messages::ChoiceControl::new(
+                "Attach to a session",
+                vec![crate::messages::ChoiceOption::session(
+                    "backend",
+                    "claude-acpx",
+                    "backend",
+                )],
+            ))
+            .with_control(crate::messages::ChoiceControl::new(
+                "Choose an approval action",
+                vec![
+                    crate::messages::ChoiceOption::approve("req-1"),
+                    crate::messages::ChoiceOption::deny("req-1"),
+                ],
+            ));
+
+        let keyboard = choice_keyboard_from_controls(&message).expect("choice buttons");
+        let buttons: Vec<_> = keyboard.inline_keyboard.into_iter().flatten().collect();
+
+        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons[0].text, "backend");
+        assert_eq!(buttons[1].text, "Approve");
+        assert_eq!(buttons[2].text, "Deny");
+        assert_eq!(
+            parse_callback_action("cf:session:claude-acpx:backend"),
+            Some(TelegramCallbackAction::Session {
+                agent_id: "claude-acpx",
+                session: "backend"
+            })
+        );
+        assert_eq!(
+            parse_callback_action("cf:approve:req-1"),
+            Some(TelegramCallbackAction::Approve("req-1"))
+        );
+        assert_eq!(
+            parse_callback_action("cf:deny:req-1"),
+            Some(TelegramCallbackAction::Deny("req-1"))
+        );
+    }
+
+    #[test]
     fn telegram_choice_falls_back_to_text_when_rich_ui_disabled() {
         let message =
             OutboundMessage::text("Choose").with_control(crate::messages::ChoiceControl::new(

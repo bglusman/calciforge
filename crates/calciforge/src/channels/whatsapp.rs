@@ -1039,6 +1039,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_choice_controls_render_text_fallback_for_sessions_and_approvals() {
+        let config = make_test_config(|c| {
+            c.ui_mode = crate::config::ChannelUiMode::Text;
+        });
+        let transport = Arc::new(MockChannel::new());
+        let bridge = dummy_bridge_with(config, transport.clone());
+
+        let message = OutboundMessage::text("Choose")
+            .with_control(crate::messages::ChoiceControl::new(
+                "Attach to a session",
+                vec![crate::messages::ChoiceOption::session(
+                    "backend",
+                    "claude-acpx",
+                    "backend",
+                )],
+            ))
+            .with_control(crate::messages::ChoiceControl::new(
+                "Choose an approval action",
+                vec![
+                    crate::messages::ChoiceOption::approve("req-1"),
+                    crate::messages::ChoiceOption::deny("req-1"),
+                ],
+            ));
+
+        bridge.bridge.send_outbound("+15555550100", &message).await;
+        transport.wait_for_sent_len(1).await;
+
+        let sent = transport.drain();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].content.contains("!switch claude-acpx backend"),
+            "WhatsApp fallback should include session action command: {}",
+            sent[0].content
+        );
+        assert!(
+            sent[0].content.contains("!approve req-1") && sent[0].content.contains("!deny req-1"),
+            "WhatsApp fallback should include both approval commands: {}",
+            sent[0].content
+        );
+    }
+
+    #[tokio::test]
     async fn test_group_targets_do_not_share_context_between_agents() {
         let mut config = (*make_test_config(|_| {})).clone();
         config.agents = vec![

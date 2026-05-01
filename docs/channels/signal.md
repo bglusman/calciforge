@@ -73,6 +73,10 @@ allowed_numbers = ["+15555550001"]
 
 # Optional: drop Signal "story" messages. Default false.
 # signal_ignore_stories = false
+
+# Optional: force plain text choice rendering. Default "auto".
+# The current embedded Signal backend is text-first either way.
+# ui_mode = "text"
 ```
 
 | Field | Required | Default | Description |
@@ -83,7 +87,23 @@ allowed_numbers = ["+15555550001"]
 | `signal_group_id` | no | — | Restrict to a specific group; or `"dm"` for DMs only |
 | `signal_ignore_attachments` | no | `false` | Drop attachment-only messages |
 | `signal_ignore_stories` | no | `false` | Drop story messages |
+| `ui_mode` | no | `"auto"` | Reserved for channel-native controls; set `"text"` to force plain text fallback |
 | `scan_messages` | no | `false` | Enable inbound adversarial content scanning |
+
+## Channel UI
+
+Signal currently renders Calciforge choices as deterministic text fallback.
+Agent choices, model choices, session lists, and approval decisions all use the
+shared choice model, so replies include actionable commands such as
+`!agent switch <id>`, `!model use <id>`, `!switch <agent> <session>`,
+`!approve <id>`, and `!deny <id>`.
+
+The embedded transport sends through `zeroclawlabs::Channel::SendMessage`,
+which exposes text, recipient, threading, cancellation, and attachments, but
+does not expose Signal-native quick replies or buttons. If that backend grows a
+safe native-control API later, Calciforge can render the same shared choices
+without changing the command handlers. Set `ui_mode = "text"` to keep this
+channel text-only for bridge-heavy or constrained clients.
 
 ## Migrating from the legacy webhook config
 
@@ -94,8 +114,9 @@ through a separate ZeroClaw daemon. If your config still has these fields:
 - `webhook_listen`, `webhook_path`, `webhook_secret`
 
 …remove them from the `[[channels]]` block where `kind = "signal"` and
-replace with the new shape above. (The same fields are still used by the
-WhatsApp channel and should stay in any `kind = "whatsapp"` block.)
+replace with the new shape above. These fields are also rejected by the
+embedded WhatsApp channel; neither Signal nor WhatsApp uses a Calciforge webhook
+sidecar in the current schema.
 
 ## Step 2: Identity config
 

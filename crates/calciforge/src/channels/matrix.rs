@@ -1445,13 +1445,28 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let message =
-            OutboundMessage::text("Choose").with_control(crate::messages::ChoiceControl::new(
+        let message = OutboundMessage::text("Choose")
+            .with_control(crate::messages::ChoiceControl::new(
                 "Options",
-                vec![crate::messages::ChoiceOption::new(
+                vec![crate::messages::ChoiceOption::agent(
                     "Librarian",
-                    "!agent switch librarian",
+                    "librarian",
                 )],
+            ))
+            .with_control(crate::messages::ChoiceControl::new(
+                "Attach to a session",
+                vec![crate::messages::ChoiceOption::session(
+                    "backend",
+                    "claude-acpx",
+                    "backend",
+                )],
+            ))
+            .with_control(crate::messages::ChoiceControl::new(
+                "Choose an approval action",
+                vec![
+                    crate::messages::ChoiceOption::approve("req-1"),
+                    crate::messages::ChoiceOption::deny("req-1"),
+                ],
             ));
 
         let result = send_matrix_outbound_message(
@@ -1471,6 +1486,9 @@ mod tests {
         assert!(body.contains("Choose"), "{body}");
         assert!(body.contains("Options"), "{body}");
         assert!(body.contains("!agent switch librarian"), "{body}");
+        assert!(body.contains("!switch claude-acpx backend"), "{body}");
+        assert!(body.contains("!approve req-1"), "{body}");
+        assert!(body.contains("!deny req-1"), "{body}");
     }
 
     #[tokio::test]
