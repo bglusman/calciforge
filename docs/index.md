@@ -275,8 +275,8 @@ manually, run `fnox set/list/tui` from `~/.config/calciforge` or set
 ```toml
 # fnox.toml — the secret store the gateway resolves through
 [secrets]
-OPENAI_API_KEY = { encrypted = "age-encryption.org/v1..." }
-ANTHROPIC_API_KEY = { provider = "1password", key = "claude" }
+OPENAI_API_KEY = { provider = "calciforge-local", value = "age-encryption.org/v1..." }
+ANTHROPIC_API_KEY = { provider = "1password", value = "claude" }
 NPM_TOKEN = { default = "value-from-env-or-prompt" }
 ```
 
@@ -312,9 +312,13 @@ Paste storage uses the Calciforge fnox working directory, defaulting to
 `~/.config/calciforge`, while provider definitions live in fnox's global
 config at `~/.config/fnox/config.toml`. On macOS, the installer creates a
 `calciforge-local` Keychain provider when fnox has no provider configured.
-To bring your own provider, preconfigure fnox globally or set
-`CALCIFORGE_FNOX_PROVIDER_NAME` and `CALCIFORGE_FNOX_PROVIDER_TYPE` before
-running the installer.
+On Linux, it creates a local `age` provider with a dedicated Ed25519 key at
+`~/.config/calciforge/secrets/fnox-age-ed25519` and injects
+`FNOX_AGE_KEY_FILE` into the Calciforge service. To bring your own provider,
+preconfigure fnox globally or set `CALCIFORGE_FNOX_PROVIDER_NAME`,
+`CALCIFORGE_FNOX_PROVIDER_TYPE`, `CALCIFORGE_FNOX_AGE_RECIPIENT`, or
+`FNOX_AGE_KEY_FILE` before running the installer. Protect the generated age
+key like any other local decrypt key.
 
 ### Outbound traffic gating
 

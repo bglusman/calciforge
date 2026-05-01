@@ -1482,7 +1482,7 @@ fn secure_help() -> String {
         "Calciforge and fnox can share the same fnox.toml/profile. Installing",
         "fnox is still useful for manual `fnox set/list/tui` operations and as",
         "the default local secret backend for paste-server. On macOS the installer",
-        "adds a calciforge-local Keychain provider when fnox has no provider.",
+        "adds a Keychain provider; on Linux it creates a local age provider.",
     ]
     .join("\n")
 }

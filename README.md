@@ -62,9 +62,12 @@ can override it), so `cd ~/.config/calciforge && fnox set/list/tui`
 manages the same store Calciforge resolves through. On macOS, if no
 global fnox provider is configured, the installer adds a
 `calciforge-local` Keychain provider under `~/.config/fnox/config.toml`;
-set `CALCIFORGE_FNOX_PROVIDER_NAME` and
-`CALCIFORGE_FNOX_PROVIDER_TYPE` before install to choose a different
-provider.
+on Linux, it creates a local `age` provider backed by an Ed25519 key in
+`~/.config/calciforge/secrets/fnox-age-ed25519`. Set
+`CALCIFORGE_FNOX_PROVIDER_NAME`, `CALCIFORGE_FNOX_PROVIDER_TYPE`,
+`CALCIFORGE_FNOX_AGE_RECIPIENT`, or `FNOX_AGE_KEY_FILE` before install
+to bring your own provider/key material. Treat the generated age key as
+secret: anyone who can read it can decrypt the local fnox store.
 
 The installer runs `calciforge doctor --no-network` after installing
 local services when a config file is present. Run `calciforge doctor`
