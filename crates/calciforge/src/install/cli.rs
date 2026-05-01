@@ -108,7 +108,7 @@ pub fn parse_install_target(args: &InstallArgs) -> Result<InstallTarget> {
 /// | Adapter | Required | Optional |
 /// |---------|----------|----------|
 /// | `zeroclaw-native` | `host`, `endpoint` | `key` |
-/// | `openclaw-channel` | `host`, `endpoint`, `auth_token`, `reply_webhook`, `reply_auth_token` | `key`, `policy_endpoint`, `proxy_endpoint`, `no_proxy` |
+/// | `openclaw-channel` | `host`, `endpoint`, `auth_token` or `auth_token_file`, `reply_webhook`, `reply_auth_token` or `reply_auth_token_file` | `key`, `policy_endpoint`, `proxy_endpoint`, `no_proxy` |
 /// | `openai-compat` | `endpoint` | — |
 /// | `webhook` | `endpoint` | `format` (default: `json`) |
 /// | `cli` | `command` | — |
@@ -121,7 +121,8 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
 
     let adapter = parse_adapter(&adapter_str, &kv, &redacted_spec)?;
 
-    // SSH fields — only required for remotely-configurable adapters.
+    // Managed-target fields. Use host=local for same-machine runtime setup;
+    // otherwise the executor reaches the target over SSH.
     let host = kv.get("host").cloned().unwrap_or_default();
     let ssh_key = kv.get("key").map(PathBuf::from);
 
@@ -133,14 +134,30 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         );
     }
 
-    let auth_token = kv.get("auth_token").or_else(|| kv.get("api_key")).cloned();
+    let auth_token = if let Some(value) = kv.get("auth_token").or_else(|| kv.get("api_key")) {
+        Some(value.clone())
+    } else {
+        resolve_token_file(
+            kv.get("auth_token_file").or_else(|| kv.get("api_key_file")),
+            "auth_token_file",
+            &redacted_spec,
+        )?
+    };
     let reply_webhook = kv.get("reply_webhook").cloned();
-    let reply_auth_token = kv.get("reply_auth_token").cloned();
+    let reply_auth_token = if let Some(value) = kv.get("reply_auth_token") {
+        Some(value.clone())
+    } else {
+        resolve_token_file(
+            kv.get("reply_auth_token_file"),
+            "reply_auth_token_file",
+            &redacted_spec,
+        )?
+    };
 
     if matches!(adapter, ClawKind::OpenClawChannel) {
         if auth_token.as_deref().is_none_or(str::is_empty) {
             bail!(
-                "adapter 'openclaw-channel' requires 'auth_token=...' (or 'api_key=...') in spec: {}",
+                "adapter 'openclaw-channel' requires 'auth_token=...'/'auth_token_file=...' (or api_key/api_key_file) in spec: {}",
                 redacted_spec
             );
         }
@@ -152,7 +169,7 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         }
         if reply_auth_token.as_deref().is_none_or(str::is_empty) {
             bail!(
-                "adapter 'openclaw-channel' requires 'reply_auth_token=...' in spec: {}",
+                "adapter 'openclaw-channel' requires 'reply_auth_token=...' or 'reply_auth_token_file=...' in spec: {}",
                 redacted_spec
             );
         }
@@ -278,8 +295,24 @@ fn redact_claw_spec(spec: &str) -> String {
 fn is_secret_spec_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
-        "auth_token" | "api_key" | "reply_auth_token" | "token" | "bearer_token"
+        "auth_token"
+            | "api_key"
+            | "reply_auth_token"
+            | "token"
+            | "bearer_token"
+            | "auth_token_file"
+            | "api_key_file"
+            | "reply_auth_token_file"
     )
+}
+
+fn resolve_token_file(path: Option<&String>, field: &str, spec: &str) -> Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let value = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {field} in spec: {spec}"))?;
+    Ok(Some(value.trim().to_string()))
 }
 
 /// Extract a required key from the KV map.
@@ -379,6 +412,44 @@ mod tests {
             Some("http://127.0.0.1:8888")
         );
         assert_eq!(claw.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
+    }
+
+    #[test]
+    fn parse_openclaw_claw_reads_token_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "calciforge-install-cli-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("inbound-token");
+        let reply_path = dir.join("reply-token");
+        std::fs::write(&auth_path, "inbound-from-file\n").unwrap();
+        std::fs::write(&reply_path, "reply-from-file\n").unwrap();
+
+        let spec = format!(
+            "name=custodian,adapter=openclaw-channel,host=local,endpoint=http://127.0.0.1:18789,auth_token_file={},reply_webhook=http://127.0.0.1:18797/hooks/reply,reply_auth_token_file={}",
+            auth_path.display(),
+            reply_path.display()
+        );
+        let claw = parse_claw_spec(&spec).unwrap();
+        assert_eq!(claw.auth_token.as_deref(), Some("inbound-from-file"));
+        assert_eq!(claw.reply_auth_token.as_deref(), Some("reply-from-file"));
+
+        let _ = std::fs::remove_file(auth_path);
+        let _ = std::fs::remove_file(reply_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn parse_openclaw_claw_prefers_inline_tokens_over_token_files() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=local,endpoint=http://127.0.0.1:18789,auth_token=inline-inbound,auth_token_file=/does/not/exist,reply_webhook=http://127.0.0.1:18797/hooks/reply,reply_auth_token=inline-reply,reply_auth_token_file=/also/missing";
+        let claw = parse_claw_spec(spec).unwrap();
+        assert_eq!(claw.auth_token.as_deref(), Some("inline-inbound"));
+        assert_eq!(claw.reply_auth_token.as_deref(), Some("inline-reply"));
     }
 
     #[test]

@@ -43,9 +43,9 @@ use super::{
         VersionCompatibility,
     },
     ssh::{
-        detect_openclaw_version, detect_zeroclaw_version, remote_path_shell, shell_quote,
-        test_agent_target_connectivity, test_remote_config_access, MockSshClient, RealSshClient,
-        SshClient,
+        detect_openclaw_version, detect_zeroclaw_version, ensure_openclaw_config_file,
+        remote_path_shell, shell_quote, test_agent_target_connectivity, test_remote_config_access,
+        MockSshClient, RealSshClient, SshClient,
     },
 };
 
@@ -286,8 +286,20 @@ async fn install_claw(
     // ── Step 3: Baseline health check ────────────────────────────────────────
     let health_step = run_health_check(claw, deps, InstallStep::HealthCheckBaseline).await;
     let health_failed = health_step.outcome.is_failure();
-    steps.push(health_step);
-    if health_failed {
+    if health_failed && matches!(claw.adapter, ClawKind::OpenClawChannel) {
+        steps.push(StepResult {
+            step: InstallStep::HealthCheckBaseline,
+            outcome: StepOutcome::Warning {
+                _detail: format!(
+                    "{}; proceeding because installer-managed OpenClaw may not be running yet",
+                    health_step.outcome.summary()
+                ),
+            },
+        });
+    } else {
+        steps.push(health_step);
+    }
+    if health_failed && !matches!(claw.adapter, ClawKind::OpenClawChannel) {
         // Baseline health check failure: abort but don't rollback (nothing changed yet).
         return ClawInstallResult {
             name: claw.name.clone(),
@@ -440,6 +452,18 @@ fn run_ssh_connectivity(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
 fn run_remote_config_access(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
     let key = claw.ssh_key.as_deref();
     let config_path = remote_config_path(claw);
+    if matches!(claw.adapter, ClawKind::OpenClawChannel) {
+        if let Err(e) =
+            ensure_openclaw_config_file(deps.ssh.as_ref(), &claw.host, key, &config_path)
+        {
+            return StepResult {
+                step: InstallStep::RemoteConfigAccess,
+                outcome: StepOutcome::Failed {
+                    error: e.to_string(),
+                },
+            };
+        }
+    }
     match test_remote_config_access(deps.ssh.as_ref(), &claw.host, key, &config_path) {
         Ok(()) => StepResult {
             step: InstallStep::RemoteConfigAccess,
@@ -988,6 +1012,10 @@ fn configure_remote_openclaw_proxy_env(
     }
 
     let service_mode = detect_openclaw_service_mode(claw, deps)?;
+    if service_mode == "launchd" {
+        return configure_launchd_openclaw_proxy_env(claw, deps, proxy_endpoint, &no_proxy);
+    }
+
     let (dropin_dir, dropin_path, reload_restart) = match service_mode {
         "user" => (
             "~/.config/systemd/user/openclaw-gateway.service.d",
@@ -1045,6 +1073,65 @@ fn configure_remote_openclaw_proxy_env(
         "configured OpenClaw {} service HTTP_PROXY and noninteractive pnpm env via systemd drop-in",
         service_mode
     )))
+}
+
+fn configure_launchd_openclaw_proxy_env(
+    claw: &ClawTarget,
+    deps: &ExecutorDeps,
+    proxy_endpoint: &str,
+    no_proxy: &str,
+) -> Result<Option<String>> {
+    let key = claw.ssh_key.as_deref();
+    let wrapper_path = "~/.config/calciforge/openclaw-gateway-wrapper.sh";
+    let wrapper_dir = "~/.config/calciforge";
+    let mkdir = deps.ssh.run(
+        &claw.host,
+        key,
+        &format!("mkdir -p {}", remote_path_shell(wrapper_dir)),
+    )?;
+    if !mkdir.success {
+        bail!(
+            "failed to create OpenClaw launchd wrapper directory on {}: {}",
+            claw.host,
+            mkdir.stderr.trim()
+        );
+    }
+
+    let wrapper = format!(
+        "#!/bin/sh\n\
+         # Managed by calciforge install. Do not put secrets in this file.\n\
+         export HTTP_PROXY={}\n\
+         export NO_PROXY={}\n\
+         export CI=true\n\
+         export PNPM_CONFIG_CONFIRM_MODULES_PURGE=false\n\
+         exec openclaw \"$@\"\n",
+        shell_export_value(proxy_endpoint),
+        shell_export_value(no_proxy)
+    );
+    deps.ssh
+        .write_file(&claw.host, key, wrapper_path, &wrapper)
+        .map_err(|e| anyhow::anyhow!("failed to write OpenClaw launchd wrapper: {}", e))?;
+    let chmod = deps.ssh.run(
+        &claw.host,
+        key,
+        &format!("chmod 700 {}", remote_path_shell(wrapper_path)),
+    )?;
+    if !chmod.success {
+        bail!(
+            "failed to mark OpenClaw launchd wrapper executable on {}: {}",
+            claw.host,
+            chmod.stderr.trim()
+        );
+    }
+
+    install_or_restart_launchd_openclaw_service(claw, deps, Some(wrapper_path))?;
+    Ok(Some(
+        "configured OpenClaw launchd service HTTP_PROXY via managed wrapper".to_string(),
+    ))
+}
+
+fn shell_export_value(value: &str) -> String {
+    shell_quote(value)
 }
 
 fn merged_openclaw_no_proxy(claw: &ClawTarget) -> Result<String> {
@@ -1123,6 +1210,11 @@ fn push_no_proxy_entry(entries: &mut Vec<String>, value: &str) {
 fn restart_remote_openclaw_service(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String> {
     let key = claw.ssh_key.as_deref();
     let service_mode = detect_openclaw_service_mode(claw, deps)?;
+    if service_mode == "launchd" {
+        install_or_restart_launchd_openclaw_service(claw, deps, None)?;
+        return Ok("installed/restarted OpenClaw launchd service".to_string());
+    }
+
     let restart = match service_mode {
         "user" => {
             "systemctl --user daemon-reload && systemctl --user restart openclaw-gateway.service"
@@ -1150,7 +1242,12 @@ fn detect_openclaw_service_mode(claw: &ClawTarget, deps: &ExecutorDeps) -> Resul
     let detect = deps.ssh.run(
         &claw.host,
         key,
-        "if systemctl is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo user; elif systemctl cat openclaw-gateway.service >/dev/null 2>&1; then echo system; elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then echo user; else echo missing; exit 42; fi",
+        "if [ \"$(uname -s 2>/dev/null || true)\" = Darwin ]; then echo launchd; \
+         elif systemctl is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo system; \
+         elif systemctl --user is-active --quiet openclaw-gateway.service >/dev/null 2>&1; then echo user; \
+         elif systemctl cat openclaw-gateway.service >/dev/null 2>&1; then echo system; \
+         elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then echo user; \
+         else echo missing; exit 42; fi",
     )?;
     if !detect.success {
         bail!(
@@ -1160,6 +1257,7 @@ fn detect_openclaw_service_mode(claw: &ClawTarget, deps: &ExecutorDeps) -> Resul
         );
     }
     match detect.stdout.trim() {
+        "launchd" => Ok("launchd"),
         "user" => Ok("user"),
         "system" => Ok("system"),
         other => bail!(
@@ -1168,6 +1266,36 @@ fn detect_openclaw_service_mode(claw: &ClawTarget, deps: &ExecutorDeps) -> Resul
             other
         ),
     }
+}
+
+fn install_or_restart_launchd_openclaw_service(
+    claw: &ClawTarget,
+    deps: &ExecutorDeps,
+    wrapper_path: Option<&str>,
+) -> Result<()> {
+    let key = claw.ssh_key.as_deref();
+    let port = endpoint_port(&claw.endpoint).unwrap_or(18789);
+    let mut install = format!("openclaw gateway install --force --port {port}");
+    if let Some(wrapper_path) = wrapper_path {
+        install.push_str(" --wrapper ");
+        install.push_str(&remote_path_shell(wrapper_path));
+    }
+    let command = format!(
+        "set -eu; command -v openclaw >/dev/null 2>&1; {install}; openclaw gateway restart || openclaw gateway start"
+    );
+    let out = deps.ssh.run(&claw.host, key, &command)?;
+    if !out.success {
+        bail!(
+            "failed to install/restart OpenClaw launchd service on {}: {}",
+            claw.host,
+            out.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+fn endpoint_port(endpoint: &str) -> Option<u16> {
+    Url::parse(endpoint).ok()?.port_or_known_default()
 }
 
 fn systemd_environment_line(key: &str, value: &str) -> Result<String> {
@@ -1446,6 +1574,8 @@ mod tests {
         let ssh = MockSshClient::new();
         // connectivity OK
         ssh.push_success("OK\n");
+        // OpenClaw clean-install config bootstrap
+        ssh.push_success("OK\n");
         // remote config permission preflight
         ssh.push_success("OK\n");
         // backup
@@ -1552,6 +1682,7 @@ mod tests {
 
         let ssh = MockSshClient::new();
         ssh.push_success("OK\n");
+        ssh.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh.push_success("OK\n");
         ssh.push_success("");
         ssh.push_success("EXISTS\n");
@@ -1640,6 +1771,7 @@ mod tests {
 
         let ssh = MockSshClient::new();
         ssh.push_success("OK\n"); // connectivity
+        ssh.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh.push_success("OK\n"); // remote config permission preflight
         ssh.push_success(""); // backup cp
         ssh.push_success("EXISTS\n"); // backup verify
@@ -1674,38 +1806,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn baseline_health_failure_aborts_without_rollback() {
-        let claw = ClawTarget {
-            name: "down-claw".into(),
-            adapter: ClawKind::OpenClawChannel,
-            host: "user@host".into(),
-            ssh_key: Some(PathBuf::from("/keys/id_ed25519")),
-            endpoint: "http://host:18789".into(),
-            policy_endpoint: None,
-            auth_token: Some("inbound-token".into()),
-            reply_webhook: Some("http://calciforge.host:18797/hooks/reply".into()),
-            reply_auth_token: Some("reply-token".into()),
-            proxy_endpoint: None,
-            no_proxy: None,
-        };
-
-        let ssh = MockSshClient::new();
-        ssh.push_success("OK\n"); // connectivity succeeds
-
+    async fn baseline_health_failure_warns_for_managed_openclaw() {
+        let (claw, ssh, _health) = make_openclaw_claw(true);
         let health = MockHealthChecker::new();
-        // First (and only) health check: baseline fails → abort
         health.push_err("target is down");
+        health.push_ok();
 
         let args = InstallArgs::default();
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
-        assert!(!result.success);
-        // Rollback not applicable — nothing was changed yet
-        assert!(matches!(
-            result.rollback_status,
-            Some(RollbackStatus::NotApplicable)
-        ));
+        assert!(
+            result.success,
+            "managed OpenClaw install should continue past pre-start health failure: {:?}",
+            result.steps
+        );
+        let baseline = result
+            .steps
+            .iter()
+            .find(|s| s.step == InstallStep::HealthCheckBaseline)
+            .expect("baseline step");
+        assert!(
+            matches!(baseline.outcome, StepOutcome::Warning { .. }),
+            "baseline health should be a warning for managed OpenClaw, got {:?}",
+            baseline.outcome
+        );
     }
 
     #[tokio::test]
@@ -1759,6 +1884,7 @@ mod tests {
 
         let ssh = MockSshClient::new();
         ssh.push_success("OK\n"); // connectivity
+        ssh.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh.push_response(crate::install::ssh::SshOutput {
             stdout: String::new(),
             stderr: "remote config directory is not writable".to_string(),
@@ -1789,6 +1915,7 @@ mod tests {
         // We need to repopulate the mock since make_openclaw_claw pre-loads responses.
         let ssh2 = MockSshClient::new();
         ssh2.push_success("OK\n"); // connectivity
+        ssh2.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh2.push_success("OK\n"); // remote config permission preflight
                                    // version detection (jq) — this is a read
         ssh2.push_success("2026.3.13\n");
@@ -2180,6 +2307,53 @@ mod tests {
                 .command
                 .contains("systemctl --user restart openclaw-gateway.service")),
             "expected user service restart, got {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_remote_config_installs_launchd_openclaw_service_on_macos() {
+        let claw = ClawTarget {
+            name: "calciforge".into(),
+            adapter: ClawKind::OpenClawChannel,
+            host: "local".into(),
+            ssh_key: None,
+            endpoint: "http://127.0.0.1:18789".into(),
+            policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://127.0.0.1:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
+            proxy_endpoint: None,
+            no_proxy: None,
+        };
+
+        let ssh = Arc::new(MockSshClient::new());
+        ssh.push_success(r#"{"version": "2026.4.29"}"#);
+        ssh.push_success("");
+        ssh.push_success(r#"{"version":"2026.4.29","plugins":{"enabled":true,"entries":{"calciforge-channel":{"enabled":true,"config":{"authToken":"inbound-token","replyWebhook":"http://127.0.0.1:18797/hooks/reply","replyAuthToken":"reply-token"}}}}}"#);
+        push_openclaw_channel_plugin_install(&ssh);
+        ssh.push_success("launchd\n");
+        ssh.push_success("");
+
+        let deps = ExecutorDeps {
+            ssh: ssh.clone(),
+            health: Arc::new(MockHealthChecker::new()),
+        };
+        let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
+        assert!(detail.contains("launchd service"));
+
+        let calls = ssh.recorded_calls();
+        assert!(
+            calls.iter().any(|c| c
+                .command
+                .contains("openclaw gateway install --force --port 18789")),
+            "expected OpenClaw launchd install command, got {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.command.contains("openclaw gateway restart")
+                    || c.command.contains("openclaw gateway start")),
+            "expected OpenClaw launchd restart/start command, got {calls:?}"
         );
     }
 

@@ -257,6 +257,12 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
         }
         "openclaw-channel" => {
             let token = agent_token()?;
+            let reply_auth_token = resolve_optional_agent_token_file(
+                agent,
+                agent.reply_auth_token.as_deref(),
+                agent.reply_auth_token_file.as_deref(),
+                "reply_auth_token_file",
+            )?;
             let openclaw_agent_id = agent
                 .openclaw_agent_id
                 .clone()
@@ -266,7 +272,7 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 token,
                 openclaw_agent_id,
                 agent.reply_port,
-                agent.reply_auth_token.clone(),
+                reply_auth_token,
                 agent.timeout_ms,
             )))
         }
@@ -420,6 +426,22 @@ fn resolve_agent_token(agent: &AgentConfig, allow_env: bool) -> Result<String, S
     Ok(String::new())
 }
 
+fn resolve_optional_agent_token_file(
+    agent: &AgentConfig,
+    inline: Option<&str>,
+    file: Option<&std::path::Path>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    if let Some(path) = file {
+        let path = crate::config::expand_tilde(&path.to_string_lossy());
+        let token = std::fs::read_to_string(path)
+            .map_err(|e| format!("agent '{}': failed to read {field}: {e}", agent.id))?;
+        return Ok(Some(token.trim().to_string()));
+    }
+
+    Ok(inline.map(str::to_string))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -444,6 +466,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -466,6 +489,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -488,6 +512,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: Some("/usr/local/bin/ironclaw".to_string()),
             args: Some(vec![
                 "run".to_string(),
@@ -549,6 +574,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -574,6 +600,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -599,6 +626,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -626,6 +654,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -652,6 +681,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: Some("claude".to_string()),
             args: Some(vec!["--acp".to_string()]),
             env: None,
@@ -682,6 +712,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None, // missing!
             args: None,
             env: None,
@@ -709,6 +740,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None, // missing!
             args: None,
             env: None,
@@ -793,6 +825,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -822,6 +855,37 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+
+        let adapter = build_adapter(&agent).expect("should build");
+        assert_eq!(adapter.kind(), "openclaw-channel");
+    }
+
+    #[test]
+    fn test_openclaw_channel_accepts_reply_auth_token_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reply_file = dir.path().join("reply-token");
+        std::fs::write(&reply_file, "reply-from-file\n").expect("write reply token");
+        let agent = AgentConfig {
+            id: "gateway-reply-file".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://localhost".to_string(),
+            timeout_ms: None,
+            model: None,
+            auth_token: None,
+            api_key: Some("inbound-token".to_string()),
+            api_key_file: None,
+            openclaw_agent_id: None,
+            allow_model_override: None,
+            reply_port: Some(18809),
+            reply_auth_token: None,
+            reply_auth_token_file: Some(reply_file),
             command: None,
             args: None,
             env: None,
@@ -848,6 +912,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -875,6 +940,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -898,6 +964,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,
@@ -934,6 +1001,7 @@ mod tests {
             allow_model_override: None,
             reply_port: None,
             reply_auth_token: None,
+            reply_auth_token_file: None,
             command: None,
             args: None,
             env: None,

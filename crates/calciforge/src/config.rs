@@ -270,6 +270,10 @@ pub struct AgentConfig {
     /// Optional bearer token required on POST /hooks/reply callbacks.
     #[serde(default)]
     pub reply_auth_token: Option<String>,
+    /// Path to a file containing the OpenClaw reply callback bearer token.
+    /// Prefer this over inline `reply_auth_token` for managed local installs.
+    #[serde(default)]
+    pub reply_auth_token_file: Option<PathBuf>,
     /// Path to binary for `kind = "cli"`.
     pub command: Option<String>,
     /// Argument template for `kind = "cli"`. `{message}` is substituted at dispatch time.
@@ -1698,6 +1702,31 @@ timeout_ms = 60000
             ))
         );
         assert!(agent.api_key.is_none());
+    }
+
+    #[test]
+    fn test_agent_reply_auth_token_file_field() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "gateway"
+kind = "openclaw-channel"
+endpoint = "http://127.0.0.1:18083"
+api_key_file = "/etc/calciforge/secrets/gateway-token"
+reply_auth_token_file = "/etc/calciforge/secrets/gateway-reply-token"
+timeout_ms = 60000
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("parse failed");
+        let agent = &cfg.agents[0];
+        assert_eq!(
+            agent.reply_auth_token_file.as_deref(),
+            Some(std::path::Path::new(
+                "/etc/calciforge/secrets/gateway-reply-token"
+            ))
+        );
+        assert!(agent.reply_auth_token.is_none());
     }
 
     #[test]

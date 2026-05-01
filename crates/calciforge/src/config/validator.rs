@@ -99,9 +99,9 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                         agent.id
                     ));
                 }
-                if agent.reply_auth_token.is_none() {
+                if agent.reply_auth_token.is_none() && agent.reply_auth_token_file.is_none() {
                     result.add_warning(format!(
-                        "Agent '{}' uses openclaw-channel without reply_auth_token; callback replies should be bearer-protected outside isolated local tests",
+                        "Agent '{}' uses openclaw-channel without reply_auth_token/reply_auth_token_file; callback replies should be bearer-protected outside isolated local tests",
                         agent.id
                     ));
                 }
@@ -565,6 +565,28 @@ kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
 api_key = "test-gateway-token"
 reply_auth_token = "test-reply-token"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "openclaw-channel should validate; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn openclaw_channel_agent_validates_with_callback_auth_file() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "custodian"
+kind = "openclaw-channel"
+endpoint = "http://127.0.0.1:18789"
+api_key = "test-gateway-token"
+reply_auth_token_file = "/tmp/calciforge-test-reply-token"
 "#;
         let config = parse(fixture);
         let result = validate_config(&config);

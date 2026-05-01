@@ -149,6 +149,10 @@ pub struct RealSshClient;
 
 impl SshClient for RealSshClient {
     fn run(&self, host: &str, key: Option<&Path>, command: &str) -> Result<SshOutput> {
+        if is_local_host(host) {
+            return run_local_shell(command);
+        }
+
         let mut cmd = Command::new("ssh");
         cmd.arg("-o")
             .arg("StrictHostKeyChecking=accept-new")
@@ -180,6 +184,40 @@ impl SshClient for RealSshClient {
             success,
         })
     }
+}
+
+fn run_local_shell(command: &str) -> Result<SshOutput> {
+    let output = Command::new("sh")
+        .arg("-lc")
+        .arg(command)
+        .output()
+        .with_context(|| "failed to spawn local shell for managed install target")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let exit_code = output.status.code().unwrap_or(-1);
+    let success = output.status.success();
+
+    Ok(SshOutput {
+        stdout,
+        stderr,
+        exit_code,
+        success,
+    })
+}
+
+pub fn is_local_host(host: &str) -> bool {
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("local") || host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if matches!(host, "127.0.0.1" | "::1") {
+        return true;
+    }
+
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    let host = host.split_once(':').map_or(host, |(host, _)| host);
+    matches!(host, "127.0.0.1" | "::1")
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +483,39 @@ pub fn test_remote_config_access(
     Ok(())
 }
 
+/// Ensure a managed OpenClaw target has a config file before the normal
+/// permission preflight. Clean installs often have the CLI package but no
+/// `openclaw.json` until the gateway is first installed or configured.
+pub fn ensure_openclaw_config_file(
+    client: &dyn SshClient,
+    host: &str,
+    key: Option<&Path>,
+    remote_path: &str,
+) -> Result<()> {
+    let path = remote_path_shell(remote_path);
+    let cmd = format!(
+        "set -eu; command -v openclaw >/dev/null 2>&1 || {{ echo openclaw CLI not found >&2; exit 44; }}; \
+         config_path={path}; config_dir=$(dirname -- \"$config_path\"); mkdir -p \"$config_dir\"; \
+         if ! test -e \"$config_path\"; then \
+           printf '%s\n' '{{\"gateway\":{{\"mode\":\"local\",\"bind\":\"loopback\",\"auth\":{{\"mode\":\"none\"}}}},\"plugins\":{{\"entries\":{{}}}}}}' > \"$config_path\"; \
+         fi; echo OK"
+    );
+    let out = client
+        .run(host, key, &cmd)
+        .with_context(|| format!("OpenClaw config bootstrap on '{host}' failed"))?;
+
+    if !out.success {
+        bail!(
+            "OpenClaw config bootstrap on '{}' failed (exit {}): {}",
+            host,
+            out.exit_code,
+            out.stderr.trim()
+        );
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Version detection
 // ---------------------------------------------------------------------------
@@ -459,6 +530,14 @@ pub fn detect_openclaw_version(
     key: Option<&Path>,
     config_path: &str,
 ) -> Result<Option<String>> {
+    let cli_cmd =
+        "openclaw --version 2>/dev/null | grep -Eo '[0-9]{4}\\.[0-9]+\\.[0-9]+' | head -1 || true";
+    let out = client.run(host, key, cli_cmd)?;
+    let version = out.stdout.trim().to_string();
+    if !version.is_empty() {
+        return Ok(Some(version));
+    }
+
     // Try jq first (most reliable).
     let jq_cmd = format!(
         "jq -r '.meta.lastTouchedVersion // .version // empty' {} 2>/dev/null || true",
@@ -603,6 +682,15 @@ mod tests {
     }
 
     #[test]
+    fn local_host_detection_accepts_common_local_targets() {
+        assert!(is_local_host("local"));
+        assert!(is_local_host("localhost"));
+        assert!(is_local_host("admin@127.0.0.1:22"));
+        assert!(is_local_host("::1"));
+        assert!(!is_local_host("admin@example.internal"));
+    }
+
+    #[test]
     fn mock_ssh_consume_responses_in_order() {
         let client = MockSshClient::new();
         client.push_success("first");
@@ -686,6 +774,18 @@ mod tests {
         let calls = client.recorded_calls();
         assert!(calls[0].command.contains("test -r"));
         assert!(calls[0].command.contains("$HOME/.openclaw/openclaw.json"));
+    }
+
+    #[test]
+    fn ensure_openclaw_config_file_creates_missing_config() {
+        let client = MockSshClient::new();
+        client.push_success("OK\n");
+
+        ensure_openclaw_config_file(&client, "local", None, "~/.openclaw/openclaw.json").unwrap();
+        let calls = client.recorded_calls();
+        assert!(calls[0].command.contains("command -v openclaw"));
+        assert!(calls[0].command.contains("openclaw.json"));
+        assert!(calls[0].command.contains("\"plugins\""));
     }
 
     #[test]

@@ -199,6 +199,7 @@ pub struct InstallTarget {
 /// This list is intentionally conservative: unknown versions get a warning,
 /// not a hard stop (operator can override with `--yes`).
 const OPENCLAW_COMPATIBLE_VERSIONS: &[&str] = &[
+    "2026.4.29",
     "2026.3.13",
     "2026.3.14",
     "2026.3.15",

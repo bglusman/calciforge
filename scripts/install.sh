@@ -33,6 +33,17 @@ SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
 SECURITY_PROXY_MITM_ENABLED="${SECURITY_PROXY_MITM_ENABLED:-true}"
 SECURITY_PROXY_CA_CERT="${SECURITY_PROXY_CA_CERT:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca.pem}"
 SECURITY_PROXY_CA_KEY="${SECURITY_PROXY_CA_KEY:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca-key.pem}"
+CALCIFORGE_MANAGED_OPENCLAW="${CALCIFORGE_MANAGED_OPENCLAW:-true}"
+CALCIFORGE_OPENCLAW_NAME="${CALCIFORGE_OPENCLAW_NAME:-openclaw-local}"
+CALCIFORGE_OPENCLAW_AGENT_ID="${CALCIFORGE_OPENCLAW_AGENT_ID:-main}"
+CALCIFORGE_OPENCLAW_PORT="${CALCIFORGE_OPENCLAW_PORT:-18789}"
+CALCIFORGE_OPENCLAW_ENDPOINT="${CALCIFORGE_OPENCLAW_ENDPOINT:-http://127.0.0.1:${CALCIFORGE_OPENCLAW_PORT}}"
+CALCIFORGE_OPENCLAW_REPLY_WEBHOOK="${CALCIFORGE_OPENCLAW_REPLY_WEBHOOK:-http://127.0.0.1:18797/hooks/reply}"
+CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE="${CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/openclaw-inbound-token}"
+CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE="${CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/openclaw-reply-token}"
+CALCIFORGE_OPENCLAW_POLICY_ENDPOINT="${CALCIFORGE_OPENCLAW_POLICY_ENDPOINT:-http://127.0.0.1:${CLASHD_PORT}/evaluate}"
+CALCIFORGE_OPENCLAW_PROXY_ENDPOINT="${CALCIFORGE_OPENCLAW_PROXY_ENDPOINT:-${SECURITY_PROXY_URL}}"
+CALCIFORGE_OPENCLAW_NO_PROXY="${CALCIFORGE_OPENCLAW_NO_PROXY:-${SECURITY_PROXY_NO_PROXY}}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
@@ -815,6 +826,109 @@ ensure_tool() {
     esac
 }
 
+ensure_secret_token_file() {
+    local path="$1" label="$2"
+    mkdir -p "$(dirname "$path")"
+    if [[ -s "$path" ]]; then
+        chmod 600 "$path" 2>/dev/null || true
+        ok "$label token file already present → $path"
+        return 0
+    fi
+    command -v openssl >/dev/null 2>&1 || die "openssl is required to generate $label token"
+    ( umask 077; openssl rand -hex 32 > "$path" )
+    chmod 600 "$path"
+    ok "Generated $label token → $path"
+}
+
+managed_openclaw_claw_spec() {
+    local no_proxy_spec="${CALCIFORGE_OPENCLAW_NO_PROXY//,/;}"
+    local spec="name=${CALCIFORGE_OPENCLAW_NAME},adapter=openclaw-channel,host=local,endpoint=${CALCIFORGE_OPENCLAW_ENDPOINT},auth_token_file=${CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE},reply_webhook=${CALCIFORGE_OPENCLAW_REPLY_WEBHOOK},reply_auth_token_file=${CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE}"
+    if [[ -n "$CALCIFORGE_OPENCLAW_POLICY_ENDPOINT" ]]; then
+        spec="${spec},policy_endpoint=${CALCIFORGE_OPENCLAW_POLICY_ENDPOINT}"
+    fi
+    if [[ -n "$CALCIFORGE_OPENCLAW_PROXY_ENDPOINT" ]]; then
+        spec="${spec},proxy_endpoint=${CALCIFORGE_OPENCLAW_PROXY_ENDPOINT}"
+    fi
+    if [[ -n "$no_proxy_spec" ]]; then
+        spec="${spec},no_proxy=${no_proxy_spec}"
+    fi
+    printf '%s' "$spec"
+}
+
+ensure_managed_openclaw_calciforge_agent() {
+    mkdir -p "$(dirname "$ZC_CONFIG")"
+    python3 - "$ZC_CONFIG" \
+        "$CALCIFORGE_OPENCLAW_NAME" \
+        "$CALCIFORGE_OPENCLAW_ENDPOINT" \
+        "$CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE" \
+        "$CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE" \
+        "$CALCIFORGE_OPENCLAW_AGENT_ID" <<'PYEOF'
+import json
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1]).expanduser()
+agent_id, endpoint, api_key_file, reply_token_file, openclaw_agent_id = sys.argv[2:7]
+
+if not path.exists() or not path.read_text().strip():
+    path.write_text("[calciforge]\nversion = 2\n")
+
+text = path.read_text()
+agent_blocks = re.split(r"(?m)^\[\[agents\]\]\s*$", text)[1:]
+for block in agent_blocks:
+    next_table = re.split(r"(?m)^\[", block, maxsplit=1)[0]
+    match = re.search(r"(?m)^\s*id\s*=\s*[\"']([^\"']+)[\"']", next_table)
+    if match and match.group(1) == agent_id:
+        print(f"calciforge agent {agent_id!r} already present in {path}")
+        raise SystemExit(0)
+
+def q(value: str) -> str:
+    return json.dumps(value)
+
+block = f"""
+
+# Managed by calciforge install for the local OpenClaw gateway.
+[[agents]]
+id = {q(agent_id)}
+kind = "openclaw-channel"
+endpoint = {q(endpoint)}
+api_key_file = {q(api_key_file)}
+reply_auth_token_file = {q(reply_token_file)}
+openclaw_agent_id = {q(openclaw_agent_id)}
+timeout_ms = 600000
+aliases = ["openclaw"]
+registry = {{ display_name = "OpenClaw Local", specialties = ["local", "managed-openclaw"] }}
+"""
+
+with path.open("a", encoding="utf-8") as fh:
+    fh.write(block)
+print(f"added calciforge agent {agent_id!r} to {path}")
+PYEOF
+}
+
+configure_managed_openclaw() {
+    truthy "$CALCIFORGE_MANAGED_OPENCLAW" || {
+        warn "Skipping managed OpenClaw configuration (CALCIFORGE_MANAGED_OPENCLAW=false)"
+        return 0
+    }
+    if [[ ! -x "$BIN_DIR/calciforge" ]]; then
+        warn "Skipping managed OpenClaw configuration — calciforge binary not found at $BIN_DIR/calciforge"
+        return 0
+    fi
+
+    ensure_secret_token_file "$CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE" "OpenClaw inbound"
+    ensure_secret_token_file "$CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE" "OpenClaw reply"
+
+    local claw_spec
+    claw_spec="$(managed_openclaw_claw_spec)"
+    "$BIN_DIR/calciforge" --config "$ZC_CONFIG" install \
+        --calciforge-host local \
+        --claw "$claw_spec" \
+        --yes || die "managed OpenClaw configuration failed; inspect installer output above"
+    ensure_managed_openclaw_calciforge_agent
+}
+
 # ── banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1104,8 +1218,13 @@ run_calciforge_doctor() {
         if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES"; then
             doctor_env=(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
         fi
-        "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
-            || warn "calciforge doctor reported issues; see output above"
+        if [[ ${#doctor_env[@]} -gt 0 ]]; then
+            "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
+                || warn "calciforge doctor reported issues; see output above"
+        else
+            "$BIN_DIR/calciforge" "${doctor_args[@]}" \
+                || warn "calciforge doctor reported issues; see output above"
+        fi
     else
         warn "Skipping calciforge doctor — config or binary not available yet"
     fi
@@ -1122,7 +1241,29 @@ hdr "fnox (secret resolver)"
 ensure_fnox || true
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. calciforge — main agent gateway (channels + router + proxy)
+# 6. openclaw — package bootstrap + managed channel/plugin configuration
+# ══════════════════════════════════════════════════════════════════════════════
+if agent_enabled openclaw; then
+    hdr "openclaw"
+    ensure_npm openclaw || true
+
+    if command -v openclaw &>/dev/null; then
+        python3 - <<'PYEOF' | openclaw approvals set --stdin 2>&1 | head -2
+import json
+print(json.dumps({"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},
+    "agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd",
+        "wc","head","tail","curl","wget","python","python3","node","npm","cargo",
+        "make","cmake","rustc"]}}}))
+PYEOF
+        ok "openclaw exec-approvals configured (restricted+ask, common tools allowlisted)"
+        configure_managed_openclaw
+    else
+        warn "openclaw not available — skipping managed OpenClaw configuration"
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
 # across reboots. Expects config at $CALCIFORGE_CONFIG_HOME/config.toml by
@@ -1210,7 +1351,7 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. Claude Code hook
+# 8. Claude Code hook
 # ══════════════════════════════════════════════════════════════════════════════
 # ── acpx — required for any agent with kind = "acpx" (claude, opencode, kilo, …)
 # Needs to be installed regardless of which specific agent is enabled, since
@@ -1287,7 +1428,7 @@ PYEOF
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. opencode
+# 9. opencode
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled opencode; then
     hdr "opencode"
@@ -1307,27 +1448,7 @@ if agent_enabled opencode; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. openclaw
-# ══════════════════════════════════════════════════════════════════════════════
-if agent_enabled openclaw; then
-    hdr "openclaw"
-    ensure_npm openclaw || true
-
-    if command -v openclaw &>/dev/null; then
-        python3 - <<'PYEOF' | openclaw approvals set --stdin 2>&1 | head -2
-import json
-print(json.dumps({"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},
-    "agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd",
-        "wc","head","tail","curl","wget","python","python3","node","npm","cargo",
-        "make","cmake","rustc"]}}}))
-PYEOF
-        ok "openclaw exec-approvals configured (restricted+ask, common tools allowlisted)"
-        warn "Start openclaw gateway: openclaw gateway --port 18789"
-    fi
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 9. dirac
+# 10. dirac
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled dirac; then
     hdr "dirac"
@@ -1340,7 +1461,7 @@ if agent_enabled dirac; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. zeroclaw
+# 11. zeroclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled zeroclaw; then
     hdr "zeroclaw"

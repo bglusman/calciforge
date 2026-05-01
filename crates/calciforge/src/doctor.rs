@@ -682,6 +682,20 @@ fn check_secret_files(config: &CalciforgeConfig, report: &mut DoctorReport) {
                 &path.to_string_lossy(),
             );
         }
+        if agent.reply_auth_token.is_some() {
+            report.warn(format!(
+                "agent '{}' stores an inline reply_auth_token; prefer reply_auth_token_file",
+                agent.id
+            ));
+        }
+        if let Some(path) = &agent.reply_auth_token_file {
+            check_readable_file(
+                report,
+                "agent reply_auth_token_file",
+                &agent.id,
+                &path.to_string_lossy(),
+            );
+        }
     }
 
     for channel in &config.channels {
@@ -950,9 +964,9 @@ async fn check_agent_wiring(
             }
 
             if agent.kind == "openclaw-channel" {
-                if agent.reply_auth_token.is_none() {
+                if agent.reply_auth_token.is_none() && agent.reply_auth_token_file.is_none() {
                     report.warn(format!(
-                        "agent '{}' uses openclaw-channel without reply_auth_token; callback replies should be bearer-protected outside isolated local tests",
+                        "agent '{}' uses openclaw-channel without reply_auth_token/reply_auth_token_file; callback replies should be bearer-protected outside isolated local tests",
                         agent.id
                     ));
                 }
