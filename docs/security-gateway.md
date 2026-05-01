@@ -5,21 +5,25 @@ title: Security Gateway
 
 # Security Gateway Architecture
 
-The `security-gateway` is the mandatory network enforcement point for agent
-tool and provider traffic. It replaces opt-in sidecar scanning with a
-fail-closed proxy boundary.
+The `security-gateway` is an enforcement point for agent tool and provider
+traffic that actually enters Calciforge-controlled paths. It is not automatic
+coverage for every process on the host. For strong guarantees, route model
+calls through Calciforge's model gateway, give agents explicit Calciforge
+fetch/tool wrappers, or run the agent under a host/container boundary that
+prevents bypass.
 
 ## 🛡️ Traffic Flow
 
-Outbound HTTP/HTTPS traffic from protected agents is routed through the
-gateway. Calciforge's own provider calls, health checks, and LAN control-plane
-traffic should not use ambient `HTTP_PROXY`/`HTTPS_PROXY`; proxying Calciforge
-itself can send model-gateway requests and internal webhooks through the
-security proxy unnecessarily.
+Outbound traffic from protected agents can be routed through the gateway by a
+specific supported integration. Calciforge's own provider calls, health
+checks, and LAN control-plane traffic should not use ambient
+`HTTP_PROXY`/`HTTPS_PROXY`; proxying Calciforge itself can send model-gateway
+requests and internal webhooks through the security proxy unnecessarily or
+recursively.
 
 **Outbound Pipeline:**
 1. **Exfiltration Scan**: Outgoing request bodies are analyzed by the `adversary-detector` for secrets, PII, or adversarial patterns.
-2. **Credential Injection**: The gateway detects the target API (e.g., OpenAI, Anthropic) and injects the required `Authorization` headers from the vault.
+2. **Secret Substitution and Credential Injection**: When the request is visible to Calciforge, the gateway can substitute placeholders such as `{% raw %}{{secret:NAME}}{% endraw %}` and inject provider `Authorization` headers from the vault.
 3. **Forwarding**: The request is forwarded to the destination.
 
 **Inbound Pipeline:**
@@ -52,10 +56,12 @@ gateway routes or explicit fetch/tool integrations for traffic that must be
 scanned.
 
 `HTTPS_PROXY` is not a complete protection story for Calciforge today. Standard
-HTTPS proxying uses CONNECT tunnels; without a trusted MITM CA, the proxy cannot
-inspect request or response bodies or substitute secrets inside the encrypted
-stream. Prefer explicit fetch/tool integration for HTTPS content that must be
-scanned.
+HTTPS proxying uses CONNECT tunnels; the current `security-proxy` does not
+terminate those tunnels and does not run a trusted MITM CA flow. That means it
+cannot inspect request or response bodies or substitute secrets inside the
+encrypted stream. Prefer Calciforge-owned model gateway routes, explicit
+fetch/tool integration, or audited recipe wrappers for HTTPS content that must
+be scanned or rewritten.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
@@ -64,7 +70,7 @@ manager, or enforced with an OS/network tier. Registering Calciforge webhooks
 lets those agents talk back to Calciforge, but it does not by itself prove
 their outbound HTTP is going through `security-proxy`.
 
-For a manually started daemon:
+For a manually started daemon that uses plaintext HTTP:
 
 ```sh
 export HTTP_PROXY=http://127.0.0.1:8888
@@ -76,6 +82,42 @@ checking `security-proxy` logs while the agent makes a known outbound request.
 `calciforge doctor` warns if the Calciforge daemon itself has ambient proxy
 environment, flags explicit subprocess proxy env for verification, and warns
 when configured HTTP/native agent daemons need separate validation.
+
+### What Happened To `HTTP(S)_PROXY`
+
+Calciforge did not remove proxy support; it narrowed where proxy env is treated
+as a reliable security mechanism.
+
+- `HTTP_PROXY` remains useful for tested plaintext HTTP clients. The
+  OpenClaw installer path can write a systemd drop-in with `HTTP_PROXY` via
+  `proxy_endpoint`, after checking that the configured `security-proxy` is
+  reachable from the OpenClaw host.
+- `HTTPS_PROXY` is not set by the installer today because the current proxy
+  does not inspect CONNECT tunnels. Setting it globally can break streaming
+  clients, WebSockets, browser/OAuth flows, and npm-backed adapters while
+  giving a false impression that encrypted payloads are being scanned.
+- Ambient proxy env on the Calciforge daemon itself is avoided because it can
+  route Calciforge provider calls, channel callbacks, health checks, and local
+  control-plane traffic through its own proxy boundary.
+- Secret injection works when the request reaches Calciforge in a visible form:
+  model-gateway/provider routes, explicit fetch/MCP/tool wrappers, audited
+  recipes, or plaintext HTTP intercept mode. It does not happen for an
+  external daemon's direct HTTPS egress unless that daemon is configured to use
+  a future inspected transport or a Calciforge-owned tool path.
+
+Practical tiers:
+
+- Direct Mac Mini/Studio OpenClaw: use the channel plugin for inbound chat,
+  point provider/model calls at Calciforge's model gateway where possible, and
+  use `proxy_endpoint` only for tested plaintext HTTP egress. This is convenient
+  but cooperative; OpenClaw can still bypass Calciforge if it opens its own
+  direct HTTPS connections.
+- Linux service host: add systemd drop-ins, dedicated service users, and later
+  `iptables`/`nftables` rules so the agent process has fewer unmanaged egress
+  paths.
+- Container, LXC, or VM: deny external egress except to Calciforge services.
+  This is the likely preferred profile for agents that use complex transports
+  or ignore proxy environment.
 
 ### Choosing A Boundary
 

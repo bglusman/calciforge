@@ -30,7 +30,7 @@ impl Default for ProxyPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnforcementMode {
-    /// Set HTTP_PROXY/HTTPS_PROXY env vars (Tier 1)
+    /// Set proxy environment for tested cooperative HTTP clients (Tier 1).
     EnvVar,
     /// iptables redirect (Tier 2, not yet implemented)
     Firewall,

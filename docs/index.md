@@ -195,16 +195,17 @@ gateway covers seven overlapping concerns; you can adopt any subset.
 
 ### Security gateway
 
-The core product is the security gateway: a local network enforcement
-point that agents use through explicit fetch/tool integration and, for
-plaintext HTTP, `HTTP_PROXY`. Instead of
-hoping each agent remembers the right rules, Calciforge puts the rules
-at the request boundary where secrets, destinations, model routes, and
-tool permissions can be checked before traffic leaves the machine.
+The core product is the security gateway: a local network enforcement point for
+traffic that enters Calciforge-controlled paths. Agents use it through the
+model gateway, explicit fetch/tool integration, audited recipes, and, for
+tested plaintext HTTP clients, `HTTP_PROXY`. Instead of hoping each agent
+remembers the right rules, Calciforge puts the rules at visible request
+boundaries where secrets, destinations, model routes, and tool permissions can
+be checked before traffic leaves the machine.
 
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection:
-standard HTTPS proxying uses CONNECT tunnels, so encrypted request bodies
-cannot be inspected or rewritten without a separate MITM design.
+standard HTTPS proxying uses CONNECT tunnels, and the current proxy does not
+terminate those tunnels or inspect encrypted request bodies.
 For agents that do not work with cooperative proxy env, Calciforge's
 security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
 audited recipe wrappers, or future container/VM isolation profiles that deny
@@ -697,7 +698,9 @@ that can route Calciforge's own provider and control-plane traffic through
 its security proxy. Do not assume CLI agents can be protected by generic
 `HTTP_PROXY` or `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and
 streaming clients may use CONNECT, WebSockets, or browser-backed auth flows
-that the current proxy cannot inspect and may break.
+that the current proxy cannot inspect and may break. Use model-gateway routes,
+explicit fetch/tool integration, audited recipes, or tested runtime-specific
+wrappers for traffic that must pass through Calciforge.
 
 For externally managed agent daemons that Calciforge does not launch, configure
 a tested proxy path on the agent process or its service manager and validate it

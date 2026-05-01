@@ -44,9 +44,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 ///     (env, fnox, vaultwarden) is an implementation detail of that
 ///     library and varies by branch/feature set; callers here don't
 ///     need to know which layer resolved the value.
-///   - fallback → `proxy_handler` (the MITM forward proxy for every
-///     other URL, with outbound/inbound scanning + credential
-///     injection).
+///   - fallback → `proxy_handler` (plain HTTP forward-proxy style handling
+///     for every other URL, with outbound/inbound scanning + credential
+///     injection when the request body is visible to Calciforge).
 pub fn build_app(state: Arc<SecurityProxy>) -> Router {
     Router::new()
         .route("/health", get(health_handler))

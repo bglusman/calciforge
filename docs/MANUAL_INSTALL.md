@@ -117,7 +117,10 @@ directly unless a stronger host/container boundary is configured.
 
 For an external agent daemon that you have tested with `security-proxy`, set
 proxy environment in that daemon's service manager instead of in
-`/etc/profile.d`. For example:
+`/etc/profile.d`. For OpenClaw hosts managed by `calciforge install`, prefer
+the `--claw ... proxy_endpoint=http://<calciforge-host>:8888` option; the
+installer writes the OpenClaw service drop-in after verifying the proxy is
+reachable from that host. For a manually managed daemon:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8080
@@ -125,10 +128,11 @@ export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 ```
 
 `HTTPS_PROXY` is intentionally omitted from the basic setup because standard
-HTTPS proxying uses CONNECT tunnels that Calciforge cannot inspect without a
-separate MITM design. Use explicit Calciforge fetch/tool integration for HTTPS
-content that must be scanned or rewritten, or run the agent inside a controlled
-container/VM profile that forces egress through Calciforge services.
+HTTPS proxying uses CONNECT tunnels and the current proxy does not terminate or
+inspect those tunnels. Use Calciforge model-gateway routes, explicit
+fetch/tool integration, or audited recipes for HTTPS content that must be
+scanned or rewritten, or run the agent inside a controlled container/VM profile
+that forces egress through Calciforge services.
 
 ## Step 6: Set API credentials
 

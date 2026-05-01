@@ -85,8 +85,8 @@ Do not assume CLI agents can be wrapped by setting `HTTP_PROXY` or
 `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and streaming clients
 may use CONNECT, WebSockets, or browser-backed auth flows that the current
 proxy cannot inspect and may break. Use OpenAI-compatible gateway routes,
-explicit fetch/tool integrations, or tested wrappers for traffic that must pass
-through `security-proxy`.
+explicit fetch/tool integrations, audited recipes, or tested wrappers for
+traffic that must pass through `security-proxy`.
 
 For externally managed agent daemons that Calciforge does not launch, proxying
 has to be configured on that daemon or its service manager and validated
@@ -98,8 +98,9 @@ export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
 Do not treat ambient `HTTPS_PROXY` as a security boundary. HTTPS clients use
-CONNECT tunnels, which Calciforge does not inspect without explicit tool/fetch
-integration.
+CONNECT tunnels; the current proxy does not terminate those tunnels or scan the
+encrypted payload. Use a Calciforge-owned model gateway, fetch/tool path, or
+audited recipe when HTTPS content needs scanning or secret substitution.
 
 ## Tiny Config Sketch
 
