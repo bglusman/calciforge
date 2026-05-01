@@ -1,7 +1,92 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 
 import { testInternals } from "../index.js";
+
+test("dispatches through OpenClaw channel runtime with calciforge command context", async () => {
+  const delivered = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      delivered.push({
+        auth: req.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const replyWebhook = `http://127.0.0.1:${server.address().port}/reply`;
+  const turnContexts = [];
+  const runtime = {
+    config: { current: () => ({ session: {} }) },
+    channel: {
+      session: {
+        resolveStorePath: () => "/tmp/openclaw-test-sessions.json",
+        readSessionUpdatedAt: () => undefined,
+        recordInboundSession: async ({ ctx }) => {
+          turnContexts.push(ctx);
+        },
+      },
+      reply: {
+        resolveEnvelopeFormatOptions: () => ({}),
+        formatInboundEnvelope: ({ body }) => body,
+        finalizeInboundContext: (ctx) => ctx,
+        withReplyDispatcher: async ({ run }) => run(),
+        dispatchReplyFromConfig: async ({ ctx, dispatcher }) => {
+          assert.equal(ctx.Surface, "calciforge");
+          assert.equal(ctx.Provider, "calciforge");
+          assert.equal(ctx.NativeChannelId, "telegram");
+          assert.equal(ctx.CommandAuthorized, true);
+          assert.equal(ctx.CommandSource, "native");
+          assert.equal(ctx.CommandTargetSessionKey, "calciforge:main:brian");
+          dispatcher.sendFinalReply({ text: "Calciforge status: ok" });
+          return { queuedFinal: true, counts: dispatcher.getQueuedCounts() };
+        },
+      },
+      turn: {
+        run: async ({ raw, adapter }) => {
+          const input = adapter.ingest(raw);
+          const resolved = adapter.resolveTurn(input);
+          await resolved.recordInboundSession({
+            storePath: resolved.storePath,
+            sessionKey: resolved.routeSessionKey,
+            ctx: resolved.ctxPayload,
+          });
+          return resolved.runDispatch();
+        },
+      },
+    },
+  };
+
+  try {
+    await testInternals.dispatchViaChannelRuntime({
+      runtime,
+      message: "/status",
+      sessionKey: "calciforge:main:brian",
+      requestId: "req-1",
+      channel: "telegram",
+      sender: "brian",
+      replyWebhook,
+      replyAuthToken: "reply-secret",
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  assert.equal(turnContexts.length, 1);
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].auth, "Bearer reply-secret");
+  assert.deepEqual(delivered[0].body, {
+    sessionKey: "calciforge:main:brian",
+    requestId: "req-1",
+    message: "Calciforge status: ok",
+    channel: "telegram",
+  });
+});
 
 test("recovers a later assistant reply after an early run error", async () => {
   let latestText = "previous reply";

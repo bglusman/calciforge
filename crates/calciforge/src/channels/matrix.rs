@@ -1006,13 +1006,16 @@ async fn handle_message(
     let selected_session = cmd_handler.active_session_for(identity_id, &agent_id);
 
     match router
-        .dispatch_message_with_sender_model_and_session(
+        .dispatch_message_with_full_context(
             &augmented,
             &agent,
             config,
-            Some(identity_id),
-            model_override.as_deref(),
-            selected_session.as_deref(),
+            crate::router::RouterDispatchContext {
+                sender: Some(identity_id),
+                model_override: model_override.as_deref(),
+                session: selected_session.as_deref(),
+                channel: Some("matrix"),
+            },
         )
         .await
     {

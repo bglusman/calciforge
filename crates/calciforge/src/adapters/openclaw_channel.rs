@@ -484,8 +484,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
             session_key: session_key.clone(),
             request_id: request_id.clone(),
             sender,
-            // DispatchContext does not currently carry channel-specific routing metadata.
-            channel: None,
+            channel: ctx.channel,
             reply_to: None,
             agent_id: &self.openclaw_agent_id,
         };
@@ -723,6 +722,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: Some("telegram"),
             })
             .await
             .expect("dispatch should succeed");
@@ -750,6 +750,10 @@ mod tests {
         assert_ne!(request_id, "calciforge:main:brian");
         uuid::Uuid::parse_str(request_id).expect("requestId should be a UUID");
         assert_eq!(body.get("sender").and_then(|v| v.as_str()), Some("brian"));
+        assert_eq!(
+            body.get("channel").and_then(|v| v.as_str()),
+            Some("telegram")
+        );
         assert_eq!(body.get("agentId").and_then(|v| v.as_str()), Some("main"));
     }
 
@@ -774,6 +778,7 @@ mod tests {
                 sender: Some("renee"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("dispatch should return reply callback");
@@ -814,6 +819,7 @@ mod tests {
                 sender: Some("renee"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("agent control-plane HTTP must bypass ambient proxy settings");
@@ -875,6 +881,7 @@ mod tests {
                 sender: Some("renee"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("legacy callback should still route by sessionKey");
@@ -1004,6 +1011,7 @@ mod tests {
                         sender: Some("brian"),
                         model_override: None,
                         session: None,
+                        channel: None,
                     })
                     .await
             })
@@ -1017,6 +1025,7 @@ mod tests {
                         sender: Some("brian"),
                         model_override: None,
                         session: None,
+                        channel: None,
                     })
                     .await
             })
@@ -1062,6 +1071,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("first dispatch should start reply server");
@@ -1074,6 +1084,7 @@ mod tests {
                 sender: Some("renee"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("rebuilt adapter should reuse reply server/router");
@@ -1101,6 +1112,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect_err("conflicting reply auth token should fail");
@@ -1138,6 +1150,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("dispatch should preserve callback attachment");
@@ -1196,6 +1209,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect_err("missing dataBase64 should fail the waiting dispatch");
@@ -1238,6 +1252,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: None,
             })
             .await
             .expect("duplicate names should be disambiguated");

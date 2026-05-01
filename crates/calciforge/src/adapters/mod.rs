@@ -115,6 +115,8 @@ pub struct DispatchContext<'a> {
     pub model_override: Option<&'a str>,
     /// Optional downstream session selected for session-aware adapters.
     pub session: Option<&'a str>,
+    /// Originating Calciforge channel kind, such as `telegram` or `matrix`.
+    pub channel: Option<&'a str>,
 }
 
 impl<'a> DispatchContext<'a> {
@@ -125,6 +127,7 @@ impl<'a> DispatchContext<'a> {
             sender: None,
             model_override: None,
             session: None,
+            channel: None,
         }
     }
 }

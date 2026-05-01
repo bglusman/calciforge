@@ -162,6 +162,86 @@ async function handleInboundRequest({
 
   try {
     const runtime = await getRuntime();
+    if (canUseChannelRuntime(runtime)) {
+      await dispatchViaChannelRuntime({
+        runtime,
+        message,
+        sessionKey,
+        requestId,
+        channel,
+        replyTo,
+        agentId,
+        sender: body.sender,
+        replyWebhook,
+        replyAuthToken,
+        log,
+      });
+      return true;
+    }
+
+    log?.warn?.(
+      "[calciforge-channel] OpenClaw channel runtime unavailable; falling back to subagent runtime",
+    );
+    await dispatchViaSubagentRuntime({
+      runtime,
+      message,
+      sessionKey,
+      requestId,
+      channel,
+      replyTo,
+      agentId,
+      replyWebhook,
+      replyAuthToken,
+      runTimeoutMs,
+      errorRecoveryMs,
+      log,
+    });
+  } catch (err) {
+    log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
+    await deliverReply({
+      replyWebhook,
+      replyAuthToken,
+      sessionKey,
+      requestId,
+      message: `OpenClaw dispatch failed: ${err.message}`,
+      channel,
+      replyTo,
+      log,
+    });
+  }
+
+  return true;
+}
+
+function canUseChannelRuntime(runtime) {
+  return Boolean(
+    runtime?.config?.current &&
+      runtime?.channel?.turn?.run &&
+      runtime?.channel?.session?.recordInboundSession &&
+      runtime?.channel?.session?.resolveStorePath &&
+      runtime?.channel?.session?.readSessionUpdatedAt &&
+      runtime?.channel?.reply?.dispatchReplyFromConfig &&
+      runtime?.channel?.reply?.finalizeInboundContext &&
+      runtime?.channel?.reply?.formatInboundEnvelope &&
+      runtime?.channel?.reply?.resolveEnvelopeFormatOptions &&
+      runtime?.channel?.reply?.withReplyDispatcher,
+  );
+}
+
+async function dispatchViaSubagentRuntime({
+  runtime,
+  message,
+  sessionKey,
+  requestId,
+  channel,
+  replyTo,
+  agentId,
+  replyWebhook,
+  replyAuthToken,
+  runTimeoutMs,
+  errorRecoveryMs,
+  log,
+}) {
     const baselineReply = await safeReadLatestAssistantReply({
       runtime,
       sessionKey,
@@ -247,21 +327,218 @@ async function handleInboundRequest({
       replyTo,
       log,
     });
-  } catch (err) {
-    log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
-    await deliverReply({
-      replyWebhook,
-      replyAuthToken,
+}
+
+async function dispatchViaChannelRuntime({
+  runtime,
+  message,
+  sessionKey,
+  requestId,
+  channel,
+  replyTo,
+  agentId,
+  sender,
+  replyWebhook,
+  replyAuthToken,
+  log,
+}) {
+  const cfg = runtime.config.current();
+  const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
+  const accountId = "default";
+  const sourceChannel = normalizeChannelName(channel);
+  const senderId = normalizeString(sender) || normalizeString(replyTo) || sessionKey;
+  const timestamp = Date.now();
+  const storePath = runtime.channel.session.resolveStorePath(cfg.session?.store, {
+    agentId: resolvedAgentId,
+  });
+  const ctxPayload = buildCalciforgeChannelContext({
+    runtime,
+    cfg,
+    message,
+    sessionKey,
+    sourceChannel,
+    senderId,
+    accountId,
+    agentId: resolvedAgentId,
+    requestId,
+    timestamp,
+  });
+  const dispatcher = createSingleReplyDispatcher();
+
+  await runtime.channel.turn.run({
+    channel: "calciforge",
+    accountId,
+    raw: {
+      message,
       sessionKey,
       requestId,
-      message: `OpenClaw dispatch failed: ${err.message}`,
-      channel,
-      replyTo,
-      log,
-    });
+      channel: sourceChannel,
+      sender: senderId,
+    },
+    adapter: {
+      ingest: () => ({
+        id: requestId || `calciforge:${timestamp}`,
+        timestamp,
+        rawText: message,
+        textForAgent: ctxPayload.BodyForAgent,
+        textForCommands: ctxPayload.CommandBody,
+        raw: message,
+      }),
+      resolveTurn: () => ({
+        channel: "calciforge",
+        accountId,
+        routeSessionKey: sessionKey,
+        storePath,
+        ctxPayload,
+        recordInboundSession: runtime.channel.session.recordInboundSession,
+        record: {
+          onRecordError: (err) =>
+            log?.warn?.(
+              `[calciforge-channel] failed to record inbound session: ${err.message}`,
+            ),
+        },
+        runDispatch: () =>
+          runtime.channel.reply.withReplyDispatcher({
+            dispatcher,
+            run: () =>
+              runtime.channel.reply.dispatchReplyFromConfig({
+                ctx: ctxPayload,
+                cfg,
+                dispatcher,
+              }),
+          }),
+      }),
+    },
+  });
+
+  const reply = dispatcher.takeReply();
+  if (!reply || isSilentReply(reply.text)) {
+    log?.info?.("[calciforge-channel] silent channel-runtime reply - not forwarding");
+    return;
   }
 
-  return true;
+  await deliverReply({
+    replyWebhook,
+    replyAuthToken,
+    sessionKey,
+    requestId,
+    message: reply.text,
+    attachments: normalizeAttachments(reply.attachments),
+    channel: sourceChannel,
+    replyTo,
+    log,
+  });
+}
+
+function buildCalciforgeChannelContext({
+  runtime,
+  cfg,
+  message,
+  sessionKey,
+  sourceChannel,
+  senderId,
+  accountId,
+  agentId,
+  requestId,
+  timestamp,
+}) {
+  const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
+  const previousTimestamp = runtime.channel.session.readSessionUpdatedAt({
+    storePath: runtime.channel.session.resolveStorePath(cfg.session?.store, {
+      agentId: resolvedAgentId,
+    }),
+    sessionKey,
+  });
+  const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
+  const body = runtime.channel.reply.formatInboundEnvelope({
+    channel: "Calciforge",
+    from: `${sourceChannel}:${senderId}`,
+    timestamp,
+    body: message,
+    chatType: "direct",
+    sender: {
+      id: senderId,
+    },
+    previousTimestamp,
+    envelope: envelopeOptions,
+  });
+  const isNativeCommand = message.trimStart().startsWith("/");
+
+  return runtime.channel.reply.finalizeInboundContext({
+    Body: body,
+    BodyForAgent: message,
+    RawBody: message,
+    CommandBody: message,
+    BodyForCommands: message,
+    From: `${sourceChannel}:${senderId}`,
+    To: `calciforge:${senderId}`,
+    SessionKey: sessionKey,
+    AccountId: accountId,
+    ChatType: "direct",
+    ConversationLabel: `${sourceChannel}:${senderId}`,
+    SenderId: senderId,
+    Provider: "calciforge",
+    Surface: "calciforge",
+    WasMentioned: true,
+    CommandAuthorized: true,
+    CommandSource: isNativeCommand ? "native" : "text",
+    CommandTargetSessionKey: sessionKey,
+    MessageSid: requestId,
+    Timestamp: timestamp,
+    NativeChannelId: sourceChannel,
+    OriginatingChannel: "calciforge",
+    OriginatingTo: `calciforge:${senderId}`,
+  });
+}
+
+function createSingleReplyDispatcher() {
+  const replies = [];
+  const counts = { tool: 0, block: 0, final: 0 };
+  const push = (kind, payload) => {
+    counts[kind] += 1;
+    replies.push({ kind, payload });
+    return true;
+  };
+
+  return {
+    sendToolResult: (payload) => push("tool", payload),
+    sendBlockReply: (payload) => push("block", payload),
+    sendFinalReply: (payload) => push("final", payload),
+    waitForIdle: async () => {},
+    markComplete: () => {},
+    getQueuedCounts: () => ({ ...counts }),
+    getFailedCounts: () => ({ tool: 0, block: 0, final: 0 }),
+    takeReply: () => {
+      const selected =
+        [...replies].reverse().find((entry) => entry.kind === "final") ??
+        [...replies].reverse().find((entry) => entry.kind === "block") ??
+        [...replies].reverse().find((entry) => entry.kind === "tool");
+      if (!selected) return null;
+      return normalizeReplyPayloadForCalciforge(selected.payload);
+    },
+  };
+}
+
+function normalizeReplyPayloadForCalciforge(payload) {
+  if (typeof payload === "string") return { text: payload, attachments: [] };
+  if (!payload || typeof payload !== "object") return { text: "", attachments: [] };
+  return {
+    text: typeof payload.text === "string" ? payload.text : "",
+    attachments: payload.attachments ?? payload.media ?? [],
+  };
+}
+
+function normalizeChannelName(value) {
+  return normalizeString(value) || "calciforge";
+}
+
+function normalizeString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function parseAgentIdFromSessionKey(sessionKey) {
+  const match = /^calciforge:([^:]+):/.exec(sessionKey);
+  return match?.[1] || null;
 }
 
 function isAuthorized(req, expectedToken) {
@@ -548,4 +825,7 @@ export const testInternals = {
   safeReadLatestAssistantReply,
   withOptionalTimeout,
   recoverReplyAfterRunError,
+  buildCalciforgeChannelContext,
+  createSingleReplyDispatcher,
+  dispatchViaChannelRuntime,
 };

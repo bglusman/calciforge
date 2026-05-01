@@ -567,13 +567,16 @@ fn handle_message_nonblocking(
 
         let dispatch_start = std::time::Instant::now();
         match router
-            .dispatch_message_with_sender_model_and_session(
+            .dispatch_message_with_full_context(
                 &augmented_text,
                 &agent,
                 &config,
-                Some(&identity.id),
-                model_override.as_deref(),
-                selected_session.as_deref(),
+                crate::router::RouterDispatchContext {
+                    sender: Some(&identity.id),
+                    model_override: model_override.as_deref(),
+                    session: selected_session.as_deref(),
+                    channel: Some("telegram"),
+                },
             )
             .await
         {
@@ -1389,13 +1392,16 @@ async fn handle_message(
     // Dispatch to agent
     let dispatch_start = std::time::Instant::now();
     match router
-        .dispatch_message_with_sender_model_and_session(
+        .dispatch_message_with_full_context(
             &augmented_text,
             &agent,
             &config,
-            Some(&identity.id),
-            model_override.as_deref(),
-            selected_session.as_deref(),
+            crate::router::RouterDispatchContext {
+                sender: Some(&identity.id),
+                model_override: model_override.as_deref(),
+                session: selected_session.as_deref(),
+                channel: Some("telegram"),
+            },
         )
         .await
     {

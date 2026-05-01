@@ -22,6 +22,15 @@ use crate::messages::OutboundMessage;
 /// The agent router. Builds adapters on-demand from agent config.
 pub struct Router;
 
+/// Optional context collected by upstream channels before dispatch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RouterDispatchContext<'a> {
+    pub sender: Option<&'a str>,
+    pub model_override: Option<&'a str>,
+    pub session: Option<&'a str>,
+    pub channel: Option<&'a str>,
+}
+
 impl Router {
     /// Create a new router.
     pub fn new() -> Self {
@@ -122,6 +131,28 @@ impl Router {
         model_override: Option<&str>,
         session: Option<&str>,
     ) -> Result<OutboundMessage> {
+        self.dispatch_message_with_full_context(
+            text,
+            agent,
+            _config,
+            RouterDispatchContext {
+                sender,
+                model_override,
+                session,
+                channel: None,
+            },
+        )
+        .await
+    }
+
+    /// Dispatch a message with all currently supported upstream channel context.
+    pub async fn dispatch_message_with_full_context(
+        &self,
+        text: &str,
+        agent: &AgentConfig,
+        _config: &CalciforgeConfig,
+        context: RouterDispatchContext<'_>,
+    ) -> Result<OutboundMessage> {
         let adapter = build_adapter(agent).map_err(|e| {
             anyhow::anyhow!("failed to build adapter for agent '{}': {}", agent.id, e)
         })?;
@@ -131,9 +162,9 @@ impl Router {
         {
             None
         } else if agent_supports_model_override(agent) {
-            model_override
+            context.model_override
         } else {
-            if model_override.is_some() {
+            if context.model_override.is_some() {
                 info!(
                     agent_id = %agent.id,
                     kind = %agent.kind,
@@ -149,17 +180,19 @@ impl Router {
             endpoint = %agent.endpoint,
             configured_model = ?agent.model,
             model_override = ?effective_model_override,
-            session = ?session,
-            sender = ?sender,
+            session = ?context.session,
+            channel = ?context.channel,
+            sender = ?context.sender,
             "routing message via {} adapter",
             adapter.kind()
         );
 
         let ctx = DispatchContext {
             message: text,
-            sender,
+            sender: context.sender,
             model_override: effective_model_override,
-            session,
+            session: context.session,
+            channel: context.channel,
         };
         adapter
             .dispatch_message_with_context(ctx)
