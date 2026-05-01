@@ -24,8 +24,12 @@ pub fn artifact_root(root_name: &str) -> PathBuf {
 
 pub fn create_run_dir(root_name: &str) -> Result<PathBuf, String> {
     let root = artifact_root(root_name);
-    ensure_artifact_root(&root)?;
-    cleanup_old_run_dirs(&root, DEFAULT_ARTIFACT_RETENTION);
+    create_run_dir_under(&root)
+}
+
+pub fn create_run_dir_under(root: &Path) -> Result<PathBuf, String> {
+    ensure_artifact_root(root)?;
+    cleanup_old_run_dirs(root, DEFAULT_ARTIFACT_RETENTION);
     let run_dir = root.join(Uuid::new_v4().to_string());
     create_private_dir(&run_dir)
         .map_err(|e| format!("failed to create artifact run directory: {e}"))?;

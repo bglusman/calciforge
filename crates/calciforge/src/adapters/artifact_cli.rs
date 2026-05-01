@@ -15,8 +15,8 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::artifacts::{
-    artifact_root, collect_run_artifacts, create_run_dir, DEFAULT_MAX_ARTIFACTS,
-    DEFAULT_MAX_ARTIFACT_BYTES,
+    artifact_root, collect_run_artifacts, create_run_dir, create_run_dir_under,
+    DEFAULT_MAX_ARTIFACTS, DEFAULT_MAX_ARTIFACT_BYTES,
 };
 use crate::messages::{OutboundAttachment, OutboundMessage};
 
@@ -124,14 +124,7 @@ impl ArtifactCliAdapter {
             return create_run_dir(ARTIFACT_ROOT_NAME).map_err(AdapterError::Unavailable);
         }
 
-        let run_dir = self.artifact_root.join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&run_dir).map_err(|e| {
-            AdapterError::Unavailable(format!(
-                "failed to create artifact directory {}: {e}",
-                run_dir.display()
-            ))
-        })?;
-        Ok(run_dir)
+        create_run_dir_under(&self.artifact_root).map_err(AdapterError::Unavailable)
     }
 
     fn uses_default_artifact_root(&self) -> bool {
@@ -442,5 +435,57 @@ mod tests {
         );
 
         assert!(adapter.uses_default_artifact_root());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_artifact_root_uses_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let custom_root = temp.path().join("custom-artifacts");
+        let adapter = ArtifactCliAdapter::with_artifact_root(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(5000),
+            custom_root.clone(),
+            DEFAULT_MAX_ARTIFACT_BYTES,
+        );
+
+        let run_dir = adapter.run_artifact_dir().expect("run artifact dir");
+
+        let root_mode = std::fs::metadata(custom_root).unwrap().permissions().mode() & 0o777;
+        let run_mode = std::fs::metadata(run_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(root_mode, 0o700);
+        assert_eq!(run_mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_artifact_root_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let linked_root = temp.path().join("linked-root");
+        symlink(temp.path(), &linked_root).expect("symlink root");
+        let adapter = ArtifactCliAdapter::with_artifact_root(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(5000),
+            linked_root,
+            DEFAULT_MAX_ARTIFACT_BYTES,
+        );
+
+        let err = adapter
+            .run_artifact_dir()
+            .expect_err("symlinked artifact root should fail");
+        match err {
+            AdapterError::Unavailable(msg) => assert!(msg.contains("must not be a symlink")),
+            other => panic!("expected unavailable error, got {other:?}"),
+        }
     }
 }
