@@ -26,6 +26,20 @@ pub struct OutboundAttachment {
 pub struct OutboundMessage {
     pub text: Option<String>,
     pub attachments: Vec<OutboundAttachment>,
+    pub controls: Vec<ChoiceControl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceControl {
+    pub title: String,
+    pub options: Vec<ChoiceOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceOption {
+    pub label: String,
+    pub command: String,
+    pub callback_data: Option<String>,
 }
 
 impl OutboundMessage {
@@ -33,7 +47,15 @@ impl OutboundMessage {
         Self {
             text: Some(text.into()),
             attachments: Vec::new(),
+            controls: Vec::new(),
         }
+    }
+
+    pub fn with_control(mut self, control: ChoiceControl) -> Self {
+        if !control.options.is_empty() {
+            self.controls.push(control);
+        }
+        self
     }
 
     pub fn response_len(&self) -> usize {
@@ -70,6 +92,32 @@ impl OutboundMessage {
             }
         }
 
+        if !self.controls.is_empty() {
+            if !rendered.trim().is_empty() {
+                rendered.push_str("\n\n");
+            }
+            for (control_index, control) in self.controls.iter().enumerate() {
+                if control_index > 0 {
+                    rendered.push('\n');
+                }
+                if !control.title.trim().is_empty() {
+                    rendered.push_str(control.title.trim());
+                    rendered.push('\n');
+                }
+                for option in &control.options {
+                    rendered.push_str("- ");
+                    rendered.push_str(option.label.trim());
+                    rendered.push_str(": `");
+                    rendered.push_str(option.command.trim());
+                    rendered.push('`');
+                    rendered.push('\n');
+                }
+                if rendered.ends_with('\n') {
+                    rendered.pop();
+                }
+            }
+        }
+
         if rendered.trim().is_empty() {
             "Agent completed without a text response.".to_string()
         } else {
@@ -92,6 +140,30 @@ impl AttachmentKind {
     }
 }
 
+impl ChoiceControl {
+    pub fn new(title: impl Into<String>, options: Vec<ChoiceOption>) -> Self {
+        Self {
+            title: title.into(),
+            options,
+        }
+    }
+}
+
+impl ChoiceOption {
+    pub fn new(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            command: command.into(),
+            callback_data: None,
+        }
+    }
+
+    pub fn with_callback_data(mut self, callback_data: impl Into<String>) -> Self {
+        self.callback_data = Some(callback_data.into());
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +179,7 @@ mod tests {
                 caption: Some("preview".to_string()),
                 size_bytes: 42,
             }],
+            controls: Vec::new(),
         };
 
         let rendered = msg.render_text_fallback();
@@ -116,6 +189,31 @@ mod tests {
         assert!(
             !rendered.contains("/tmp/calciforge-artifacts"),
             "chat fallback must not leak local storage paths: {rendered}"
+        );
+    }
+
+    #[test]
+    fn fallback_renders_choice_commands_for_text_only_channels() {
+        let msg = OutboundMessage::text("Choose an agent").with_control(ChoiceControl::new(
+            "Options",
+            vec![
+                ChoiceOption::new("Librarian", "!agent switch librarian")
+                    .with_callback_data("cf:agent:librarian"),
+                ChoiceOption::new("Critic", "!agent switch critic")
+                    .with_callback_data("cf:agent:critic"),
+            ],
+        ));
+
+        let rendered = msg.render_text_fallback();
+        assert!(rendered.contains("Choose an agent"));
+        assert!(rendered.contains("Options"));
+        assert!(
+            rendered.contains("- Librarian: `!agent switch librarian`"),
+            "fallback must expose the command users can type: {rendered}"
+        );
+        assert!(
+            rendered.contains("- Critic: `!agent switch critic`"),
+            "fallback must include every available choice: {rendered}"
         );
     }
 }

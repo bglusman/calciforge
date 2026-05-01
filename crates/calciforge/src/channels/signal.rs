@@ -197,6 +197,27 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
 
         // ── Command fast-path ─────────────────────────────────────────────
 
+        if let Some(reply) = self
+            .command_handler
+            .agent_choice_message_for_identity(&text, &identity.id)
+        {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_outbound(&target, &reply).await;
+            });
+            return;
+        }
+
+        if let Some(reply) = self.command_handler.model_choice_message(&text) {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_outbound(&target, &reply).await;
+            });
+            return;
+        }
+
         // Pre-auth handler (`!ping`, `!help`, `!agents`, `!metrics`, …)
         if let Some(reply) = self.command_handler.handle(&text) {
             debug!(identity = %identity.id, cmd = %text.trim(), "Signal: handled pre-auth command");
@@ -216,6 +237,8 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             && !CommandHandler::is_sessions_command(&text)
             && !CommandHandler::is_model_command(&text)
             && !CommandHandler::is_secure_command(&text)
+            && !CommandHandler::is_approve_command(&text)
+            && !CommandHandler::is_deny_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
@@ -266,12 +289,12 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         if CommandHandler::is_sessions_command(&text) {
             let reply = self
                 .command_handler
-                .handle_sessions(&text, &identity.id)
+                .handle_sessions_message(&text, &identity.id)
                 .await;
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
-                channel.send_reply(&target, &reply).await;
+                channel.send_outbound(&target, &reply).await;
             });
             return;
         }
@@ -323,6 +346,23 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
                 channel
                     .send_reply(&target, "🧹 Conversation context cleared.")
                     .await;
+            });
+            return;
+        }
+
+        // !approve / !deny
+        if CommandHandler::is_approve_command(&text) || CommandHandler::is_deny_command(&text) {
+            debug!(identity = %identity.id, cmd = %text.trim(), "Signal: handling async approval command");
+            let command_handler = self.command_handler.clone();
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                if let Some((ack, follow_up)) = command_handler.handle_async(&text).await {
+                    channel.send_reply(&target, &ack).await;
+                    if let Some(resp) = follow_up {
+                        channel.send_reply(&target, &resp).await;
+                    }
+                }
             });
             return;
         }
@@ -424,6 +464,41 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
                     self.send_outbound(&reply_target, &response).await;
                 }
                 Err(e) => {
+                    if let Some(crate::adapters::AdapterError::ApprovalPending(req)) =
+                        e.downcast_ref::<crate::adapters::AdapterError>()
+                    {
+                        let req = req.clone();
+                        debug!(
+                            request_id = %req.request_id,
+                            command = %req.command,
+                            "Signal: clash approval request - forwarding to user"
+                        );
+                        self.command_handler
+                            .register_pending_approval(
+                                crate::adapters::openclaw::PendingApprovalMeta {
+                                    request_id: req.request_id.clone(),
+                                    zeroclaw_endpoint: agent.endpoint.clone(),
+                                    zeroclaw_auth_token: agent
+                                        .auth_token
+                                        .clone()
+                                        .unwrap_or_default(),
+                                    _summary: CommandHandler::approval_request_message(
+                                        &req.command,
+                                        &req.reason,
+                                        &req.request_id,
+                                    )
+                                    .render_text_fallback(),
+                                },
+                            )
+                            .await;
+                        let notification = CommandHandler::approval_request_message(
+                            &req.command,
+                            &req.reason,
+                            &req.request_id,
+                        );
+                        self.send_outbound(&reply_target, &notification).await;
+                        return;
+                    }
                     warn!(identity = %identity_id, error = %e, "Signal: agent dispatch failed");
                     self.send_reply(&reply_target, &format!("⚠️ Agent error: {e}"))
                         .await;
@@ -863,6 +938,38 @@ mod tests {
         assert_eq!(
             sent[0].recipient, "group:abc",
             "reply must target the group, not the raw sender"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_agent_choices_render_text_fallback() {
+        let config = make_test_config(|c| {
+            c.ui_mode = crate::config::ChannelUiMode::Text;
+        });
+        let transport = Arc::new(MockChannel::new());
+        let bridge = dummy_bridge_with(config, transport.clone());
+
+        let msg = ChannelMessage {
+            id: "1".into(),
+            sender: "+15555550100".into(),
+            reply_target: "+15555550100".into(),
+            content: "!agents".into(),
+            channel: "signal".into(),
+            timestamp: 0,
+            thread_ts: None,
+            interruption_scope_id: None,
+            attachments: vec![],
+        };
+
+        bridge.bridge.handle_message(msg).await;
+        transport.wait_for_sent_len(1).await;
+
+        let sent = transport.drain();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].content.contains("!agent switch librarian"),
+            "Signal fallback should include the actionable command: {}",
+            sent[0].content
         );
     }
 }

@@ -100,10 +100,12 @@ artifact names and sizes instead of exposing local artifact paths.
 When `ui_mode = "auto"`, Telegram replies can include inline buttons for
 bounded channel-native actions. `!agent list` and `!model list` show buttons
 that select an agent/model through the same backend handlers as the text
-commands, and `!secret input NAME` / `!secret bulk` replies include an
-`Open paste form` URL button. The plain text command remains in every reply so
-operators can disable buttons with `ui_mode = "text"` without losing
-functionality.
+commands. Session lists and Clash approval requests use the same control path:
+session buttons run `!switch <agent> <session>`, and approval buttons run
+`!approve <id>` / `!deny <id>`. `!secret input NAME` / `!secret bulk` replies
+include an `Open paste form` URL button. The plain text command remains in
+every reply so operators can disable buttons with `ui_mode = "text"` without
+losing functionality.
 
 Telegram also works well as a Calciforge control surface even if the main agent
 conversation happens somewhere else. Because active agent/model choices are

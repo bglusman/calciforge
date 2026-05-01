@@ -119,7 +119,9 @@ The bot responds to commands (`!help`, `!ping`, `!agent list`,
 other messages to the default agent for the sender's identity. Legacy shortcuts
 such as `!agents`, `!switch`, and `!secure` remain supported.
 
-Matrix support currently treats text commands as the portable interface.
+Matrix support currently treats text commands as the portable interface. Agent
+choices, model choices, session lists, and approval decisions all render through
+the shared choice model, but the Matrix adapter sends the text fallback today.
 Some Matrix clients and bridges expose buttons or polls differently, and
 bridges such as Beeper may not support the downstream app's native controls.
 Use `ui_mode = "text"` in `[[channels]]` to force plain text for a channel;

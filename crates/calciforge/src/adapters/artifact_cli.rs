@@ -320,6 +320,7 @@ impl AgentAdapter for ArtifactCliAdapter {
                 Some(stdout)
             },
             attachments,
+            controls: Vec::new(),
         })
     }
 

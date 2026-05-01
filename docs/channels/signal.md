@@ -151,9 +151,13 @@ curl http://127.0.0.1:8080/v1/health
 ## Channel UI
 
 Signal is a high-priority channel for future richer controls, but the current
-interface should be treated as text-first. Keep using deterministic commands
-such as `!agent list`, `!agent switch <id>`, `!model list`, and
-`!model use <id>` until the Signal transport exposes safe native affordances.
+interface should be treated as text-first. Agent choices, model choices,
+session lists, and approval decisions all render through the shared choice
+model, but the embedded Signal transport sends the text fallback because
+`zeroclawlabs::Channel::SendMessage` does not expose Signal-native controls.
+Keep using deterministic commands such as `!agent switch <id>`, `!model use
+<id>`, `!switch <agent> <session>`, `!approve <id>`, and `!deny <id>` until the
+Signal transport exposes safe native affordances.
 
 You can also use Telegram as the Calciforge control surface for buttons while
 continuing the main chat in Signal. Active agent/model selections are keyed by

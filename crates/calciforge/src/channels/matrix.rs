@@ -868,6 +868,18 @@ async fn handle_message(
     };
 
     // --- Command fast-path ---
+    if let Some(reply) = cmd_handler.agent_choice_message_for_identity(body, identity_id) {
+        debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled agent choice command");
+        send_outbound(reply, "agent_choices").await;
+        return;
+    }
+
+    if let Some(reply) = cmd_handler.model_choice_message(body) {
+        debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled model choice command");
+        send_outbound(reply, "model_choices").await;
+        return;
+    }
+
     if let Some(reply) = cmd_handler.handle(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled local command");
         send(reply, "command").await;
@@ -882,6 +894,8 @@ async fn handle_message(
         && !CommandHandler::is_sessions_command(body)
         && !CommandHandler::is_model_command(body)
         && !CommandHandler::is_secure_command(body)
+        && !CommandHandler::is_approve_command(body)
+        && !CommandHandler::is_deny_command(body)
     {
         send(cmd_handler.unknown_command(body), "unknown_command").await;
         return;
@@ -904,8 +918,8 @@ async fn handle_message(
     }
 
     if CommandHandler::is_sessions_command(body) {
-        let reply = cmd_handler.handle_sessions(body, identity_id).await;
-        send(reply, "sessions").await;
+        let reply = cmd_handler.handle_sessions_message(body, identity_id).await;
+        send_outbound(reply, "sessions").await;
         return;
     }
 
@@ -1042,23 +1056,24 @@ async fn handle_message(
                     "Matrix: clash approval request — forwarding to user"
                 );
                 cmd_handler
-                    .register_pending_approval(
-                        crate::adapters::openclaw::PendingApprovalMeta {
-                            request_id: req.request_id.clone(),
-                            zeroclaw_endpoint: agent.endpoint.clone(),
-                            zeroclaw_auth_token: agent.auth_token.clone().unwrap_or_default(),
-                            _summary: format!(
-                                "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
-                                req.command, req.reason, req.request_id
-                            ),
-                        },
-                    )
+                    .register_pending_approval(crate::adapters::openclaw::PendingApprovalMeta {
+                        request_id: req.request_id.clone(),
+                        zeroclaw_endpoint: agent.endpoint.clone(),
+                        zeroclaw_auth_token: agent.auth_token.clone().unwrap_or_default(),
+                        _summary: CommandHandler::approval_request_message(
+                            &req.command,
+                            &req.reason,
+                            &req.request_id,
+                        )
+                        .render_text_fallback(),
+                    })
                     .await;
-                let notification = format!(
-                    "Approval required\nCommand: {}\nReason: {}\nReply !approve or !deny [reason]\nRequest ID: {}",
-                    req.command, req.reason, req.request_id
+                let notification = CommandHandler::approval_request_message(
+                    &req.command,
+                    &req.reason,
+                    &req.request_id,
                 );
-                send(notification, "approval_request").await;
+                send_outbound(notification, "approval_request").await;
                 return;
             }
             warn!(identity = %identity_id, error = %e, "Matrix: agent dispatch failed");
@@ -1273,6 +1288,7 @@ mod tests {
                 caption: Some("Generated diagram".to_string()),
                 size_bytes: 9,
             }],
+            controls: Vec::new(),
         };
 
         let result = send_matrix_outbound_message(
@@ -1364,6 +1380,7 @@ mod tests {
                 caption: Some("Generated diagram".to_string()),
                 size_bytes: 9,
             }],
+            controls: Vec::new(),
         };
 
         let result = send_matrix_outbound_message(
@@ -1387,6 +1404,73 @@ mod tests {
             !fallback.contains(temp.path().to_str().unwrap()),
             "fallback must not leak local artifact path: {fallback}"
         );
+    }
+
+    #[tokio::test]
+    async fn send_matrix_outbound_message_renders_choice_text_fallback() {
+        use axum::{
+            extract::{Path, State},
+            routing::put,
+            Json, Router as AxumRouter,
+        };
+        use serde_json::{json, Value};
+        use std::net::SocketAddr;
+        use tokio::{net::TcpListener, sync::Mutex};
+
+        #[derive(Clone, Default)]
+        struct MockMatrixState {
+            events: Arc<Mutex<Vec<Value>>>,
+        }
+
+        async fn send_message(
+            State(state): State<MockMatrixState>,
+            Path((_room_id, _txn_id)): Path<(String, String)>,
+            Json(payload): Json<Value>,
+        ) -> Json<Value> {
+            state.events.lock().await.push(payload);
+            Json(json!({ "event_id": "$reply1" }))
+        }
+
+        let state = MockMatrixState::default();
+        let app = AxumRouter::new()
+            .route(
+                "/_matrix/client/v3/rooms/:room_id/send/m.room.message/:txn_id",
+                put(send_message),
+            )
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let message =
+            OutboundMessage::text("Choose").with_control(crate::messages::ChoiceControl::new(
+                "Options",
+                vec![crate::messages::ChoiceOption::new(
+                    "Librarian",
+                    "!agent switch librarian",
+                )],
+            ));
+
+        let result = send_matrix_outbound_message(
+            &format!("http://{addr}"),
+            &reqwest::Client::new(),
+            "Bearer token",
+            "!room:example.test",
+            &message,
+        )
+        .await;
+        server_handle.abort();
+        result.unwrap();
+
+        let events = state.events.lock().await;
+        assert_eq!(events.len(), 1);
+        let body = events[0]["body"].as_str().unwrap();
+        assert!(body.contains("Choose"), "{body}");
+        assert!(body.contains("Options"), "{body}");
+        assert!(body.contains("!agent switch librarian"), "{body}");
     }
 
     #[tokio::test]

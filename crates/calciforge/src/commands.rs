@@ -25,6 +25,7 @@ use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
 use crate::config::{calciforge_config_home, CalciforgeConfig};
+use crate::messages::{ChoiceControl, ChoiceOption, OutboundMessage};
 use crate::providers::alloy::AlloyManager;
 
 /// Default state directory: `~/.config/calciforge/state/`.
@@ -456,6 +457,100 @@ impl CommandHandler {
         choices
     }
 
+    /// Returns `true` for commands whose primary response can include agent choices.
+    pub fn is_agent_choice_request(text: &str) -> bool {
+        let tokens: Vec<String> = text
+            .split_whitespace()
+            .map(|token| token.to_lowercase())
+            .collect();
+        matches!(
+            tokens.as_slice(),
+            [cmd] if cmd == "!agents"
+        ) || matches!(
+            tokens.as_slice(),
+            [cmd] if cmd == "!agent"
+        ) || matches!(
+            tokens.as_slice(),
+            [cmd, sub] if cmd == "!agent" && matches!(sub.as_str(), "list" | "ls" | "agents")
+        )
+    }
+
+    /// Returns `true` for model list commands that can include activatable choices.
+    pub fn is_model_choice_request(text: &str) -> bool {
+        let tokens: Vec<String> = text
+            .split_whitespace()
+            .map(|token| token.to_lowercase())
+            .collect();
+        matches!(
+            tokens.as_slice(),
+            [cmd] if cmd == "!model"
+        ) || matches!(
+            tokens.as_slice(),
+            [cmd, sub] if cmd == "!model" && matches!(sub.as_str(), "list" | "ls" | "models")
+        )
+    }
+
+    /// Build a channel-agnostic agent choice response for an authenticated identity.
+    pub fn agent_choice_message_for_identity(
+        &self,
+        text: &str,
+        identity_id: &str,
+    ) -> Option<OutboundMessage> {
+        if !Self::is_agent_choice_request(text) {
+            return None;
+        }
+
+        let base_reply = self
+            .handle(text)
+            .unwrap_or_else(|| "Configured agents unavailable.".to_string());
+        match self.agent_choices_for_identity(identity_id) {
+            Ok(choices) => Some(
+                OutboundMessage::text(base_reply).with_control(ChoiceControl::new(
+                    "Choose an agent",
+                    choices
+                        .into_iter()
+                        .map(|(id, label)| {
+                            ChoiceOption::new(label, format!("!agent switch {id}"))
+                                .with_callback_data(format!("cf:agent:{id}"))
+                        })
+                        .collect(),
+                )),
+            ),
+            Err(err) => Some(OutboundMessage::text(format!(
+                "{base_reply}\n\nButton choices unavailable: {err}."
+            ))),
+        }
+    }
+
+    /// Build a channel-agnostic model choice response.
+    pub fn model_choice_message(&self, text: &str) -> Option<OutboundMessage> {
+        if !Self::is_model_choice_request(text) {
+            return None;
+        }
+
+        let choices = self.activatable_model_choices();
+        let reply = self.handle(text).unwrap_or_else(|| {
+            if choices.is_empty() {
+                "No activatable model choices are configured. Type `!model` for configured shortcuts."
+                    .to_string()
+            } else {
+                "Choose a model, or type `!model use <id>`:".to_string()
+            }
+        });
+
+        let options = choices
+            .into_iter()
+            .map(|(id, label)| {
+                ChoiceOption::new(label, format!("!model use {id}"))
+                    .with_callback_data(format!("cf:model:{id}"))
+            })
+            .collect::<Vec<_>>();
+        Some(
+            OutboundMessage::text(reply)
+                .with_control(ChoiceControl::new("Choose a model", options)),
+        )
+    }
+
     /// Record that a message was routed to an agent.
     ///
     /// Call this after a successful agent dispatch with the measured latency.
@@ -692,6 +787,26 @@ impl CommandHandler {
             .lock()
             .await
             .insert(meta.request_id.clone(), meta);
+    }
+
+    /// Build the operator-facing approval request with reusable approve/deny choices.
+    pub fn approval_request_message(
+        command: &str,
+        reason: &str,
+        request_id: &str,
+    ) -> OutboundMessage {
+        let text = format!(
+            "Approval required\nCommand: {command}\nReason: {reason}\nRequest ID: {request_id}"
+        );
+        OutboundMessage::text(text).with_control(ChoiceControl::new(
+            "Choose an approval action",
+            vec![
+                ChoiceOption::new("Approve", format!("!approve {request_id}"))
+                    .with_callback_data(format!("cf:approve:{request_id}")),
+                ChoiceOption::new("Deny", format!("!deny {request_id}"))
+                    .with_callback_data(format!("cf:deny:{request_id}")),
+            ],
+        ))
     }
 
     /// Handle an `!approve [request_id]` command.
@@ -1099,11 +1214,18 @@ impl CommandHandler {
         }
     }
 
+    pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
+        self.handle_sessions_message(text, identity_id)
+            .await
+            .render_text_fallback()
+    }
+
     /// Handle a `!sessions` command for an authenticated identity.
     ///
     /// Lists ACP sessions for the specified agent (for acpx-type agents).
-    /// Returns a message listing available sessions or an error.
-    pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
+    /// Returns a channel-agnostic message with selectable session choices when
+    /// the ACPX backend reports active sessions.
+    pub async fn handle_sessions_message(&self, text: &str, identity_id: &str) -> OutboundMessage {
         let trimmed = text.trim();
         // Parse the agent argument after "!sessions", "!session", or
         // noun-style "!session list".
@@ -1117,7 +1239,7 @@ impl CommandHandler {
         let agent_arg = args.first().copied().unwrap_or("").to_string();
 
         if agent_arg.is_empty() {
-            return "Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available ACP sessions for an agent.\nUse !agent list to see available agents.".to_string();
+            return OutboundMessage::text("Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available ACP sessions for an agent.\nUse !agent list to see available agents.");
         }
 
         // Look up the routing rule for this identity.
@@ -1129,7 +1251,7 @@ impl CommandHandler {
         {
             Some(r) => r,
             None => {
-                return "⚠️ No routing rule found for your identity.".to_string();
+                return OutboundMessage::text("⚠️ No routing rule found for your identity.");
             }
         };
 
@@ -1164,10 +1286,10 @@ impl CommandHandler {
         let agent_id = match matched_agent {
             None => {
                 let valid = allowed.join(", ");
-                return format!(
+                return OutboundMessage::text(format!(
                     "⚠️ Agent '{}' is not available to you.\n\nValid agents: {}",
                     agent_arg, valid
-                );
+                ));
             }
             Some(id) => id,
         };
@@ -1175,37 +1297,55 @@ impl CommandHandler {
         // Get agent config to check if it's an acpx agent.
         let agent_cfg = match self.config.agents.iter().find(|a| a.id == agent_id) {
             Some(cfg) => cfg,
-            None => return format!("⚠️ Agent '{}' not found in configuration.", agent_id),
+            None => {
+                return OutboundMessage::text(format!(
+                    "⚠️ Agent '{}' not found in configuration.",
+                    agent_id
+                ));
+            }
         };
 
         if agent_cfg.kind != "acpx" {
-            return format!(
+            return OutboundMessage::text(format!(
                 "ℹ️ Agent '{}' ({}) does not support session listing.\nOnly 'acpx' type agents support sessions.",
                 agent_id, agent_cfg.kind
-            );
+            ));
         }
 
         // List sessions using acpx.
         let agent_name = agent_cfg.command.as_deref().unwrap_or(agent_id);
         match self.list_acpx_sessions(agent_name).await {
             Ok(sessions) if sessions.is_empty() => {
-                format!(
+                OutboundMessage::text(format!(
                     "ℹ️ No active sessions for '{}'.\n\nUse !switch {} to create a new session.",
                     agent_id, agent_id
-                )
+                ))
             }
             Ok(sessions) => {
                 let session_list = sessions.join("\n  - ");
-                format!(
+                let reply = format!(
                     "🗂️  Active sessions for '{}':\n  - {}\n\nUse !switch {} <session> to attach to a specific session.",
                     agent_id, session_list, agent_id
-                )
+                );
+                OutboundMessage::text(reply).with_control(ChoiceControl::new(
+                    "Attach to a session",
+                    sessions
+                        .into_iter()
+                        .map(|session| {
+                            ChoiceOption::new(
+                                session.clone(),
+                                format!("!switch {agent_id} {session}"),
+                            )
+                            .with_callback_data(format!("cf:session:{agent_id}:{session}"))
+                        })
+                        .collect(),
+                ))
             }
             Err(e) => {
-                format!(
+                OutboundMessage::text(format!(
                     "⚠️ Failed to list sessions for '{}': {}\n\nMake sure acpx is installed and the agent is properly configured.",
                     agent_id, e
-                )
+                ))
             }
         }
     }
