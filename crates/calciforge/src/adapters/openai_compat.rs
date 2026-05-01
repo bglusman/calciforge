@@ -298,6 +298,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: Some("override"),
                 session: None,
+                channel: None,
             })
             .await
             .unwrap();
@@ -320,6 +321,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: Some("openclaw/main"),
                 session: None,
+                channel: None,
             })
             .await
             .unwrap_err()

@@ -4,6 +4,9 @@
   "description": "Calciforge native channel plugin for OpenClaw",
   "type": "module",
   "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "peerDependencies": {
     "openclaw": "*"
   }

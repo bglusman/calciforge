@@ -464,6 +464,7 @@ mod tests {
             sender: Some("brian"),
             model_override: None,
             session: None,
+            channel: None,
         };
         let result = a.dispatch_with_context(ctx).await;
 
@@ -599,6 +600,7 @@ mod tests {
                 sender: Some("brian"),
                 model_override: None,
                 session: None,
+                channel: None,
             };
             let _ = a.dispatch_with_context(ctx).await;
         }
@@ -670,6 +672,7 @@ mod tests {
             sender: Some("renee"),
             model_override: None,
             session: None,
+            channel: None,
         };
         let _ = a.dispatch_with_context(ctx).await;
 

@@ -499,13 +499,16 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             let dispatch_start = std::time::Instant::now();
             match self
                 .router
-                .dispatch_message_with_sender_model_and_session(
+                .dispatch_message_with_full_context(
                     &augmented,
                     &agent,
                     &self.config,
-                    Some(&identity_id),
-                    model_override.as_deref(),
-                    selected_session.as_deref(),
+                    crate::router::RouterDispatchContext {
+                        sender: Some(&identity_id),
+                        model_override: model_override.as_deref(),
+                        session: selected_session.as_deref(),
+                        channel: Some("whatsapp"),
+                    },
                 )
                 .await
             {

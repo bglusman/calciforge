@@ -57,6 +57,55 @@ three-part vocabulary:
   OpenClaw can request artifacts, progress updates, policy checks, and final
   delivery without learning each chat channel's mechanics.
 
+## First-Class Policy Wiring
+
+Calciforge's security promise should not depend on an agent runtime politely
+following prompt instructions. First-class agents need a path to submit
+structured action intent to Calciforge's policy layer before the action runs.
+The policy should decide allow, review, or deny while preserving enough audit
+detail to explain the decision later.
+
+The current target shape is:
+
+- **Native policy adapter where available** — install an agent-specific hook,
+  plugin, or ACP/MCP tool bridge that calls Calciforge/Clash before tool
+  execution.
+- **Security proxy and model gateway for network/provider traffic** — keep the
+  HTTP(S) path easy to use by default, but do not pretend it covers every local
+  command or runtime tool.
+- **Container, VM, or host egress controls for stronger bypass resistance** —
+  use network-level controls when the operator needs enforcement beyond a
+  cooperative proxy environment variable.
+- **Recipe-level wrappers for best-effort tools** — when an upstream runtime
+  lacks hooks, document the remaining gap and keep the integration out of the
+  first-class support tier.
+
+OpenClaw is the first managed-agent path that should receive the full pattern:
+channel plugin, reply callbacks, native policy plugin, proxy configuration,
+health checks, and rollback behavior. Claude Code has a hook-based path.
+Codex should move toward ACP plus Calciforge-owned tools where possible.
+opencode should prefer ACP or a maintained plugin path once the interface is
+stable.
+
+ZeroClaw needs an explicit product decision. The official release can remain a
+supported or best-effort adapter, but Calciforge should not inherit static
+upstream paranoia as the main policy contract if that blocks useful actions
+that Calciforge policy would otherwise allow. If upstream does not expose a
+blocking, configurable policy hook, a fork or library-mode integration may be
+justified. Reviving a name such as NonZeroClaw could make sense for that path:
+a ZeroClaw-compatible runtime whose policy authority is Calciforge/Clash, while
+official ZeroClaw remains the stricter compatibility option.
+
+Each first-class agent should eventually have a short support matrix:
+
+- chat/session bridge,
+- native policy hook status,
+- proxy/model-gateway wiring,
+- secret discovery path,
+- artifact/callback support,
+- install/upgrade ownership,
+- known bypasses or stricter-than-policy limits.
+
 ## ACP Direction
 
 ACP is the most promising common protocol layer for interactive coding agents.

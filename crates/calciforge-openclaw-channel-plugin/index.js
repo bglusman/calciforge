@@ -86,6 +86,8 @@ async function runWithSyntheticGatewayClient(work) {
 export default function register(api) {
   const pluginConfig = api.pluginConfig ?? {};
   const { authToken, replyWebhook, replyAuthToken } = pluginConfig;
+  const runTimeoutMs = positiveInteger(pluginConfig.runTimeoutMs, 300000);
+  const errorRecoveryMs = positiveInteger(pluginConfig.errorRecoveryMs, 120000);
 
   if (authToken && replyWebhook && replyAuthToken) {
     api.logger.info(
@@ -103,6 +105,8 @@ export default function register(api) {
           authToken,
           replyWebhook,
           replyAuthToken,
+          runTimeoutMs,
+          errorRecoveryMs,
           log: api.logger,
         }),
     }, api.logger)
@@ -126,6 +130,8 @@ async function handleInboundRequest({
   authToken,
   replyWebhook,
   replyAuthToken,
+  runTimeoutMs,
+  errorRecoveryMs,
   log,
 }) {
   if (req.method !== "POST") {
@@ -146,7 +152,7 @@ async function handleInboundRequest({
     return true;
   }
 
-  const { message, sessionKey, channel, replyTo, agentId } = body;
+  const { message, sessionKey, requestId, channel, replyTo, agentId } = body;
   if (!message || !sessionKey) {
     json(res, 400, { error: "message and sessionKey are required" });
     return true;
@@ -156,6 +162,93 @@ async function handleInboundRequest({
 
   try {
     const runtime = await getRuntime();
+    if (canUseChannelRuntime(runtime)) {
+      await dispatchViaChannelRuntime({
+        runtime,
+        message,
+        sessionKey,
+        requestId,
+        channel,
+        replyTo,
+        agentId,
+        sender: body.sender,
+        replyWebhook,
+        replyAuthToken,
+        log,
+      });
+      return true;
+    }
+
+    log?.warn?.(
+      "[calciforge-channel] OpenClaw channel runtime unavailable; falling back to subagent runtime",
+    );
+    await dispatchViaSubagentRuntime({
+      runtime,
+      message,
+      sessionKey,
+      requestId,
+      channel,
+      replyTo,
+      agentId,
+      replyWebhook,
+      replyAuthToken,
+      runTimeoutMs,
+      errorRecoveryMs,
+      log,
+    });
+  } catch (err) {
+    log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
+    await deliverReply({
+      replyWebhook,
+      replyAuthToken,
+      sessionKey,
+      requestId,
+      message: `OpenClaw dispatch failed: ${err.message}`,
+      channel,
+      replyTo,
+      log,
+    });
+  }
+
+  return true;
+}
+
+function canUseChannelRuntime(runtime) {
+  return Boolean(
+    runtime?.config?.current &&
+      runtime?.channel?.turn?.run &&
+      runtime?.channel?.session?.recordInboundSession &&
+      runtime?.channel?.session?.resolveStorePath &&
+      runtime?.channel?.session?.readSessionUpdatedAt &&
+      runtime?.channel?.reply?.dispatchReplyFromConfig &&
+      runtime?.channel?.reply?.finalizeInboundContext &&
+      runtime?.channel?.reply?.formatInboundEnvelope &&
+      runtime?.channel?.reply?.resolveEnvelopeFormatOptions &&
+      runtime?.channel?.reply?.withReplyDispatcher,
+  );
+}
+
+async function dispatchViaSubagentRuntime({
+  runtime,
+  message,
+  sessionKey,
+  requestId,
+  channel,
+  replyTo,
+  agentId,
+  replyWebhook,
+  replyAuthToken,
+  runTimeoutMs,
+  errorRecoveryMs,
+  log,
+}) {
+    const baselineReply = await safeReadLatestAssistantReply({
+      runtime,
+      sessionKey,
+      log,
+      timeoutMs: 5000,
+    });
+    const runStartedAtMs = Date.now();
     const { runId, result } = await runWithSyntheticGatewayClient(async () => {
       const { runId } = await runtime.subagent.run({
         sessionKey,
@@ -167,7 +260,7 @@ async function handleInboundRequest({
 
       const result = await runtime.subagent.waitForRun({
         runId,
-        timeoutMs: 300000,
+        timeoutMs: runTimeoutMs,
       });
       return { runId, result };
     });
@@ -176,10 +269,36 @@ async function handleInboundRequest({
       log?.warn?.(
         `[calciforge-channel] agent run ${result.status} - runId=${runId}`,
       );
+      const recovered = await recoverReplyAfterRunError({
+        runtime,
+        runId,
+        sessionKey,
+        baselineReply,
+        runStartedAtMs,
+        initialResult: result,
+        errorRecoveryMs,
+        log,
+      });
+      if (recovered) {
+        await deliverReply({
+          replyWebhook,
+          replyAuthToken,
+          sessionKey,
+          requestId,
+          message: recovered.replyText,
+          attachments: recovered.attachments,
+          channel,
+          replyTo,
+          log,
+        });
+        return true;
+      }
+
       await deliverReply({
         replyWebhook,
         replyAuthToken,
         sessionKey,
+        requestId,
         message: `OpenClaw run ${result.status}`,
         channel,
         replyTo,
@@ -188,11 +307,11 @@ async function handleInboundRequest({
       return true;
     }
 
-    const replyText = await runWithSyntheticGatewayClient(() =>
-      readLatestAssistantText(runtime, sessionKey),
+    const reply = await runWithSyntheticGatewayClient(() =>
+      readLatestAssistantReply(runtime, sessionKey),
     );
     const attachments = normalizeAttachments(result.attachments);
-    if (isSilentReply(replyText) && attachments.length === 0) {
+    if (isSilentReply(reply.text) && attachments.length === 0) {
       log?.info?.("[calciforge-channel] silent reply - not forwarding");
       return true;
     }
@@ -201,26 +320,225 @@ async function handleInboundRequest({
       replyWebhook,
       replyAuthToken,
       sessionKey,
-      message: replyText,
+      requestId,
+      message: reply.text,
       attachments,
       channel,
       replyTo,
       log,
     });
-  } catch (err) {
-    log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
-    await deliverReply({
-      replyWebhook,
-      replyAuthToken,
+}
+
+async function dispatchViaChannelRuntime({
+  runtime,
+  message,
+  sessionKey,
+  requestId,
+  channel,
+  replyTo,
+  agentId,
+  sender,
+  replyWebhook,
+  replyAuthToken,
+  log,
+}) {
+  const cfg = runtime.config.current();
+  const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
+  const accountId = "default";
+  const sourceChannel = normalizeChannelName(channel);
+  const senderId = normalizeString(sender) || normalizeString(replyTo) || sessionKey;
+  const timestamp = Date.now();
+  const storePath = runtime.channel.session.resolveStorePath(cfg.session?.store, {
+    agentId: resolvedAgentId,
+  });
+  const ctxPayload = buildCalciforgeChannelContext({
+    runtime,
+    cfg,
+    message,
+    sessionKey,
+    sourceChannel,
+    senderId,
+    accountId,
+    agentId: resolvedAgentId,
+    requestId,
+    timestamp,
+  });
+  const dispatcher = createSingleReplyDispatcher();
+
+  await runtime.channel.turn.run({
+    channel: "calciforge",
+    accountId,
+    raw: {
+      message,
       sessionKey,
-      message: `OpenClaw dispatch failed: ${err.message}`,
-      channel,
-      replyTo,
-      log,
-    });
+      requestId,
+      channel: sourceChannel,
+      sender: senderId,
+    },
+    adapter: {
+      ingest: () => ({
+        id: requestId || `calciforge:${timestamp}`,
+        timestamp,
+        rawText: message,
+        textForAgent: ctxPayload.BodyForAgent,
+        textForCommands: ctxPayload.CommandBody,
+        raw: message,
+      }),
+      resolveTurn: () => ({
+        channel: "calciforge",
+        accountId,
+        routeSessionKey: sessionKey,
+        storePath,
+        ctxPayload,
+        recordInboundSession: runtime.channel.session.recordInboundSession,
+        record: {
+          onRecordError: (err) =>
+            log?.warn?.(
+              `[calciforge-channel] failed to record inbound session: ${err.message}`,
+            ),
+        },
+        runDispatch: () =>
+          runtime.channel.reply.withReplyDispatcher({
+            dispatcher,
+            run: () =>
+              runtime.channel.reply.dispatchReplyFromConfig({
+                ctx: ctxPayload,
+                cfg,
+                dispatcher,
+              }),
+          }),
+      }),
+    },
+  });
+
+  const reply = dispatcher.takeReply();
+  if (!reply || isSilentReply(reply.text)) {
+    log?.info?.("[calciforge-channel] silent channel-runtime reply - not forwarding");
+    return;
   }
 
-  return true;
+  await deliverReply({
+    replyWebhook,
+    replyAuthToken,
+    sessionKey,
+    requestId,
+    message: reply.text,
+    attachments: normalizeAttachments(reply.attachments),
+    channel: sourceChannel,
+    replyTo,
+    log,
+  });
+}
+
+function buildCalciforgeChannelContext({
+  runtime,
+  cfg,
+  message,
+  sessionKey,
+  sourceChannel,
+  senderId,
+  accountId,
+  agentId,
+  requestId,
+  timestamp,
+}) {
+  const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
+  const previousTimestamp = runtime.channel.session.readSessionUpdatedAt({
+    storePath: runtime.channel.session.resolveStorePath(cfg.session?.store, {
+      agentId: resolvedAgentId,
+    }),
+    sessionKey,
+  });
+  const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
+  const body = runtime.channel.reply.formatInboundEnvelope({
+    channel: "Calciforge",
+    from: `${sourceChannel}:${senderId}`,
+    timestamp,
+    body: message,
+    chatType: "direct",
+    sender: {
+      id: senderId,
+    },
+    previousTimestamp,
+    envelope: envelopeOptions,
+  });
+  const isNativeCommand = message.trimStart().startsWith("/");
+
+  return runtime.channel.reply.finalizeInboundContext({
+    Body: body,
+    BodyForAgent: message,
+    RawBody: message,
+    CommandBody: message,
+    BodyForCommands: message,
+    From: `${sourceChannel}:${senderId}`,
+    To: `calciforge:${senderId}`,
+    SessionKey: sessionKey,
+    AccountId: accountId,
+    ChatType: "direct",
+    ConversationLabel: `${sourceChannel}:${senderId}`,
+    SenderId: senderId,
+    Provider: "calciforge",
+    Surface: "calciforge",
+    WasMentioned: true,
+    CommandAuthorized: true,
+    CommandSource: isNativeCommand ? "native" : "text",
+    CommandTargetSessionKey: sessionKey,
+    MessageSid: requestId,
+    Timestamp: timestamp,
+    NativeChannelId: sourceChannel,
+    OriginatingChannel: "calciforge",
+    OriginatingTo: `calciforge:${senderId}`,
+  });
+}
+
+function createSingleReplyDispatcher() {
+  const replies = [];
+  const counts = { tool: 0, block: 0, final: 0 };
+  const push = (kind, payload) => {
+    counts[kind] += 1;
+    replies.push({ kind, payload });
+    return true;
+  };
+
+  return {
+    sendToolResult: (payload) => push("tool", payload),
+    sendBlockReply: (payload) => push("block", payload),
+    sendFinalReply: (payload) => push("final", payload),
+    waitForIdle: async () => {},
+    markComplete: () => {},
+    getQueuedCounts: () => ({ ...counts }),
+    getFailedCounts: () => ({ tool: 0, block: 0, final: 0 }),
+    takeReply: () => {
+      const selected =
+        [...replies].reverse().find((entry) => entry.kind === "final") ??
+        [...replies].reverse().find((entry) => entry.kind === "block") ??
+        [...replies].reverse().find((entry) => entry.kind === "tool");
+      if (!selected) return null;
+      return normalizeReplyPayloadForCalciforge(selected.payload);
+    },
+  };
+}
+
+function normalizeReplyPayloadForCalciforge(payload) {
+  if (typeof payload === "string") return { text: payload, attachments: [] };
+  if (!payload || typeof payload !== "object") return { text: "", attachments: [] };
+  return {
+    text: typeof payload.text === "string" ? payload.text : "",
+    attachments: payload.attachments ?? payload.media ?? [],
+  };
+}
+
+function normalizeChannelName(value) {
+  return normalizeString(value) || "calciforge";
+}
+
+function normalizeString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function parseAgentIdFromSessionKey(sessionKey) {
+  const match = /^calciforge:([^:]+):/.exec(sessionKey);
+  return match?.[1] || null;
 }
 
 function isAuthorized(req, expectedToken) {
@@ -247,7 +565,124 @@ function isSilentReply(replyText) {
   return !trimmed || trimmed === "NO_REPLY" || trimmed === "HEARTBEAT_OK";
 }
 
-async function readLatestAssistantText(runtime, sessionKey) {
+async function recoverReplyAfterRunError({
+  runtime,
+  runId,
+  sessionKey,
+  baselineReply,
+  runStartedAtMs,
+  initialResult,
+  errorRecoveryMs,
+  log,
+  withGatewayClient = runWithSyntheticGatewayClient,
+  pollDelayMs = 1000,
+}) {
+  const deadline = Date.now() + errorRecoveryMs;
+  let lastResult = initialResult;
+
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const reply = await safeReadLatestAssistantReply({
+      runtime,
+      sessionKey,
+      log,
+      withGatewayClient,
+      timeoutMs: Math.min(5000, remainingMs),
+    });
+    const attachments = normalizeAttachments(lastResult?.attachments);
+    if (
+      isRecoverableReply(reply, baselineReply, attachments, runStartedAtMs) &&
+      (!isSilentReply(reply?.text) || attachments.length > 0)
+    ) {
+      log?.info?.(
+        `[calciforge-channel] recovered reply after run ${lastResult?.status ?? "error"} - runId=${runId}`,
+      );
+      return { replyText: reply?.text ?? "", attachments };
+    }
+
+    try {
+      lastResult = await withGatewayClient(() =>
+        runtime.subagent.waitForRun({
+          runId,
+          timeoutMs: Math.min(15000, remainingMs),
+        }),
+      );
+      const waitedReply = await safeReadLatestAssistantReply({
+        runtime,
+        sessionKey,
+        log,
+        withGatewayClient,
+        timeoutMs: Math.min(5000, Math.max(1, deadline - Date.now())),
+      });
+      const waitedAttachments = normalizeAttachments(lastResult.attachments);
+      if (
+        isRecoverableReply(
+          waitedReply,
+          baselineReply,
+          waitedAttachments,
+          runStartedAtMs,
+        ) &&
+        (!isSilentReply(waitedReply?.text) || waitedAttachments.length > 0)
+      ) {
+        return {
+          replyText: waitedReply?.text ?? "",
+          attachments: waitedAttachments,
+        };
+      }
+    } catch (err) {
+      log?.warn?.(
+        `[calciforge-channel] error recovery wait failed - ${err.message}`,
+      );
+    }
+
+    if (Date.now() >= deadline) break;
+    await sleep(pollDelayMs);
+  }
+
+  return null;
+}
+
+function isNewReply(reply, baselineReply) {
+  if (!reply?.text && !reply?.key) return false;
+  if (!baselineReply) return true;
+  return reply.key !== baselineReply.key || reply.text !== baselineReply.text;
+}
+
+function isRecoverableReply(reply, baselineReply, attachments, runStartedAtMs) {
+  if (attachments.length > 0) return true;
+  if (!isNewReply(reply, baselineReply)) return false;
+  if (!baselineReply && !Number.isFinite(reply?.createdAtMs)) return false;
+  return replyMatchesRunWindow(reply, runStartedAtMs);
+}
+
+function replyMatchesRunWindow(reply, runStartedAtMs) {
+  if (!Number.isFinite(runStartedAtMs)) return true;
+  if (!Number.isFinite(reply?.createdAtMs)) return false;
+  return reply.createdAtMs >= runStartedAtMs;
+}
+
+async function safeReadLatestAssistantReply({
+  runtime,
+  sessionKey,
+  log,
+  withGatewayClient = runWithSyntheticGatewayClient,
+  timeoutMs,
+}) {
+  try {
+    return await withOptionalTimeout(
+      withGatewayClient(() => readLatestAssistantReply(runtime, sessionKey)),
+      timeoutMs,
+    );
+  } catch (err) {
+    log?.warn?.(
+      `[calciforge-channel] could not read latest assistant reply - ${err.message}`,
+    );
+    return null;
+  }
+}
+
+async function readLatestAssistantReply(runtime, sessionKey) {
   const { messages } = await runtime.subagent.getSessionMessages({
     sessionKey,
     limit: 10,
@@ -255,23 +690,67 @@ async function readLatestAssistantText(runtime, sessionKey) {
   const lastMsg = [...messages]
     .reverse()
     .find((msg) => msg?.role === "assistant");
-  if (!lastMsg) return "";
+  if (!lastMsg) return { key: null, text: "", createdAtMs: null };
 
   const content = lastMsg.content;
-  if (typeof content === "string") return content;
+  const createdAtMs = parseTimestampMillis(
+    lastMsg.createdAt ?? lastMsg.timestamp ?? lastMsg.created_at,
+  );
+  const key =
+    lastMsg.id ??
+    lastMsg.messageId ??
+    lastMsg.createdAt ??
+    lastMsg.timestamp ??
+    JSON.stringify(content);
+  if (typeof content === "string") return { key, text: content, createdAtMs };
   if (Array.isArray(content)) {
-    return content
-      .filter((part) => part.type === "text")
-      .map((part) => part.text ?? "")
-      .join("\n");
+    return {
+      key,
+      text: content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text ?? "")
+        .join("\n"),
+      createdAtMs,
+    };
   }
-  return "";
+  return { key, text: "", createdAtMs };
+}
+
+function parseTimestampMillis(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value !== "string" || value.trim() === "") return null;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function withOptionalTimeout(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function deliverReply({
   replyWebhook,
   replyAuthToken,
   sessionKey,
+  requestId,
   message,
   attachments,
   channel,
@@ -285,6 +764,9 @@ async function deliverReply({
 
   try {
     const payload = { sessionKey, message, channel, to: replyTo };
+    if (requestId) {
+      payload.requestId = requestId;
+    }
     if (attachments?.length) {
       payload.attachments = attachments;
     }
@@ -332,3 +814,24 @@ function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export const testInternals = {
+  isNewReply,
+  isRecoverableReply,
+  parseTimestampMillis,
+  safeReadLatestAssistantReply,
+  withOptionalTimeout,
+  recoverReplyAfterRunError,
+  buildCalciforgeChannelContext,
+  createSingleReplyDispatcher,
+  dispatchViaChannelRuntime,
+};

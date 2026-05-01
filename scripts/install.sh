@@ -48,12 +48,16 @@ REMOTE_SCANNER_MODEL="${REMOTE_SCANNER_MODEL:-gpt-5.4-mini}"
 REMOTE_SCANNER_PROMPT_FILE="${REMOTE_SCANNER_PROMPT_FILE:-$CALCIFORGE_CONFIG_HOME/remote-llm-scanner-prompt.txt}"
 LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
+CALCIFORGE_INSTALL_DOCTOR_NETWORK="${CALCIFORGE_INSTALL_DOCTOR_NETWORK:-true}"
+CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES="${CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES:-false}"
 ZC_CONFIG="${CALCIFORGE_CONFIG:-$CALCIFORGE_CONFIG_HOME/config.toml}"
 ZC_LOG_DIR="${ZC_LOG_DIR:-$CALCIFORGE_CONFIG_HOME/logs}"
 INSTALL_NODES_STATE="${CALCIFORGE_INSTALL_NODES_STATE:-$CALCIFORGE_CONFIG_HOME/install-nodes.json}"
 LEGACY_SERVICE_PREFIX="${CALCIFORGE_LEGACY_SERVICE_PREFIX:-}"
 CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
 AGENTS_JSON="$CLASH_DIR/agents.json"
+CLASHD_DEFAULT_POLICY="$REPO_ROOT/crates/clashd/config/default-policy.star"
+CLASHD_DEFAULT_AGENTS="$REPO_ROOT/crates/clashd/config/agents.example.json"
 
 case "$REMOTE_SCANNER_ENABLED" in
     1|true|TRUE|yes|YES|on|ON)
@@ -365,6 +369,50 @@ disable_legacy_local_service() {
         $SYSTEMCTL disable --now "${legacy}.service" >/dev/null 2>&1 || true
     fi
     return 0
+}
+
+install_clashd_policy_file() {
+    local policy_path="$1"
+    local default_policy="$2"
+
+    if [[ ! -f "$policy_path" ]]; then
+        cp "$default_policy" "$policy_path"
+        ok "Policy installed → $policy_path"
+        return 0
+    fi
+
+    if grep -q "clashd policy for Claude Code tool calls" "$policy_path" 2>/dev/null; then
+        local backup="${policy_path}.claude-template.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+        cp "$policy_path" "$backup"
+        cp "$default_policy" "$policy_path"
+        warn "Replaced Claude-specific policy at $policy_path with shared clashd policy (backup: $backup)"
+        return 0
+    fi
+
+    ok "Policy already present → $policy_path"
+}
+
+install_clashd_agents_file() {
+    local agents_path="$1"
+    local default_agents="$2"
+    local agents_compact=""
+
+    if [[ -f "$agents_path" ]]; then
+        agents_compact="$(tr -d '[:space:]' < "$agents_path")"
+    fi
+
+    if [[ ! -s "$agents_path" || "$agents_compact" == '{"agents":[]}' ]]; then
+        if [[ -f "$agents_path" ]]; then
+            local backup="${agents_path}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+            cp "$agents_path" "$backup"
+            warn "Replacing empty clashd agent config at $agents_path (backup: $backup)"
+        fi
+        cp "$default_agents" "$agents_path" 2>/dev/null || echo '{"agents":[]}' > "$agents_path"
+        ok "Agent config → $agents_path"
+        return 0
+    fi
+
+    ok "Agent config already present → $agents_path"
 }
 
 load_launch_agent() {
@@ -822,18 +870,11 @@ fi
 hdr "clashd policy engine"
 
 mkdir -p "$CLASH_DIR" "$LOG_DIR" "$PLIST_DIR"
+disable_legacy_local_service "calciforge-clashd" "clashd"
 disable_legacy_local_service "calciforge-clashd" "${LEGACY_SERVICE_PREFIX}-clashd"
 
-if [[ ! -f "$CLASHD_POLICY" ]]; then
-    cp "$REPO_ROOT/crates/clashd/config/claude-code-policy.star" "$CLASHD_POLICY"
-    ok "Policy installed → $CLASHD_POLICY"
-else
-    ok "Policy already present → $CLASHD_POLICY"
-fi
-
-[[ -f "$AGENTS_JSON" ]] || \
-    { cp "$REPO_ROOT/crates/clashd/config/agents.example.json" "$AGENTS_JSON" 2>/dev/null || \
-      echo '{"agents":[]}' > "$AGENTS_JSON"; ok "Agent config → $AGENTS_JSON"; }
+install_clashd_policy_file "$CLASHD_POLICY" "$CLASHD_DEFAULT_POLICY"
+install_clashd_agents_file "$AGENTS_JSON" "$CLASHD_DEFAULT_AGENTS"
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
     CLASHD_PLIST="$PLIST_DIR/com.calciforge.clashd.plist"
@@ -1055,8 +1096,15 @@ run_calciforge_doctor() {
     local mode="${1:-local}"
     if [[ -f "$ZC_CONFIG" && -x "$BIN_DIR/calciforge" ]]; then
         hdr "calciforge doctor (${mode})"
-        env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
-            "$BIN_DIR/calciforge" --config "$ZC_CONFIG" doctor --no-network \
+        local doctor_args=(--config "$ZC_CONFIG" doctor)
+        if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK"; then
+            doctor_args+=(--no-network)
+        fi
+        local doctor_env=()
+        if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES"; then
+            doctor_env=(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
+        fi
+        "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
             || warn "calciforge doctor reported issues; see output above"
     else
         warn "Skipping calciforge doctor — config or binary not available yet"
@@ -1774,13 +1822,61 @@ REMOTE_BUILD
 
         # ── rsync config files ────────────────────────────────────────────────
         if [[ "$bin" == "clashd" ]]; then
-            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $config_dir"
-            rsync -az -e "$rsync_ssh" \
-                "$REPO_ROOT/crates/clashd/config/claude-code-policy.star" \
-                "${ssh_target}:${config_dir}/policy.star" 2>/dev/null || true
-            # Write minimal agents.json if absent
-            ssh "${ssh_opts[@]}" "$ssh_target" \
-                "[[ -f ${config_dir}/agents.json ]] || echo '{\"agents\":[]}' > ${config_dir}/agents.json"
+            local remote_policy_tmp="/tmp/calciforge-default-policy-$$.star"
+            local remote_agents_tmp="/tmp/calciforge-agents-example-$$.json"
+            ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$config_dir" <<'REMOTE_MKDIR'
+set -euo pipefail
+mkdir -p -- "$1"
+REMOTE_MKDIR
+            rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
+            rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$config_dir" "$remote_policy_tmp" "$remote_agents_tmp" <<'REMOTE_CLASHD_CONFIG'
+set -euo pipefail
+config_dir="$1"
+default_policy="$2"
+default_agents="$3"
+policy="${config_dir}/policy.star"
+agents="${config_dir}/agents.json"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+mkdir -p "$config_dir"
+
+if [[ ! -f "$policy" ]]; then
+    if [[ -f /etc/clashd/policy.star ]]; then
+        cp /etc/clashd/policy.star "$policy"
+        echo "migrated legacy clashd policy to $policy"
+    else
+        install -m 0644 "$default_policy" "$policy"
+        echo "installed default clashd policy to $policy"
+    fi
+elif grep -q "clashd policy for Claude Code tool calls" "$policy" 2>/dev/null; then
+    cp "$policy" "${policy}.claude-template.bak.${stamp}"
+    if [[ -f /etc/clashd/policy.star ]] && ! grep -q "clashd policy for Claude Code tool calls" /etc/clashd/policy.star 2>/dev/null; then
+        cp /etc/clashd/policy.star "$policy"
+        echo "replaced Claude-specific policy with migrated legacy OpenClaw policy at $policy"
+    else
+        install -m 0644 "$default_policy" "$policy"
+        echo "replaced Claude-specific policy with default shared clashd policy at $policy"
+    fi
+fi
+
+agents_compact=""
+if [[ -f "$agents" ]]; then
+    agents_compact="$(tr -d '[:space:]' < "$agents")"
+fi
+if [[ ! -s "$agents" || "$agents_compact" == '{"agents":[]}' ]]; then
+    [[ -f "$agents" ]] && cp "$agents" "${agents}.bak.${stamp}"
+    if [[ -s /root/.clash/agents.json ]] && [[ "$(tr -d '[:space:]' < /root/.clash/agents.json)" != '{"agents":[]}' ]]; then
+        cp /root/.clash/agents.json "$agents"
+        echo "migrated legacy clashd agent config to $agents"
+    else
+        install -m 0644 "$default_agents" "$agents"
+        echo "installed default clashd agent config to $agents"
+    fi
+fi
+
+rm -f "$default_policy" "$default_agents"
+REMOTE_CLASHD_CONFIG
         fi
 
         # ── install service ───────────────────────────────────────────────────
@@ -1847,6 +1943,12 @@ REMOTE_MITM_CA
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${service_name}"
             local launchd_env=("CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" "PATH=${remote_service_path}")
+            if [[ "$bin" == "clashd" ]]; then
+                launchd_env+=(
+                    "CLASHD_POLICY=${config_dir}/policy.star"
+                    "CLASHD_AGENTS=${config_dir}/agents.json"
+                )
+            fi
             if [[ "$bin" == "calciforge" ]]; then
                 launchd_env+=(
                     "CALCIFORGE_CONFIG_HOME=${config_dir}"

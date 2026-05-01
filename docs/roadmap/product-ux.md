@@ -81,6 +81,13 @@ but model richer controls as optional channel capabilities:
   updates, or pinned summaries when those affordances exist and do not
   leak sensitive information.
 
+Matrix needs a separate security track for end-to-end encryption. The current
+Matrix channel uses plaintext Client-Server API rooms; E2EE support requires
+Olm/Megolm device/session management, trust or verification policy, encrypted
+media handling, and clear recovery behavior when keys are unavailable. Until
+that lands, docs should label Matrix as plaintext and operators should choose
+Signal or another encrypted channel for sensitive chat content.
+
 Expose these capabilities through configuration, not channel assumptions.
 `ui_mode = "auto"` can enable safe native controls for a direct channel while
 `ui_mode = "text"` keeps bridge-heavy setups, such as WhatsApp through Matrix
@@ -97,6 +104,13 @@ abstraction. A reasonable architecture is a channel capability trait:
 handlers ask for a high-level interaction such as "single choice",
 "approval", "artifact", or "form link"; each channel renders the best
 native affordance it can, then falls back to deterministic text.
+
+WhatsApp is worth treating as a dependency-risk item. If the embedded
+WhatsApp Web library cannot expose reply buttons or lists safely, Calciforge
+can still ship text/media support and use Telegram or the local web UI as a
+control surface. A narrow fork may be justified later if native WhatsApp
+controls become important enough and the upstream crate does not accept or
+prioritize the needed API surface.
 
 ## Secret Input UX
 

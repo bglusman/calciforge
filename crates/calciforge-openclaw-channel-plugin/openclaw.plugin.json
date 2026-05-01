@@ -18,6 +18,14 @@
       "replyAuthToken": {
         "type": "string",
         "description": "Bearer token for authenticating callbacks to Calciforge's reply webhook"
+      },
+      "runTimeoutMs": {
+        "type": "integer",
+        "description": "Maximum time to wait for the OpenClaw run before treating it as timed out"
+      },
+      "errorRecoveryMs": {
+        "type": "integer",
+        "description": "Additional time to wait for fallback-generated replies after OpenClaw reports an early run error"
       }
     }
   }
