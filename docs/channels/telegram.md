@@ -21,12 +21,12 @@ Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply/media
 
 ## Prerequisites
 
-1. **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`, follow the
-   prompts, copy the token it returns (format: `1234567890:ABCDEFghijklmnopqrstuvwxyz01234567`)
-2. **Find your Telegram user ID** (numeric, not your username):
-   - Send any message to your new bot, then run `calciforge` — the user ID appears in logs
-     on the first unrecognised message
-   - Or send a message to [@userinfobot](https://t.me/userinfobot) — it replies with your ID
+- **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`, follow the
+  prompts, copy the token it returns (format: `1234567890:ABCDEFghijklmnopqrstuvwxyz01234567`).
+- **Find your Telegram user ID** (numeric, not your username):
+  send any message to your new bot, then run `calciforge` and read the user ID
+  from the first unrecognised-message log, or send a message to
+  [@userinfobot](https://t.me/userinfobot).
 
 ## Step 1: Save the bot token
 
@@ -100,10 +100,12 @@ artifact names and sizes instead of exposing local artifact paths.
 When `ui_mode = "auto"`, Telegram replies can include inline buttons for
 bounded channel-native actions. `!agent list` and `!model list` show buttons
 that select an agent/model through the same backend handlers as the text
-commands, and `!secret input NAME` / `!secret bulk` replies include an
-`Open paste form` URL button. The plain text command remains in every reply so
-operators can disable buttons with `ui_mode = "text"` without losing
-functionality.
+commands. Session lists and Clash approval requests use the same control path:
+session buttons run `!switch <agent> <session>`, and approval buttons run
+`!approve <id>` / `!deny <id>`. `!secret input NAME` / `!secret bulk` replies
+include an `Open paste form` URL button. The plain text command remains in
+every reply so operators can disable buttons with `ui_mode = "text"` without
+losing functionality.
 
 Telegram also works well as a Calciforge control surface even if the main agent
 conversation happens somewhere else. Because active agent/model choices are

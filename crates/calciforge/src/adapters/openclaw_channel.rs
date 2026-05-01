@@ -251,6 +251,7 @@ impl ReplyPayload {
         Ok(OutboundMessage {
             text: self.message.filter(|message| !message.trim().is_empty()),
             attachments,
+            controls: Vec::new(),
         })
     }
 }

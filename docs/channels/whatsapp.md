@@ -13,7 +13,7 @@ no ZeroClaw/OpenClaw webhook sidecar for this channel.
 WhatsApp user  <->  WhatsApp Web session  <->  Calciforge  <->  agent
 ```
 
-## Requirements
+## Prerequisites
 
 - A WhatsApp account or linked device that can pair with WhatsApp Web.
 - Persistent storage for the session database.
@@ -41,6 +41,10 @@ allowed_numbers = ["+15555550001"]
 
 # Optional security scan for inbound messages.
 # scan_messages = true
+
+# Optional: force plain text choice rendering. Default "auto".
+# The current embedded WhatsApp backend is text-first either way.
+# ui_mode = "text"
 ```
 
 ```toml
@@ -73,11 +77,15 @@ conversation.
 
 ## Channel UI
 
-The embedded WhatsApp Web channel is text/media-first today. It should keep the
-same deterministic text commands as Matrix and Signal until the backend exposes
-WhatsApp interactive messages safely. If a future WhatsApp Business API or
-provider-backed channel supports lists or reply buttons, Calciforge can render
-the same agent/model choices natively while preserving text fallback.
+The embedded WhatsApp Web channel is text/media-first today. Agent choices,
+model choices, session lists, and approval decisions all render through the
+shared choice model, but the embedded channel sends the text fallback because
+`zeroclawlabs::Channel::SendMessage` exposes text, recipient, threading,
+cancellation, and attachments, but not WhatsApp interactive messages. If a
+future WhatsApp Business API or provider-backed channel supports lists or reply
+buttons, Calciforge can render the same choices natively while preserving text
+fallback. Set `ui_mode = "text"` to keep this channel text-only for bridged or
+constrained clients.
 
 Operators can use Telegram as the Calciforge control surface for buttons while
 continuing the main chat in WhatsApp. Active agent/model selections are keyed by
