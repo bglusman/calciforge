@@ -459,35 +459,46 @@ impl CommandHandler {
 
     /// Returns `true` for commands whose primary response can include agent choices.
     pub fn is_agent_choice_request(text: &str) -> bool {
-        let tokens: Vec<String> = text
-            .split_whitespace()
-            .map(|token| token.to_lowercase())
-            .collect();
-        matches!(
-            tokens.as_slice(),
-            [cmd] if cmd == "!agents"
-        ) || matches!(
-            tokens.as_slice(),
-            [cmd] if cmd == "!agent"
-        ) || matches!(
-            tokens.as_slice(),
-            [cmd, sub] if cmd == "!agent" && matches!(sub.as_str(), "list" | "ls" | "agents")
-        )
+        let mut tokens = text.split_whitespace();
+        let Some(cmd) = tokens.next() else {
+            return false;
+        };
+        let sub = tokens.next();
+        if tokens.next().is_some() {
+            return false;
+        }
+
+        match sub {
+            None => cmd.eq_ignore_ascii_case("!agents") || cmd.eq_ignore_ascii_case("!agent"),
+            Some(sub) => {
+                cmd.eq_ignore_ascii_case("!agent")
+                    && (sub.eq_ignore_ascii_case("list")
+                        || sub.eq_ignore_ascii_case("ls")
+                        || sub.eq_ignore_ascii_case("agents"))
+            }
+        }
     }
 
     /// Returns `true` for model list commands that can include activatable choices.
     pub fn is_model_choice_request(text: &str) -> bool {
-        let tokens: Vec<String> = text
-            .split_whitespace()
-            .map(|token| token.to_lowercase())
-            .collect();
-        matches!(
-            tokens.as_slice(),
-            [cmd] if cmd == "!model"
-        ) || matches!(
-            tokens.as_slice(),
-            [cmd, sub] if cmd == "!model" && matches!(sub.as_str(), "list" | "ls" | "models")
-        )
+        let mut tokens = text.split_whitespace();
+        let Some(cmd) = tokens.next() else {
+            return false;
+        };
+        let sub = tokens.next();
+        if tokens.next().is_some() {
+            return false;
+        }
+
+        match sub {
+            None => cmd.eq_ignore_ascii_case("!model"),
+            Some(sub) => {
+                cmd.eq_ignore_ascii_case("!model")
+                    && (sub.eq_ignore_ascii_case("list")
+                        || sub.eq_ignore_ascii_case("ls")
+                        || sub.eq_ignore_ascii_case("models"))
+            }
+        }
     }
 
     /// Build a channel-agnostic agent choice response for an authenticated identity.
@@ -1087,7 +1098,7 @@ impl CommandHandler {
         }
 
         let agent_arg = args[0].to_string();
-        let session_arg = args.get(1).map(|s| s.to_string());
+        let session_arg = (args.len() > 1).then(|| args[1..].join(" "));
 
         // Look up the routing rule for this identity.
         let routing_rule = match self
@@ -3164,6 +3175,18 @@ mod tests {
         assert!(
             reply.contains("Invalid session name"),
             "path-like session should be rejected: {}",
+            reply
+        );
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
+    }
+
+    #[test]
+    fn test_switch_acpx_rejects_multi_token_session_name_as_one_argument() {
+        let h = make_handler();
+        let reply = h.handle_switch("!switch claude-acpx backend session", "brian");
+        assert!(
+            reply.contains("Invalid session name"),
+            "multi-token session should be rejected as one invalid session name: {}",
             reply
         );
         assert_eq!(h.active_session_for("brian", "claude-acpx"), None);

@@ -1032,22 +1032,21 @@ fn telegram_keyboard_for_message(
 
 fn choice_keyboard_from_controls(message: &OutboundMessage) -> Option<InlineKeyboardMarkup> {
     const MAX_TELEGRAM_CALLBACK_BYTES: usize = 64;
+    const MAX_TELEGRAM_BUTTON_TEXT_CHARS: usize = 64;
     let mut rows = Vec::new();
     let mut row = Vec::new();
-    for option in message
+    for (option, data) in message
         .controls
         .iter()
         .flat_map(|control| control.options.iter())
+        .filter_map(|option| {
+            let data = option.callback_data.as_deref()?;
+            (data.len() <= MAX_TELEGRAM_CALLBACK_BYTES).then_some((option, data))
+        })
         .take(20)
     {
-        let Some(data) = option.callback_data.as_deref() else {
-            continue;
-        };
-        if data.len() > MAX_TELEGRAM_CALLBACK_BYTES {
-            continue;
-        }
         row.push(InlineKeyboardButton::callback(
-            option.label.clone(),
+            telegram_button_text(&option.label, MAX_TELEGRAM_BUTTON_TEXT_CHARS),
             data.to_string(),
         ));
         if row.len() == 2 {
@@ -1062,6 +1061,16 @@ fn choice_keyboard_from_controls(message: &OutboundMessage) -> Option<InlineKeyb
     } else {
         Some(InlineKeyboardMarkup::new(rows))
     }
+}
+
+fn telegram_button_text(label: &str, max_chars: usize) -> String {
+    if label.chars().count() <= max_chars {
+        return label.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let mut text = label.chars().take(keep).collect::<String>();
+    text.push_str("...");
+    text
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1666,15 +1675,25 @@ mod tests {
     #[test]
     fn telegram_choice_keyboard_skips_callbacks_too_large_for_telegram() {
         let long_id = "x".repeat(80);
+        let skipped: Vec<_> = (0..20)
+            .map(|idx| {
+                crate::messages::ChoiceOption::new(
+                    format!("Too long {idx}"),
+                    format!("!agent switch {long_id}-{idx}"),
+                )
+                .with_callback_data(format!("cf:agent:{long_id}-{idx}"))
+            })
+            .collect();
         let message =
             OutboundMessage::text("Choose").with_control(crate::messages::ChoiceControl::new(
                 "Options",
-                vec![
-                    crate::messages::ChoiceOption::new("Short", "!agent switch short")
-                        .with_callback_data("cf:agent:short"),
-                    crate::messages::ChoiceOption::new("Long", format!("!agent switch {long_id}"))
-                        .with_callback_data(format!("cf:agent:{long_id}")),
-                ],
+                skipped
+                    .into_iter()
+                    .chain(std::iter::once(
+                        crate::messages::ChoiceOption::new("Short", "!agent switch short")
+                            .with_callback_data("cf:agent:short"),
+                    ))
+                    .collect(),
             ));
 
         let keyboard = choice_keyboard_from_controls(&message).expect("one valid button");
@@ -1682,6 +1701,26 @@ mod tests {
 
         assert_eq!(buttons.len(), 1);
         assert_eq!(buttons[0].text, "Short");
+    }
+
+    #[test]
+    fn telegram_choice_keyboard_truncates_long_button_text() {
+        let long_label = format!("session-{}", "x".repeat(80));
+        let message =
+            OutboundMessage::text("Choose").with_control(crate::messages::ChoiceControl::new(
+                "Options",
+                vec![
+                    crate::messages::ChoiceOption::new(long_label, "!switch claude-acpx backend")
+                        .with_callback_data("cf:session:claude-acpx:backend"),
+                ],
+            ));
+
+        let keyboard = choice_keyboard_from_controls(&message).expect("one valid button");
+        let buttons: Vec<_> = keyboard.inline_keyboard.into_iter().flatten().collect();
+
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].text.chars().count(), 64);
+        assert!(buttons[0].text.ends_with("..."));
     }
 
     #[test]

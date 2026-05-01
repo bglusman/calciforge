@@ -13,7 +13,7 @@ no ZeroClaw/OpenClaw webhook sidecar for this channel.
 WhatsApp user  <->  WhatsApp Web session  <->  Calciforge  <->  agent
 ```
 
-## Requirements
+## Prerequisites
 
 - A WhatsApp account or linked device that can pair with WhatsApp Web.
 - Persistent storage for the session database.
