@@ -230,7 +230,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 ///
 /// | `kind`             | Protocol            | Session continuity | Native commands |
 /// |--------------------|---------------------|--------------------|-----------------|
-/// | `openclaw-channel` | `/calciforge/inbound` + callback | ✅ native sessionKey | ✅ plugin channel |
+/// | `openclaw-channel` | `/calciforge/inbound` + callback | ✅ native sessionKey | ✅ OpenClaw lane commands |
 /// | `openai-compat`    | `/v1/chat/completions` | provider-specific | n/a |
 /// | `zeroclaw-http`    | `/webhook`          | ❌ stateless        | ✅ |
 /// | `zeroclaw-native`  | `/webhook` + history | ✅ in-process ring buffer | ✅ |

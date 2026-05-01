@@ -51,6 +51,10 @@ fn first_arg(text: &str) -> Option<&str> {
     text.split_whitespace().nth(1)
 }
 
+fn second_arg(text: &str) -> Option<&str> {
+    text.split_whitespace().nth(2)
+}
+
 fn command_token(text: &str) -> &str {
     text.split_whitespace().next().unwrap_or("")
 }
@@ -508,7 +512,7 @@ impl CommandHandler {
             "!commands" => Some(self.cmd_help()),
             // !status needs auth — return None so the caller resolves identity first.
             "!status" => None,
-            "!agents" => Some(self.cmd_agents()),
+            "!agents" => Some(self.cmd_agents_summary()),
             "!metrics" => Some(self.cmd_metrics()),
             "!ping" => Some("pong".to_string()),
             // !sessions needs auth — return None so caller resolves identity first.
@@ -520,7 +524,10 @@ impl CommandHandler {
             "!agent" => {
                 let sub = first_arg(trimmed).map(str::to_ascii_lowercase);
                 match sub.as_deref() {
-                    Some("list" | "ls" | "agents") | None => Some(self.cmd_agents()),
+                    Some("list" | "ls" | "agents") | None => Some(self.cmd_agents_summary()),
+                    Some("details" | "detail" | "info") => {
+                        Some(self.cmd_agent_details(second_arg(trimmed)))
+                    }
                     Some("help") => Some(self.cmd_help()),
                     _ => None,
                 }
@@ -1321,12 +1328,12 @@ impl CommandHandler {
             "Calciforge — available commands:",
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
-            "  !agents  — list configured agents with endpoints",
+            "  !agents  — list configured agents",
             "  !sessions <agent> — list ACP sessions for an agent (requires auth)",
             "  !metrics — messages routed, average latency",
             "  !ping    — connectivity check (replies: pong)",
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
-            "  !agent list | !agent switch <agent> — noun-style agent commands",
+            "  !agent list | !agent details [agent] | !agent switch <agent> — noun-style agent commands",
             "  !default — switch back to your default agent (requires auth)",
             "  !model [list|use <id>|alias] — show or activate model choices",
             "  !secure, !secret <input|bulk|list|help> — paste URLs and secret names; `set` is legacy fallback",
@@ -1649,22 +1656,51 @@ impl CommandHandler {
         )
     }
 
-    fn cmd_agents(&self) -> String {
+    fn cmd_agents_summary(&self) -> String {
         if self.config.agents.is_empty() {
             return "No agents configured.".to_string();
         }
 
-        let mut lines = vec!["Configured agents:".to_string()];
+        let mut lines = vec!["Agents:".to_string()];
         for agent in &self.config.agents {
-            // For CLI agents, show command instead of endpoint
+            let model_info = agent.model.as_deref().unwrap_or("default");
+            lines.push(format!("  {} — {}", agent.id, model_info));
+        }
+        lines.push("Use !agent details [agent] for endpoints and adapter types.".to_string());
+        lines.join("\n")
+    }
+
+    fn cmd_agent_details(&self, agent_id: Option<&str>) -> String {
+        if self.config.agents.is_empty() {
+            return "No agents configured.".to_string();
+        }
+
+        let agents: Vec<_> = self
+            .config
+            .agents
+            .iter()
+            .filter(|agent| agent_id.is_none_or(|id| agent.id == id))
+            .collect();
+        if agents.is_empty() {
+            let requested = agent_id.unwrap_or_default();
+            return format!(
+                "⚠️ Agent '{requested}' not found. Use !agent list to see available agents."
+            );
+        }
+
+        let heading = if let Some(agent_id) = agent_id {
+            format!("Agent details: {agent_id}")
+        } else {
+            "Agent details:".to_string()
+        };
+        let mut lines = vec![heading];
+        for agent in agents {
             let location = if agent.kind == "cli" {
-                agent
-                    .command
-                    .as_deref()
-                    .unwrap_or("(no command)")
-                    .to_string()
+                agent.command.as_deref().unwrap_or("(no command)")
+            } else if agent.endpoint.is_empty() {
+                "(no endpoint)"
             } else {
-                agent.endpoint.clone()
+                &agent.endpoint
             };
             let model_info = agent.model.as_deref().unwrap_or("default");
             lines.push(format!(
@@ -2357,10 +2393,20 @@ mod tests {
         let h = make_handler();
         let reply = h.handle("!agents").unwrap();
         assert!(reply.contains("librarian"), "should show agent id");
-        assert!(reply.contains("10.0.0.20"), "should show endpoint");
-        assert!(reply.contains("openclaw-channel"), "should show agent kind");
+        assert!(
+            !reply.contains("10.0.0.20"),
+            "summary should not show noisy endpoint details: {reply}"
+        );
+        assert!(
+            !reply.contains("openclaw-channel"),
+            "summary should not show noisy adapter details: {reply}"
+        );
         // Should show model info (fallback to "default" when no model set)
-        assert!(reply.contains("model: default"), "should show model info");
+        assert!(reply.contains("default"), "should show model summary");
+        assert!(
+            reply.contains("!agent details"),
+            "should point to detail command: {reply}"
+        );
     }
 
     #[test]
@@ -2374,6 +2420,25 @@ mod tests {
         assert!(
             uppercase.contains("librarian"),
             "uppercase alias should also list agents: {uppercase}"
+        );
+    }
+
+    #[test]
+    fn agent_details_shows_endpoint_and_kind_metadata() {
+        let h = make_handler();
+        let reply = h.handle("!agent details librarian").unwrap();
+        assert!(reply.contains("librarian"), "should show agent id: {reply}");
+        assert!(
+            reply.contains("10.0.0.20"),
+            "details should show endpoint: {reply}"
+        );
+        assert!(
+            reply.contains("openclaw-channel"),
+            "details should show agent kind: {reply}"
+        );
+        assert!(
+            !reply.contains("custodian"),
+            "targeted details should only show requested agent: {reply}"
         );
     }
 
@@ -2430,7 +2495,7 @@ mod tests {
         let h = CommandHandler::new(Arc::new(config));
         let reply = h.handle("!agents").unwrap();
         assert!(
-            reply.contains("model: claude-sonnet-4-6"),
+            reply.contains("claude-sonnet-4-6"),
             "should show configured model: {}",
             reply
         );

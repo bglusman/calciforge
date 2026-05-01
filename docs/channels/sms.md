@@ -69,3 +69,15 @@ calciforge
 Send `!ping` from an allowed phone number. Calciforge replies to the Linq
 conversation id when the webhook includes one, otherwise it replies directly to
 the sender phone number.
+
+## Channel UI
+
+Plain SMS is text-only. RCS can support suggested replies/actions through
+provider-backed RCS Business Messaging, but Calciforge treats that as a richer
+channel capability rather than assuming every `kind = "sms"` route can render
+buttons.
+
+For now, use deterministic text commands in SMS/iMessage and optionally keep
+Telegram open as a Calciforge control surface for button-based agent/model
+selection. Active selections are keyed by Calciforge identity and apply across
+the operator's configured channels.

@@ -1,9 +1,8 @@
 {
   "id": "calciforge-channel",
   "name": "Calciforge Channel",
-  "description": "Registers Calciforge as a native inbound channel so messages flow through OpenClaw's full agent runtime and replies are delivered back to Calciforge.",
+  "description": "Registers Calciforge's inbound HTTP bridge so messages flow through OpenClaw's full agent runtime and replies are delivered back to Calciforge.",
   "version": "0.1.0",
-  "channels": ["calciforge"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

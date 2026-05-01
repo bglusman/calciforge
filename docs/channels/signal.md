@@ -112,8 +112,8 @@ aliases = [
 
 [[routing]]
 identity = "operator"
-default_agent = "librarian"
-allowed_agents = ["librarian"]
+default_agent = "research"
+allowed_agents = ["research"]
 ```
 
 Phone numbers in `allowed_numbers` that don't match any identity alias are
@@ -147,3 +147,22 @@ Check logs for `Signal channel listening via SSE on …`. A health check on
 ```bash
 curl http://127.0.0.1:8080/v1/health
 ```
+
+## Channel UI
+
+Signal is a high-priority channel for future richer controls, but the current
+interface should be treated as text-first. Keep using deterministic commands
+such as `!agent list`, `!agent switch <id>`, `!model list`, and
+`!model use <id>` until the Signal transport exposes safe native affordances.
+
+You can also use Telegram as the Calciforge control surface for buttons while
+continuing the main chat in Signal. Active agent/model selections are keyed by
+Calciforge identity, so choices made through Telegram apply to the same
+operator's Signal route.
+
+<div class="channel-ui-grid">
+  <figure>
+    <img src="../assets/channel-ui-signal-fallback.svg" alt="Signal text fallback for agent and model selection">
+    <figcaption>Signal remains text-first while richer channel controls are evaluated.</figcaption>
+  </figure>
+</div>

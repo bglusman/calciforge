@@ -54,8 +54,10 @@ adapter. All other fields are adapter-specific.
 
 ### `kind = "openclaw-channel"`
 
-HTTP adapter for an OpenClaw gateway that has the Calciforge channel plugin
-installed. Calciforge POSTs each routed message to the plugin's
+HTTP adapter for an OpenClaw gateway that has the Calciforge bridge plugin
+installed. The plugin package is still named `calciforge-channel` for
+compatibility, but Calciforge owns the user-facing channel. Calciforge POSTs
+each routed message to the plugin's
 `/calciforge/inbound` route, OpenClaw runs the selected agent lane with its own
 session state, and the plugin sends the reply back to Calciforge's
 `/hooks/reply` callback.
@@ -63,7 +65,7 @@ session state, and the plugin sends the reply back to Calciforge's
 This is not a Calciforge-to-Calciforge adapter. Do not point
 `openclaw-channel` at another Calciforge gateway. Use `openai-compat` for a
 plain model gateway, or route to the actual downstream OpenClaw gateway that
-owns the channel plugin.
+owns the bridge plugin.
 
 Calciforge controls identity routing, channel access, callback authentication,
 and artifact delivery for this path. OpenClaw's outbound model/tool traffic is

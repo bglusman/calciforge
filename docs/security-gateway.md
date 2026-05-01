@@ -142,7 +142,7 @@ redirects and installer-managed per-runtime trust setup are next.
 
 Practical tiers:
 
-- Direct Mac Mini/Studio OpenClaw: use the channel plugin for inbound chat,
+- Direct Mac Mini/Studio OpenClaw: use the Calciforge bridge plugin for inbound chat,
   point provider/model calls at Calciforge's model gateway where possible, and
   use `proxy_endpoint` plus MITM CA trust for tested HTTP/HTTPS egress. This is
   convenient but cooperative; OpenClaw can still bypass Calciforge if it opens

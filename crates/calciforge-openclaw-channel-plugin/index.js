@@ -8,7 +8,8 @@
  */
 
 async function getLegacyRegisterPluginHttpRoute() {
-  const mod = await import("/usr/lib/node_modules/openclaw/dist/plugin-sdk/plugin-runtime.js");
+  const distDir = await resolveOpenClawDistDir();
+  const mod = await import(`file://${distDir}/plugin-sdk/plugin-runtime.js`);
   return mod.registerPluginHttpRoute;
 }
 
@@ -25,6 +26,63 @@ async function registerHttpRoute(api, route, log) {
   return { unregister, source: "legacy route registry" };
 }
 
+let gatewayBoundRuntimePromise = null;
+let gatewayScopeBridgePromise = null;
+
+function getGatewayBoundRuntime() {
+  gatewayBoundRuntimePromise ??= resolveOpenClawDistDir().then((distDir) =>
+    import(`file://${distDir}/plugins/runtime/index.js`).then(
+      ({ createPluginRuntime }) =>
+        createPluginRuntime({ allowGatewaySubagentBinding: true }),
+    ),
+  );
+  return gatewayBoundRuntimePromise;
+}
+
+async function resolveOpenClawDistDir() {
+  const fs = await import("node:fs");
+  for (const candidate of [
+    "/usr/lib/node_modules/openclaw/dist",
+    "/opt/homebrew/lib/node_modules/openclaw/dist",
+    "/usr/local/lib/node_modules/openclaw/dist",
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error("OpenClaw dist directory was not found");
+}
+
+function getGatewayScopeBridge() {
+  gatewayScopeBridgePromise ??= import("node:fs").then(async (fs) => {
+    const distDir = await resolveOpenClawDistDir();
+    const files = fs.readdirSync(distDir);
+    const bridgeFile =
+      files.find((name) => /^gateway-request-scope-.*\.js$/.test(name)) ??
+      files.find((name) => /^loader-.*\.js$/.test(name));
+    if (!bridgeFile) {
+      throw new Error("OpenClaw gateway request scope bridge was not found");
+    }
+    const mod = await import(`file://${distDir}/${bridgeFile}`);
+    const withGatewayScope =
+      mod.withPluginRuntimeGatewayRequestScope ?? mod.u ?? mod.n;
+    if (typeof withGatewayScope !== "function") {
+      throw new Error("OpenClaw gateway request scope bridge is incompatible");
+    }
+    return { withGatewayScope };
+  });
+  return gatewayScopeBridgePromise;
+}
+
+async function runWithSyntheticGatewayClient(work) {
+  const { withGatewayScope } = await getGatewayScopeBridge();
+  return withGatewayScope(
+    {
+      pluginId: "calciforge-channel",
+      isWebchatConnect: () => false,
+    },
+    work,
+  );
+}
+
 export default function register(api) {
   const pluginConfig = api.pluginConfig ?? {};
   const { authToken, replyWebhook, replyAuthToken } = pluginConfig;
@@ -39,7 +97,7 @@ export default function register(api) {
       match: "exact",
       handler: async (req, res) =>
         handleInboundRequest({
-          api,
+          getRuntime: getGatewayBoundRuntime,
           req,
           res,
           authToken,
@@ -59,43 +117,10 @@ export default function register(api) {
         );
       });
   }
-
-  api.registerChannel({
-    plugin: {
-      id: "calciforge-channel",
-      name: "Calciforge",
-      description: "Calciforge inbound channel",
-      configSchema: { type: "object", properties: {}, additionalProperties: true },
-
-      listAccounts: async () => [{ accountId: "default", config: {} }],
-
-      resolveAccountSnapshot: ({ account }) => ({
-        accountId: account.accountId,
-        config: account.config,
-        status: { kind: "connected", label: "Calciforge channel active" },
-      }),
-
-      send: null,
-
-      gateway: {
-        startAccount: async (ctx) => {
-          const { abortSignal, log } = ctx;
-          log?.info?.("[calciforge-channel] channel account active");
-
-          await new Promise((resolve) => {
-            abortSignal?.addEventListener("abort", () => {
-              log?.info?.("[calciforge-channel] channel stopped");
-              resolve();
-            });
-          });
-        },
-      },
-    },
-  });
 }
 
 async function handleInboundRequest({
-  api,
+  getRuntime,
   req,
   res,
   authToken,
@@ -130,17 +155,21 @@ async function handleInboundRequest({
   json(res, 200, { ok: true });
 
   try {
-    const { runId } = await api.runtime.subagent.run({
-      sessionKey,
-      message,
-      idempotencyKey: `calciforge:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      ...(agentId ? { lane: agentId } : {}),
-      deliver: false,
-    });
+    const runtime = await getRuntime();
+    const { runId, result } = await runWithSyntheticGatewayClient(async () => {
+      const { runId } = await runtime.subagent.run({
+        sessionKey,
+        message,
+        idempotencyKey: `calciforge:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+        ...(agentId ? { lane: agentId } : {}),
+        deliver: false,
+      });
 
-    const result = await api.runtime.subagent.waitForRun({
-      runId,
-      timeoutMs: 300000,
+      const result = await runtime.subagent.waitForRun({
+        runId,
+        timeoutMs: 300000,
+      });
+      return { runId, result };
     });
 
     if (result.status !== "ok") {
@@ -159,9 +188,8 @@ async function handleInboundRequest({
       return true;
     }
 
-    const replyText = await readLatestAssistantText(
-      api,
-      sessionKey,
+    const replyText = await runWithSyntheticGatewayClient(() =>
+      readLatestAssistantText(runtime, sessionKey),
     );
     const attachments = normalizeAttachments(result.attachments);
     if (isSilentReply(replyText) && attachments.length === 0) {
@@ -214,8 +242,13 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function readLatestAssistantText(api, sessionKey) {
-  const { messages } = await api.runtime.subagent.getSessionMessages({
+function isSilentReply(replyText) {
+  const trimmed = (replyText ?? "").trim();
+  return !trimmed || trimmed === "NO_REPLY" || trimmed === "HEARTBEAT_OK";
+}
+
+async function readLatestAssistantText(runtime, sessionKey) {
+  const { messages } = await runtime.subagent.getSessionMessages({
     sessionKey,
     limit: 10,
   });
@@ -233,11 +266,6 @@ async function readLatestAssistantText(api, sessionKey) {
       .join("\n");
   }
   return "";
-}
-
-function isSilentReply(replyText) {
-  const trimmed = (replyText ?? "").trim();
-  return !trimmed || trimmed === "NO_REPLY" || trimmed === "HEARTBEAT_OK";
 }
 
 async function deliverReply({
