@@ -95,6 +95,7 @@ struct PendingRequest {
     name: String,
     description: String,
     expires_at: chrono::DateTime<chrono::Utc>,
+    in_progress: bool,
     completed: bool,
 }
 
@@ -106,6 +107,7 @@ struct PendingBulkRequest {
     label: String,
     description: String,
     expires_at: chrono::DateTime<chrono::Utc>,
+    in_progress: bool,
     completed: bool,
 }
 
@@ -216,6 +218,7 @@ pub async fn spawn_request(
             name: name.clone(),
             description: description.into(),
             expires_at,
+            in_progress: false,
             completed: false,
         },
     );
@@ -317,6 +320,7 @@ pub async fn spawn_bulk_request(
             label: label.clone(),
             description: description.into(),
             expires_at,
+            in_progress: false,
             completed: false,
         },
     );
@@ -491,7 +495,7 @@ async fn get_bulk_form(
     if chrono::Utc::now() > req.expires_at {
         return (StatusCode::GONE, Html(EXPIRED_HTML.to_string())).into_response();
     }
-    if req.completed {
+    if req.completed || req.in_progress {
         return (
             StatusCode::CONFLICT,
             Html("This bulk-paste link has already been used.".to_string()),
@@ -530,29 +534,16 @@ async fn post_bulk_submit(
         }
     }
 
-    let req = {
-        let map = state.requests.lock().await;
-        map.get(&token).cloned()
-    };
-    let Some(req) = req else {
-        return (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML.to_string())).into_response();
-    };
-    if chrono::Utc::now() > req.expires_at {
-        return (StatusCode::GONE, Html(EXPIRED_HTML.to_string())).into_response();
-    }
-    if req.completed {
-        return (
-            StatusCode::CONFLICT,
-            Html("This bulk-paste link has already been used.".to_string()),
-        )
-            .into_response();
-    }
     if form.dump.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Html("Empty dump rejected.".to_string()),
         )
             .into_response();
+    }
+
+    if let Err(error) = peek_bulk_request(&state.requests, &token).await {
+        return error.into_response(true);
     }
 
     let allow_update = query.update.unwrap_or(0) != 0;
@@ -573,6 +564,11 @@ async fn post_bulk_submit(
                     .into_response();
             }
         }
+    };
+
+    let req = match claim_bulk_request(&state.requests, &token).await {
+        Ok(req) => req,
+        Err(error) => return error.into_response(true),
     };
 
     let parsed = parse_env_dump(&form.dump);
@@ -613,12 +609,7 @@ async fn post_bulk_submit(
         }
     }
 
-    {
-        let mut map = state.requests.lock().await;
-        if let Some(r) = map.get_mut(&token) {
-            r.completed = true;
-        }
-    }
+    complete_bulk_request(&state.requests, &token).await;
     // Signal submitted only if at least one key actually landed —
     // otherwise the operator probably wants the URL to stay live so
     // they can fix the dump and retry. (Server still marks completed
@@ -642,6 +633,126 @@ fn is_valid_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
+enum PasteStateError {
+    NotFound,
+    Expired,
+    InUse,
+}
+
+impl PasteStateError {
+    fn into_response(self, bulk: bool) -> axum::response::Response {
+        match self {
+            Self::NotFound => (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML.to_string())),
+            Self::Expired => (StatusCode::GONE, Html(EXPIRED_HTML.to_string())),
+            Self::InUse if bulk => (
+                StatusCode::CONFLICT,
+                Html("This bulk-paste link has already been used.".to_string()),
+            ),
+            Self::InUse => (
+                StatusCode::CONFLICT,
+                Html("This paste link has already been used.".to_string()),
+            ),
+        }
+        .into_response()
+    }
+}
+
+async fn peek_request(
+    requests: &Arc<Mutex<HashMap<String, PendingRequest>>>,
+    token: &str,
+) -> Result<PendingRequest, PasteStateError> {
+    let map = requests.lock().await;
+    let Some(req) = map.get(token).cloned() else {
+        return Err(PasteStateError::NotFound);
+    };
+    validate_request_state(req)
+}
+
+async fn claim_request(
+    requests: &Arc<Mutex<HashMap<String, PendingRequest>>>,
+    token: &str,
+) -> Result<PendingRequest, PasteStateError> {
+    let mut map = requests.lock().await;
+    let Some(req) = map.get_mut(token) else {
+        return Err(PasteStateError::NotFound);
+    };
+    validate_request_state(req.clone())?;
+    req.in_progress = true;
+    Ok(req.clone())
+}
+
+async fn complete_request(requests: &Arc<Mutex<HashMap<String, PendingRequest>>>, token: &str) {
+    let mut map = requests.lock().await;
+    if let Some(req) = map.get_mut(token) {
+        req.in_progress = false;
+        req.completed = true;
+    }
+}
+
+async fn release_request(requests: &Arc<Mutex<HashMap<String, PendingRequest>>>, token: &str) {
+    let mut map = requests.lock().await;
+    if let Some(req) = map.get_mut(token) {
+        req.in_progress = false;
+    }
+}
+
+fn validate_request_state(req: PendingRequest) -> Result<PendingRequest, PasteStateError> {
+    if chrono::Utc::now() > req.expires_at {
+        return Err(PasteStateError::Expired);
+    }
+    if req.completed || req.in_progress {
+        return Err(PasteStateError::InUse);
+    }
+    Ok(req)
+}
+
+async fn peek_bulk_request(
+    requests: &Arc<Mutex<HashMap<String, PendingBulkRequest>>>,
+    token: &str,
+) -> Result<PendingBulkRequest, PasteStateError> {
+    let map = requests.lock().await;
+    let Some(req) = map.get(token).cloned() else {
+        return Err(PasteStateError::NotFound);
+    };
+    validate_bulk_request_state(req)
+}
+
+async fn claim_bulk_request(
+    requests: &Arc<Mutex<HashMap<String, PendingBulkRequest>>>,
+    token: &str,
+) -> Result<PendingBulkRequest, PasteStateError> {
+    let mut map = requests.lock().await;
+    let Some(req) = map.get_mut(token) else {
+        return Err(PasteStateError::NotFound);
+    };
+    validate_bulk_request_state(req.clone())?;
+    req.in_progress = true;
+    Ok(req.clone())
+}
+
+async fn complete_bulk_request(
+    requests: &Arc<Mutex<HashMap<String, PendingBulkRequest>>>,
+    token: &str,
+) {
+    let mut map = requests.lock().await;
+    if let Some(req) = map.get_mut(token) {
+        req.in_progress = false;
+        req.completed = true;
+    }
+}
+
+fn validate_bulk_request_state(
+    req: PendingBulkRequest,
+) -> Result<PendingBulkRequest, PasteStateError> {
+    if chrono::Utc::now() > req.expires_at {
+        return Err(PasteStateError::Expired);
+    }
+    if req.completed || req.in_progress {
+        return Err(PasteStateError::InUse);
+    }
+    Ok(req)
 }
 
 fn mint_token() -> String {
@@ -677,7 +788,7 @@ async fn get_form(
     if chrono::Utc::now() > req.expires_at {
         return (StatusCode::GONE, Html(EXPIRED_HTML.to_string())).into_response();
     }
-    if req.completed {
+    if req.completed || req.in_progress {
         return (
             StatusCode::CONFLICT,
             Html("This paste link has already been used.".to_string()),
@@ -710,23 +821,6 @@ async fn post_submit(
         }
     }
 
-    let req = {
-        let map = state.requests.lock().await;
-        map.get(&token).cloned()
-    };
-    let Some(req) = req else {
-        return (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML.to_string())).into_response();
-    };
-    if chrono::Utc::now() > req.expires_at {
-        return (StatusCode::GONE, Html(EXPIRED_HTML.to_string())).into_response();
-    }
-    if req.completed {
-        return (
-            StatusCode::CONFLICT,
-            Html("This paste link has already been used.".to_string()),
-        )
-            .into_response();
-    }
     if form.value.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -734,6 +828,11 @@ async fn post_submit(
         )
             .into_response();
     }
+
+    let req = match peek_request(&state.requests, &token).await {
+        Ok(req) => req,
+        Err(error) => return error.into_response(false),
+    };
 
     // New-only enforcement: unless update=1 explicitly set, refuse if
     // the secret already exists.
@@ -763,16 +862,14 @@ async fn post_submit(
         }
     }
 
+    let req = match claim_request(&state.requests, &token).await {
+        Ok(req) => req,
+        Err(error) => return error.into_response(false),
+    };
+
     match state.fnox.set(&req.name, &form.value).await {
         Ok(()) => {
-            // Mark completed; do NOT remove the entry yet — the
-            // confirmation page lookup needs it to remain.
-            {
-                let mut map = state.requests.lock().await;
-                if let Some(r) = map.get_mut(&token) {
-                    r.completed = true;
-                }
-            }
+            complete_request(&state.requests, &token).await;
             // Signal the spawning task that submission succeeded so the
             // CLI can exit immediately instead of sleeping until expiry.
             // The send may fail if the receiver was already dropped
@@ -788,6 +885,7 @@ async fn post_submit(
             Html(render_confirmation(&req.name, preview)).into_response()
         }
         Err(e) => {
+            release_request(&state.requests, &token).await;
             warn!("fnox set failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1605,6 +1703,77 @@ mod tests {
         handle.shutdown();
     }
 
+    /// Given a one-shot paste URL and many near-simultaneous POSTs,
+    /// when the storage backend is slow enough for natural double-click
+    /// or browser retry races to overlap,
+    /// then exactly one request stores the secret and the rest see the
+    /// token as already in use. This catches the false confidence gap
+    /// where checking `completed` only before async fnox work lets every
+    /// overlapping request pass the pre-check and write.
+    #[tokio::test]
+    async fn concurrent_single_secret_posts_are_single_use() {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("set-log");
+        let bin = fake_fnox(
+            &dir,
+            &format!(
+                r#"case "$1" in
+list) exit 0 ;;
+set) echo "$2" >> "{}"; sleep 0.2; cat > /dev/null; exit 0 ;;
+*) exit 1 ;;
+esac"#,
+                log.display()
+            ),
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+        let mut handle = spawn_request(
+            "RACE_KEY",
+            "",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let url = handle.url.clone();
+        let http = reqwest::Client::new();
+
+        let mut tasks = Vec::new();
+        for idx in 0..8 {
+            let http = http.clone();
+            let url = url.clone();
+            tasks.push(tokio::spawn(async move {
+                http.post(url)
+                    .form(&[("value", format!("value-{idx}"))])
+                    .send()
+                    .await
+                    .expect("paste POST should receive an HTTP response")
+                    .status()
+            }));
+        }
+
+        let mut statuses = Vec::new();
+        for task in tasks {
+            statuses.push(task.await.unwrap());
+        }
+        let successes = statuses.iter().filter(|status| status.is_success()).count();
+        assert_eq!(
+            successes, 1,
+            "exactly one concurrent submit may succeed; got {statuses:?}"
+        );
+
+        let set_log = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(
+            set_log.lines().count(),
+            1,
+            "fnox set must run once for a single-use URL; log:\n{set_log}"
+        );
+
+        handle.shutdown();
+    }
+
     // ── Bulk-paste tests ──────────────────────────────────────────────
 
     #[test]
@@ -1800,5 +1969,72 @@ INVALID_NO_EQUALS
             .await
             .unwrap();
         assert_eq!(resp.status(), 400);
+    }
+
+    /// Same single-use race as the scalar paste flow, but for the .env
+    /// bulk endpoint. Bulk mode does more work after validation (list,
+    /// parse, per-key set), so it needs the same in-progress guard.
+    #[tokio::test]
+    async fn concurrent_bulk_posts_are_single_use() {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("bulk-set-log");
+        let bin = fake_fnox(
+            &dir,
+            &format!(
+                r#"case "$1" in
+list) exit 0 ;;
+set) echo "$2" >> "{}"; sleep 0.2; cat > /dev/null; exit 0 ;;
+*) exit 1 ;;
+esac"#,
+                log.display()
+            ),
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+        let mut handle = spawn_bulk_request(
+            "race-bulk",
+            "",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let url = handle.url.clone();
+        let http = reqwest::Client::new();
+
+        let mut tasks = Vec::new();
+        for idx in 0..8 {
+            let http = http.clone();
+            let url = url.clone();
+            tasks.push(tokio::spawn(async move {
+                http.post(url)
+                    .form(&[("dump", format!("BULK_RACE=value-{idx}"))])
+                    .send()
+                    .await
+                    .expect("bulk POST should receive an HTTP response")
+                    .status()
+            }));
+        }
+
+        let mut statuses = Vec::new();
+        for task in tasks {
+            statuses.push(task.await.unwrap());
+        }
+        let successes = statuses.iter().filter(|status| status.is_success()).count();
+        assert_eq!(
+            successes, 1,
+            "exactly one concurrent bulk submit may succeed; got {statuses:?}"
+        );
+
+        let set_log = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(
+            set_log.lines().count(),
+            1,
+            "bulk fnox set must run once for a single-use URL; log:\n{set_log}"
+        );
+
+        handle.shutdown();
     }
 }
