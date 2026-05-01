@@ -15,6 +15,7 @@
 //! [`CommandHandler::cmd_status_for_identity`] respectively.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -52,6 +53,35 @@ fn first_arg(text: &str) -> Option<&str> {
 
 fn command_token(text: &str) -> &str {
     text.split_whitespace().next().unwrap_or("")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentChoiceError {
+    MissingRoutingRule {
+        identity_id: String,
+    },
+    UnknownAllowedAgents {
+        identity_id: String,
+        unknown_agents: Vec<String>,
+    },
+}
+
+impl fmt::Display for AgentChoiceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentChoiceError::MissingRoutingRule { identity_id } => {
+                write!(f, "no routing rule found for identity '{identity_id}'")
+            }
+            AgentChoiceError::UnknownAllowedAgents {
+                identity_id,
+                unknown_agents,
+            } => write!(
+                f,
+                "identity '{identity_id}' references unknown allowed_agents: {}",
+                unknown_agents.join(", ")
+            ),
+        }
+    }
 }
 
 fn command_suggestion(cmd: &str) -> Option<&'static str> {
@@ -322,14 +352,19 @@ impl CommandHandler {
     }
 
     /// Return agent choices the identity may activate, with display labels.
-    pub fn agent_choices_for_identity(&self, identity_id: &str) -> Vec<(String, String)> {
+    pub fn agent_choices_for_identity(
+        &self,
+        identity_id: &str,
+    ) -> Result<Vec<(String, String)>, AgentChoiceError> {
         let Some(routing_rule) = self
             .config
             .routing
             .iter()
             .find(|r| r.identity == identity_id)
         else {
-            return Vec::new();
+            return Err(AgentChoiceError::MissingRoutingRule {
+                identity_id: identity_id.to_string(),
+            });
         };
 
         let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
@@ -346,23 +381,31 @@ impl CommandHandler {
                 .collect()
         };
 
-        allowed
-            .into_iter()
-            .filter_map(|agent_id| {
-                let agent = self
-                    .config
-                    .agents
-                    .iter()
-                    .find(|agent| agent.id == agent_id)?;
-                let label = agent
-                    .registry
-                    .as_ref()
-                    .and_then(|registry| registry.display_name.as_deref())
-                    .unwrap_or(&agent.id)
-                    .to_string();
-                Some((agent.id.clone(), label))
+        let mut unknown_agents = Vec::new();
+        let mut choices = Vec::new();
+        for agent_id in allowed {
+            match self.config.agents.iter().find(|agent| agent.id == agent_id) {
+                Some(agent) => {
+                    let label = agent
+                        .registry
+                        .as_ref()
+                        .and_then(|registry| registry.display_name.as_deref())
+                        .unwrap_or(&agent.id)
+                        .to_string();
+                    choices.push((agent.id.clone(), label));
+                }
+                None => unknown_agents.push(agent_id.to_string()),
+            }
+        }
+
+        if unknown_agents.is_empty() {
+            Ok(choices)
+        } else {
+            Err(AgentChoiceError::UnknownAllowedAgents {
+                identity_id: identity_id.to_string(),
+                unknown_agents,
             })
-            .collect()
+        }
     }
 
     /// Return model choices that can be activated with `!model use <id>`.
@@ -2331,6 +2374,49 @@ mod tests {
         assert!(
             uppercase.contains("librarian"),
             "uppercase alias should also list agents: {uppercase}"
+        );
+    }
+
+    #[test]
+    fn agent_choices_report_missing_routing_rule() {
+        let h = make_handler();
+        let err = h
+            .agent_choices_for_identity("unknown_identity")
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentChoiceError::MissingRoutingRule { identity_id }
+                if identity_id == "unknown_identity"
+        ));
+    }
+
+    #[test]
+    fn agent_choices_report_unknown_allowed_agents() {
+        let mut config = make_config();
+        config.routing.push(RoutingRule {
+            identity: "typoed".to_string(),
+            default_agent: "librarian".to_string(),
+            allowed_agents: vec!["missing-agent".to_string()],
+        });
+        let h = CommandHandler::new(Arc::new(config));
+
+        let err = h.agent_choices_for_identity("typoed").unwrap_err();
+        assert!(matches!(
+            err,
+            AgentChoiceError::UnknownAllowedAgents {
+                identity_id,
+                unknown_agents
+            } if identity_id == "typoed" && unknown_agents == vec!["missing-agent"]
+        ));
+    }
+
+    #[test]
+    fn agent_choices_return_allowed_display_labels() {
+        let h = make_handler();
+        let choices = h.agent_choices_for_identity("david").unwrap();
+        assert_eq!(
+            choices,
+            vec![("librarian".to_string(), "Librarian".to_string())]
         );
     }
 

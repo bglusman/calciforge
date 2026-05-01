@@ -480,6 +480,12 @@ pub enum ChannelUiMode {
     Text,
 }
 
+/// Returns true when exactly one enabled channel of this kind allows native
+/// channel UI affordances such as Telegram inline buttons.
+///
+/// The option is stored per channel instance. If multiple enabled entries
+/// share the same kind, this helper fails closed because the current channel
+/// handlers only pass a kind string into the gate.
 pub fn channel_allows_rich_ui(config: &CalciforgeConfig, kind: &str) -> bool {
     let mut matches = config
         .channels

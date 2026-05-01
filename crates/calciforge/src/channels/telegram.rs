@@ -14,7 +14,7 @@ use crate::sync::Arc;
 
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
-    commands::CommandHandler,
+    commands::{AgentChoiceError, CommandHandler},
     config::{channel_allows_rich_ui, expand_tilde, CalciforgeConfig},
     context::ContextStore,
     messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
@@ -180,7 +180,10 @@ fn handle_message_nonblocking(
     if channel_allows_rich_ui(&config, "telegram") && is_agent_choice_request(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "showing agent choice buttons");
         let choices = command_handler.agent_choices_for_identity(&identity.id);
-        let reply = agent_choice_prompt(&choices);
+        let base_reply = command_handler
+            .handle(&text)
+            .unwrap_or_else(|| "Configured agents unavailable.".to_string());
+        let reply = agent_choice_prompt(base_reply, &choices);
         telemetry::command_reply_ready(
             "telegram",
             &identity.id,
@@ -195,7 +198,10 @@ fn handle_message_nonblocking(
                 bot2,
                 chat_id,
                 reply,
-                agent_choice_keyboard(&choices),
+                choices
+                    .as_ref()
+                    .ok()
+                    .and_then(|choices| agent_choice_keyboard(choices)),
                 "agent_choices",
             )
             .await;
@@ -206,7 +212,9 @@ fn handle_message_nonblocking(
     if channel_allows_rich_ui(&config, "telegram") && is_model_choice_request(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "showing model choice buttons");
         let choices = command_handler.activatable_model_choices();
-        let reply = model_choice_prompt(&choices);
+        let reply = command_handler
+            .handle(&text)
+            .unwrap_or_else(|| model_choice_prompt(&choices));
         telemetry::command_reply_ready(
             "telegram",
             &identity.id,
@@ -926,9 +934,15 @@ async fn handle_callback_query(
         }
     };
 
-    let _ = bot.answer_callback_query(query.id).text("Updated.").await;
+    let chat_id = query.message.as_ref().map(|message| message.chat().id);
+    let feedback = callback_feedback(&reply, chat_id.is_some());
+    let mut answer = bot.answer_callback_query(query.id).text(feedback.text);
+    if feedback.show_alert {
+        answer = answer.show_alert(true);
+    }
+    let _ = answer.await;
 
-    if let Some(chat_id) = query.message.as_ref().map(|message| message.chat().id) {
+    if let Some(chat_id) = chat_id {
         send_plain_reply(bot, chat_id, reply, "callback_action").await;
     }
 }
@@ -983,18 +997,14 @@ fn is_model_choice_request(text: &str) -> bool {
     )
 }
 
-fn agent_choice_prompt(choices: &[(String, String)]) -> String {
-    if choices.is_empty() {
-        return "No agents are available for your identity.".to_string();
+fn agent_choice_prompt(
+    base_reply: String,
+    choices: &Result<Vec<(String, String)>, AgentChoiceError>,
+) -> String {
+    if let Err(err) = choices {
+        return format!("{base_reply}\n\nButton choices unavailable: {err}.");
     }
-    format!(
-        "Choose an agent, or type `!agent switch <agent>`:\n{}",
-        choices
-            .iter()
-            .map(|(id, label)| format!("  - {id} ({label})"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
+    base_reply
 }
 
 fn model_choice_prompt(choices: &[(String, String)]) -> String {
@@ -1042,6 +1052,50 @@ fn choice_keyboard(kind: &str, choices: &[(String, String)]) -> Option<InlineKey
     } else {
         Some(InlineKeyboardMarkup::new(rows))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallbackFeedback {
+    text: String,
+    show_alert: bool,
+}
+
+fn callback_feedback(reply: &str, chat_will_receive_reply: bool) -> CallbackFeedback {
+    let success = callback_reply_succeeded(reply);
+    if chat_will_receive_reply {
+        return CallbackFeedback {
+            text: if success {
+                "Updated.".to_string()
+            } else {
+                "Action was not applied.".to_string()
+            },
+            show_alert: !success,
+        };
+    }
+
+    CallbackFeedback {
+        text: truncate_callback_text(reply.trim()),
+        show_alert: !success,
+    }
+}
+
+fn callback_reply_succeeded(reply: &str) -> bool {
+    let reply = reply.trim_start();
+    reply.starts_with('✅') || reply.starts_with('🔄')
+}
+
+fn truncate_callback_text(text: &str) -> String {
+    const MAX_CALLBACK_ANSWER_CHARS: usize = 200;
+    let char_count = text.chars().count();
+    if char_count <= MAX_CALLBACK_ANSWER_CHARS {
+        return text.to_string();
+    }
+    let mut truncated = text
+        .chars()
+        .take(MAX_CALLBACK_ANSWER_CHARS.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn first_http_url(text: &str) -> Option<reqwest::Url> {
@@ -1543,6 +1597,63 @@ mod tests {
         );
         assert_eq!(parse_callback_action("agent:librarian"), None);
         assert_eq!(parse_callback_action("cf:agent:"), None);
+    }
+
+    #[test]
+    fn telegram_callback_feedback_reflects_success_and_failure() {
+        assert_eq!(
+            callback_feedback("✅ Switched active agent to Librarian.", true),
+            CallbackFeedback {
+                text: "Updated.".to_string(),
+                show_alert: false,
+            }
+        );
+        assert_eq!(
+            callback_feedback("⚠️ Agent 'custodian' is not available to you.", true),
+            CallbackFeedback {
+                text: "Action was not applied.".to_string(),
+                show_alert: true,
+            }
+        );
+
+        let no_chat = callback_feedback("⚠️ Agent 'custodian' is not available to you.", false);
+        assert!(no_chat.text.contains("custodian"), "{no_chat:?}");
+        assert!(no_chat.show_alert, "{no_chat:?}");
+    }
+
+    #[test]
+    fn telegram_callback_feedback_truncates_inline_only_replies() {
+        let long_reply = format!("⚠️ {}", "x".repeat(250));
+        let feedback = callback_feedback(&long_reply, false);
+
+        assert_eq!(feedback.text.chars().count(), 200);
+        assert!(feedback.text.ends_with('…'), "{feedback:?}");
+        assert!(feedback.show_alert, "{feedback:?}");
+    }
+
+    #[test]
+    fn telegram_agent_choice_prompt_preserves_existing_output_when_choices_work() {
+        let base_reply = "Configured agents:\n  librarian".to_string();
+        let choices = Ok(vec![("librarian".to_string(), "Librarian".to_string())]);
+
+        assert_eq!(
+            agent_choice_prompt(base_reply.clone(), &choices),
+            base_reply
+        );
+    }
+
+    #[test]
+    fn telegram_agent_choice_prompt_surfaces_button_misconfig() {
+        let base_reply = "Configured agents:\n  librarian".to_string();
+        let choices = Err(AgentChoiceError::UnknownAllowedAgents {
+            identity_id: "brian".to_string(),
+            unknown_agents: vec!["typo".to_string()],
+        });
+        let reply = agent_choice_prompt(base_reply, &choices);
+
+        assert!(reply.contains("Configured agents:"), "{reply}");
+        assert!(reply.contains("Button choices unavailable"), "{reply}");
+        assert!(reply.contains("typo"), "{reply}");
     }
 
     #[test]
