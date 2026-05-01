@@ -1,4 +1,4 @@
-//! `paste-server` — localhost one-shot secret-input server.
+//! `paste-server` — one-shot secret-input server.
 //!
 //! Implements the `!secure request NAME` flow per
 //! `docs/rfcs/secret-input-web-ui.md`. Workflow:
@@ -6,8 +6,8 @@
 //! 1. A caller (chat command, MCP tool, CLI) invokes
 //!    [`PasteServer::spawn_request`] with a secret name + description.
 //! 2. The server allocates a random port (or uses configured), mints a
-//!    32-byte random token, binds an axum listener on
-//!    `127.0.0.1:<port>`, and returns the URL the user visits.
+//!    32-byte random token, binds an axum listener on the configured
+//!    interface, and returns the URL the user visits.
 //! 3. User opens the URL in a browser, sees a single text field
 //!    labeled with the secret name + description, pastes the value,
 //!    submits.
@@ -17,7 +17,7 @@
 //!
 //! ## Security properties
 //!
-//! - Localhost-only binding; no remote access by default
+//! - Localhost-only binding for direct CLI use unless configured otherwise
 //! - Single-use URL token; 5-minute default expiry
 //! - **New-only by default**: refuses to overwrite an existing secret
 //!   unless the user explicitly passes `?update=1` (eliminates
@@ -27,7 +27,7 @@
 //! - Origin/Referer header check on POST to mitigate DNS rebinding
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,6 +61,18 @@ pub struct PasteConfig {
     /// embeds the paste form in a sandboxed iframe and weakens the
     /// rebinding defense the localhost check exists for.
     pub allow_null_origin: bool,
+    /// Listener address. If unset, `PASTE_BIND` is honored; otherwise
+    /// direct CLI use stays localhost-only via `127.0.0.1:0`.
+    pub bind_addr: Option<String>,
+    /// Public base URL used when Calciforge sits behind a reverse
+    /// proxy/tunnel. If unset, `PASTE_PUBLIC_BASE_URL` is honored.
+    /// Example: `https://calciforge.example.net/paste-ui`.
+    pub public_base_url: Option<String>,
+    /// Public hostname/IP used in generated links while keeping the
+    /// listener's actual port. If unset, `PASTE_PUBLIC_HOST` is
+    /// honored, then Calciforge tries to infer a LAN IP for wildcard
+    /// binds before falling back to loopback.
+    pub public_host: Option<String>,
 }
 
 impl Default for PasteConfig {
@@ -70,6 +82,9 @@ impl Default for PasteConfig {
             preview_chars: None,
             require_localhost_origin: true,
             allow_null_origin: false,
+            bind_addr: None,
+            public_base_url: None,
+            public_host: None,
         }
     }
 }
@@ -170,16 +185,16 @@ pub enum PasteError {
     Io(#[from] std::io::Error),
 }
 
-/// Spawn a one-shot paste server bound to a random localhost port.
+/// Spawn a one-shot paste server bound to a random localhost port
+/// unless configured otherwise.
 /// Returns immediately with the URL the user should open. The server
 /// runs in a background tokio task; call [`PasteHandle::wait_submitted`]
 /// to block until the user submits, and [`PasteHandle::shutdown`] to
 /// trigger graceful drain.
 ///
-/// Port: 0 (kernel picks a free port). The previous doc claimed a
-/// `PORT` env override existed; it didn't, so the claim is removed
-/// rather than papered over. If a stable port is needed (e.g.
-/// integration testing), expose it via PasteConfig in a follow-up.
+/// Port `0` lets the kernel pick a free port. Set
+/// [`PasteConfig::bind_addr`] or `PASTE_BIND` when the listener should
+/// be reachable from another device.
 pub async fn spawn_request(
     name: impl Into<String>,
     description: impl Into<String>,
@@ -219,12 +234,10 @@ pub async fn spawn_request(
         .route("/paste/:token", get(get_form).post(post_submit))
         .with_state(state);
 
-    // Bind localhost by default. Phone/LAN use should be explicit via
-    // PASTE_BIND or, better, a short-lived authenticated tunnel/proxy.
-    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let bind_addr = configured_bind_addr(&config);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
-    let url = format!("http://{addr}/paste/{token}");
+    let url = build_url(&config, addr, "paste", &token);
 
     // Log only the bound address — the URL contains the one-shot bearer
     // token and would land in shared logs / journalctl / shell history
@@ -322,10 +335,10 @@ pub async fn spawn_bulk_request(
         .route("/bulk/:token", get(get_bulk_form).post(post_bulk_submit))
         .with_state(state);
 
-    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let bind_addr = configured_bind_addr(&config);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
-    let url = format!("http://{addr}/bulk/{token}");
+    let url = build_url(&config, addr, "bulk", &token);
 
     info!(label = %label, addr = %addr, "secret-paste bulk server listening");
     debug!(label = %label, %url, "secret-paste bulk full URL (debug-only)");
@@ -384,6 +397,73 @@ fn parse_env_dump(input: &str) -> Vec<Result<(String, String), (usize, String)>>
             Some(Ok((key.to_string(), value.to_string())))
         })
         .collect()
+}
+
+fn configured_bind_addr(config: &PasteConfig) -> String {
+    config
+        .bind_addr
+        .clone()
+        .or_else(|| std::env::var("PASTE_BIND").ok())
+        .unwrap_or_else(|| "127.0.0.1:0".to_string())
+}
+
+fn configured_public_base_url(config: &PasteConfig) -> Option<String> {
+    config
+        .public_base_url
+        .clone()
+        .or_else(|| std::env::var("PASTE_PUBLIC_BASE_URL").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn configured_public_host(config: &PasteConfig) -> Option<String> {
+    config
+        .public_host
+        .clone()
+        .or_else(|| std::env::var("PASTE_PUBLIC_HOST").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn build_url(config: &PasteConfig, addr: SocketAddr, route: &str, token: &str) -> String {
+    let path = format!("{route}/{token}");
+    if let Some(base) = configured_public_base_url(config) {
+        return format!("{}/{}", base.trim_end_matches('/'), path);
+    }
+
+    let host = configured_public_host(config).unwrap_or_else(|| public_host_for_addr(addr.ip()));
+    let host = bracket_ipv6_host(&host);
+    format!("http://{host}:{}/{path}", addr.port())
+}
+
+fn public_host_for_addr(ip: IpAddr) -> String {
+    if ip.is_unspecified() {
+        if let Some(lan_ip) = detect_lan_ip() {
+            return lan_ip.to_string();
+        }
+        return "127.0.0.1".to_string();
+    }
+    ip.to_string()
+}
+
+fn bracket_ipv6_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') && !host.contains("://") {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+fn detect_lan_ip() -> Option<IpAddr> {
+    for target in ["8.8.8.8:80", "1.1.1.1:80", "192.168.1.1:80"] {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        if socket.connect(target).is_err() {
+            continue;
+        }
+        let ip = socket.local_addr().ok()?.ip();
+        if !ip.is_loopback() && !ip.is_unspecified() {
+            return Some(ip);
+        }
+    }
+    None
 }
 
 fn strip_matching_quotes(value: &str) -> &str {
@@ -954,6 +1034,58 @@ mod tests {
         let t = mint_token();
         assert_eq!(t.len(), 64);
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn display_url_uses_public_host_for_wildcard_bind() {
+        let cfg = PasteConfig {
+            public_host: Some("192.168.1.55".to_string()),
+            ..PasteConfig::default()
+        };
+        let addr: SocketAddr = "0.0.0.0:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "bulk", "abc123");
+
+        assert_eq!(url, "http://192.168.1.55:58083/bulk/abc123");
+    }
+
+    #[test]
+    fn display_url_uses_public_base_url_for_proxy_deployments() {
+        let cfg = PasteConfig {
+            public_base_url: Some("https://calciforge.example.net/secret-paste/".to_string()),
+            ..PasteConfig::default()
+        };
+        let addr: SocketAddr = "127.0.0.1:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "paste", "abc123");
+
+        assert_eq!(
+            url,
+            "https://calciforge.example.net/secret-paste/paste/abc123"
+        );
+    }
+
+    #[test]
+    fn display_url_never_returns_unspecified_host() {
+        let cfg = PasteConfig::default();
+        let addr: SocketAddr = "0.0.0.0:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "bulk", "abc123");
+
+        assert!(
+            !url.contains("0.0.0.0"),
+            "wildcard bind address is not a usable browser URL: {url}"
+        );
+    }
+
+    #[test]
+    fn display_url_keeps_loopback_bind_local() {
+        let cfg = PasteConfig::default();
+        let addr: SocketAddr = "127.0.0.1:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "paste", "abc123");
+
+        assert_eq!(url, "http://127.0.0.1:58083/paste/abc123");
     }
 
     #[test]

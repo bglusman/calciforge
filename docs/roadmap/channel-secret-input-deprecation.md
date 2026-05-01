@@ -11,7 +11,7 @@ Calciforge should treat chat-based secret value entry as a last-resort
 path, not as the normal onboarding flow. The preferred paths are:
 
 - `!secure input NAME` or `!secure bulk LABEL`, which returns a
-  short-lived local paste URL without sending the value through chat
+  short-lived LAN paste URL without sending the value through chat
 - `paste-server NAME` or `paste-server --bulk ...` for short-lived
   local browser input
 - `fnox set NAME` on the host, when fnox is installed/configured
@@ -47,8 +47,11 @@ Recommended product direction:
   management.
 - Gate chat value entry behind per-channel config such as
   `allow_chat_secret_set = true`.
-- Treat remote paste links as a separate design: short-lived,
+- Treat off-LAN paste links as a separate design: short-lived,
   authenticated tunnel/proxy only, never a long-lived public form.
+  Calciforge supports `CALCIFORGE_PASTE_PUBLIC_HOST` for stable LAN
+  addresses and `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for a reverse proxy,
+  but the proxy design still needs hardening guidance.
 - Keep any channel-flow copy blunt: only for low-stakes keys, travel
   emergencies, or values the operator plans to rotate afterward.
 - Consider a future removal path once MCP/local paste flows are

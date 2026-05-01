@@ -285,13 +285,20 @@ paste-server --bulk env-import "bulk .env import"
 # prints http://127.0.0.1:PORT/bulk/<token>
 ```
 
+From chat, `!secure input NAME` and `!secure bulk LABEL` start the same
+short-lived paste server but opt into a LAN listener so the link can be
+opened from a browser that can reach the Calciforge host. This is for
+your local network, not the public internet.
+
 The URLs expire after five minutes and are single-use. The bulk URL
 accepts a whole `.env`-shaped paste and returns per-key results
 (stored / already-exists / illegal-name / malformed).
 
-The paste server binds to localhost by default. Remote/phone use should
-go through an explicit short-lived authenticated tunnel or proxy; do
-not expose the paste server directly to the open internet.
+Direct `paste-server` CLI use binds to localhost by default. For a
+stable LAN hostname/IP, set `CALCIFORGE_PASTE_PUBLIC_HOST` on the
+Calciforge service. For a reverse-proxy or tunnel URL, set
+`CALCIFORGE_PASTE_PUBLIC_BASE_URL` and terminate authentication at that
+proxy. Do not expose the paste server directly to the open internet.
 
 ### Outbound traffic gating
 
@@ -714,7 +721,8 @@ gateway providers, and synthetic model routes pass smoke tests.
 
 The status summary above is the site-facing snapshot of what works today and
 what is still in flight. Public roadmap ideas live in
-the [roadmap notes](roadmap/v3-ideas.html).
+the [roadmap notes](roadmap/v3-ideas.html), with product-interface
+direction in the [UX roadmap](roadmap/product-ux.html).
 
 <footer>
 <div class="name-origin">

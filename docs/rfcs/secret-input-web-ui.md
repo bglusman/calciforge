@@ -171,9 +171,11 @@ test coverage.
 
 ## Out of scope here (parking)
 
-- Mobile users on cellular — same constraint as before; needs a
-  separate "remote paste" path (Tailscale, mobile browser opening
-  laptop's localhost via tunnel, etc.). Not solving today.
+- Mobile users on cellular — LAN paste links are not enough; this needs
+  a separate "remote paste" path with an authenticated reverse proxy or
+  short-lived tunnel. `CALCIFORGE_PASTE_PUBLIC_BASE_URL` gives the
+  service a stable URL to print once that proxy exists, but the proxy
+  itself is out of scope for the current MVP.
 - Multi-tenant — the form has no auth beyond the URL token because
   it's localhost-only. If we ever go remote, add an HTTP basic-auth
   layer in front.

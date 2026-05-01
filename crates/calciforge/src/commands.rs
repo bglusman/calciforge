@@ -1458,10 +1458,15 @@ impl CommandHandler {
 fn secure_help() -> String {
     [
         "!secure subcommands:",
-        "  !secure input NAME [desc] — create a one-shot localhost paste link",
-        "  !secure bulk LABEL [desc] — create a one-shot .env paste link",
+        "  !secure input NAME [desc] — create a one-shot local-network paste link",
+        "  !secure bulk LABEL [desc] — create a one-shot local-network .env paste link",
         "  !secure list              — list stored secret names (not values)",
         "  !secure help              — show this help",
+        "",
+        "The input/bulk links are for browsers that can reach this Calciforge",
+        "host on your LAN. For stable hostnames or off-LAN access, configure",
+        "CALCIFORGE_PASTE_PUBLIC_BASE_URL behind an authenticated reverse proxy",
+        "or tunnel; do not expose paste-server directly to the open internet.",
         "",
         "Equivalent host-local commands:",
         "  paste-server NAME \"description\"",
@@ -1497,6 +1502,7 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
     if bulk {
         command.arg("--bulk");
     }
+    configure_paste_server_env(&mut command);
     command
         .arg(name_or_label)
         .arg(description)
@@ -1554,6 +1560,56 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
          Open it from a browser that can reach the Calciforge host. The link expires quickly and stores through the configured local secret backend. \
          For phone/off-network use, use a short-lived authenticated proxy/tunnel; do not expose this paste server directly to the open internet."
     )
+}
+
+fn configure_paste_server_env(command: &mut tokio::process::Command) {
+    let env = paste_server_env_from_values(
+        std::env::var("CALCIFORGE_PASTE_BIND").ok(),
+        std::env::var_os("PASTE_BIND").is_some(),
+        std::env::var("CALCIFORGE_PASTE_PUBLIC_BASE_URL").ok(),
+        std::env::var("CALCIFORGE_PASTE_PUBLIC_HOST").ok(),
+    );
+
+    if let Some(bind) = env.bind {
+        command.env("PASTE_BIND", bind);
+    }
+    if let Some(base_url) = env.public_base_url {
+        command.env("PASTE_PUBLIC_BASE_URL", base_url);
+    }
+    if let Some(host) = env.public_host {
+        command.env("PASTE_PUBLIC_HOST", host);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PasteServerEnv {
+    bind: Option<String>,
+    public_base_url: Option<String>,
+    public_host: Option<String>,
+}
+
+fn paste_server_env_from_values(
+    calciforge_bind: Option<String>,
+    inherited_paste_bind_present: bool,
+    calciforge_public_base_url: Option<String>,
+    calciforge_public_host: Option<String>,
+) -> PasteServerEnv {
+    // Chat-triggered secret input is usually opened from a phone or
+    // another LAN machine, so Calciforge opts into a LAN listener. The
+    // standalone paste-server CLI keeps its localhost default.
+    let bind = if calciforge_bind.is_some() {
+        calciforge_bind
+    } else if inherited_paste_bind_present {
+        None
+    } else {
+        Some("0.0.0.0:0".to_string())
+    };
+
+    PasteServerEnv {
+        bind,
+        public_base_url: calciforge_public_base_url,
+        public_host: calciforge_public_host,
+    }
 }
 
 async fn secure_set(rest: &str) -> String {
@@ -2532,6 +2588,71 @@ mod tests {
         assert!(!CommandHandler::is_secure_set_command("!secure list"));
         assert!(!CommandHandler::is_secure_set_command("!secure help"));
         assert!(!CommandHandler::is_secure_set_command("!status"));
+    }
+
+    #[test]
+    fn secure_help_sets_lan_expectations_for_paste_links() {
+        let help = secure_help();
+
+        assert!(
+            help.contains("local-network"),
+            "help should avoid implying the chat paste URL is localhost-only: {help}"
+        );
+        assert!(
+            help.contains("LAN"),
+            "help should tell users the browser must reach the Calciforge host: {help}"
+        );
+        assert!(
+            help.contains("CALCIFORGE_PASTE_PUBLIC_BASE_URL"),
+            "help should name the reverse-proxy/tunnel override: {help}"
+        );
+    }
+
+    #[test]
+    fn paste_server_env_defaults_chat_paste_to_lan_listener() {
+        let env = paste_server_env_from_values(None, false, None, None);
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: Some("0.0.0.0:0".to_string()),
+                public_base_url: None,
+                public_host: None,
+            }
+        );
+    }
+
+    #[test]
+    fn paste_server_env_respects_explicit_bind_and_public_url() {
+        let env = paste_server_env_from_values(
+            Some("127.0.0.1:58083".to_string()),
+            true,
+            Some("https://calciforge.example.net/paste".to_string()),
+            Some("calciforge.local".to_string()),
+        );
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: Some("127.0.0.1:58083".to_string()),
+                public_base_url: Some("https://calciforge.example.net/paste".to_string()),
+                public_host: Some("calciforge.local".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn paste_server_env_does_not_override_inherited_paste_bind() {
+        let env = paste_server_env_from_values(None, true, None, None);
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: None,
+                public_base_url: None,
+                public_host: None,
+            }
+        );
     }
 
     fn install_fake_fnox(dir: &TempDir, body: &str) -> std::path::PathBuf {

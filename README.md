@@ -51,7 +51,7 @@ After install, the default local pieces are:
 - `clashd` on `127.0.0.1:9001` — small HTTP adapter around the `clash` policy engine
 - `secrets-client` — env → fnox → Vaultwarden secret resolver
 - `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
-- `paste-server` — short-lived local forms for adding secrets without putting values in chat history
+- `paste-server` — short-lived local/LAN forms for adding secrets without putting values in chat history
 
 The installer attempts to install and initialize `fnox` automatically.
 Calciforge and the `fnox` CLI can share the same `fnox.toml` and
@@ -72,8 +72,12 @@ validates configured scanner policy files and rule syntax, and can probe
 configured agent endpoints. Use `--no-network` for a purely local check.
 
 Channel-based secret input is intentionally being de-emphasized because
-chat transports can retain plaintext values. Prefer the local paste UI
-or direct `fnox` input for new secrets.
+chat transports can retain plaintext values. Prefer the paste UI
+(`!secure input NAME` / `!secure bulk LABEL` from chat, or
+`paste-server NAME` on the host) or direct `fnox` input for new secrets.
+Chat-started paste links are intended for browsers on the same local
+network unless you configure an authenticated reverse proxy/tunnel with
+`CALCIFORGE_PASTE_PUBLIC_BASE_URL`.
 
 Do not put proxy variables on the Calciforge daemon itself; that can route
 Calciforge's own provider and control-plane traffic through its security proxy.
