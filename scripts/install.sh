@@ -35,6 +35,8 @@ SECURITY_PROXY_CA_KEY="${SECURITY_PROXY_CA_KEY:-$CALCIFORGE_CONFIG_HOME/secrets/
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
+FNOX_AGE_KEY_FILE="${FNOX_AGE_KEY_FILE:-${CALCIFORGE_FNOX_AGE_KEY_FILE:-}}"
+CALCIFORGE_FNOX_AGE_RECIPIENT="${CALCIFORGE_FNOX_AGE_RECIPIENT:-}"
 REMOTE_SCANNER_ENABLED="${CALCIFORGE_REMOTE_SCANNER_ENABLED:-${REMOTE_SCANNER_ENABLED:-0}}"
 REMOTE_SCANNER_PORT="${REMOTE_SCANNER_PORT:-9801}"
 REMOTE_SCANNER_URL=""
@@ -63,6 +65,9 @@ esac
 # installer fallbacks (brew vs apt/dnf). Scripts that don't have both paths
 # tested will warn rather than fail.
 PLATFORM="$(uname -s)"
+if [[ -z "$FNOX_AGE_KEY_FILE" && "$PLATFORM" != "Darwin" ]]; then
+    FNOX_AGE_KEY_FILE="$CALCIFORGE_CONFIG_HOME/secrets/fnox-age-ed25519"
+fi
 # Running as root on Linux installs system-wide; non-root uses --user.
 # On Darwin we always use per-user LaunchAgents.
 IS_ROOT=false
@@ -591,8 +596,82 @@ default_fnox_provider_type() {
     elif [[ "$PLATFORM" == "Darwin" ]]; then
         echo "keychain"
     else
-        echo ""
+        echo "age"
     fi
+}
+
+fnox_global_config_file() {
+    echo "${FNOX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fnox}/config.toml"
+}
+
+toml_basic_string() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '"%s"\n' "$value"
+}
+
+ensure_fnox_age_key() {
+    local key_file recipient
+    if [[ -n "$CALCIFORGE_FNOX_AGE_RECIPIENT" ]]; then
+        echo "$CALCIFORGE_FNOX_AGE_RECIPIENT"
+        return 0
+    fi
+
+    key_file="${FNOX_AGE_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/fnox-age-ed25519}"
+    mkdir -p "$(dirname "$key_file")"
+    if [[ ! -f "$key_file" ]]; then
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            warn "fnox age provider needs ssh-keygen to create ${key_file}; set CALCIFORGE_FNOX_AGE_RECIPIENT and FNOX_AGE_KEY_FILE to use your own key"
+            return 1
+        fi
+        echo "  Generating fnox age key ${key_file}..." >&2
+        ssh-keygen -q -t ed25519 -N "" -C "calciforge-fnox@$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)" -f "$key_file"
+    fi
+    chmod 600 "$key_file" 2>/dev/null || true
+    chmod 644 "${key_file}.pub" 2>/dev/null || true
+    FNOX_AGE_KEY_FILE="$key_file"
+
+    if [[ ! -f "${key_file}.pub" ]]; then
+        warn "fnox age public key ${key_file}.pub is missing"
+        return 1
+    fi
+    recipient="$(cat "${key_file}.pub")"
+    if [[ -z "$recipient" ]]; then
+        warn "fnox age public key ${key_file}.pub is empty"
+        return 1
+    fi
+    echo "$recipient"
+}
+
+ensure_fnox_age_provider() {
+    local recipient config_file escaped_name escaped_recipient
+    if [[ -z "$CALCIFORGE_FNOX_AGE_RECIPIENT" && -z "$FNOX_AGE_KEY_FILE" ]]; then
+        FNOX_AGE_KEY_FILE="$CALCIFORGE_CONFIG_HOME/secrets/fnox-age-ed25519"
+    fi
+    recipient="$(ensure_fnox_age_key)" || return 1
+    config_file="$(fnox_global_config_file)"
+    mkdir -p "$(dirname "$config_file")"
+    touch "$config_file"
+    escaped_name="$(toml_basic_string "$CALCIFORGE_FNOX_PROVIDER_NAME")"
+    escaped_recipient="$(toml_basic_string "$recipient")"
+    {
+        echo ""
+        echo "[providers.${escaped_name}]"
+        echo "type = \"age\""
+        echo "recipients = [${escaped_recipient}]"
+    } >> "$config_file"
+
+    if FNOX_AGE_KEY_FILE="$FNOX_AGE_KEY_FILE" fnox provider test "$CALCIFORGE_FNOX_PROVIDER_NAME" >/dev/null 2>&1; then
+        ok "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' ready"
+        return 0
+    fi
+
+    warn "fnox age provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' was written but did not pass its connection test"
+    return 1
 }
 
 ensure_fnox_provider() {
@@ -607,6 +686,11 @@ ensure_fnox_provider() {
     if [[ -z "$provider_type" ]]; then
         warn "fnox has no provider configured; run 'fnox provider add <name> <type> --global' or set CALCIFORGE_FNOX_PROVIDER_TYPE before install"
         return 1
+    fi
+
+    if [[ "$provider_type" == "age" ]]; then
+        ensure_fnox_age_provider
+        return $?
     fi
 
     err_file="$(mktemp)"
@@ -1011,6 +1095,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>RUST_LOG</key><string>calciforge=info</string>
         <key>CALCIFORGE_CONFIG_HOME</key><string>${CALCIFORGE_CONFIG_HOME}</string>
         <key>CALCIFORGE_FNOX_DIR</key><string>${CALCIFORGE_FNOX_DIR}</string>
+        <key>FNOX_AGE_KEY_FILE</key><string>${FNOX_AGE_KEY_FILE}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
@@ -1037,6 +1122,7 @@ ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
 Environment=RUST_LOG=calciforge=info
 Environment=CALCIFORGE_CONFIG_HOME=${CALCIFORGE_CONFIG_HOME}
 Environment=CALCIFORGE_FNOX_DIR=${CALCIFORGE_FNOX_DIR}
+Environment=FNOX_AGE_KEY_FILE=${FNOX_AGE_KEY_FILE}
 Environment=CALCIFORGE_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
 Environment=PATH=${SERVICE_PATH}
@@ -1432,16 +1518,23 @@ PYEOF
     }
 
     ensure_remote_fnox() {
-        local name="$1" ssh_target="$2" ssh_key="$3"
+        local name="$1" ssh_target="$2" ssh_key="$3" config_dir="$4"
+        local provider_type_arg="${CALCIFORGE_FNOX_PROVIDER_TYPE:-__calciforge_default__}"
         local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
         [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
 
         echo "  [$name] checking fnox..."
-        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- "$CALCIFORGE_FNOX_PROVIDER_NAME" "$CALCIFORGE_FNOX_PROVIDER_TYPE" <<'REMOTE_FNOX'
+        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- "$CALCIFORGE_FNOX_PROVIDER_NAME" "$provider_type_arg" "$config_dir" <<'REMOTE_FNOX'
 set -euo pipefail
 provider_name="$1"
 provider_type="${2:-}"
+if [[ "$provider_type" == "__calciforge_default__" ]]; then
+    provider_type=""
+fi
+config_dir="$3"
+age_key_file="${config_dir}/secrets/fnox-age-ed25519"
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+mkdir -p "${config_dir}" "${config_dir}/secrets"
 if ! command -v fnox >/dev/null 2>&1; then
     if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
         brew install fnox >/dev/null
@@ -1487,21 +1580,42 @@ fi
 if [[ -x "$HOME/.cargo/bin/fnox" && ! -e /usr/local/bin/fnox && -w /usr/local/bin ]]; then
     ln -s "$HOME/.cargo/bin/fnox" /usr/local/bin/fnox 2>/dev/null || true
 fi
-if ! fnox list >/dev/null 2>&1; then
+if ! (cd "$config_dir" && fnox list >/dev/null 2>&1); then
     fnox init --global --skip-wizard >/dev/null
 fi
 provider_count="$(fnox provider list 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
 if [[ "$provider_count" -eq 0 ]]; then
     if [[ -z "$provider_type" && "$(uname -s)" == "Darwin" ]]; then
         provider_type="keychain"
+    elif [[ -z "$provider_type" ]]; then
+        provider_type="age"
     fi
-    if [[ -n "$provider_type" ]]; then
+    if [[ "$provider_type" == "age" ]]; then
+        if [[ ! -f "$age_key_file" ]]; then
+            ssh-keygen -q -t ed25519 -N "" -C "calciforge-fnox@$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)" -f "$age_key_file"
+        fi
+        chmod 600 "$age_key_file" 2>/dev/null || true
+        chmod 644 "${age_key_file}.pub" 2>/dev/null || true
+        config_file="${FNOX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fnox}/config.toml"
+        mkdir -p "$(dirname "$config_file")"
+        provider_name_escaped="$(printf '%s' "$provider_name" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        recipient="$(sed 's/\\/\\\\/g; s/"/\\"/g' "${age_key_file}.pub")"
+        {
+            echo ""
+            echo "[providers.\"${provider_name_escaped}\"]"
+            echo "type = \"age\""
+            printf "recipients = [\"%s\"]\n" "$recipient"
+        } >> "$config_file"
+        FNOX_AGE_KEY_FILE="$age_key_file" fnox provider test "$provider_name" >/dev/null
+    elif [[ -n "$provider_type" ]]; then
         fnox provider add "$provider_name" "$provider_type" --global >/dev/null
         fnox provider test "$provider_name" >/dev/null
     else
         echo "fnox has no provider configured; remote secret paste storage will not work until one is added" >&2
     fi
 fi
+export FNOX_AGE_KEY_FILE="$age_key_file"
+cd "$config_dir"
 fnox list >/dev/null
 REMOTE_FNOX
         ok "  [$name] fnox ready"
@@ -1695,7 +1809,7 @@ REMOTE_MITM_CA
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
-                calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}" ;;
+                calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
             exec_args=""
             if [[ "$bin" == "calciforge" ]]; then
@@ -1724,6 +1838,7 @@ REMOTE_MITM_CA
                 launchd_env+=(
                     "CALCIFORGE_CONFIG_HOME=${config_dir}"
                     "CALCIFORGE_FNOX_DIR=${config_dir}"
+                    "FNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519"
                 )
             fi
             if [[ "$bin" == "security-proxy" ]]; then
@@ -1765,7 +1880,7 @@ PYEOF
         echo ""
         echo "  Node: $name ($user@$host, $arch, $os)"
         preflight_node "$name" "$host" "$user" "$ssh_key" "$os" "$services" "$install_dir" "$config_dir"
-        ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" || \
+        ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" "$config_dir" || \
             warn "  [$name] fnox not ready — secret resolution may fail on that node"
         deploy_binary_only "$name" "$host" "$user" "$ssh_key" "$arch" \
             "calciforge-secrets" "$install_dir" || \

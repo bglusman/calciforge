@@ -22,8 +22,10 @@ Calciforge uses `~/.config/calciforge` as its default fnox working
 directory, while fnox provider definitions remain in fnox's global config.
 Installing the `fnox` binary remains useful for manual management
 (`cd ~/.config/calciforge && fnox set/list/tui`) and as the current default
-local storage backend for `paste-server`, even if Calciforge eventually grows
-a no-external-binary store or a fnox-library write path.
+local storage backend for `paste-server`. The installer creates a Keychain
+provider on macOS and a local `age` provider on Linux when no fnox provider is
+configured, but Calciforge should still grow a no-external-binary store or a
+fnox-library write path.
 
 The channel path is attractive when traveling or operating from a
 phone, but raw secret values then land in chat transport, client
