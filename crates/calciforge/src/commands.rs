@@ -475,15 +475,15 @@ impl CommandHandler {
         text.trim().starts_with('!')
     }
 
-    /// Returns `true` if the text is a `!secure` command (case-insensitive).
+    /// Returns `true` if the text is a `!secret` / `!secure` command (case-insensitive).
     ///
-    /// `!secure` is intercepted at the channel layer **before** any agent
+    /// Secret commands are intercepted at the channel layer **before** any agent
     /// sees the message, so the raw value passed to
-    /// `!secure set NAME=value` is never routed to an agent's context.
+    /// `!secret set NAME=value` / `!secure set NAME=value` is never routed to an agent's context.
     /// It is still seen by the chat transport (Telegram/Matrix/WhatsApp
     /// logs), which is the retention-leak tradeoff the user has to
     /// accept (or use an out-of-band path). Document this in any UX
-    /// that advertises `!secure`.
+    /// that advertises secret commands.
     pub fn is_secure_command(text: &str) -> bool {
         let trimmed = text.trim();
         let cmd = command_token(trimmed).to_lowercase();
@@ -491,7 +491,7 @@ impl CommandHandler {
     }
 
     /// Returns `true` only for the chat-value entry form
-    /// `!secure set ...`. This is the risky subcommand that channel
+    /// `!secret set ...` / `!secure set ...`. This is the risky subcommand that channel
     /// handlers gate behind `allow_chat_secret_set`.
     pub fn is_secure_set_command(text: &str) -> bool {
         let mut parts = text.split_whitespace();
@@ -1129,7 +1129,7 @@ impl CommandHandler {
         format!("✅ Switched to default agent: {}", default_agent_id)
     }
 
-    /// Handle `!secure <subcommand>`. Secret values never transit an
+    /// Handle `!secret <subcommand>` / `!secure <subcommand>`. Secret values never transit an
     /// agent's context. `set` is the legacy chat-retained path;
     /// `input`/`bulk` mint short-lived paste URLs.
     ///
@@ -1147,7 +1147,7 @@ impl CommandHandler {
     /// `!secure input NAME` or run `paste-server NAME` locally.
     pub async fn handle_secure(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        // `!secure ...` — split off the subcommand word using
+        // `!secret ...` / `!secure ...` — split off the subcommand word using
         // split_whitespace so multiple spaces / tabs don't end up as
         // empty middle tokens (the prior splitn(' ') treated
         // "!secure  set NAME=v" as sub="" with the rest mis-shaped).
@@ -1155,7 +1155,7 @@ impl CommandHandler {
         let lead = parts.next().unwrap_or("!secure").to_lowercase();
         let sub = parts.next().map(|s| s.to_lowercase()).unwrap_or_default();
         // Reconstruct the rest by joining remaining tokens with single
-        // spaces. For !secure set, the value goes through to fnox set
+        // spaces. For chat `set`, the value goes through to fnox set
         // (now via stdin) so internal whitespace shape is preserved by
         // the caller that builds it as `NAME=value`.
         let rest_owned: String = parts.collect::<Vec<_>>().join(" ");
@@ -1554,7 +1554,7 @@ impl CommandHandler {
 }
 
 // ---------------------------------------------------------------------------
-// !secure subcommand implementations (free functions so tests can drive
+// !secret / !secure subcommand implementations (free functions so tests can drive
 // them without constructing a full CommandHandler).
 // ---------------------------------------------------------------------------
 

@@ -309,17 +309,17 @@ fn handle_message_nonblocking(
         return;
     }
 
-    // !secure — store/list secrets without ever routing the value to an
+    // !secret / !secure — store/list secrets without ever routing the value to an
     // agent. Runs post-auth so we can audit who set what; doesn't yet
     // gate by role (open for any authenticated identity). The handler
     // is async because it shells out to `fnox`.
     //
     // We deliberately do NOT log `text` here or in the handler — the
-    // `!secure set NAME=value` form contains a secret value that must
-    // not appear in ops logs. debug! logs only that a !secure command
+    // chat `set` form contains a secret value that must
+    // not appear in ops logs. debug! logs only that a secret command
     // was handled; the handler never logs `text` either.
     if CommandHandler::is_secure_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling secret command");
         if CommandHandler::is_secure_set_command(&text)
             && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
         {
@@ -888,23 +888,23 @@ async fn handle_message(
         return;
     }
 
-    // !secure — store/list secrets without routing the value to an
+    // !secret / !secure — store/list secrets without routing the value to an
     // agent. Logged debug-level with no text to keep the value out of
-    // ops logs (`!secure set NAME=value` would otherwise be visible).
+    // ops logs (the chat `set` form would otherwise be visible).
     if CommandHandler::is_secure_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !secure command");
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling secret command");
         if CommandHandler::is_secure_set_command(&text)
             && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
         {
             let reply = CommandHandler::secure_set_disabled_reply("Telegram");
             if let Err(e) = bot.send_message(chat_id, &reply).await {
-                warn!(chat_id = %chat_id, error = %e, "failed to send !secure disabled reply");
+                warn!(chat_id = %chat_id, error = %e, "failed to send secret disabled reply");
             }
             return;
         }
         let reply = command_handler.handle_secure(&text, &identity.id).await;
         if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send !secure reply");
+            warn!(chat_id = %chat_id, error = %e, "failed to send secret reply");
         }
         return;
     }
