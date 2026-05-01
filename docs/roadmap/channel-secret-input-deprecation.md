@@ -10,8 +10,9 @@ Status: proposed direction
 Calciforge should treat chat-based secret value entry as a last-resort
 path, not as the normal onboarding flow. The preferred paths are:
 
-- `!secure input NAME` or `!secure bulk LABEL`, which returns a
-  short-lived LAN paste URL without sending the value through chat
+- `!secret input NAME` or `!secret bulk LABEL` (`!secure` aliases also
+  work), which returns a short-lived LAN paste URL without sending the
+  value through chat
 - `paste-server NAME` or `paste-server --bulk ...` for short-lived
   local browser input
 - `fnox set NAME` on the host, when fnox is installed/configured
@@ -45,7 +46,7 @@ Risk is channel-dependent:
 
 Recommended product direction:
 
-- Keep public docs focused on `!secure input`, host-local
+- Keep public docs focused on `!secret input`, host-local
   `paste-server`, and direct fnox input for operators who want CLI/TUI
   management.
 - Gate chat value entry behind per-channel config such as

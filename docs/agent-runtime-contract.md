@@ -76,8 +76,9 @@ Current surfaces:
   calls through Calciforge rather than directly to a provider.
 - The security proxy/MITM endpoint when the operator has configured the agent
   runtime to trust and use it.
-- `paste-server` and chat `!secure input` / `!secure bulk` flows for asking the
-  operator to add secrets without putting values in chat.
+- `paste-server` and chat `!secret input` / `!secret bulk` flows for asking the
+  operator to add secrets without putting values in chat. `!secure input` and
+  `!secure bulk` remain supported aliases.
 
 Future surfaces can use the same pattern:
 

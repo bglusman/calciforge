@@ -292,11 +292,12 @@ paste-server --bulk env-import "bulk .env import"
 # prints http://127.0.0.1:PORT/bulk/<token>
 ```
 
-From chat, `!secure input NAME` and `!secure bulk LABEL` start the same
+From chat, `!secret input NAME` and `!secret bulk LABEL` start the same
 short-lived paste server and bind to the detected LAN interface when possible
 so the link can be opened from a browser that can reach the Calciforge host.
-If LAN detection fails, the paste server keeps the localhost default. This is
-for your local network, not the public internet.
+`!secure input` and `!secure bulk` remain supported aliases. If LAN detection
+fails, the paste server keeps the localhost default. This is for your local
+network, not the public internet.
 
 The URLs expire after five minutes and are single-use. The bulk URL
 accepts a whole `.env`-shaped paste and returns per-key results
