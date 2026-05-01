@@ -98,6 +98,13 @@ handlers ask for a high-level interaction such as "single choice",
 "approval", "artifact", or "form link"; each channel renders the best
 native affordance it can, then falls back to deterministic text.
 
+WhatsApp is worth treating as a dependency-risk item. If the embedded
+WhatsApp Web library cannot expose reply buttons or lists safely, Calciforge
+can still ship text/media support and use Telegram or the local web UI as a
+control surface. A narrow fork may be justified later if native WhatsApp
+controls become important enough and the upstream crate does not accept or
+prioritize the needed API surface.
+
 ## Secret Input UX
 
 `!secure input` and `!secure bulk` should read as local-network paste
