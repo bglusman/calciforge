@@ -21,12 +21,12 @@ Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply/media
 
 ## Prerequisites
 
-1. **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`, follow the
-   prompts, copy the token it returns (format: `1234567890:ABCDEFghijklmnopqrstuvwxyz01234567`)
-2. **Find your Telegram user ID** (numeric, not your username):
-   - Send any message to your new bot, then run `calciforge` — the user ID appears in logs
-     on the first unrecognised message
-   - Or send a message to [@userinfobot](https://t.me/userinfobot) — it replies with your ID
+- **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`, follow the
+  prompts, copy the token it returns (format: `1234567890:ABCDEFghijklmnopqrstuvwxyz01234567`).
+- **Find your Telegram user ID** (numeric, not your username):
+  send any message to your new bot, then run `calciforge` and read the user ID
+  from the first unrecognised-message log, or send a message to
+  [@userinfobot](https://t.me/userinfobot).
 
 ## Step 1: Save the bot token
 

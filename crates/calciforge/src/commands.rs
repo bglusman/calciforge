@@ -459,35 +459,46 @@ impl CommandHandler {
 
     /// Returns `true` for commands whose primary response can include agent choices.
     pub fn is_agent_choice_request(text: &str) -> bool {
-        let tokens: Vec<String> = text
-            .split_whitespace()
-            .map(|token| token.to_lowercase())
-            .collect();
-        matches!(
-            tokens.as_slice(),
-            [cmd] if cmd == "!agents"
-        ) || matches!(
-            tokens.as_slice(),
-            [cmd] if cmd == "!agent"
-        ) || matches!(
-            tokens.as_slice(),
-            [cmd, sub] if cmd == "!agent" && matches!(sub.as_str(), "list" | "ls" | "agents")
-        )
+        let mut tokens = text.split_whitespace();
+        let Some(cmd) = tokens.next() else {
+            return false;
+        };
+        let sub = tokens.next();
+        if tokens.next().is_some() {
+            return false;
+        }
+
+        match sub {
+            None => cmd.eq_ignore_ascii_case("!agents") || cmd.eq_ignore_ascii_case("!agent"),
+            Some(sub) => {
+                cmd.eq_ignore_ascii_case("!agent")
+                    && (sub.eq_ignore_ascii_case("list")
+                        || sub.eq_ignore_ascii_case("ls")
+                        || sub.eq_ignore_ascii_case("agents"))
+            }
+        }
     }
 
     /// Returns `true` for model list commands that can include activatable choices.
     pub fn is_model_choice_request(text: &str) -> bool {
-        let tokens: Vec<String> = text
-            .split_whitespace()
-            .map(|token| token.to_lowercase())
-            .collect();
-        matches!(
-            tokens.as_slice(),
-            [cmd] if cmd == "!model"
-        ) || matches!(
-            tokens.as_slice(),
-            [cmd, sub] if cmd == "!model" && matches!(sub.as_str(), "list" | "ls" | "models")
-        )
+        let mut tokens = text.split_whitespace();
+        let Some(cmd) = tokens.next() else {
+            return false;
+        };
+        let sub = tokens.next();
+        if tokens.next().is_some() {
+            return false;
+        }
+
+        match sub {
+            None => cmd.eq_ignore_ascii_case("!model"),
+            Some(sub) => {
+                cmd.eq_ignore_ascii_case("!model")
+                    && (sub.eq_ignore_ascii_case("list")
+                        || sub.eq_ignore_ascii_case("ls")
+                        || sub.eq_ignore_ascii_case("models"))
+            }
+        }
     }
 
     /// Build a channel-agnostic agent choice response for an authenticated identity.
@@ -509,10 +520,7 @@ impl CommandHandler {
                     "Choose an agent",
                     choices
                         .into_iter()
-                        .map(|(id, label)| {
-                            ChoiceOption::new(label, format!("!agent switch {id}"))
-                                .with_callback_data(format!("cf:agent:{id}"))
-                        })
+                        .map(|(id, label)| ChoiceOption::agent(label, id))
                         .collect(),
                 )),
             ),
@@ -540,10 +548,7 @@ impl CommandHandler {
 
         let options = choices
             .into_iter()
-            .map(|(id, label)| {
-                ChoiceOption::new(label, format!("!model use {id}"))
-                    .with_callback_data(format!("cf:model:{id}"))
-            })
+            .map(|(id, label)| ChoiceOption::model(label, id))
             .collect::<Vec<_>>();
         Some(
             OutboundMessage::text(reply)
@@ -801,10 +806,8 @@ impl CommandHandler {
         OutboundMessage::text(text).with_control(ChoiceControl::new(
             "Choose an approval action",
             vec![
-                ChoiceOption::new("Approve", format!("!approve {request_id}"))
-                    .with_callback_data(format!("cf:approve:{request_id}")),
-                ChoiceOption::new("Deny", format!("!deny {request_id}"))
-                    .with_callback_data(format!("cf:deny:{request_id}")),
+                ChoiceOption::approve(request_id),
+                ChoiceOption::deny(request_id),
             ],
         ))
     }
@@ -1095,7 +1098,7 @@ impl CommandHandler {
         }
 
         let agent_arg = args[0].to_string();
-        let session_arg = args.get(1).map(|s| s.to_string());
+        let session_arg = (args.len() > 1).then(|| args[1..].join(" "));
 
         // Look up the routing rule for this identity.
         let routing_rule = match self
@@ -1322,24 +1325,7 @@ impl CommandHandler {
                 ))
             }
             Ok(sessions) => {
-                let session_list = sessions.join("\n  - ");
-                let reply = format!(
-                    "🗂️  Active sessions for '{}':\n  - {}\n\nUse !switch {} <session> to attach to a specific session.",
-                    agent_id, session_list, agent_id
-                );
-                OutboundMessage::text(reply).with_control(ChoiceControl::new(
-                    "Attach to a session",
-                    sessions
-                        .into_iter()
-                        .map(|session| {
-                            ChoiceOption::new(
-                                session.clone(),
-                                format!("!switch {agent_id} {session}"),
-                            )
-                            .with_callback_data(format!("cf:session:{agent_id}:{session}"))
-                        })
-                        .collect(),
-                ))
+                active_sessions_message(agent_id, sessions)
             }
             Err(e) => {
                 OutboundMessage::text(format!(
@@ -2137,6 +2123,33 @@ async fn secure_list() -> String {
     }
 }
 
+fn active_sessions_message(agent_id: &str, sessions: Vec<String>) -> OutboundMessage {
+    let sessions = sessions
+        .into_iter()
+        .filter(|session| valid_downstream_session_name(session))
+        .collect::<Vec<_>>();
+
+    if sessions.is_empty() {
+        return OutboundMessage::text(format!(
+            "ℹ️ No attachable sessions for '{}'.\n\nUse !switch {} to create a new session.",
+            agent_id, agent_id
+        ));
+    }
+
+    let session_list = sessions.join("\n  - ");
+    let reply = format!(
+        "🗂️  Active sessions for '{}':\n  - {}\n\nUse !switch {} <session> to attach to a specific session.",
+        agent_id, session_list, agent_id
+    );
+    OutboundMessage::text(reply).with_control(ChoiceControl::new(
+        "Attach to a session",
+        sessions
+            .into_iter()
+            .map(|session| ChoiceOption::session(session.clone(), agent_id, session))
+            .collect(),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -2461,6 +2474,83 @@ mod tests {
         assert!(
             reply.contains("librarian") && reply.contains("does not support session listing"),
             "noun-style session alias should parse the agent after 'list': {reply}"
+        );
+    }
+
+    #[test]
+    fn shared_choice_messages_cover_agent_model_session_and_approval_actions() {
+        let h = make_handler_with_synthetics();
+
+        let agents = h
+            .agent_choice_message_for_identity("!agent list", "brian")
+            .expect("agent choices");
+        assert!(
+            agents
+                .controls
+                .iter()
+                .flat_map(|control| &control.options)
+                .any(|option| option.command == "!agent switch librarian"
+                    && option.callback_data.as_deref() == Some("cf:agent:librarian")),
+            "agent choices must provide matching text and callback actions: {agents:?}"
+        );
+
+        let models = h.model_choice_message("!model").expect("model choices");
+        assert!(
+            models
+                .controls
+                .iter()
+                .flat_map(|control| &control.options)
+                .any(|option| option.command == "!model use dispatcher-test"
+                    && option.callback_data.as_deref() == Some("cf:model:dispatcher-test")),
+            "model choices must provide matching text and callback actions: {models:?}"
+        );
+
+        let sessions = active_sessions_message(
+            "claude-acpx",
+            vec![
+                "backend".to_string(),
+                "../bad".to_string(),
+                "review".to_string(),
+            ],
+        );
+        assert!(
+            sessions
+                .controls
+                .iter()
+                .flat_map(|control| &control.options)
+                .any(|option| option.command == "!switch claude-acpx backend"
+                    && option.callback_data.as_deref() == Some("cf:session:claude-acpx:backend")),
+            "session choices must provide matching text and callback actions: {sessions:?}"
+        );
+        let session_fallback = sessions.render_text_fallback();
+        assert!(
+            !session_fallback.contains("../bad"),
+            "session choices must not present names rejected by !switch validation: {session_fallback}"
+        );
+
+        let approval = CommandHandler::approval_request_message("rm -rf /tmp/x", "test", "req-1");
+        let fallback = approval.render_text_fallback();
+        assert!(
+            fallback.contains("!approve req-1") && fallback.contains("!deny req-1"),
+            "approval fallback must remain actionable on text-only channels: {fallback}"
+        );
+        assert!(
+            approval
+                .controls
+                .iter()
+                .flat_map(|control| &control.options)
+                .any(|option| option.command == "!approve req-1"
+                    && option.callback_data.as_deref() == Some("cf:approve:req-1")),
+            "approval choice must expose approve callback: {approval:?}"
+        );
+        assert!(
+            approval
+                .controls
+                .iter()
+                .flat_map(|control| &control.options)
+                .any(|option| option.command == "!deny req-1"
+                    && option.callback_data.as_deref() == Some("cf:deny:req-1")),
+            "approval choice must expose deny callback: {approval:?}"
         );
     }
 
@@ -3085,6 +3175,18 @@ mod tests {
         assert!(
             reply.contains("Invalid session name"),
             "path-like session should be rejected: {}",
+            reply
+        );
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
+    }
+
+    #[test]
+    fn test_switch_acpx_rejects_multi_token_session_name_as_one_argument() {
+        let h = make_handler();
+        let reply = h.handle_switch("!switch claude-acpx backend session", "brian");
+        assert!(
+            reply.contains("Invalid session name"),
+            "multi-token session should be rejected as one invalid session name: {}",
             reply
         );
         assert_eq!(h.active_session_for("brian", "claude-acpx"), None);

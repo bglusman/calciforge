@@ -158,6 +158,41 @@ impl ChoiceOption {
         }
     }
 
+    pub fn agent(label: impl Into<String>, agent_id: impl Into<String>) -> Self {
+        let agent_id = agent_id.into();
+        Self::new(label, format!("!agent switch {agent_id}"))
+            .with_callback_data(format!("cf:agent:{agent_id}"))
+    }
+
+    pub fn model(label: impl Into<String>, model_id: impl Into<String>) -> Self {
+        let model_id = model_id.into();
+        Self::new(label, format!("!model use {model_id}"))
+            .with_callback_data(format!("cf:model:{model_id}"))
+    }
+
+    pub fn session(
+        label: impl Into<String>,
+        agent_id: impl Into<String>,
+        session: impl Into<String>,
+    ) -> Self {
+        let agent_id = agent_id.into();
+        let session = session.into();
+        Self::new(label, format!("!switch {agent_id} {session}"))
+            .with_callback_data(format!("cf:session:{agent_id}:{session}"))
+    }
+
+    pub fn approve(request_id: impl Into<String>) -> Self {
+        let request_id = request_id.into();
+        Self::new("Approve", format!("!approve {request_id}"))
+            .with_callback_data(format!("cf:approve:{request_id}"))
+    }
+
+    pub fn deny(request_id: impl Into<String>) -> Self {
+        let request_id = request_id.into();
+        Self::new("Deny", format!("!deny {request_id}"))
+            .with_callback_data(format!("cf:deny:{request_id}"))
+    }
+
     pub fn with_callback_data(mut self, callback_data: impl Into<String>) -> Self {
         self.callback_data = Some(callback_data.into());
         self
@@ -197,10 +232,8 @@ mod tests {
         let msg = OutboundMessage::text("Choose an agent").with_control(ChoiceControl::new(
             "Options",
             vec![
-                ChoiceOption::new("Librarian", "!agent switch librarian")
-                    .with_callback_data("cf:agent:librarian"),
-                ChoiceOption::new("Critic", "!agent switch critic")
-                    .with_callback_data("cf:agent:critic"),
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
             ],
         ));
 
@@ -215,5 +248,31 @@ mod tests {
             rendered.contains("- Critic: `!agent switch critic`"),
             "fallback must include every available choice: {rendered}"
         );
+    }
+
+    #[test]
+    fn typed_choice_options_keep_text_and_callback_actions_in_sync() {
+        let agent = ChoiceOption::agent("Librarian", "librarian");
+        assert_eq!(agent.command, "!agent switch librarian");
+        assert_eq!(agent.callback_data.as_deref(), Some("cf:agent:librarian"));
+
+        let model = ChoiceOption::model("Fast local", "local/qwen");
+        assert_eq!(model.command, "!model use local/qwen");
+        assert_eq!(model.callback_data.as_deref(), Some("cf:model:local/qwen"));
+
+        let session = ChoiceOption::session("backend", "claude-acpx", "backend");
+        assert_eq!(session.command, "!switch claude-acpx backend");
+        assert_eq!(
+            session.callback_data.as_deref(),
+            Some("cf:session:claude-acpx:backend")
+        );
+
+        let approve = ChoiceOption::approve("req-1");
+        assert_eq!(approve.command, "!approve req-1");
+        assert_eq!(approve.callback_data.as_deref(), Some("cf:approve:req-1"));
+
+        let deny = ChoiceOption::deny("req-1");
+        assert_eq!(deny.command, "!deny req-1");
+        assert_eq!(deny.callback_data.as_deref(), Some("cf:deny:req-1"));
     }
 }
