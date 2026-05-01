@@ -5,11 +5,13 @@
 //!
 //! # Command routing
 //!
-//! Some commands (`!help`, `!agents`, `!metrics`, `!ping`) require no
+//! Some commands (`!help`, `!agents`, `!agent list`, `!metrics`, `!ping`)
+//! require no
 //! auth context and are intercepted before identity resolution.
 //!
-//! Other commands (`!switch`, `!status`) require an authenticated identity and
-//! are handled after auth via [`CommandHandler::handle_switch`] and
+//! Other commands (`!switch`, `!agent switch`, `!status`) require an
+//! authenticated identity and are handled after auth via
+//! [`CommandHandler::handle_switch`] and
 //! [`CommandHandler::cmd_status_for_identity`] respectively.
 
 use std::collections::HashMap;
@@ -42,6 +44,70 @@ fn active_model_state_file_path_for(state_dir: &Path) -> PathBuf {
 /// Path to the active downstream session selections within `state_dir`.
 fn active_session_state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-agent-sessions.json")
+}
+
+fn first_arg(text: &str) -> Option<&str> {
+    text.split_whitespace().nth(1)
+}
+
+fn command_token(text: &str) -> &str {
+    text.split_whitespace().next().unwrap_or("")
+}
+
+fn command_suggestion(cmd: &str) -> Option<&'static str> {
+    const MAX_FUZZY_COMMAND_CHARS: usize = 64;
+    const COMMANDS: &[&str] = &[
+        "!help",
+        "!status",
+        "!agents",
+        "!agent",
+        "!sessions",
+        "!session",
+        "!metrics",
+        "!ping",
+        "!switch",
+        "!default",
+        "!model",
+        "!secure",
+        "!secret",
+        "!approve",
+        "!deny",
+    ];
+
+    let lower = cmd.to_lowercase();
+    let without_bang = lower.trim_start_matches('!');
+    if without_bang.chars().count() > MAX_FUZZY_COMMAND_CHARS {
+        return None;
+    }
+
+    COMMANDS
+        .iter()
+        .copied()
+        .find(|candidate| candidate.trim_start_matches('!') == without_bang)
+        .or_else(|| {
+            COMMANDS.iter().copied().find(|candidate| {
+                levenshtein_distance(without_bang, candidate.trim_start_matches('!')) <= 2
+            })
+        })
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let b_len = b.chars().count();
+    let mut costs: Vec<usize> = (0..=b_len).collect();
+
+    for (i, ca) in a.chars().enumerate() {
+        let mut previous = costs[0];
+        costs[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let insertion = costs[j + 1] + 1;
+            let deletion = costs[j] + 1;
+            let substitution = previous + usize::from(ca != cb);
+            previous = costs[j + 1];
+            costs[j + 1] = insertion.min(deletion).min(substitution);
+        }
+    }
+
+    costs[b_len]
 }
 
 /// Load persisted active-agent selections from a given state directory.
@@ -304,7 +370,7 @@ impl CommandHandler {
         }
 
         // Grab just the command word (before any args)
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
 
         match cmd.as_str() {
             "!help" => Some(self.cmd_help()),
@@ -315,16 +381,27 @@ impl CommandHandler {
             "!metrics" => Some(self.cmd_metrics()),
             "!ping" => Some("pong".to_string()),
             // !sessions needs auth — return None so caller resolves identity first.
-            "!sessions" => None,
+            "!sessions" | "!session" => None,
             // !switch needs auth — return None here so the caller can do auth
             // first, then call handle_switch().
             // !agent is an alias: reads as "pick an agent" since !agents lists them.
-            "!switch" | "!agent" => None,
+            "!switch" => None,
+            "!agent" => {
+                let sub = first_arg(trimmed).map(str::to_ascii_lowercase);
+                match sub.as_deref() {
+                    Some("list" | "ls" | "agents") | None => Some(self.cmd_agents()),
+                    Some("help") => Some(self.cmd_help()),
+                    _ => None,
+                }
+            }
             // !default needs auth — switches back to the configured default agent.
             "!default" => None,
             // !model shows model shortcuts/alloys — no auth needed for list.
             // Setting an alloy requires auth; handle_model() is called post-auth.
             "!model" => self.cmd_model_preauth(trimmed),
+            // !secret is the noun-style alias for !secure and is handled
+            // post-auth so the audit path and channel retention gate still run.
+            "!secure" | "!secret" => None,
             _ => None, // Unknown !command — fall through to agent
         }
     }
@@ -335,8 +412,8 @@ impl CommandHandler {
     /// routing to the agent.
     pub fn is_sessions_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
-        cmd == "!sessions"
+        let cmd = command_token(trimmed).to_lowercase();
+        cmd == "!sessions" || cmd == "!session"
     }
 
     /// Returns `true` if the text is a `!switch` (or `!agent` alias) command.
@@ -345,7 +422,7 @@ impl CommandHandler {
     /// routing to the agent. `!agent <name>` reads naturally after `!agents` lists them.
     pub fn is_switch_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
         cmd == "!switch" || cmd == "!agent"
     }
 
@@ -355,7 +432,7 @@ impl CommandHandler {
     /// routing to the agent.
     pub fn is_default_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
         cmd == "!default"
     }
 
@@ -365,7 +442,7 @@ impl CommandHandler {
     /// routing to the agent.
     pub fn is_model_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
         cmd == "!model"
     }
 
@@ -375,21 +452,21 @@ impl CommandHandler {
     /// instead of routing to the agent.
     pub fn is_status_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
         cmd == "!status"
     }
 
     /// Returns `true` if the text is an `!approve` command (case-insensitive).
     pub fn is_approve_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
         cmd == "!approve"
     }
 
     /// Returns `true` if the text is a `!deny` command (case-insensitive).
     pub fn is_deny_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
+        let cmd = command_token(trimmed).to_lowercase();
         cmd == "!deny"
     }
 
@@ -409,8 +486,8 @@ impl CommandHandler {
     /// that advertises `!secure`.
     pub fn is_secure_command(text: &str) -> bool {
         let trimmed = text.trim();
-        let cmd = trimmed.split(' ').next().unwrap_or("").to_lowercase();
-        cmd == "!secure"
+        let cmd = command_token(trimmed).to_lowercase();
+        cmd == "!secure" || cmd == "!secret"
     }
 
     /// Returns `true` only for the chat-value entry form
@@ -420,15 +497,15 @@ impl CommandHandler {
         let mut parts = text.split_whitespace();
         let cmd = parts.next().unwrap_or("").to_lowercase();
         let sub = parts.next().unwrap_or("").to_lowercase();
-        cmd == "!secure" && sub == "set"
+        (cmd == "!secure" || cmd == "!secret") && sub == "set"
     }
 
     /// Reply used when a channel has not opted into chat-transport
     /// secret values. Keep this value-free and channel-generic.
     pub fn secure_set_disabled_reply(channel_kind: &str) -> String {
         format!(
-            "⚠️ `!secure set` is disabled for {channel_kind} by default because \
-             it sends the secret through chat history. Use `!secure input NAME` \
+            "⚠️ `!secret set` / `!secure set` is disabled for {channel_kind} by default because \
+             it sends the secret through chat history. Use `!secret input NAME` \
              from chat, or set `allow_chat_secret_set = true` on this channel \
              only if you accept that retention tradeoff."
         )
@@ -436,11 +513,13 @@ impl CommandHandler {
 
     /// Respond to unknown commands with a helpful message.
     pub fn unknown_command(&self, text: &str) -> String {
-        let cmd = text.trim().split(' ').next().unwrap_or("").to_string();
-        format!(
-            "⚠️ Unknown command: {}\n\nUse !help or !commands to see available commands.",
-            cmd
-        )
+        let cmd = command_token(text).to_string();
+        let mut lines = vec![format!("⚠️ Unknown command: {cmd}")];
+        if let Some(suggestion) = command_suggestion(&cmd) {
+            lines.push(format!("Did you mean `{suggestion}`?"));
+        }
+        lines.push("Use `!help` to see available commands.".to_string());
+        lines.join("\n\n")
     }
 
     /// Handle a command that may require async work (approve/deny).
@@ -744,16 +823,22 @@ impl CommandHandler {
     /// failure — never panics.
     pub fn handle_switch(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        // Parse arguments after "!switch"
-        let args: Vec<&str> = trimmed
-            .split_once(' ')
-            .map(|x| x.1)
-            .unwrap_or("")
-            .split_whitespace()
-            .collect();
+        // Parse arguments after "!switch" or noun-style "!agent switch".
+        let mut parts = trimmed.split_whitespace();
+        let is_agent_cmd = parts
+            .next()
+            .is_some_and(|cmd| cmd.eq_ignore_ascii_case("!agent"));
+        let mut args: Vec<&str> = parts.collect();
+        if is_agent_cmd
+            && args.first().is_some_and(|arg| {
+                arg.eq_ignore_ascii_case("switch") || arg.eq_ignore_ascii_case("use")
+            })
+        {
+            args.remove(0);
+        }
 
         if args.is_empty() {
-            return "Usage: !switch <agent> [session] (alias: !agent)\n\nUse !agents to see available agents.\nUse !sessions <agent> to list available sessions for acpx agents.".to_string();
+            return "Usage: !switch <agent> [session]\nAlias: !agent switch <agent> [session]\n\nUse !agent list to see available agents.\nUse !session list <agent> to list available sessions for acpx agents.".to_string();
         }
 
         let agent_arg = args[0].to_string();
@@ -882,16 +967,19 @@ impl CommandHandler {
     /// Returns a message listing available sessions or an error.
     pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        // Parse the agent argument (everything after "!sessions ")
-        let agent_arg = trimmed
-            .split_once(' ')
-            .map(|x| x.1)
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        // Parse the agent argument after "!sessions", "!session", or
+        // noun-style "!session list".
+        let mut args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
+        if args
+            .first()
+            .is_some_and(|arg| arg.eq_ignore_ascii_case("list") || arg.eq_ignore_ascii_case("show"))
+        {
+            args.remove(0);
+        }
+        let agent_arg = args.first().copied().unwrap_or("").to_string();
 
         if agent_arg.is_empty() {
-            return "Usage: !sessions <agent>\n\nLists available ACP sessions for an agent.\nUse !agents to see available agents.".to_string();
+            return "Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available ACP sessions for an agent.\nUse !agent list to see available agents.".to_string();
         }
 
         // Look up the routing rule for this identity.
@@ -1047,10 +1135,10 @@ impl CommandHandler {
     ///
     /// Subcommands:
     ///   - `!secure set NAME=value`  — store a secret via chat (legacy/caution)
-    ///   - `!secure input NAME`      — create a one-shot paste URL
-    ///   - `!secure bulk LABEL`      — create a one-shot `.env` paste URL
-    ///   - `!secure list`            — list stored secret names
-    ///   - `!secure help`            — usage string
+    ///   - `!secure input NAME` / `!secret input NAME` — create a paste URL
+    ///   - `!secure bulk LABEL` / `!secret bulk LABEL` — create a `.env` paste URL
+    ///   - `!secure list` / `!secret list`             — list stored secret names
+    ///   - `!secure help` / `!secret help`             — usage string
     ///
     /// **Retention warning** (documented in first-time-use UX):
     /// this command's text passes through the chat transport
@@ -1064,7 +1152,7 @@ impl CommandHandler {
         // empty middle tokens (the prior splitn(' ') treated
         // "!secure  set NAME=v" as sub="" with the rest mis-shaped).
         let mut parts = trimmed.split_whitespace();
-        let _lead = parts.next(); // `!secure`
+        let lead = parts.next().unwrap_or("!secure").to_lowercase();
         let sub = parts.next().map(|s| s.to_lowercase()).unwrap_or_default();
         // Reconstruct the rest by joining remaining tokens with single
         // spaces. For !secure set, the value goes through to fnox set
@@ -1078,8 +1166,9 @@ impl CommandHandler {
         // chat-side principal; correlatable to channel + auth.
         tracing::info!(
             identity = %identity_id,
+            command = %lead,
             subcommand = %sub,
-            "!secure invoked"
+            "secure command invoked"
         );
 
         match sub.as_str() {
@@ -1088,10 +1177,7 @@ impl CommandHandler {
             "bulk" => secure_input(rest, true).await,
             "list" => secure_list().await,
             "help" | "" => secure_help(),
-            _ => format!(
-                "⚠️ Unknown !secure subcommand: `{sub}`\n\n{}",
-                secure_help()
-            ),
+            _ => format!("⚠️ Unknown {lead} subcommand: `{sub}`\n\n{}", secure_help()),
         }
     }
 
@@ -1109,9 +1195,10 @@ impl CommandHandler {
             "  !metrics — messages routed, average latency",
             "  !ping    — connectivity check (replies: pong)",
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
+            "  !agent list | !agent switch <agent> — noun-style agent commands",
             "  !default — switch back to your default agent (requires auth)",
-            "  !model [alias|synthetic] — show shortcuts/synthetic models or activate one (requires auth)",
-            "  !secure <input|bulk|list|help> — mint paste URLs or list secret names; `set` is legacy fallback",
+            "  !model [list|use <id>|alias] — show or activate model choices",
+            "  !secure, !secret <input|bulk|list|help> — paste URLs and secret names; `set` is legacy fallback",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ]
@@ -1120,9 +1207,16 @@ impl CommandHandler {
     /// Pre-auth handling for !model — lists shortcuts/alloys.
     /// Returns None if an alloy is being selected (requires post-auth handling).
     fn cmd_model_preauth(&self, text: &str) -> Option<String> {
-        let args: Vec<&str> = text.trim().splitn(2, ' ').collect();
+        let mut args: Vec<&str> = text.split_whitespace().skip(1).collect();
 
-        if args.len() == 1 || args[1].trim().is_empty() {
+        let list_requested = args.is_empty()
+            || args.first().is_some_and(|arg| {
+                arg.eq_ignore_ascii_case("list")
+                    || arg.eq_ignore_ascii_case("ls")
+                    || arg.eq_ignore_ascii_case("show")
+            });
+
+        if list_requested {
             // No argument — list all shortcuts and alloys
             let mut lines = vec![];
 
@@ -1210,17 +1304,25 @@ impl CommandHandler {
             }
 
             lines.push("\nUsage:".to_string());
+            lines.push("  !model list — show this list".to_string());
             lines.push("  !model <alias> — show model for alias".to_string());
             if self.alloy_manager.is_some() {
                 lines.push(
-                    "  !model <synthetic-id> — activate alloy/cascade/dispatcher/exec model for your identity"
+                    "  !model use <synthetic-id> — activate alloy/cascade/dispatcher/exec model for your identity"
                         .to_string(),
                 );
             }
             Some(lines.join("\n"))
         } else {
             // Argument provided — check if it's a model shortcut or synthetic selection
-            let arg = args[1].trim();
+            if args.first().is_some_and(|arg| {
+                arg.eq_ignore_ascii_case("use")
+                    || arg.eq_ignore_ascii_case("switch")
+                    || arg.eq_ignore_ascii_case("set")
+            }) {
+                args.remove(0);
+            }
+            let arg = args.first().copied().unwrap_or("");
 
             // First check if it's a model shortcut (show-only)
             if let Some(shortcut) = self.config.model_shortcuts.iter().find(|s| s.alias == arg) {
@@ -1251,15 +1353,17 @@ impl CommandHandler {
     /// 4. Otherwise → show an error with available options.
     pub fn handle_model(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
-        let args: Vec<&str> = trimmed
-            .split_once(' ')
-            .map(|x| x.1)
-            .unwrap_or("")
-            .split_whitespace()
-            .collect();
+        let mut args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
+        if args.first().is_some_and(|arg| {
+            arg.eq_ignore_ascii_case("use")
+                || arg.eq_ignore_ascii_case("switch")
+                || arg.eq_ignore_ascii_case("set")
+        }) {
+            args.remove(0);
+        }
 
         if args.is_empty() {
-            return "Usage: !model <id>\n\nUse !model to see available models.".to_string();
+            return "Usage: !model use <id>\nAlias: !model <id>\n\nUse !model list to see available models.".to_string();
         }
 
         let model_id = args[0];
@@ -1456,11 +1560,11 @@ impl CommandHandler {
 
 fn secure_help() -> String {
     [
-        "!secure subcommands:",
-        "  !secure input NAME [desc] — create a one-shot local-network paste link",
-        "  !secure bulk LABEL [desc] — create a one-shot local-network .env paste link",
-        "  !secure list              — list stored secret names (not values)",
-        "  !secure help              — show this help",
+        "!secret subcommands (alias: !secure):",
+        "  !secret input NAME [desc] — create a one-shot local-network paste link",
+        "  !secret bulk LABEL [desc] — create a one-shot local-network .env paste link",
+        "  !secret list              — list stored secret names (not values)",
+        "  !secret help              — show this help",
         "",
         "The input/bulk links are for browsers that can reach this Calciforge",
         "host on your LAN. For stable hostnames or off-LAN access, configure",
@@ -1472,10 +1576,10 @@ fn secure_help() -> String {
         "  paste-server --bulk env-import \"bulk .env import\"",
         "",
         "Legacy chat fallback:",
-        "  !secure set NAME=value    — store a low-stakes secret by name",
-        "  !secure set NAME value    — same, for mobile keyboards",
+        "  !secret set NAME=value    — store a low-stakes secret by name",
+        "  !secret set NAME value    — same, for mobile keyboards",
         "",
-        "⚠️ `!secure set` passes through the chat transport, which retains",
+        "⚠️ `!secret set` passes through the chat transport, which retains",
         "   history and may not be end-to-end encrypted. `input`/`bulk` send",
         "   only a short-lived URL; the value is entered in the browser.",
         "",
@@ -1491,9 +1595,9 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
     let mut parts = rest.split_whitespace();
     let Some(name_or_label) = parts.next() else {
         return if bulk {
-            "⚠️ Usage: `!secure bulk LABEL [description]`".to_string()
+            "⚠️ Usage: `!secret bulk LABEL [description]`".to_string()
         } else {
-            "⚠️ Usage: `!secure input NAME [description]`".to_string()
+            "⚠️ Usage: `!secret input NAME [description]`".to_string()
         };
     };
     let description = parts.collect::<Vec<_>>().join(" ");
@@ -1648,7 +1752,7 @@ async fn secure_set(rest: &str) -> String {
     };
 
     if name.is_empty() || value.is_empty() {
-        return "⚠️ Usage: `!secure set NAME=value`".to_string();
+        return "⚠️ Usage: `!secret set NAME=value`".to_string();
     }
     // Keep the accepted syntax narrow so names are safe as fnox keys
     // and as `{{secret:NAME}}` interpolation references in
@@ -1943,6 +2047,35 @@ mod tests {
         assert!(h.handle("!foo bar").is_none());
     }
 
+    #[test]
+    fn unknown_command_suggests_near_matches() {
+        let h = make_handler();
+        let reply = h.unknown_command("!stats");
+        assert!(reply.contains("Unknown command"), "{reply}");
+        assert!(reply.contains("!status"), "{reply}");
+        assert!(reply.contains("!help"), "{reply}");
+    }
+
+    #[test]
+    fn unknown_command_skips_suggestion_for_oversized_token() {
+        let h = make_handler();
+        let oversized = format!("!{}", "x".repeat(256));
+        let reply = h.unknown_command(&oversized);
+        assert!(reply.contains("Unknown command"), "{reply}");
+        assert!(
+            !reply.contains("Did you mean"),
+            "oversized unknown commands should not run fuzzy matching: {reply}"
+        );
+    }
+
+    #[test]
+    fn unknown_command_suggestion_handles_tab_after_command() {
+        let h = make_handler();
+        let reply = h.unknown_command("!stats\tplease");
+        assert!(reply.contains("Unknown command"), "{reply}");
+        assert!(reply.contains("!status"), "{reply}");
+    }
+
     // --- !help ---
 
     #[test]
@@ -1955,6 +2088,8 @@ mod tests {
         assert!(reply.contains("!metrics"));
         assert!(reply.contains("!ping"));
         assert!(reply.contains("!switch"));
+        assert!(reply.contains("!agent list"));
+        assert!(reply.contains("!secret"));
     }
 
     // --- !status ---
@@ -1979,6 +2114,30 @@ mod tests {
         assert!(!CommandHandler::is_status_command("!ping"));
         assert!(!CommandHandler::is_status_command("!switch foo"));
         assert!(!CommandHandler::is_status_command("status")); // no !
+    }
+
+    #[test]
+    fn session_alias_detection_accepts_singular_form() {
+        assert!(CommandHandler::is_sessions_command("!sessions claude-acpx"));
+        assert!(CommandHandler::is_sessions_command(
+            "!session list claude-acpx"
+        ));
+        assert!(CommandHandler::is_sessions_command(
+            "  !SESSION list claude-acpx"
+        ));
+        assert!(!CommandHandler::is_sessions_command(
+            "session list claude-acpx"
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_list_alias_parses_agent_after_list_verb() {
+        let h = make_handler();
+        let reply = h.handle_sessions("!session list librarian", "brian").await;
+        assert!(
+            reply.contains("librarian") && reply.contains("does not support session listing"),
+            "noun-style session alias should parse the agent after 'list': {reply}"
+        );
     }
 
     #[tokio::test]
@@ -2057,6 +2216,20 @@ mod tests {
     }
 
     #[test]
+    fn agent_list_alias_lists_configured_agents() {
+        let h = make_handler();
+        let reply = h.handle("!agent list").unwrap();
+        assert!(reply.contains("librarian"), "should show agent id: {reply}");
+        assert!(reply.contains("custodian"), "should show agent id: {reply}");
+
+        let uppercase = h.handle("!AGENT LIST").unwrap();
+        assert!(
+            uppercase.contains("librarian"),
+            "uppercase alias should also list agents: {uppercase}"
+        );
+    }
+
+    #[test]
     fn test_agents_shows_model_when_set() {
         let mut config = make_config();
         // Set a specific model on the librarian agent
@@ -2090,6 +2263,21 @@ mod tests {
     fn test_model_command_activation_becomes_dispatch_override() {
         let h = make_handler_with_synthetics();
         let reply = h.handle_model("!model dispatcher-test", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[test]
+    fn model_noun_aliases_list_and_activate() {
+        let h = make_handler_with_synthetics();
+        let list = h.handle("!model list").unwrap();
+        assert!(list.contains("Configured dispatchers:"), "{list}");
+        assert!(list.contains("!model use <synthetic-id>"), "{list}");
+
+        let reply = h.handle_model("!model use dispatcher-test", "brian");
         assert!(reply.contains("Activated synthetic model"), "{reply}");
         assert_eq!(
             h.active_model_for_identity("brian").as_deref(),
@@ -2238,6 +2426,7 @@ mod tests {
         assert!(CommandHandler::is_switch_command("!switch custodian"));
         assert!(CommandHandler::is_switch_command("  !SWITCH custodian  "));
         assert!(CommandHandler::is_switch_command("!Switch librarian"));
+        assert!(CommandHandler::is_switch_command("!agent switch librarian"));
         assert!(!CommandHandler::is_switch_command("!ping"));
         assert!(!CommandHandler::is_switch_command("!help"));
         assert!(!CommandHandler::is_switch_command("switch custodian")); // no !
@@ -2406,6 +2595,45 @@ mod tests {
             reply
         );
         assert_eq!(h.active_agent_for("brian"), Some("custodian".to_string()));
+    }
+
+    #[test]
+    fn agent_switch_noun_alias_succeeds() {
+        let h = make_handler();
+        let reply = h.handle_switch("!agent switch keeper", "brian");
+        assert!(
+            reply.contains('✅') && reply.contains("custodian"),
+            "noun-style alias switch should succeed: {}",
+            reply
+        );
+        assert_eq!(h.active_agent_for("brian"), Some("custodian".to_string()));
+    }
+
+    #[tokio::test]
+    async fn noun_alias_argument_parsing_accepts_tabs() {
+        let h = make_handler_with_synthetics();
+
+        let switch_reply = h.handle_switch("!agent\tswitch\tkeeper", "brian");
+        assert!(
+            switch_reply.contains('✅') && switch_reply.contains("custodian"),
+            "tab-separated agent switch should succeed: {switch_reply}"
+        );
+
+        let model_reply = h.handle_model("!model\tuse\tdispatcher-test", "brian");
+        assert!(
+            model_reply.contains("Activated synthetic model"),
+            "tab-separated model use should succeed: {model_reply}"
+        );
+
+        let sessions = h
+            .handle_sessions("!session\tlist\tlibrarian", "brian")
+            .await;
+        assert!(
+            sessions.contains("does not support session listing")
+                || sessions.contains("No active sessions")
+                || sessions.contains("Active sessions"),
+            "tab-separated session list should parse the agent argument: {sessions}"
+        );
     }
 
     #[test]
@@ -2600,12 +2828,25 @@ mod tests {
             "  !secure   set NAME=value"
         ));
         assert!(CommandHandler::is_secure_set_command(
+            "  !secret   set NAME=value"
+        ));
+        assert!(CommandHandler::is_secure_set_command(
             "!SECURE SET NAME value"
         ));
         assert!(!CommandHandler::is_secure_set_command("!secure"));
         assert!(!CommandHandler::is_secure_set_command("!secure list"));
         assert!(!CommandHandler::is_secure_set_command("!secure help"));
+        assert!(!CommandHandler::is_secure_set_command("!secret help"));
         assert!(!CommandHandler::is_secure_set_command("!status"));
+    }
+
+    #[test]
+    fn secret_alias_is_secure_command() {
+        assert!(CommandHandler::is_secure_command(
+            "!secret input OPENAI_API_KEY"
+        ));
+        assert!(CommandHandler::is_secure_command("!SECRET list"));
+        assert!(!CommandHandler::is_secure_command("!secrets"));
     }
 
     #[test]

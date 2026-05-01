@@ -55,7 +55,7 @@ Optional fields:
 | Field | Default | Description |
 |---|---|---|
 | `scan_messages` | `false` | Enable inbound adversarial content scanning via the security proxy |
-| `allow_chat_secret_set` | `false` | Allow `!secure set NAME=value` via Telegram chat (not recommended — the value appears in chat history and provider logs) |
+| `allow_chat_secret_set` | `false` | Allow `!secret set NAME=value` / `!secure set NAME=value` via Telegram chat (not recommended — the value appears in chat history and provider logs) |
 
 ## Step 3: Identity config
 

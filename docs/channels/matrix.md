@@ -77,7 +77,7 @@ allowed_users = ["@operator:example.com"]
 | `room_id` | yes | Internal room ID (starts with `!`) |
 | `allowed_users` | yes | Matrix user IDs permitted to send commands; use `["*"]` to allow all room members; empty list is rejected at startup |
 | `scan_messages` | no (`false`) | Enable inbound adversarial content scanning |
-| `allow_chat_secret_set` | no (`false`) | Allow `!secure set` via Matrix (not recommended) |
+| `allow_chat_secret_set` | no (`false`) | Allow `!secret set` / `!secure set` via Matrix (not recommended) |
 
 ## Step 3: Identity config
 
@@ -113,8 +113,10 @@ calciforge doctor   # validates config
 calciforge          # start; send a message in the room
 ```
 
-The bot responds to commands (`!help`, `!ping`, `!agents`, etc.) and routes other messages
-to the default agent for the sender's identity.
+The bot responds to commands (`!help`, `!ping`, `!agent list`,
+`!agent switch <agent>`, `!model list`, `!secret input NAME`, etc.) and routes
+other messages to the default agent for the sender's identity. Legacy shortcuts
+such as `!agents`, `!switch`, and `!secure` remain supported.
 
 Agent replies that include artifacts are uploaded through the Matrix media API
 and sent as native `m.image`, `m.audio`, `m.video`, or `m.file` events. If media

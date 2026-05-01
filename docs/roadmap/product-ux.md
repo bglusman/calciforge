@@ -50,9 +50,11 @@ predictable:
 
 - Use stable nouns: `agent`, `session`, `model`, `secret`, `policy`,
   `task`.
-- Prefer verb+noun aliases in chat while preserving old commands:
-  `!agent switch custodian`, `!secret input OPENAI_API_KEY`,
-  `!task list`, `!policy status`.
+- Prefer noun/verb aliases in chat while preserving old commands.
+  The first implemented set is `!agent list`,
+  `!agent switch custodian`, `!session list claude-acpx`,
+  `!model list`, `!model use dispatcher`, and
+  `!secret input OPENAI_API_KEY`.
 - Keep one-line shortcuts for frequent actions: `!status`, `!help`,
   `!approve`, `!deny`.
 - Add "did you mean" recovery for unknown commands and missing
