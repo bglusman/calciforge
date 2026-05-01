@@ -86,6 +86,8 @@ async function runWithSyntheticGatewayClient(work) {
 export default function register(api) {
   const pluginConfig = api.pluginConfig ?? {};
   const { authToken, replyWebhook, replyAuthToken } = pluginConfig;
+  const runTimeoutMs = positiveInteger(pluginConfig.runTimeoutMs, 300000);
+  const errorRecoveryMs = positiveInteger(pluginConfig.errorRecoveryMs, 120000);
 
   if (authToken && replyWebhook && replyAuthToken) {
     api.logger.info(
@@ -103,6 +105,8 @@ export default function register(api) {
           authToken,
           replyWebhook,
           replyAuthToken,
+          runTimeoutMs,
+          errorRecoveryMs,
           log: api.logger,
         }),
     }, api.logger)
@@ -126,6 +130,8 @@ async function handleInboundRequest({
   authToken,
   replyWebhook,
   replyAuthToken,
+  runTimeoutMs,
+  errorRecoveryMs,
   log,
 }) {
   if (req.method !== "POST") {
@@ -156,6 +162,13 @@ async function handleInboundRequest({
 
   try {
     const runtime = await getRuntime();
+    const baselineReply = await safeReadLatestAssistantReply({
+      runtime,
+      sessionKey,
+      log,
+      timeoutMs: 5000,
+    });
+    const runStartedAtMs = Date.now();
     const { runId, result } = await runWithSyntheticGatewayClient(async () => {
       const { runId } = await runtime.subagent.run({
         sessionKey,
@@ -167,7 +180,7 @@ async function handleInboundRequest({
 
       const result = await runtime.subagent.waitForRun({
         runId,
-        timeoutMs: 300000,
+        timeoutMs: runTimeoutMs,
       });
       return { runId, result };
     });
@@ -176,6 +189,30 @@ async function handleInboundRequest({
       log?.warn?.(
         `[calciforge-channel] agent run ${result.status} - runId=${runId}`,
       );
+      const recovered = await recoverReplyAfterRunError({
+        runtime,
+        runId,
+        sessionKey,
+        baselineReply,
+        runStartedAtMs,
+        initialResult: result,
+        errorRecoveryMs,
+        log,
+      });
+      if (recovered) {
+        await deliverReply({
+          replyWebhook,
+          replyAuthToken,
+          sessionKey,
+          message: recovered.replyText,
+          attachments: recovered.attachments,
+          channel,
+          replyTo,
+          log,
+        });
+        return true;
+      }
+
       await deliverReply({
         replyWebhook,
         replyAuthToken,
@@ -188,11 +225,11 @@ async function handleInboundRequest({
       return true;
     }
 
-    const replyText = await runWithSyntheticGatewayClient(() =>
-      readLatestAssistantText(runtime, sessionKey),
+    const reply = await runWithSyntheticGatewayClient(() =>
+      readLatestAssistantReply(runtime, sessionKey),
     );
     const attachments = normalizeAttachments(result.attachments);
-    if (isSilentReply(replyText) && attachments.length === 0) {
+    if (isSilentReply(reply.text) && attachments.length === 0) {
       log?.info?.("[calciforge-channel] silent reply - not forwarding");
       return true;
     }
@@ -201,7 +238,7 @@ async function handleInboundRequest({
       replyWebhook,
       replyAuthToken,
       sessionKey,
-      message: replyText,
+      message: reply.text,
       attachments,
       channel,
       replyTo,
@@ -247,7 +284,123 @@ function isSilentReply(replyText) {
   return !trimmed || trimmed === "NO_REPLY" || trimmed === "HEARTBEAT_OK";
 }
 
-async function readLatestAssistantText(runtime, sessionKey) {
+async function recoverReplyAfterRunError({
+  runtime,
+  runId,
+  sessionKey,
+  baselineReply,
+  runStartedAtMs,
+  initialResult,
+  errorRecoveryMs,
+  log,
+  withGatewayClient = runWithSyntheticGatewayClient,
+  pollDelayMs = 1000,
+}) {
+  const deadline = Date.now() + errorRecoveryMs;
+  let lastResult = initialResult;
+
+  while (Date.now() < deadline) {
+    const reply = await safeReadLatestAssistantReply({
+      runtime,
+      sessionKey,
+      log,
+      withGatewayClient,
+    });
+    const attachments = normalizeAttachments(lastResult?.attachments);
+    if (
+      isRecoverableReply(reply, baselineReply, attachments, runStartedAtMs) &&
+      (!isSilentReply(reply?.text) || attachments.length > 0)
+    ) {
+      log?.info?.(
+        `[calciforge-channel] recovered reply after run ${lastResult?.status ?? "error"} - runId=${runId}`,
+      );
+      return { replyText: reply?.text ?? "", attachments };
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+
+    try {
+      lastResult = await withGatewayClient(() =>
+        runtime.subagent.waitForRun({
+          runId,
+          timeoutMs: Math.min(15000, remainingMs),
+        }),
+      );
+      const waitedReply = await safeReadLatestAssistantReply({
+        runtime,
+        sessionKey,
+        log,
+        withGatewayClient,
+      });
+      const waitedAttachments = normalizeAttachments(lastResult.attachments);
+      if (
+        isRecoverableReply(
+          waitedReply,
+          baselineReply,
+          waitedAttachments,
+          runStartedAtMs,
+        ) &&
+        (!isSilentReply(waitedReply?.text) || waitedAttachments.length > 0)
+      ) {
+        return {
+          replyText: waitedReply?.text ?? "",
+          attachments: waitedAttachments,
+        };
+      }
+    } catch (err) {
+      log?.warn?.(
+        `[calciforge-channel] error recovery wait failed - ${err.message}`,
+      );
+    }
+
+    if (Date.now() >= deadline) break;
+    await sleep(pollDelayMs);
+  }
+
+  return null;
+}
+
+function isNewReply(reply, baselineReply) {
+  if (!reply?.text && !reply?.key) return false;
+  if (!baselineReply) return true;
+  return reply.key !== baselineReply.key || reply.text !== baselineReply.text;
+}
+
+function isRecoverableReply(reply, baselineReply, attachments, runStartedAtMs) {
+  if (attachments.length > 0) return true;
+  if (!isNewReply(reply, baselineReply)) return false;
+  if (!baselineReply && !Number.isFinite(reply?.createdAtMs)) return false;
+  return replyMatchesRunWindow(reply, runStartedAtMs);
+}
+
+function replyMatchesRunWindow(reply, runStartedAtMs) {
+  if (!Number.isFinite(runStartedAtMs)) return true;
+  if (!Number.isFinite(reply?.createdAtMs)) return true;
+  return reply.createdAtMs >= runStartedAtMs;
+}
+
+async function safeReadLatestAssistantReply({
+  runtime,
+  sessionKey,
+  log,
+  withGatewayClient = runWithSyntheticGatewayClient,
+  timeoutMs,
+}) {
+  try {
+    return await withOptionalTimeout(
+      withGatewayClient(() => readLatestAssistantReply(runtime, sessionKey)),
+      timeoutMs,
+    );
+  } catch (err) {
+    log?.warn?.(
+      `[calciforge-channel] could not read latest assistant reply - ${err.message}`,
+    );
+    return null;
+  }
+}
+
+async function readLatestAssistantReply(runtime, sessionKey) {
   const { messages } = await runtime.subagent.getSessionMessages({
     sessionKey,
     limit: 10,
@@ -255,17 +408,55 @@ async function readLatestAssistantText(runtime, sessionKey) {
   const lastMsg = [...messages]
     .reverse()
     .find((msg) => msg?.role === "assistant");
-  if (!lastMsg) return "";
+  if (!lastMsg) return { key: null, text: "", createdAtMs: null };
 
   const content = lastMsg.content;
-  if (typeof content === "string") return content;
+  const createdAtMs = parseTimestampMillis(
+    lastMsg.createdAt ?? lastMsg.timestamp ?? lastMsg.created_at,
+  );
+  const key =
+    lastMsg.id ??
+    lastMsg.messageId ??
+    lastMsg.createdAt ??
+    lastMsg.timestamp ??
+    JSON.stringify(content);
+  if (typeof content === "string") return { key, text: content, createdAtMs };
   if (Array.isArray(content)) {
-    return content
-      .filter((part) => part.type === "text")
-      .map((part) => part.text ?? "")
-      .join("\n");
+    return {
+      key,
+      text: content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text ?? "")
+        .join("\n"),
+      createdAtMs,
+    };
   }
-  return "";
+  return { key, text: "", createdAtMs };
+}
+
+function parseTimestampMillis(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value !== "string" || value.trim() === "") return null;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function withOptionalTimeout(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return Promise.race([
+    promise,
+    sleep(timeoutMs).then(() => {
+      throw new Error(`timed out after ${timeoutMs}ms`);
+    }),
+  ]);
 }
 
 async function deliverReply({
@@ -332,3 +523,21 @@ function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export const testInternals = {
+  isNewReply,
+  isRecoverableReply,
+  parseTimestampMillis,
+  safeReadLatestAssistantReply,
+  withOptionalTimeout,
+  recoverReplyAfterRunError,
+};

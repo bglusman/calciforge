@@ -49,6 +49,7 @@ REMOTE_SCANNER_PROMPT_FILE="${REMOTE_SCANNER_PROMPT_FILE:-$CALCIFORGE_CONFIG_HOM
 LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
 CALCIFORGE_INSTALL_DOCTOR_NETWORK="${CALCIFORGE_INSTALL_DOCTOR_NETWORK:-true}"
+CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES="${CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES:-false}"
 ZC_CONFIG="${CALCIFORGE_CONFIG:-$CALCIFORGE_CONFIG_HOME/config.toml}"
 ZC_LOG_DIR="${ZC_LOG_DIR:-$CALCIFORGE_CONFIG_HOME/logs}"
 INSTALL_NODES_STATE="${CALCIFORGE_INSTALL_NODES_STATE:-$CALCIFORGE_CONFIG_HOME/install-nodes.json}"
@@ -1060,8 +1061,11 @@ run_calciforge_doctor() {
         if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK"; then
             doctor_args+=(--no-network)
         fi
-        env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
-            "$BIN_DIR/calciforge" "${doctor_args[@]}" \
+        local doctor_env=()
+        if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES"; then
+            doctor_env=(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
+        fi
+        "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
             || warn "calciforge doctor reported issues; see output above"
     else
         warn "Skipping calciforge doctor — config or binary not available yet"
