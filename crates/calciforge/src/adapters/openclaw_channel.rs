@@ -30,6 +30,7 @@ const DEFAULT_REPLY_PORT: u16 = 18_797;
 const OPENCLAW_ARTIFACT_ROOT_NAME: &str = "calciforge-openclaw-artifacts";
 const MAX_REPLY_ATTACHMENTS: usize = 8;
 const MAX_REPLY_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+const INBOUND_CONNECT_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
 
 type ReplyResult = Result<OutboundMessage, String>;
 
@@ -498,18 +499,8 @@ impl AgentAdapter for OpenClawChannelAdapter {
             "openclaw-channel dispatch"
         );
 
-        let mut req = self.client.post(&url).json(&body);
-        if !self.auth_token.is_empty() {
-            req = req.bearer_auth(&self.auth_token);
-        }
-
-        let inbound_resp = req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                AdapterError::Timeout
-            } else {
-                AdapterError::Unavailable(format_reqwest_error(&e))
-            }
-        });
+        let inbound_resp =
+            send_inbound_with_retries(&self.client, &url, &self.auth_token, &body).await;
 
         let inbound_resp = match inbound_resp {
             Ok(r) => r,
@@ -548,6 +539,47 @@ impl AgentAdapter for OpenClawChannelAdapter {
     fn kind(&self) -> &'static str {
         "openclaw-channel"
     }
+}
+
+async fn send_inbound_with_retries(
+    client: &reqwest::Client,
+    url: &str,
+    auth_token: &str,
+    body: &InboundPayload<'_>,
+) -> Result<reqwest::Response, AdapterError> {
+    let mut attempt = 0usize;
+
+    loop {
+        let mut req = client.post(url).json(body);
+        if !auth_token.is_empty() {
+            req = req.bearer_auth(auth_token);
+        }
+
+        match req.send().await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if e.is_timeout() => return Err(AdapterError::Timeout),
+            Err(e)
+                if should_retry_inbound_connect_error(&e)
+                    && attempt < INBOUND_CONNECT_RETRY_DELAYS_MS.len() =>
+            {
+                let delay_ms = INBOUND_CONNECT_RETRY_DELAYS_MS[attempt];
+                attempt += 1;
+                warn!(
+                    endpoint = %url,
+                    attempt,
+                    retry_delay_ms = delay_ms,
+                    error = %format_reqwest_error(&e),
+                    "openclaw-channel inbound connect failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(e) => return Err(AdapterError::Unavailable(format_reqwest_error(&e))),
+        }
+    }
+}
+
+fn should_retry_inbound_connect_error(error: &reqwest::Error) -> bool {
+    error.is_connect()
 }
 
 fn format_reqwest_error(error: &reqwest::Error) -> String {
@@ -823,6 +855,44 @@ mod tests {
             })
             .await
             .expect("agent control-plane HTTP must bypass ambient proxy settings");
+
+        assert_eq!(reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_retries_transient_inbound_connect_failure() {
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+        let inbound_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: None,
+            reply_attachments: None,
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let app = Router::new()
+                .route("/calciforge/inbound", post(inbound_handler))
+                .with_state(state);
+            let listener = TcpListener::bind(("127.0.0.1", inbound_port))
+                .await
+                .expect("delayed inbound test server should bind");
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+        let reply = adapter
+            .dispatch_with_context(DispatchContext {
+                message: "survive one refused connection",
+                sender: Some("brian"),
+                model_override: None,
+                session: None,
+                channel: Some("telegram"),
+            })
+            .await
+            .expect("dispatch should retry a transient inbound connect failure");
 
         assert_eq!(reply, "reply from openclaw");
     }
