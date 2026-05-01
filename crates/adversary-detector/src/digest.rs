@@ -4,7 +4,8 @@
 //! the digest matches, the previously computed verdict is reused without re-scanning.
 //! If the digest has changed the content is rescanned automatically.
 //!
-//! Persistence is via a simple JSON file; the default path is `~/.calciforge/digests.json`.
+//! Persistence is via a simple JSON file; the default path is
+//! `~/.config/calciforge/digests.json`.
 //! The file is loaded eagerly on construction and flushed after every mutation.
 
 use chrono::{DateTime, Utc};
@@ -53,10 +54,9 @@ impl DigestStore {
         Self { path, entries }
     }
 
-    /// Open the store at the default path: `~/.calciforge/digests.json`.
+    /// Open the store at the default path: `~/.config/calciforge/digests.json`.
     pub async fn open_default() -> Self {
-        let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-        Self::open(home.join(".calciforge/digests.json")).await
+        Self::open(calciforge_config_home().join("digests.json")).await
     }
 
     /// Look up a URL by exact match. Returns `None` if not found or expired.
@@ -145,6 +145,20 @@ impl DigestStore {
             Err(e) => warn!("digest store: open error: {e}"),
         }
     }
+}
+
+fn calciforge_config_home() -> PathBuf {
+    std::env::var_os("CALCIFORGE_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME").map(|base| PathBuf::from(base).join("calciforge"))
+        })
+        .unwrap_or_else(|| {
+            home::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/root"))
+                .join(".config")
+                .join("calciforge")
+        })
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

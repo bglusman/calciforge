@@ -24,23 +24,30 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLASH_DIR="$HOME/.clash"
 CLAUDE_DIR="$HOME/.claude"
+CALCIFORGE_CONFIG_HOME="${CALCIFORGE_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/calciforge}"
 CLASHD_PORT="${CLASHD_PORT:-9001}"
 SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
 SECURITY_PROXY_URL="${SECURITY_PROXY_URL:-http://127.0.0.1:${SECURITY_PROXY_PORT}}"
 SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
+SECURITY_PROXY_MITM_ENABLED="${SECURITY_PROXY_MITM_ENABLED:-true}"
+SECURITY_PROXY_CA_CERT="${SECURITY_PROXY_CA_CERT:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca.pem}"
+SECURITY_PROXY_CA_KEY="${SECURITY_PROXY_CA_KEY:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca-key.pem}"
+CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
+CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
+CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
 REMOTE_SCANNER_ENABLED="${CALCIFORGE_REMOTE_SCANNER_ENABLED:-${REMOTE_SCANNER_ENABLED:-0}}"
 REMOTE_SCANNER_PORT="${REMOTE_SCANNER_PORT:-9801}"
 REMOTE_SCANNER_URL=""
 REMOTE_SCANNER_FAIL_CLOSED="${REMOTE_SCANNER_FAIL_CLOSED:-true}"
-REMOTE_SCANNER_API_KEY_FILE="${REMOTE_SCANNER_API_KEY_FILE:-$HOME/.calciforge/secrets/remote-scanner-api-key}"
+REMOTE_SCANNER_API_KEY_FILE="${REMOTE_SCANNER_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/remote-scanner-api-key}"
 REMOTE_SCANNER_API_BASE="${REMOTE_SCANNER_API_BASE:-https://api.openai.com/v1}"
 REMOTE_SCANNER_MODEL="${REMOTE_SCANNER_MODEL:-gpt-5.4-mini}"
-REMOTE_SCANNER_PROMPT_FILE="${REMOTE_SCANNER_PROMPT_FILE:-$HOME/.calciforge/remote-llm-scanner-prompt.txt}"
+REMOTE_SCANNER_PROMPT_FILE="${REMOTE_SCANNER_PROMPT_FILE:-$CALCIFORGE_CONFIG_HOME/remote-llm-scanner-prompt.txt}"
 LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
-ZC_CONFIG="${CALCIFORGE_CONFIG:-$HOME/.calciforge/config.toml}"
-ZC_LOG_DIR="${ZC_LOG_DIR:-$HOME/.calciforge/logs}"
-INSTALL_NODES_STATE="${CALCIFORGE_INSTALL_NODES_STATE:-$HOME/.calciforge/install-nodes.json}"
+ZC_CONFIG="${CALCIFORGE_CONFIG:-$CALCIFORGE_CONFIG_HOME/config.toml}"
+ZC_LOG_DIR="${ZC_LOG_DIR:-$CALCIFORGE_CONFIG_HOME/logs}"
+INSTALL_NODES_STATE="${CALCIFORGE_INSTALL_NODES_STATE:-$CALCIFORGE_CONFIG_HOME/install-nodes.json}"
 LEGACY_SERVICE_PREFIX="${CALCIFORGE_LEGACY_SERVICE_PREFIX:-}"
 CLASHD_POLICY="${CLASHD_POLICY:-$CLASH_DIR/policy.star}"
 AGENTS_JSON="$CLASH_DIR/agents.json"
@@ -125,6 +132,40 @@ rotate_log_file() {
     : > "$file"
 }
 
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+ensure_mitm_ca() {
+    truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
+
+    if [[ -f "$SECURITY_PROXY_CA_CERT" && -f "$SECURITY_PROXY_CA_KEY" ]]; then
+        chmod 600 "$SECURITY_PROXY_CA_KEY" 2>/dev/null || true
+        ok "MITM CA already present → $SECURITY_PROXY_CA_CERT"
+        return 0
+    fi
+    if [[ -e "$SECURITY_PROXY_CA_CERT" || -e "$SECURITY_PROXY_CA_KEY" ]]; then
+        die "MITM CA is incomplete: expected both $SECURITY_PROXY_CA_CERT and $SECURITY_PROXY_CA_KEY"
+    fi
+    command -v openssl >/dev/null 2>&1 || \
+        die "openssl is required to generate the Calciforge MITM CA; set SECURITY_PROXY_MITM_ENABLED=false to skip"
+
+    mkdir -p "$(dirname "$SECURITY_PROXY_CA_CERT")" "$(dirname "$SECURITY_PROXY_CA_KEY")"
+    ( umask 077
+      openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+        -keyout "$SECURITY_PROXY_CA_KEY" \
+        -out "$SECURITY_PROXY_CA_CERT" \
+        -subj "/CN=Calciforge Local MITM CA" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 )
+    chmod 600 "$SECURITY_PROXY_CA_KEY"
+    chmod 644 "$SECURITY_PROXY_CA_CERT"
+    ok "Generated MITM CA → $SECURITY_PROXY_CA_CERT"
+}
+
 write_log_rotator() {
     mkdir -p "$BIN_DIR"
     cat > "$BIN_DIR/calciforge-rotate-logs" <<'ROTATE'
@@ -169,7 +210,7 @@ ROTATE
 
 install_log_rotation() {
     write_log_rotator
-    mkdir -p "$LOG_DIR" "$SEC_LOG_DIR" "$ZC_LOG_DIR"
+    mkdir -p "$CALCIFORGE_CONFIG_HOME" "$CALCIFORGE_FNOX_DIR" "$LOG_DIR" "$SEC_LOG_DIR" "$ZC_LOG_DIR"
 
     if [[ "$PLATFORM" == "Darwin" ]]; then
         local rotate_plist="$PLIST_DIR/com.calciforge.log-rotate.plist"
@@ -513,18 +554,20 @@ ensure_fnox() {
 }
 
 ensure_fnox_config() {
+    mkdir -p "$CALCIFORGE_FNOX_DIR"
     local err_file
     err_file="$(mktemp)"
-    if fnox list >/dev/null 2>"$err_file"; then
+    if (cd "$CALCIFORGE_FNOX_DIR" && fnox list >/dev/null 2>"$err_file"); then
         rm -f "$err_file"
         ok "fnox config usable"
+        ensure_fnox_provider
         return 0
     fi
 
-    if grep -qi "No configuration file found" "$err_file"; then
+    if grep -Eqi "No configuration file found|No providers configured" "$err_file"; then
         echo "  Initializing fnox global config..."
         if fnox init --global --skip-wizard >/dev/null 2>"$err_file"; then
-            if fnox list >/dev/null 2>"$err_file"; then
+            if ensure_fnox_provider; then
                 rm -f "$err_file"
                 ok "fnox global config initialized"
                 return 0
@@ -533,6 +576,51 @@ ensure_fnox_config() {
     fi
 
     warn "fnox is installed but not usable from this environment"
+    sed 's/^/  fnox: /' "$err_file" | tail -5
+    rm -f "$err_file"
+    return 1
+}
+
+fnox_provider_count() {
+    fnox provider list 2>/dev/null | awk 'NF { count++ } END { print count + 0 }'
+}
+
+default_fnox_provider_type() {
+    if [[ -n "$CALCIFORGE_FNOX_PROVIDER_TYPE" ]]; then
+        echo "$CALCIFORGE_FNOX_PROVIDER_TYPE"
+    elif [[ "$PLATFORM" == "Darwin" ]]; then
+        echo "keychain"
+    else
+        echo ""
+    fi
+}
+
+ensure_fnox_provider() {
+    local count provider_type err_file
+    count="$(fnox_provider_count)"
+    if [[ "$count" -gt 0 ]]; then
+        ok "fnox provider configured"
+        return 0
+    fi
+
+    provider_type="$(default_fnox_provider_type)"
+    if [[ -z "$provider_type" ]]; then
+        warn "fnox has no provider configured; run 'fnox provider add <name> <type> --global' or set CALCIFORGE_FNOX_PROVIDER_TYPE before install"
+        return 1
+    fi
+
+    err_file="$(mktemp)"
+    echo "  Adding fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' (${provider_type})..."
+    if fnox provider add "$CALCIFORGE_FNOX_PROVIDER_NAME" "$provider_type" --global >/dev/null 2>"$err_file"; then
+        if fnox provider test "$CALCIFORGE_FNOX_PROVIDER_NAME" >/dev/null 2>"$err_file"; then
+            rm -f "$err_file"
+            ok "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' ready"
+            return 0
+        fi
+        warn "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' was added but did not pass its connection test"
+    else
+        warn "failed to add fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}'"
+    fi
     sed 's/^/  fnox: /' "$err_file" | tail -5
     rm -f "$err_file"
     return 1
@@ -609,12 +697,13 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
     # channel-matrix is optional in Cargo.toml but on for real deployments; enable by default.
     # Build each crate separately so --features only applies to calciforge.
     run_build "support binaries" \
-        "$CARGO" build --release -p clashd -p security-proxy -p mcp-server -p paste-server
+        "$CARGO" build --release -p clashd -p security-proxy -p mcp-server -p paste-server \
+            -p secrets-client --bin calciforge-secrets
     run_build "calciforge with Matrix channel support" \
         "$CARGO" build --release -p calciforge --features channel-matrix
 
     mkdir -p "$BIN_DIR"
-    for bin in clashd calciforge security-proxy mcp-server paste-server; do
+    for bin in clashd calciforge security-proxy mcp-server paste-server calciforge-secrets; do
         src="$REPO_ROOT/target/release/$bin"
         [[ -f "$src" ]] || { warn "Binary not found: $src (build may have failed)"; continue; }
         # On Linux, overwriting a running binary fails with "Text file busy".
@@ -800,6 +889,7 @@ fi
 hdr "security-proxy"
 
 mkdir -p "$SEC_LOG_DIR"
+ensure_mitm_ca
 disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-security-proxy"
 disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-proxy"
 
@@ -814,6 +904,9 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>ProgramArguments</key><array><string>${BIN_DIR}/security-proxy</string></array>
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
+        <key>SECURITY_PROXY_MITM_ENABLED</key><string>${SECURITY_PROXY_MITM_ENABLED}</string>
+        <key>SECURITY_PROXY_CA_CERT</key><string>${SECURITY_PROXY_CA_CERT}</string>
+        <key>SECURITY_PROXY_CA_KEY</key><string>${SECURITY_PROXY_CA_KEY}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
@@ -837,6 +930,9 @@ After=network.target
 Type=simple
 ExecStart=${BIN_DIR}/security-proxy
 Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
+Environment=SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}
+Environment=SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}
+Environment=SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
 Environment=AGENT_CONFIG=${AGENTS_JSON}
@@ -885,9 +981,9 @@ ensure_fnox || true
 # 6. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
-# across reboots. Expects config at ~/.calciforge/config.toml; users must
-# populate it before the service starts (or the service will fail health and
-# launchd/systemd will keep retrying).
+# across reboots. Expects config at $CALCIFORGE_CONFIG_HOME/config.toml by
+# default; users must populate it before the service starts (or the service
+# will fail health and launchd/systemd will keep retrying).
 hdr "calciforge"
 
 mkdir -p "$ZC_LOG_DIR"
@@ -913,6 +1009,8 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     </array>
     <key>EnvironmentVariables</key><dict>
         <key>RUST_LOG</key><string>calciforge=info</string>
+        <key>CALCIFORGE_CONFIG_HOME</key><string>${CALCIFORGE_CONFIG_HOME}</string>
+        <key>CALCIFORGE_FNOX_DIR</key><string>${CALCIFORGE_FNOX_DIR}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
@@ -937,6 +1035,8 @@ Wants=calciforge-clashd.service calciforge-security-proxy.service
 Type=simple
 ExecStart=${BIN_DIR}/calciforge --config ${ZC_CONFIG}
 Environment=RUST_LOG=calciforge=info
+Environment=CALCIFORGE_CONFIG_HOME=${CALCIFORGE_CONFIG_HOME}
+Environment=CALCIFORGE_FNOX_DIR=${CALCIFORGE_FNOX_DIR}
 Environment=CALCIFORGE_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
 Environment=PATH=${SERVICE_PATH}
@@ -1211,7 +1311,11 @@ PYEOF
         fi
 
         local out_path="$REPO_ROOT/target/${target}/release/${bin}"
-        local cargo_args=(build --release -p "$bin" --target "$target")
+        local package="$bin"
+        if [[ "$bin" == "calciforge-secrets" ]]; then
+            package="secrets-client"
+        fi
+        local cargo_args=(build --release -p "$package" --bin "$bin" --target "$target")
         if [[ "$bin" == "calciforge" ]]; then
             cargo_args+=(--features channel-matrix)
         fi
@@ -1243,7 +1347,7 @@ PYEOF
             local docker_target_dir="target/docker-${target}"
             run_build "$bin for $target via Docker" docker run --rm --platform "$platform" \
                 -v "$REPO_ROOT:/work" -w /work rust:1-bookworm bash -lc \
-                "export PATH=/usr/local/cargo/bin:\$PATH CARGO_TARGET_DIR='$docker_target_dir' && apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libssl-dev libudev-dev cmake protobuf-compiler clang >/dev/null && cargo build --release -p '$bin' --target '$docker_target' $([[ "$bin" == "calciforge" ]] && printf '%s' '--features channel-matrix') && chown -R '$host_uid:$host_gid' '$docker_target_dir'"
+                "export PATH=/usr/local/cargo/bin:\$PATH CARGO_TARGET_DIR='$docker_target_dir' && apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pkg-config libssl-dev libudev-dev cmake protobuf-compiler clang >/dev/null && cargo build --release -p '$package' --bin '$bin' --target '$docker_target' $([[ "$bin" == "calciforge" ]] && printf '%s' '--features channel-matrix') && chown -R '$host_uid:$host_gid' '$docker_target_dir'"
             out_path="$REPO_ROOT/${docker_target_dir}/${target}/release/${bin}"
         else
             warn "No cross-compilation tool found (install 'cross' or 'cargo-zigbuild')" >&2
@@ -1252,6 +1356,36 @@ PYEOF
 
         [[ -f "$out_path" ]] && built_cache_put "$cache_key" "$out_path" && echo "$out_path" || \
             { warn "Build failed for $target/$bin"; echo ""; return 1; }
+    }
+
+    deploy_binary_only() {
+        local name="$1" host="$2" user="$3" ssh_key="$4" arch="$5" bin="$6" install_dir="$7"
+        local ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+        [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+        local ssh_target="${user}@${host}"
+        local rsync_ssh
+        printf -v rsync_ssh '%q ' ssh "${ssh_opts[@]}"
+
+        echo "  [$name] deploying support binary $bin..."
+        local bin_path
+        bin_path=$(build_for_arch "$arch" "$bin") || {
+            warn "  [$name] no local/cross binary for support binary $bin on $arch"
+            return 1
+        }
+        [[ -z "$bin_path" || ! -f "$bin_path" ]] && {
+            warn "  [$name] no binary available for support binary $bin on $arch — skipping"
+            return 1
+        }
+
+        ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
+        local remote_tmp="/tmp/calciforge-install-${bin}-$$"
+        if ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+            rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${remote_tmp}"
+        else
+            scp "${ssh_opts[@]}" "$bin_path" "${ssh_target}:${remote_tmp}"
+        fi
+        ssh "${ssh_opts[@]}" "$ssh_target" "install -m 0755 ${remote_tmp} ${install_dir}/${bin} && rm -f ${remote_tmp}"
+        ok "  [$name] support binary $bin deployed"
     }
 
     # ── systemd unit generator ────────────────────────────────────────────────
@@ -1303,8 +1437,10 @@ PYEOF
         [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
 
         echo "  [$name] checking fnox..."
-        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' <<'REMOTE_FNOX'
+        ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- "$CALCIFORGE_FNOX_PROVIDER_NAME" "$CALCIFORGE_FNOX_PROVIDER_TYPE" <<'REMOTE_FNOX'
 set -euo pipefail
+provider_name="$1"
+provider_type="${2:-}"
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 if ! command -v fnox >/dev/null 2>&1; then
     if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
@@ -1353,6 +1489,18 @@ if [[ -x "$HOME/.cargo/bin/fnox" && ! -e /usr/local/bin/fnox && -w /usr/local/bi
 fi
 if ! fnox list >/dev/null 2>&1; then
     fnox init --global --skip-wizard >/dev/null
+fi
+provider_count="$(fnox provider list 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
+if [[ "$provider_count" -eq 0 ]]; then
+    if [[ -z "$provider_type" && "$(uname -s)" == "Darwin" ]]; then
+        provider_type="keychain"
+    fi
+    if [[ -n "$provider_type" ]]; then
+        fnox provider add "$provider_name" "$provider_type" --global >/dev/null
+        fnox provider test "$provider_name" >/dev/null
+    else
+        echo "fnox has no provider configured; remote secret paste storage will not work until one is added" >&2
+    fi
 fi
 fnox list >/dev/null
 REMOTE_FNOX
@@ -1510,13 +1658,44 @@ REMOTE_BUILD
 
         # ── install service ───────────────────────────────────────────────────
         local remote_log_dir
+        local remote_mitm_ca_cert="${config_dir}/mitm-ca.pem"
+        local remote_mitm_ca_key="${config_dir}/mitm-ca-key.pem"
+        if [[ "$bin" == "security-proxy" ]] && truthy "$SECURITY_PROXY_MITM_ENABLED"; then
+            ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- "$remote_mitm_ca_cert" "$remote_mitm_ca_key" <<'REMOTE_MITM_CA'
+set -euo pipefail
+cert="$1"
+key="$2"
+if [[ -f "$cert" && -f "$key" ]]; then
+    chmod 600 "$key" 2>/dev/null || true
+    exit 0
+fi
+if [[ -e "$cert" || -e "$key" ]]; then
+    echo "incomplete MITM CA; expected both $cert and $key" >&2
+    exit 20
+fi
+command -v openssl >/dev/null 2>&1 || {
+    echo "openssl is required to generate Calciforge MITM CA" >&2
+    exit 21
+}
+mkdir -p "$(dirname "$cert")" "$(dirname "$key")"
+umask 077
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+    -keyout "$key" \
+    -out "$cert" \
+    -subj "/CN=Calciforge Local MITM CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+chmod 600 "$key"
+chmod 644 "$cert"
+REMOTE_MITM_CA
+        fi
         if [[ "$os" == "linux" ]]; then
             remote_log_dir="/var/log/calciforge"
             local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
-                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
-                calciforge)     env_pairs="" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}" ;;
             esac
             exec_args=""
             if [[ "$bin" == "calciforge" ]]; then
@@ -1541,6 +1720,20 @@ REMOTE_BUILD
             remote_log_dir="\$HOME/Library/Logs/calciforge"
             local plist_content label="com.calciforge.${service_name}"
             local launchd_env=("CLASHD_PORT=${CLASHD_PORT}" "SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}" "PATH=${remote_service_path}")
+            if [[ "$bin" == "calciforge" ]]; then
+                launchd_env+=(
+                    "CALCIFORGE_CONFIG_HOME=${config_dir}"
+                    "CALCIFORGE_FNOX_DIR=${config_dir}"
+                )
+            fi
+            if [[ "$bin" == "security-proxy" ]]; then
+                launchd_env+=(
+                    "SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}"
+                    "SECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}"
+                    "SECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}"
+                    "AGENT_CONFIG=${config_dir}/agents.json"
+                )
+            fi
             plist_content=$(launchd_plist "$bin" "$install_dir" "$remote_log_dir" "${launchd_env[@]}")
             local plist_path="\$HOME/Library/LaunchAgents/${label}.plist"
             ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p \$HOME/Library/LaunchAgents \$HOME/Library/Logs/calciforge"
@@ -1574,6 +1767,9 @@ PYEOF
         preflight_node "$name" "$host" "$user" "$ssh_key" "$os" "$services" "$install_dir" "$config_dir"
         ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" || \
             warn "  [$name] fnox not ready — secret resolution may fail on that node"
+        deploy_binary_only "$name" "$host" "$user" "$ssh_key" "$arch" \
+            "calciforge-secrets" "$install_dir" || \
+            warn "  [$name] calciforge-secrets not deployed — CLI secret discovery may fail on that node"
         IFS=',' read -ra svc_list <<< "$services"
         for svc in "${svc_list[@]}"; do
             deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \
@@ -1603,15 +1799,19 @@ agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
 echo ""
 echo "Optional external-agent proxy:"
 echo "  HTTP_PROXY=${SECURITY_PROXY_URL}"
+if truthy "$SECURITY_PROXY_MITM_ENABLED"; then
+    echo "  HTTPS_PROXY=${SECURITY_PROXY_URL}"
+    echo "  Calciforge MITM CA=${SECURITY_PROXY_CA_CERT}"
+fi
 echo "  NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
 if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     echo "  Remote scanner=${REMOTE_SCANNER_URL} (fail_closed=${REMOTE_SCANNER_FAIL_CLOSED})"
 fi
 echo ""
 echo "Use this only for manually started external agent daemons or tested wrappers."
-echo "Do not set it on the Calciforge service, and do not assume generic CLI agents"
-echo "work correctly behind HTTP_PROXY/HTTPS_PROXY."
-echo "HTTPS content needs explicit tool/fetch integration or a stronger OS/container boundary."
+echo "Do not set proxy env on the Calciforge service itself."
+echo "HTTPS inspection also requires the target runtime to trust the Calciforge"
+echo "MITM CA; otherwise leave HTTPS_PROXY unset for that runtime."
 echo ""
 echo "Logs:"
 echo "  clashd:         $LOG_DIR/"

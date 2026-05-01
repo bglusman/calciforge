@@ -5,6 +5,7 @@
 //! local reply webhook `POST /hooks/reply`.
 
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::time::Duration;
 
 use crate::artifacts::{create_run_dir, write_inline_attachment};
@@ -441,7 +442,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
             if e.is_timeout() {
                 AdapterError::Timeout
             } else {
-                AdapterError::Unavailable(e.to_string())
+                AdapterError::Unavailable(format_reqwest_error(&e))
             }
         });
 
@@ -482,6 +483,17 @@ impl AgentAdapter for OpenClawChannelAdapter {
     fn kind(&self) -> &'static str {
         "openclaw-channel"
     }
+}
+
+fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = StdError::source(error);
+    while let Some(err) = source {
+        message.push_str(": ");
+        message.push_str(&err.to_string());
+        source = err.source();
+    }
+    message
 }
 
 #[cfg(test)]

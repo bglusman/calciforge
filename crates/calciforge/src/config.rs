@@ -1,13 +1,14 @@
 //! CalciforgeConfig — TOML configuration loading and schema types.
 //!
-//! Reads from `~/.calciforge/config.toml` or, for service installs, falls back
-//! to `/etc/calciforge/config.toml`. Supports the full config schema as defined
-//! in the spec (Section 3).
+//! Reads from the configured Calciforge config path, defaulting to
+//! `~/.config/calciforge/config.toml` for user installs and falling back to
+//! `/etc/calciforge/config.toml` for system installs. Supports the full config
+//! schema as defined in the spec (Section 3).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod validator;
 
@@ -1064,13 +1065,21 @@ pub fn load_config_from(path: &PathBuf) -> Result<CalciforgeConfig> {
 
 /// Returns the preferred config file path.
 ///
-/// Prefer the user config for local/dev runs, but fall back to the system path
-/// used by service installs so diagnostic commands work after installation.
+/// Prefer the XDG-style user config for local/dev runs, but fall back to the
+/// legacy user path and then the system path so diagnostic commands still work
+/// on older/manual installs.
 pub fn config_path() -> Result<PathBuf> {
     let home = home::home_dir().context("could not determine home directory")?;
-    let user_config = home.join(".calciforge").join("config.toml");
+    let config_home = calciforge_config_home(Some(&home));
+
+    let user_config = config_home.join("config.toml");
     if user_config.exists() {
         return Ok(user_config);
+    }
+
+    let legacy_user_config = home.join(".calciforge").join("config.toml");
+    if legacy_user_config.exists() {
+        return Ok(legacy_user_config);
     }
 
     let system_config = PathBuf::from("/etc/calciforge/config.toml");
@@ -1079,6 +1088,25 @@ pub fn config_path() -> Result<PathBuf> {
     }
 
     Ok(user_config)
+}
+
+/// Return Calciforge's user config/state directory.
+pub fn calciforge_config_home(home_override: Option<&Path>) -> PathBuf {
+    if let Some(path) = std::env::var_os("CALCIFORGE_CONFIG_HOME").map(PathBuf::from) {
+        return path;
+    }
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .map(|base| base.join("calciforge"))
+    {
+        return path;
+    }
+    home_override
+        .map(Path::to_path_buf)
+        .or_else(home::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/root"))
+        .join(".config")
+        .join("calciforge")
 }
 
 /// Expand a `~`-prefixed path using the home directory.
@@ -1158,7 +1186,7 @@ allowed_agents = ["librarian"]
 
 [[channels]]
 kind = "telegram"
-bot_token_file = "~/.calciforge/secrets/telegram-token"
+bot_token_file = "~/.config/calciforge/secrets/telegram-token"
 enabled = true
 
 [memory]
@@ -1370,8 +1398,8 @@ enabled = true
 
     #[test]
     fn test_expand_tilde() {
-        let p = expand_tilde("~/.calciforge/secrets/telegram-token");
-        assert!(p.to_string_lossy().contains(".calciforge"));
+        let p = expand_tilde("~/.config/calciforge/secrets/telegram-token");
+        assert!(p.to_string_lossy().contains(".config/calciforge"));
         assert!(!p.to_string_lossy().starts_with('~'));
     }
 
@@ -1696,14 +1724,14 @@ version = 2
 [[channels]]
 kind = "telegram"
 enabled = true
-bot_token_file = "~/.calciforge/secrets/telegram-token"
+bot_token_file = "~/.config/calciforge/secrets/telegram-token"
 "#;
         let cfg: CalciforgeConfig = toml::from_str(raw).expect("telegram channel config");
         assert_eq!(cfg.channels[0].kind, "telegram");
         assert!(cfg.channels[0].enabled);
         assert_eq!(
             cfg.channels[0].bot_token_file.as_deref(),
-            Some("~/.calciforge/secrets/telegram-token")
+            Some("~/.config/calciforge/secrets/telegram-token")
         );
     }
 
@@ -1717,7 +1745,7 @@ version = 2
 kind = "matrix"
 enabled = true
 homeserver = "https://matrix.example.com"
-access_token_file = "~/.calciforge/secrets/matrix-token"
+access_token_file = "~/.config/calciforge/secrets/matrix-token"
 room_id = "!abc123def456:example.com"
 allowed_users = ["@operator:example.com"]
 "#;
@@ -1771,7 +1799,7 @@ version = 2
 [[channels]]
 kind = "whatsapp"
 enabled = true
-whatsapp_session_path = "~/.calciforge/whatsapp/session.db"
+whatsapp_session_path = "~/.config/calciforge/whatsapp/session.db"
 whatsapp_pair_phone = "15555550001"
 allowed_numbers = ["+15555550001"]
 "#;
@@ -1779,7 +1807,7 @@ allowed_numbers = ["+15555550001"]
         assert_eq!(cfg.channels[0].kind, "whatsapp");
         assert_eq!(
             cfg.channels[0].whatsapp_session_path.as_deref(),
-            Some("~/.calciforge/whatsapp/session.db")
+            Some("~/.config/calciforge/whatsapp/session.db")
         );
         assert_eq!(
             cfg.channels[0].whatsapp_pair_phone.as_deref(),
@@ -1796,7 +1824,7 @@ version = 2
 [[channels]]
 kind = "sms"
 enabled = true
-sms_linq_api_token_file = "~/.calciforge/secrets/linq-token"
+sms_linq_api_token_file = "~/.config/calciforge/secrets/linq-token"
 sms_from_phone = "+15555550001"
 sms_webhook_listen = "0.0.0.0:18798"
 sms_webhook_path = "/webhooks/sms"
@@ -1806,7 +1834,7 @@ allowed_numbers = ["+15555550100"]
         assert_eq!(cfg.channels[0].kind, "sms");
         assert_eq!(
             cfg.channels[0].sms_linq_api_token_file.as_deref(),
-            Some("~/.calciforge/secrets/linq-token")
+            Some("~/.config/calciforge/secrets/linq-token")
         );
         assert_eq!(
             cfg.channels[0].sms_from_phone.as_deref(),

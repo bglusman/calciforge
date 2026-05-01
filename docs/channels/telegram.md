@@ -34,20 +34,20 @@ Write the raw token string (no extra whitespace) to a file readable only by the 
 process:
 
 ```bash
-install -m 600 /dev/null ~/.calciforge/secrets/telegram-token
+install -m 600 /dev/null ~/.config/calciforge/secrets/telegram-token
 printf '%s' '1234567890:ABCDEFghijklmnopqrstuvwxyz01234567' \
-  > ~/.calciforge/secrets/telegram-token
+  > ~/.config/calciforge/secrets/telegram-token
 ```
 
 ## Step 2: Channel config
 
-Add to `~/.calciforge/config.toml`:
+Add to `~/.config/calciforge/config.toml`:
 
 ```toml
 [[channels]]
 kind = "telegram"
 enabled = true
-bot_token_file = "~/.calciforge/secrets/telegram-token"
+bot_token_file = "~/.config/calciforge/secrets/telegram-token"
 ```
 
 Optional fields:

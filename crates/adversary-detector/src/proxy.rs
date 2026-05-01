@@ -215,7 +215,7 @@ impl AdversaryDetector {
     }
 
     /// Construct from a [`ScannerConfig`] and logger, opening the digest store
-    /// at the configured path (or the default `~/.calciforge/digests.json`).
+    /// at the configured path (or the default `~/.config/calciforge/digests.json`).
     pub async fn from_config(
         config: ScannerConfig,
         logger: AuditLogger,

@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
 use std::time::Duration;
 
 use adversary_detector::{
@@ -193,12 +194,7 @@ async fn check_install_node_metadata(no_network: bool, report: &mut DoctorReport
 fn install_nodes_state_path() -> PathBuf {
     std::env::var("CALCIFORGE_INSTALL_NODES_STATE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            PathBuf::from(home)
-                .join(".calciforge")
-                .join("install-nodes.json")
-        })
+        .unwrap_or_else(|_| crate::config::calciforge_config_home(None).join("install-nodes.json"))
 }
 
 fn read_install_nodes(path: &Path) -> Result<Vec<InstallNodeMetadata>> {
@@ -323,7 +319,10 @@ fn shell_quote_for_remote(input: &str) -> Result<String> {
 
 fn check_secret_tooling(report: &mut DoctorReport) {
     match which("fnox") {
-        Some(path) => report.ok(format!("fnox found at {}", path.display())),
+        Some(path) => {
+            report.ok(format!("fnox found at {}", path.display()));
+            check_fnox_providers(&path, report);
+        }
         None => report.warn(
             "fnox not found in PATH; env and Vaultwarden secrets may still work, \
              but fnox-backed discovery/substitution will fail",
@@ -351,6 +350,60 @@ fn check_secret_tooling(report: &mut DoctorReport) {
              is unavailable",
         ),
     }
+}
+
+fn check_fnox_providers(fnox_path: &Path, report: &mut DoctorReport) {
+    let output = StdCommand::new(fnox_path)
+        .args(["provider", "list"])
+        .output();
+    let output = match output {
+        Ok(output) => output,
+        Err(e) => {
+            report.warn(format!(
+                "fnox provider list could not be executed; paste UI and fnox-backed \
+                 discovery may fail: {e}"
+            ));
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let diagnostic = stderr.trim();
+        let suffix = if diagnostic.is_empty() {
+            String::new()
+        } else {
+            format!(": {diagnostic}")
+        };
+        report.warn(format!(
+            "fnox provider list failed; paste UI and fnox-backed discovery may fail{suffix}"
+        ));
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count = count_fnox_provider_lines(&stdout);
+    if count == 0 {
+        report.warn(
+            "fnox has no provider configured; paste UI, !secure set, and fnox-backed \
+             secret discovery will fail until a provider is added",
+        );
+    } else {
+        report.ok(format!("fnox has {count} provider(s) configured"));
+    }
+}
+
+fn count_fnox_provider_lines(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("No providers")
+                && !line.starts_with("No provider")
+                && !line.starts_with("Providers:")
+        })
+        .count()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -937,6 +990,9 @@ async fn check_agent_wiring(
 
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
+                if agent.kind == "openclaw-channel" {
+                    check_openclaw_channel_route(agent, report).await;
+                }
             }
         }
     }
@@ -1036,6 +1092,71 @@ async fn check_endpoint_reachable(agent: &AgentConfig, report: &mut DoctorReport
     }
 }
 
+async fn check_openclaw_channel_route(agent: &AgentConfig, report: &mut DoctorReport) {
+    let route = format!(
+        "{}/calciforge/inbound",
+        agent.endpoint.trim_end_matches('/')
+    );
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(err) => {
+            report.error(format!(
+                "agent '{}' openclaw-channel route check could not build HTTP client: {err}",
+                agent.id
+            ));
+            return;
+        }
+    };
+
+    match client.get(&route).send().await {
+        Ok(response) => {
+            let status = response.status();
+            if openclaw_channel_route_status_is_present(status) {
+                report.ok(format!(
+                    "agent '{}' exposes openclaw-channel route at /calciforge/inbound ({status})",
+                    agent.id
+                ));
+            } else if status == reqwest::StatusCode::NOT_FOUND {
+                report.error(format!(
+                    "agent '{}' endpoint is reachable but /calciforge/inbound returns 404; install or enable the Calciforge OpenClaw channel plugin",
+                    agent.id
+                ));
+            } else if status.is_server_error() {
+                report.error(format!(
+                    "agent '{}' /calciforge/inbound returned server error {status}",
+                    agent.id
+                ));
+            } else {
+                report.warn(format!(
+                    "agent '{}' /calciforge/inbound returned unexpected status {status}; verify the Calciforge OpenClaw channel plugin is installed",
+                    agent.id
+                ));
+            }
+        }
+        Err(err) => {
+            report.error(format!(
+                "agent '{}' /calciforge/inbound route check failed: {err}",
+                agent.id
+            ));
+        }
+    }
+}
+
+fn openclaw_channel_route_status_is_present(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::OK
+            | reqwest::StatusCode::ACCEPTED
+            | reqwest::StatusCode::BAD_REQUEST
+            | reqwest::StatusCode::UNAUTHORIZED
+            | reqwest::StatusCode::FORBIDDEN
+            | reqwest::StatusCode::METHOD_NOT_ALLOWED
+    )
+}
+
 fn endpoint_matches_bind(endpoint: &str, bind: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(endpoint) else {
         return false;
@@ -1114,8 +1235,7 @@ fn check_persisted_state_in(
 }
 
 fn default_state_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join(".calciforge").join("state")
+    crate::config::calciforge_config_home(None).join("state")
 }
 
 fn read_state_map(path: &Path) -> Result<HashMap<String, String>, ()> {
@@ -1336,6 +1456,25 @@ mod tests {
         assert!(!endpoint_matches_bind(
             "http://127.0.0.1:18793",
             "127.0.0.1:18083"
+        ));
+    }
+
+    #[test]
+    fn openclaw_channel_route_statuses_distinguish_plugin_from_missing_route() {
+        assert!(openclaw_channel_route_status_is_present(
+            reqwest::StatusCode::METHOD_NOT_ALLOWED
+        ));
+        assert!(openclaw_channel_route_status_is_present(
+            reqwest::StatusCode::UNAUTHORIZED
+        ));
+        assert!(openclaw_channel_route_status_is_present(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+        assert!(!openclaw_channel_route_status_is_present(
+            reqwest::StatusCode::NOT_FOUND
+        ));
+        assert!(!openclaw_channel_route_status_is_present(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
         ));
     }
 
@@ -1754,5 +1893,16 @@ mod tests {
         std::fs::set_permissions(&path, permissions).unwrap();
 
         assert!(is_executable_file(&path));
+    }
+
+    #[test]
+    fn fnox_provider_count_ignores_empty_status_lines() {
+        assert_eq!(count_fnox_provider_lines("calciforge-local\n"), 1);
+        assert_eq!(
+            count_fnox_provider_lines("\nProviders:\nkeychain\nage\n"),
+            2
+        );
+        assert_eq!(count_fnox_provider_lines("No providers configured\n"), 0);
+        assert_eq!(count_fnox_provider_lines("No provider found\n"), 0);
     }
 }

@@ -195,16 +195,21 @@ gateway covers seven overlapping concerns; you can adopt any subset.
 
 ### Security gateway
 
-The core product is the security gateway: a local network enforcement
-point that agents use through explicit fetch/tool integration and, for
-plaintext HTTP, `HTTP_PROXY`. Instead of
-hoping each agent remembers the right rules, Calciforge puts the rules
-at the request boundary where secrets, destinations, model routes, and
-tool permissions can be checked before traffic leaves the machine.
+The core product is the security gateway: a local network enforcement point for
+traffic that enters Calciforge-controlled paths. Agents use it through the
+model gateway, explicit fetch/tool integration, audited recipes, and, for
+tested plaintext HTTP clients, `HTTP_PROXY`. Instead of hoping each agent
+remembers the right rules, Calciforge puts the rules at visible request
+boundaries where secrets, destinations, model routes, and tool permissions can
+be checked before traffic leaves the machine.
 
-Ambient `HTTPS_PROXY` is deliberately not presented as full protection:
-standard HTTPS proxying uses CONNECT tunnels, so encrypted request bodies
-cannot be inspected or rewritten without a separate MITM design.
+Ambient `HTTPS_PROXY` is deliberately not presented as full protection unless
+it points at Calciforge's MITM listener and the target runtime trusts the
+Calciforge CA. Standard HTTPS proxying uses CONNECT tunnels; the experimental
+hudsucker-backed MITM mode terminates those tunnels so Calciforge can scan and
+rewrite decrypted request/response bodies. The installer enables that listener
+and generates a persistent local CA by default, while runtime-specific CA trust
+and `HTTPS_PROXY` rollout remain explicit.
 For agents that do not work with cooperative proxy env, Calciforge's
 security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
 audited recipe wrappers, or future container/VM isolation profiles that deny
@@ -261,9 +266,11 @@ for the contributor-friendly suite used to harden detection over time.
 Your agent never holds the actual API key. The gateway resolves
 through the configured local secret backend and substitutes at the
 request boundary. In the default deployment that backend is
-[fnox](https://github.com/jdx/fnox); Calciforge and the `fnox` CLI can
-share the same `fnox.toml` and profile, so manual `fnox set/list/tui`
-operations manage the same store.
+[fnox](https://github.com/jdx/fnox). Calciforge uses
+`~/.config/calciforge` as its app config home by default, and its fnox
+working directory defaults to the same path. To manage the same store
+manually, run `fnox set/list/tui` from `~/.config/calciforge` or set
+`CALCIFORGE_FNOX_DIR` to another directory.
 
 ```toml
 # fnox.toml — the secret store the gateway resolves through
@@ -285,13 +292,29 @@ paste-server --bulk env-import "bulk .env import"
 # prints http://127.0.0.1:PORT/bulk/<token>
 ```
 
+From chat, `!secure input NAME` and `!secure bulk LABEL` start the same
+short-lived paste server and bind to the detected LAN interface when possible
+so the link can be opened from a browser that can reach the Calciforge host.
+If LAN detection fails, the paste server keeps the localhost default. This is
+for your local network, not the public internet.
+
 The URLs expire after five minutes and are single-use. The bulk URL
 accepts a whole `.env`-shaped paste and returns per-key results
 (stored / already-exists / illegal-name / malformed).
 
-The paste server binds to localhost by default. Remote/phone use should
-go through an explicit short-lived authenticated tunnel or proxy; do
-not expose the paste server directly to the open internet.
+Direct `paste-server` CLI use binds to localhost by default. For a
+stable LAN hostname/IP, set `CALCIFORGE_PASTE_PUBLIC_HOST` on the
+Calciforge service. For a reverse-proxy or tunnel URL, set
+`CALCIFORGE_PASTE_PUBLIC_BASE_URL` and terminate authentication at that
+proxy. Do not expose the paste server directly to the open internet.
+
+Paste storage uses the Calciforge fnox working directory, defaulting to
+`~/.config/calciforge`, while provider definitions live in fnox's global
+config at `~/.config/fnox/config.toml`. On macOS, the installer creates a
+`calciforge-local` Keychain provider when fnox has no provider configured.
+To bring your own provider, preconfigure fnox globally or set
+`CALCIFORGE_FNOX_PROVIDER_NAME` and `CALCIFORGE_FNOX_PROVIDER_TYPE` before
+running the installer.
 
 ### Outbound traffic gating
 
@@ -557,20 +580,27 @@ weaker process-listing tradeoff.
 The broader plan for async orchestrators, native media delivery, and richer
 agent outputs is tracked in the
 [agent recipes and orchestrators roadmap](roadmap/agent-recipes-orchestrators.html).
+For any recipe or first-class adapter, the separate
+[agent runtime contract](agent-runtime-contract.html) describes how the agent
+learns Calciforge's CLI-first guidance, optional MCP tools, artifact directory,
+proxy/model surfaces, and future agent-facing APIs.
 
 ### Agent-facing tools (MCP and CLI)
 
-A built-in MCP server and small CLI expose secret *names* to agents
+A small CLI and optional MCP server expose secret *names* to agents
 but never return values — the only way for an agent to use a secret is to
 emit `{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve
 on the way out. Designed so a compromised agent can enumerate names
 and fail to retrieve values.
 
-Today, discovery is process-scoped: it sees the fnox names available
-to the MCP server or CLI process. Calciforge enforces per-secret
-destination allowlists at substitution time, but does not yet enforce
-per-agent secret discovery/use ACLs. That policy layer is on the
-[roadmap](roadmap/agent-secret-access-policy.html).
+Calciforge's default agent guidance should be CLI-first:
+`calciforge-secrets list` and `calciforge-secrets ref NAME` work for any
+runtime that can run a command. MCP is an opt-in convenience for runtimes that
+support it and have been configured explicitly. Today, discovery is
+process-scoped: it sees the fnox names available to the MCP server or CLI
+process. Calciforge enforces per-secret destination allowlists at substitution
+time, but does not yet enforce per-agent secret discovery/use ACLs. That policy
+layer is on the [roadmap](roadmap/agent-secret-access-policy.html).
 
 ```json
 // ~/.claude/mcp-config.json
@@ -690,7 +720,10 @@ that can route Calciforge's own provider and control-plane traffic through
 its security proxy. Do not assume CLI agents can be protected by generic
 `HTTP_PROXY` or `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and
 streaming clients may use CONNECT, WebSockets, or browser-backed auth flows
-that the current proxy cannot inspect and may break.
+that can break unless the runtime has been tested with Calciforge's proxy and,
+for HTTPS, trusts the MITM CA. Use model-gateway routes, explicit fetch/tool
+integration, audited recipes, tested MITM proxy setup, or runtime-specific
+wrappers for traffic that must pass through Calciforge.
 
 For externally managed agent daemons that Calciforge does not launch, configure
 a tested proxy path on the agent process or its service manager and validate it
@@ -714,7 +747,8 @@ gateway providers, and synthetic model routes pass smoke tests.
 
 The status summary above is the site-facing snapshot of what works today and
 what is still in flight. Public roadmap ideas live in
-the [roadmap notes](roadmap/v3-ideas.html).
+the [roadmap notes](roadmap/v3-ideas.html), with product-interface
+direction in the [UX roadmap](roadmap/product-ux.html).
 
 <footer>
 <div class="name-origin">

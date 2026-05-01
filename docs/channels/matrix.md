@@ -52,20 +52,20 @@ curl -s -X POST 'https://matrix.example.com/_matrix/client/v3/login' \
 ## Step 1: Save the access token
 
 ```bash
-install -m 600 /dev/null ~/.calciforge/secrets/matrix-token
-printf '%s' 'syt_YOUR_ACCESS_TOKEN_HERE' > ~/.calciforge/secrets/matrix-token
+install -m 600 /dev/null ~/.config/calciforge/secrets/matrix-token
+printf '%s' 'syt_YOUR_ACCESS_TOKEN_HERE' > ~/.config/calciforge/secrets/matrix-token
 ```
 
 ## Step 2: Channel config
 
-Add to `~/.calciforge/config.toml`:
+Add to `~/.config/calciforge/config.toml`:
 
 ```toml
 [[channels]]
 kind = "matrix"
 enabled = true
 homeserver = "https://matrix.example.com"
-access_token_file = "~/.calciforge/secrets/matrix-token"
+access_token_file = "~/.config/calciforge/secrets/matrix-token"
 room_id = "!abc123def456:example.com"
 allowed_users = ["@operator:example.com"]
 ```

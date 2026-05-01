@@ -54,9 +54,22 @@ adapter. All other fields are adapter-specific.
 
 ### `kind = "openclaw-channel"`
 
-HTTP adapter that talks to an OpenClaw or Calciforge gateway running the
-channel plugin. The gateway maintains the agent session; Calciforge acts as
-the routing and security layer in front of it.
+HTTP adapter for an OpenClaw gateway that has the Calciforge channel plugin
+installed. Calciforge POSTs each routed message to the plugin's
+`/calciforge/inbound` route, OpenClaw runs the selected agent lane with its own
+session state, and the plugin sends the reply back to Calciforge's
+`/hooks/reply` callback.
+
+This is not a Calciforge-to-Calciforge adapter. Do not point
+`openclaw-channel` at another Calciforge gateway. Use `openai-compat` for a
+plain model gateway, or route to the actual downstream OpenClaw gateway that
+owns the channel plugin.
+
+Calciforge controls identity routing, channel access, callback authentication,
+and artifact delivery for this path. OpenClaw's outbound model/tool traffic is
+only covered by Calciforge's security layers when you configure the OpenClaw
+service to use a tested proxy/tool/policy integration; installing the channel
+plugin alone does not prove outbound egress enforcement.
 
 Required at runtime: `endpoint`, plus `api_key` or `api_key_file` unless the
 deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`.
@@ -74,7 +87,7 @@ service.
 id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/librarian-token"
 reply_auth_token = "{{secret:LIBRARIAN_REPLY_TOKEN}}"
 timeout_ms = 120000
 aliases = ["lib", "main"]
@@ -134,7 +147,7 @@ Required: `endpoint`, `api_key`.
 id = "zeroclaw"
 kind = "zeroclaw"
 endpoint = "http://127.0.0.1:18792"
-api_key_file = "~/.calciforge/secrets/zeroclaw-token"
+api_key_file = "~/.config/calciforge/secrets/zeroclaw-token"
 timeout_ms = 90000
 ```
 
@@ -222,7 +235,7 @@ The optional `registry` table is not used at dispatch time — it populates the
 id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/librarian-token"
 timeout_ms = 120000
 
 [agents.registry]
@@ -320,7 +333,7 @@ aliases = [{ channel = "telegram", id = "7000000001" }]
 id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/librarian-token"
 timeout_ms = 120000
 
 [[routing]]
@@ -331,7 +344,7 @@ allowed_agents = ["librarian"]
 [[channels]]
 kind = "telegram"
 enabled = true
-bot_token_file = "~/.calciforge/secrets/telegram-token"
+bot_token_file = "~/.config/calciforge/secrets/telegram-token"
 ```
 
 ## Verify

@@ -21,13 +21,12 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
-use crate::config::CalciforgeConfig;
+use crate::config::{calciforge_config_home, CalciforgeConfig};
 use crate::providers::alloy::AlloyManager;
 
-/// Default state directory: `~/.calciforge/state/`.
+/// Default state directory: `~/.config/calciforge/state/`.
 fn default_state_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join(".calciforge").join("state")
+    calciforge_config_home(None).join("state")
 }
 
 /// Path to the active-agent state file within `state_dir`.
@@ -133,7 +132,7 @@ pub struct CommandHandler {
     /// Persisted to `state_dir/active-agent-sessions.json`.
     active_sessions: Mutex<HashMap<String, HashMap<String, String>>>,
     /// Directory for persisted state files.
-    /// Defaults to `~/.calciforge/state/`; overridable for tests via
+    /// Defaults to `~/.config/calciforge/state/`; overridable for tests via
     /// [`CommandHandler::with_state_dir`].
     state_dir: PathBuf,
     /// Pending Clash approvals: request_id → ZeroClaw endpoint + metadata.
@@ -152,7 +151,7 @@ pub struct CommandHandler {
 impl CommandHandler {
     /// Create a new CommandHandler, loading any persisted agent selections from disk.
     ///
-    /// State is persisted to `~/.calciforge/state/`.  For test isolation, use
+    /// State is persisted to `~/.config/calciforge/state/`. For test isolation, use
     /// [`CommandHandler::with_state_dir`] to supply a per-test temp directory.
     pub fn new(config: Arc<CalciforgeConfig>) -> Self {
         Self::with_state_dir(config, default_state_dir())
@@ -1458,10 +1457,15 @@ impl CommandHandler {
 fn secure_help() -> String {
     [
         "!secure subcommands:",
-        "  !secure input NAME [desc] — create a one-shot localhost paste link",
-        "  !secure bulk LABEL [desc] — create a one-shot .env paste link",
+        "  !secure input NAME [desc] — create a one-shot local-network paste link",
+        "  !secure bulk LABEL [desc] — create a one-shot local-network .env paste link",
         "  !secure list              — list stored secret names (not values)",
         "  !secure help              — show this help",
+        "",
+        "The input/bulk links are for browsers that can reach this Calciforge",
+        "host on your LAN. For stable hostnames or off-LAN access, configure",
+        "CALCIFORGE_PASTE_PUBLIC_BASE_URL behind an authenticated reverse proxy",
+        "or tunnel; do not expose paste-server directly to the open internet.",
         "",
         "Equivalent host-local commands:",
         "  paste-server NAME \"description\"",
@@ -1477,7 +1481,8 @@ fn secure_help() -> String {
         "",
         "Calciforge and fnox can share the same fnox.toml/profile. Installing",
         "fnox is still useful for manual `fnox set/list/tui` operations and as",
-        "the default local secret backend for paste-server.",
+        "the default local secret backend for paste-server. On macOS the installer",
+        "adds a calciforge-local Keychain provider when fnox has no provider.",
     ]
     .join("\n")
 }
@@ -1497,6 +1502,7 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
     if bulk {
         command.arg("--bulk");
     }
+    configure_paste_server_env(&mut command);
     command
         .arg(name_or_label)
         .arg(description)
@@ -1554,6 +1560,74 @@ async fn secure_input(rest: &str, bulk: bool) -> String {
          Open it from a browser that can reach the Calciforge host. The link expires quickly and stores through the configured local secret backend. \
          For phone/off-network use, use a short-lived authenticated proxy/tunnel; do not expose this paste server directly to the open internet."
     )
+}
+
+fn configure_paste_server_env(command: &mut tokio::process::Command) {
+    let env = paste_server_env_from_values(
+        std::env::var("CALCIFORGE_PASTE_BIND").ok(),
+        std::env::var_os("PASTE_BIND").is_some(),
+        std::env::var("CALCIFORGE_PASTE_PUBLIC_BASE_URL").ok(),
+        std::env::var("CALCIFORGE_PASTE_PUBLIC_HOST").ok(),
+        detect_lan_bind_addr(),
+    );
+
+    if let Some(bind) = env.bind {
+        command.env("PASTE_BIND", bind);
+    }
+    if let Some(base_url) = env.public_base_url {
+        command.env("PASTE_PUBLIC_BASE_URL", base_url);
+    }
+    if let Some(host) = env.public_host {
+        command.env("PASTE_PUBLIC_HOST", host);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PasteServerEnv {
+    bind: Option<String>,
+    public_base_url: Option<String>,
+    public_host: Option<String>,
+}
+
+fn paste_server_env_from_values(
+    calciforge_bind: Option<String>,
+    inherited_paste_bind_present: bool,
+    calciforge_public_base_url: Option<String>,
+    calciforge_public_host: Option<String>,
+    detected_lan_bind: Option<String>,
+) -> PasteServerEnv {
+    // Chat-triggered secret input is usually opened from a phone or
+    // another LAN machine, so Calciforge binds to the detected LAN address
+    // when possible. The standalone paste-server CLI keeps its localhost
+    // default, and this path also falls back to that when no LAN address is
+    // available.
+    let bind = if calciforge_bind.is_some() {
+        calciforge_bind
+    } else if inherited_paste_bind_present {
+        None
+    } else {
+        detected_lan_bind
+    };
+
+    PasteServerEnv {
+        bind,
+        public_base_url: calciforge_public_base_url,
+        public_host: calciforge_public_host,
+    }
+}
+
+fn detect_lan_bind_addr() -> Option<String> {
+    for target in ["192.0.2.1:80", "198.51.100.1:80", "203.0.113.1:80"] {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        if socket.connect(target).is_err() {
+            continue;
+        }
+        let ip = socket.local_addr().ok()?.ip();
+        if !ip.is_loopback() && !ip.is_unspecified() {
+            return Some(format!("{ip}:0"));
+        }
+    }
+    None
 }
 
 async fn secure_set(rest: &str) -> String {
@@ -1654,7 +1728,7 @@ mod tests {
         let config = Arc::new(make_config());
         // Use a per-test temp directory so persisted state (`active-agents.json`)
         // never bleeds between test runs.  Without this, a test that calls
-        // `handle_switch` writes to the shared `~/.calciforge/state/active-agents.json`
+        // `handle_switch` writes to the shared active-agent state file
         // file, causing subsequent tests that construct a fresh handler to observe
         // the leftover switch state.
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
@@ -1821,7 +1895,7 @@ mod tests {
             ],
             channels: vec![ChannelConfig {
                 kind: "telegram".to_string(),
-                bot_token_file: Some("~/.calciforge/secrets/telegram-token".to_string()),
+                bot_token_file: Some("~/.config/calciforge/secrets/telegram-token".to_string()),
                 enabled: true,
                 ..Default::default()
             }],
@@ -2532,6 +2606,88 @@ mod tests {
         assert!(!CommandHandler::is_secure_set_command("!secure list"));
         assert!(!CommandHandler::is_secure_set_command("!secure help"));
         assert!(!CommandHandler::is_secure_set_command("!status"));
+    }
+
+    #[test]
+    fn secure_help_sets_lan_expectations_for_paste_links() {
+        let help = secure_help();
+
+        assert!(
+            help.contains("local-network"),
+            "help should avoid implying the chat paste URL is localhost-only: {help}"
+        );
+        assert!(
+            help.contains("LAN"),
+            "help should tell users the browser must reach the Calciforge host: {help}"
+        );
+        assert!(
+            help.contains("CALCIFORGE_PASTE_PUBLIC_BASE_URL"),
+            "help should name the reverse-proxy/tunnel override: {help}"
+        );
+    }
+
+    #[test]
+    fn paste_server_env_defaults_chat_paste_to_detected_lan_listener() {
+        let env =
+            paste_server_env_from_values(None, false, None, None, Some("192.0.2.23:0".to_string()));
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: Some("192.0.2.23:0".to_string()),
+                public_base_url: None,
+                public_host: None,
+            }
+        );
+    }
+
+    #[test]
+    fn paste_server_env_falls_back_to_paste_server_default_without_lan_detection() {
+        let env = paste_server_env_from_values(None, false, None, None, None);
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: None,
+                public_base_url: None,
+                public_host: None,
+            }
+        );
+    }
+
+    #[test]
+    fn paste_server_env_respects_explicit_bind_and_public_url() {
+        let env = paste_server_env_from_values(
+            Some("127.0.0.1:58083".to_string()),
+            true,
+            Some("https://calciforge.example.net/paste".to_string()),
+            Some("calciforge.local".to_string()),
+            Some("192.0.2.23:0".to_string()),
+        );
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: Some("127.0.0.1:58083".to_string()),
+                public_base_url: Some("https://calciforge.example.net/paste".to_string()),
+                public_host: Some("calciforge.local".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn paste_server_env_does_not_override_inherited_paste_bind() {
+        let env =
+            paste_server_env_from_values(None, true, None, None, Some("192.0.2.23:0".to_string()));
+
+        assert_eq!(
+            env,
+            PasteServerEnv {
+                bind: None,
+                public_base_url: None,
+                public_host: None,
+            }
+        );
     }
 
     fn install_fake_fnox(dir: &TempDir, body: &str) -> std::path::PathBuf {

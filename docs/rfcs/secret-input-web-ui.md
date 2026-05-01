@@ -142,9 +142,10 @@ test coverage.
 
 ### What I'd skip
 
-- **No HTTPS** — localhost-only binding, plain HTTP is fine and
-  avoids the cert-management hassle. If we ever expose this beyond
-  localhost (e.g., via Tailscale), HTTPS becomes mandatory.
+- **No HTTPS for local/LAN MVP** — localhost or detected-LAN binding keeps
+  plain HTTP acceptable for the current short-lived local-network flow. If we
+  expose this beyond the local network through a reverse proxy or tunnel, HTTPS
+  and proxy-layer authentication become mandatory.
 - **No JS framework** — single HTML form, plain POST. Less code,
   fewer attack surfaces.
 - **No CSS framework** — minimal inline styles. The page is used
@@ -171,12 +172,14 @@ test coverage.
 
 ## Out of scope here (parking)
 
-- Mobile users on cellular — same constraint as before; needs a
-  separate "remote paste" path (Tailscale, mobile browser opening
-  laptop's localhost via tunnel, etc.). Not solving today.
+- Mobile users on cellular — LAN paste links are not enough; this needs
+  a separate "remote paste" path with an authenticated reverse proxy or
+  short-lived tunnel. `CALCIFORGE_PASTE_PUBLIC_BASE_URL` gives the
+  service a stable URL to print once that proxy exists, but the proxy
+  itself is out of scope for the current MVP.
 - Multi-tenant — the form has no auth beyond the URL token because
-  it's localhost-only. If we ever go remote, add an HTTP basic-auth
-  layer in front.
+  it is intended for localhost/LAN use. If we ever go remote, add an HTTP
+  basic-auth or stronger auth layer in front.
 - Updates UI — explicitly omitted. If we add it later, it's a
   separate URL with explicit "I am rotating this secret"
   confirmation step.

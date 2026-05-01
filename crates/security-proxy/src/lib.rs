@@ -2,6 +2,7 @@ pub mod agent_config;
 pub mod audit;
 pub mod config;
 pub mod credentials;
+pub mod mitm;
 pub mod proxy;
 pub mod router;
 pub mod scanner;

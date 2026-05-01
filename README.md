@@ -23,6 +23,7 @@ being treated as daily-driver infrastructure.
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
+| Agent runtime contract for CLI-first guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
 | Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
@@ -51,13 +52,19 @@ After install, the default local pieces are:
 - `clashd` on `127.0.0.1:9001` — small HTTP adapter around the `clash` policy engine
 - `secrets-client` — env → fnox → Vaultwarden secret resolver
 - `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
-- `paste-server` — short-lived local forms for adding secrets without putting values in chat history
+- `paste-server` — short-lived local/LAN forms for adding secrets without putting values in chat history
 
 The installer attempts to install and initialize `fnox` automatically.
-Calciforge and the `fnox` CLI can share the same `fnox.toml` and
-profile, so using `fnox set/list/tui` manually is a valid way to manage
-the same store Calciforge resolves through. The paste UI currently
-stores through that configured local backend.
+Calciforge uses `~/.config/calciforge` as its app config home by
+default; override it with `CALCIFORGE_CONFIG_HOME`. The Calciforge
+fnox working directory defaults to the same path (`CALCIFORGE_FNOX_DIR`
+can override it), so `cd ~/.config/calciforge && fnox set/list/tui`
+manages the same store Calciforge resolves through. On macOS, if no
+global fnox provider is configured, the installer adds a
+`calciforge-local` Keychain provider under `~/.config/fnox/config.toml`;
+set `CALCIFORGE_FNOX_PROVIDER_NAME` and
+`CALCIFORGE_FNOX_PROVIDER_TYPE` before install to choose a different
+provider.
 
 The installer runs `calciforge doctor --no-network` after installing
 local services when a config file is present. Run `calciforge doctor`
@@ -72,8 +79,12 @@ validates configured scanner policy files and rule syntax, and can probe
 configured agent endpoints. Use `--no-network` for a purely local check.
 
 Channel-based secret input is intentionally being de-emphasized because
-chat transports can retain plaintext values. Prefer the local paste UI
-or direct `fnox` input for new secrets.
+chat transports can retain plaintext values. Prefer the paste UI
+(`!secure input NAME` / `!secure bulk LABEL` from chat, or
+`paste-server NAME` on the host) or direct `fnox` input for new secrets.
+Chat-started paste links are intended for browsers on the same local
+network unless you configure an authenticated reverse proxy/tunnel with
+`CALCIFORGE_PASTE_PUBLIC_BASE_URL`.
 
 Do not put proxy variables on the Calciforge daemon itself; that can route
 Calciforge's own provider and control-plane traffic through its security proxy.
@@ -81,8 +92,8 @@ Do not assume CLI agents can be wrapped by setting `HTTP_PROXY` or
 `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and streaming clients
 may use CONNECT, WebSockets, or browser-backed auth flows that the current
 proxy cannot inspect and may break. Use OpenAI-compatible gateway routes,
-explicit fetch/tool integrations, or tested wrappers for traffic that must pass
-through `security-proxy`.
+explicit fetch/tool integrations, audited recipes, or tested wrappers for
+traffic that must pass through `security-proxy`.
 
 For externally managed agent daemons that Calciforge does not launch, proxying
 has to be configured on that daemon or its service manager and validated
@@ -93,9 +104,15 @@ export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
-Do not treat ambient `HTTPS_PROXY` as a security boundary. HTTPS clients use
-CONNECT tunnels, which Calciforge does not inspect without explicit tool/fetch
-integration.
+Do not treat ambient `HTTPS_PROXY` as a security boundary unless it points at
+Calciforge's MITM listener and the agent runtime trusts the Calciforge CA. The
+installer enables the experimental hudsucker-backed listener and generates a
+persistent local CA by default; manual deployments can set
+`SECURITY_PROXY_MITM_ENABLED=true`, `SECURITY_PROXY_CA_CERT=...`, and
+`SECURITY_PROXY_CA_KEY=...`. Otherwise HTTPS clients use opaque CONNECT
+tunnels. Use a Calciforge-owned model gateway, fetch/tool path, audited recipe,
+or tested MITM proxy setup when HTTPS content needs scanning or secret
+substitution.
 
 ## Tiny Config Sketch
 
@@ -180,6 +197,7 @@ bash scripts/install-git-hooks.sh
 ## Docs
 
 - [Feature tour and install notes](https://calciforge.org/)
+- [Agent runtime contract](docs/agent-runtime-contract.md)
 - [Model gateway reference](docs/model-gateway.md)
 - [Codex/OpenClaw integration](docs/codex-openclaw-integration.md)
 - [Model gateway RFC](docs/rfcs/model-gateway-primitives.md)

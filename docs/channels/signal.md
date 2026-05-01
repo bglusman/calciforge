@@ -46,7 +46,7 @@ listener and the JSON-RPC sender live inside the Calciforge process.
 
 ## Step 1: Channel config
 
-Add to `~/.calciforge/config.toml`:
+Add to `~/.config/calciforge/config.toml`:
 
 ```toml
 [[channels]]

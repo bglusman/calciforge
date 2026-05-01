@@ -1,4 +1,4 @@
-//! `paste-server` — localhost one-shot secret-input server.
+//! `paste-server` — one-shot secret-input server.
 //!
 //! Implements the `!secure request NAME` flow per
 //! `docs/rfcs/secret-input-web-ui.md`. Workflow:
@@ -6,8 +6,8 @@
 //! 1. A caller (chat command, MCP tool, CLI) invokes
 //!    [`PasteServer::spawn_request`] with a secret name + description.
 //! 2. The server allocates a random port (or uses configured), mints a
-//!    32-byte random token, binds an axum listener on
-//!    `127.0.0.1:<port>`, and returns the URL the user visits.
+//!    32-byte random token, binds an axum listener on the configured
+//!    interface, and returns the URL the user visits.
 //! 3. User opens the URL in a browser, sees a single text field
 //!    labeled with the secret name + description, pastes the value,
 //!    submits.
@@ -17,7 +17,7 @@
 //!
 //! ## Security properties
 //!
-//! - Localhost-only binding; no remote access by default
+//! - Localhost-only binding for direct CLI use unless configured otherwise
 //! - Single-use URL token; 5-minute default expiry
 //! - **New-only by default**: refuses to overwrite an existing secret
 //!   unless the user explicitly passes `?update=1` (eliminates
@@ -27,7 +27,7 @@
 //! - Origin/Referer header check on POST to mitigate DNS rebinding
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,6 +61,18 @@ pub struct PasteConfig {
     /// embeds the paste form in a sandboxed iframe and weakens the
     /// rebinding defense the localhost check exists for.
     pub allow_null_origin: bool,
+    /// Listener address. If unset, `PASTE_BIND` is honored; otherwise
+    /// direct CLI use stays localhost-only via `127.0.0.1:0`.
+    pub bind_addr: Option<String>,
+    /// Public base URL used when Calciforge sits behind a reverse
+    /// proxy/tunnel. If unset, `PASTE_PUBLIC_BASE_URL` is honored.
+    /// Example: `https://calciforge.example.net/paste-ui`.
+    pub public_base_url: Option<String>,
+    /// Public hostname/IP used in generated links while keeping the
+    /// listener's actual port. If unset, `PASTE_PUBLIC_HOST` is
+    /// honored, then Calciforge tries to infer a LAN IP for wildcard
+    /// binds before falling back to loopback.
+    pub public_host: Option<String>,
 }
 
 impl Default for PasteConfig {
@@ -70,6 +82,9 @@ impl Default for PasteConfig {
             preview_chars: None,
             require_localhost_origin: true,
             allow_null_origin: false,
+            bind_addr: None,
+            public_base_url: None,
+            public_host: None,
         }
     }
 }
@@ -170,16 +185,16 @@ pub enum PasteError {
     Io(#[from] std::io::Error),
 }
 
-/// Spawn a one-shot paste server bound to a random localhost port.
+/// Spawn a one-shot paste server bound to a random localhost port
+/// unless configured otherwise.
 /// Returns immediately with the URL the user should open. The server
 /// runs in a background tokio task; call [`PasteHandle::wait_submitted`]
 /// to block until the user submits, and [`PasteHandle::shutdown`] to
 /// trigger graceful drain.
 ///
-/// Port: 0 (kernel picks a free port). The previous doc claimed a
-/// `PORT` env override existed; it didn't, so the claim is removed
-/// rather than papered over. If a stable port is needed (e.g.
-/// integration testing), expose it via PasteConfig in a follow-up.
+/// Port `0` lets the kernel pick a free port. Set
+/// [`PasteConfig::bind_addr`] or `PASTE_BIND` when the listener should
+/// be reachable from another device.
 pub async fn spawn_request(
     name: impl Into<String>,
     description: impl Into<String>,
@@ -219,12 +234,10 @@ pub async fn spawn_request(
         .route("/paste/:token", get(get_form).post(post_submit))
         .with_state(state);
 
-    // Bind localhost by default. Phone/LAN use should be explicit via
-    // PASTE_BIND or, better, a short-lived authenticated tunnel/proxy.
-    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let bind_addr = configured_bind_addr(&config);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
-    let url = format!("http://{addr}/paste/{token}");
+    let url = build_url(&config, addr, "paste", &token);
 
     // Log only the bound address — the URL contains the one-shot bearer
     // token and would land in shared logs / journalctl / shell history
@@ -322,10 +335,10 @@ pub async fn spawn_bulk_request(
         .route("/bulk/:token", get(get_bulk_form).post(post_bulk_submit))
         .with_state(state);
 
-    let bind_addr = std::env::var("PASTE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let bind_addr = configured_bind_addr(&config);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr: SocketAddr = listener.local_addr()?;
-    let url = format!("http://{addr}/bulk/{token}");
+    let url = build_url(&config, addr, "bulk", &token);
 
     info!(label = %label, addr = %addr, "secret-paste bulk server listening");
     debug!(label = %label, %url, "secret-paste bulk full URL (debug-only)");
@@ -386,6 +399,73 @@ fn parse_env_dump(input: &str) -> Vec<Result<(String, String), (usize, String)>>
         .collect()
 }
 
+fn configured_bind_addr(config: &PasteConfig) -> String {
+    config
+        .bind_addr
+        .clone()
+        .or_else(|| std::env::var("PASTE_BIND").ok())
+        .unwrap_or_else(|| "127.0.0.1:0".to_string())
+}
+
+fn configured_public_base_url(config: &PasteConfig) -> Option<String> {
+    config
+        .public_base_url
+        .clone()
+        .or_else(|| std::env::var("PASTE_PUBLIC_BASE_URL").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn configured_public_host(config: &PasteConfig) -> Option<String> {
+    config
+        .public_host
+        .clone()
+        .or_else(|| std::env::var("PASTE_PUBLIC_HOST").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn build_url(config: &PasteConfig, addr: SocketAddr, route: &str, token: &str) -> String {
+    let path = format!("{route}/{token}");
+    if let Some(base) = configured_public_base_url(config) {
+        return format!("{}/{}", base.trim_end_matches('/'), path);
+    }
+
+    let host = configured_public_host(config).unwrap_or_else(|| public_host_for_addr(addr.ip()));
+    let host = bracket_ipv6_host(&host);
+    format!("http://{host}:{}/{path}", addr.port())
+}
+
+fn public_host_for_addr(ip: IpAddr) -> String {
+    if ip.is_unspecified() {
+        if let Some(lan_ip) = detect_lan_ip() {
+            return lan_ip.to_string();
+        }
+        return "127.0.0.1".to_string();
+    }
+    ip.to_string()
+}
+
+fn bracket_ipv6_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') && !host.contains("://") {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+fn detect_lan_ip() -> Option<IpAddr> {
+    for target in ["192.0.2.1:80", "198.51.100.1:80", "203.0.113.1:80"] {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        if socket.connect(target).is_err() {
+            continue;
+        }
+        let ip = socket.local_addr().ok()?.ip();
+        if !ip.is_loopback() && !ip.is_unspecified() {
+            return Some(ip);
+        }
+    }
+    None
+}
+
 fn strip_matching_quotes(value: &str) -> &str {
     if value.len() >= 2
         && ((value.starts_with('"') && value.ends_with('"'))
@@ -438,9 +518,9 @@ async fn post_bulk_submit(
         let ok = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|o| is_localhost_origin(o, allow_null));
+            .is_some_and(|o| is_allowed_origin(o, &state.config, allow_null));
         if !ok {
-            warn!("rejecting bulk POST: missing/non-localhost Origin header");
+            warn!("rejecting bulk POST: missing/untrusted Origin header");
             return (
                 StatusCode::FORBIDDEN,
                 Html("Rejected: missing/invalid Origin header (anti-rebinding)".to_string()),
@@ -611,9 +691,9 @@ async fn post_submit(
         let ok = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|o| is_localhost_origin(o, allow_null));
+            .is_some_and(|o| is_allowed_origin(o, &state.config, allow_null));
         if !ok {
-            warn!("rejecting paste POST: missing/non-localhost Origin header");
+            warn!("rejecting paste POST: missing/untrusted Origin header");
             return (
                 StatusCode::FORBIDDEN,
                 Html("Rejected: missing/invalid Origin header (anti-rebinding)".to_string()),
@@ -713,10 +793,27 @@ async fn post_submit(
     }
 }
 
-fn is_localhost_origin(origin: &str, allow_null: bool) -> bool {
+fn is_allowed_origin(origin: &str, config: &PasteConfig, allow_null: bool) -> bool {
     if origin == "null" {
         return allow_null;
     }
+
+    if let Some(base) = configured_public_base_url(config)
+        && origin_matches_base_url(origin, &base)
+    {
+        return true;
+    }
+
+    if let Some(host) = configured_public_host(config)
+        && origin_matches_public_host(origin, &host)
+    {
+        return true;
+    }
+
+    is_localhost_origin(origin)
+}
+
+fn is_localhost_origin(origin: &str) -> bool {
     if origin.starts_with("http://127.0.0.1:")
         || origin.starts_with("http://localhost:")
         || origin == "http://localhost"
@@ -727,6 +824,76 @@ fn is_localhost_origin(origin: &str, allow_null: bool) -> bool {
     // the same LAN can submit. Treats the home network as trusted —
     // the check still blocks origins from the public internet.
     is_rfc1918_http_origin(origin)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OriginParts<'a> {
+    scheme: &'a str,
+    host: &'a str,
+    port: Option<u16>,
+}
+
+fn parse_origin_like(input: &str) -> Option<OriginParts<'_>> {
+    let (scheme, rest) = input.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+
+    let (host, port) = if let Some(after_bracket) = authority.strip_prefix('[') {
+        let (host, remainder) = after_bracket.split_once(']')?;
+        let port = if let Some(port_text) = remainder.strip_prefix(':') {
+            Some(port_text.parse().ok()?)
+        } else if remainder.is_empty() {
+            None
+        } else {
+            return None;
+        };
+        (host, port)
+    } else {
+        let mut pieces = authority.split(':');
+        let host = pieces.next()?;
+        let port = match pieces.next() {
+            Some(port_text) => Some(port_text.parse().ok()?),
+            None => None,
+        };
+        if pieces.next().is_some() {
+            return None;
+        }
+        (host, port)
+    };
+
+    if host.is_empty() {
+        return None;
+    }
+    Some(OriginParts { scheme, host, port })
+}
+
+fn origin_matches_base_url(origin: &str, base_url: &str) -> bool {
+    let Some(origin) = parse_origin_like(origin) else {
+        return false;
+    };
+    let Some(base) = parse_origin_like(base_url) else {
+        return false;
+    };
+    origin.scheme == base.scheme
+        && origin.host.eq_ignore_ascii_case(base.host)
+        && origin.port == base.port
+}
+
+fn origin_matches_public_host(origin: &str, public_host: &str) -> bool {
+    let Some(origin) = parse_origin_like(origin) else {
+        return false;
+    };
+    let normalized = public_host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    origin.host.eq_ignore_ascii_case(normalized)
 }
 
 fn is_rfc1918_http_origin(origin: &str) -> bool {
@@ -957,6 +1124,58 @@ mod tests {
     }
 
     #[test]
+    fn display_url_uses_public_host_for_wildcard_bind() {
+        let cfg = PasteConfig {
+            public_host: Some("192.168.1.55".to_string()),
+            ..PasteConfig::default()
+        };
+        let addr: SocketAddr = "0.0.0.0:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "bulk", "abc123");
+
+        assert_eq!(url, "http://192.168.1.55:58083/bulk/abc123");
+    }
+
+    #[test]
+    fn display_url_uses_public_base_url_for_proxy_deployments() {
+        let cfg = PasteConfig {
+            public_base_url: Some("https://calciforge.example.net/secret-paste/".to_string()),
+            ..PasteConfig::default()
+        };
+        let addr: SocketAddr = "127.0.0.1:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "paste", "abc123");
+
+        assert_eq!(
+            url,
+            "https://calciforge.example.net/secret-paste/paste/abc123"
+        );
+    }
+
+    #[test]
+    fn display_url_never_returns_unspecified_host() {
+        let cfg = PasteConfig::default();
+        let addr: SocketAddr = "0.0.0.0:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "bulk", "abc123");
+
+        assert!(
+            !url.contains("0.0.0.0"),
+            "wildcard bind address is not a usable browser URL: {url}"
+        );
+    }
+
+    #[test]
+    fn display_url_keeps_loopback_bind_local() {
+        let cfg = PasteConfig::default();
+        let addr: SocketAddr = "127.0.0.1:58083".parse().unwrap();
+
+        let url = build_url(&cfg, addr, "paste", "abc123");
+
+        assert_eq!(url, "http://127.0.0.1:58083/paste/abc123");
+    }
+
+    #[test]
     fn truncated_preview_short_input_returns_ellipsis_only() {
         assert_eq!(truncated_preview("ab", 4), "…");
         assert_eq!(truncated_preview("12345678", 4), "…");
@@ -1160,25 +1379,65 @@ mod tests {
     #[test]
     fn origin_predicate_accepts_loopback_and_rfc1918_rejects_public() {
         // loopback
-        assert!(is_localhost_origin("http://127.0.0.1:8080", false));
-        assert!(is_localhost_origin("http://localhost:8080", false));
+        assert!(is_localhost_origin("http://127.0.0.1:8080"));
+        assert!(is_localhost_origin("http://localhost:8080"));
         // RFC 1918 ranges
-        assert!(is_localhost_origin("http://192.168.1.175:58083", false));
-        assert!(is_localhost_origin("http://10.0.0.5:9000", false));
-        assert!(is_localhost_origin("http://172.16.5.1:80", false));
-        assert!(is_localhost_origin("http://172.31.255.1:80", false));
+        assert!(is_localhost_origin("http://192.168.1.175:58083"));
+        assert!(is_localhost_origin("http://10.0.0.5:9000"));
+        assert!(is_localhost_origin("http://172.16.5.1:80"));
+        assert!(is_localhost_origin("http://172.31.255.1:80"));
         // boundary: 172.32 is NOT private
-        assert!(!is_localhost_origin("http://172.32.0.1:80", false));
+        assert!(!is_localhost_origin("http://172.32.0.1:80"));
         // public
-        assert!(!is_localhost_origin("http://example.com", false));
-        assert!(!is_localhost_origin("http://8.8.8.8:80", false));
+        assert!(!is_localhost_origin("http://example.com"));
+        assert!(!is_localhost_origin("http://8.8.8.8:80"));
         // CGNAT-adjacent — explicitly NOT in the allowed set
-        assert!(!is_localhost_origin("http://100.64.0.1:80", false));
+        assert!(!is_localhost_origin("http://100.64.0.1:80"));
         // https not http (paste server is plain http; https can't have come from us)
-        assert!(!is_localhost_origin("https://192.168.1.1:443", false));
+        assert!(!is_localhost_origin("https://192.168.1.1:443"));
         // null still gated by allow_null_origin
-        assert!(!is_localhost_origin("null", false));
-        assert!(is_localhost_origin("null", true));
+        assert!(!is_allowed_origin("null", &PasteConfig::default(), false));
+        assert!(is_allowed_origin("null", &PasteConfig::default(), true));
+    }
+
+    #[test]
+    fn origin_predicate_accepts_configured_public_base_url_origin() {
+        let cfg = PasteConfig {
+            public_base_url: Some("https://calciforge.example.net/secret-paste".to_string()),
+            ..PasteConfig::default()
+        };
+
+        assert!(is_allowed_origin(
+            "https://calciforge.example.net",
+            &cfg,
+            false
+        ));
+        assert!(!is_allowed_origin(
+            "http://calciforge.example.net",
+            &cfg,
+            false
+        ));
+        assert!(!is_allowed_origin(
+            "https://attacker.example.net",
+            &cfg,
+            false
+        ));
+    }
+
+    #[test]
+    fn origin_predicate_accepts_configured_public_host_origin() {
+        let cfg = PasteConfig {
+            public_host: Some("calciforge.local".to_string()),
+            ..PasteConfig::default()
+        };
+
+        assert!(is_allowed_origin(
+            "http://calciforge.local:58083",
+            &cfg,
+            false
+        ));
+        assert!(is_allowed_origin("https://calciforge.local", &cfg, false));
+        assert!(!is_allowed_origin("http://other.local:58083", &cfg, false));
     }
 
     /// Given a POST whose Origin is an RFC 1918 LAN IP (192.168.x.y),

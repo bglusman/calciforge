@@ -497,7 +497,7 @@ const MIGRATION_TOML: &str = r#"
 [[channels]]
 kind = "whatsapp"
 enabled = true
-whatsapp_session_path = "~/.calciforge/whatsapp/session.db"
+whatsapp_session_path = "~/.config/calciforge/whatsapp/session.db"
 allowed_numbers = ["+15555550001"]
 # Optional pairing-code login:
 # whatsapp_pair_phone = "15555550001"
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_session_path_expands_tilde() {
         let mut config = ChannelConfig {
-            whatsapp_session_path: Some("~/.calciforge/whatsapp/session.db".to_string()),
+            whatsapp_session_path: Some("~/.config/calciforge/whatsapp/session.db".to_string()),
             ..Default::default()
         };
 
@@ -821,7 +821,7 @@ mod tests {
             "WhatsApp session path should not keep a literal tilde: {session_path}"
         );
         assert!(
-            session_path.ends_with(".calciforge/whatsapp/session.db"),
+            session_path.ends_with(".config/calciforge/whatsapp/session.db"),
             "WhatsApp session path should preserve the configured suffix: {session_path}"
         );
 

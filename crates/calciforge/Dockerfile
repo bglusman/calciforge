@@ -15,9 +15,9 @@ COPY --from=builder /app/target/release/calciforge /usr/local/bin/calciforge
 COPY --from=builder /app/target/release/security-proxy /usr/local/bin/security-proxy
 
 # Create config directory
-RUN mkdir -p /root/.calciforge
+RUN mkdir -p /root/.config/calciforge
 
 EXPOSE 8888 18792 18793 18794 18795 18796 18797 18798
 
 ENTRYPOINT ["/usr/local/bin/calciforge"]
-CMD ["--config", "/root/.calciforge/config.toml"]
+CMD ["--config", "/root/.config/calciforge/config.toml"]

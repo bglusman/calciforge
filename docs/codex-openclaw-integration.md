@@ -76,8 +76,8 @@ Do not wrap Codex CLI with generic `HTTP_PROXY`/`HTTPS_PROXY` unless you have
 validated that specific route. Codex uses streaming and browser/OAuth-backed
 control-plane calls; the current `security-proxy` does not inspect CONNECT
 tunnels and can break those flows. Use Calciforge's OpenAI-compatible gateway,
-exec models, or explicit fetch/tool integration for traffic that needs
-scanning or secret substitution.
+exec models, explicit fetch/tool integration, or audited recipes for traffic
+that needs scanning or secret substitution.
 
 Keep chat-facing Codex agents conservative. `read-only` is the safer
 default for general messaging channels. Use `workspace-write` only for

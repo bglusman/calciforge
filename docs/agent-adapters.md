@@ -25,13 +25,19 @@ tools should not become first-class adapters until they expose a scriptable
 protocol; otherwise Calciforge inherits the GUI's state model, auth prompts,
 and failure modes.
 
+Every adapter and recipe also needs an instruction path. The
+[agent runtime contract](agent-runtime-contract.html) is the shared baseline:
+default to CLI guidance via `calciforge-secrets`, opt into MCP only when the
+operator configures it for that runtime, and document any advertised artifact,
+proxy, model-gateway, or future Calciforge API surfaces.
+
 ## Current Adapter Posture
 
 | Agent | Calciforge path | Notes |
 |---|---|---|
 | Codex CLI | `kind = "codex-cli"`, `[[exec_models]]`, or future ACP via `codex-acp` | Good fit when the Unix account running Calciforge owns Codex credentials. Zed's Apache-2.0 `codex-acp` adapter is the better reference path for richer Codex sessions because it exposes ACP features such as images, tool-call permission requests, edit review, TODO lists, slash commands, MCP server forwarding, and Codex auth methods. Keep chat-facing agents conservative unless the channel is trusted. |
 | Claude Code | `kind = "cli"` or `acpx` | Use `claude -p` for simple subscription-backed prompt execution. Use `acpx` when ACP sessions are needed. |
-| OpenClaw | `openclaw-channel` | Preferred path for richer agent runtime, skills, plugins, provider routing, and slash commands. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
+| OpenClaw | `openclaw-channel` | Preferred path for richer OpenClaw runtime, skills, plugins, provider routing, and slash commands. It talks to the Calciforge channel plugin inside OpenClaw, not to another Calciforge gateway. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
 | OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
 | Artifact-producing CLI | `kind = "artifact-cli"` | Prototype path for tools such as npcsh media workflows. Calciforge sends the task on stdin, exposes `{artifact_dir}` and `CALCIFORGE_ARTIFACT_DIR`, validates produced files, and returns a text fallback that names attachments without exposing local paths. Telegram and Matrix already use the richer internal envelope; native media upload can be added channel by channel. |
 | opencode | `acpx` or generic CLI | Model-agnostic terminal agent with a mature CLI/TUI surface. Prefer ACP when available. |
@@ -159,8 +165,9 @@ OpenClaw exposes several surfaces that look similar but behave differently:
   so Calciforge must not treat a bare `{ ok: true, runId }` response as an
   agent reply.
 - `POST /calciforge/inbound` plus the Calciforge reply callback is the intended
-  channel/plugin style integration. Prefer this when OpenClaw should see
-  Calciforge messages as native inbound channel turns.
+  channel/plugin style integration. This route lives inside OpenClaw via the
+  Calciforge channel plugin. Prefer it when OpenClaw should see Calciforge
+  messages as native inbound channel turns.
 - `calciforge install` now treats OpenClaw as a first-class managed agent:
   the non-interactive `openclaw-channel` spec requires inbound auth,
   `reply_webhook`, and reply auth, then installs
@@ -175,8 +182,16 @@ Operational guidance:
 - Keep OpenClaw slash commands as the first token. Calciforge must not prepend
   cross-agent context before `/model`, `/status`, `/reset`, or similar
   downstream commands.
+- Do not point `kind = "openclaw-channel"` at another Calciforge instance. If
+  the target endpoint is Calciforge's model gateway, use `openai-compat`; if it
+  is another managed agent, route to that agent's actual OpenClaw plugin
+  endpoint.
 - Treat any remaining `openclaw-http` config as stale and broken. Run
   `calciforge doctor` after install or config edits to catch it before startup.
+- Treat outbound security as a separate axis from channel routing. The channel
+  plugin gets messages into OpenClaw and replies back out; OpenClaw's own
+  provider/tool egress still needs a tested proxy, MCP/fetch/tool integration,
+  or container/VM boundary when network enforcement matters.
 - Use live OpenClaw gateway tests for command behavior. Mock adapter tests are
   not enough because command parsing depends on enabled gateway endpoints,
   channel/plugin surface, session key shape, and authorization context.
