@@ -4,8 +4,9 @@
 //! `POST /calciforge/inbound` (gateway auth) and waits for a correlated callback on the
 //! local reply webhook `POST /hooks/reply`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use crate::artifacts::{create_run_dir, write_inline_attachment};
@@ -104,7 +105,7 @@ impl ReplyRouter {
 #[derive(Clone)]
 struct ReplyServerState {
     router: ReplyRouter,
-    auth_token: Option<String>,
+    auth_tokens: Arc<StdMutex<HashSet<String>>>,
 }
 
 /// Reply webhook body sent by the OpenClaw plugin.
@@ -177,7 +178,7 @@ impl ReplyServer {
 #[derive(Clone)]
 struct SharedReplyServer {
     port: u16,
-    auth_token: Option<String>,
+    auth_tokens: Arc<StdMutex<HashSet<String>>>,
     router: ReplyRouter,
     once: Arc<OnceLock<()>>,
     ready_notify: Arc<Notify>,
@@ -203,12 +204,34 @@ impl ReplyServerHandle {
             .expect("openclaw-channel reply server registry poisoned");
 
         if let Some(existing) = servers.get(&port) {
-            let config_error = if existing.auth_token == auth_token {
-                None
-            } else {
-                Some(format!(
-                    "reply port {port} is already registered with a different reply_auth_token"
-                ))
+            let config_error = match auth_token {
+                Some(token) => {
+                    let mut tokens = existing
+                        .auth_tokens
+                        .lock()
+                        .expect("openclaw-channel reply auth token set poisoned");
+                    if tokens.is_empty() {
+                        Some(format!(
+                            "reply port {port} is already registered without reply_auth_token"
+                        ))
+                    } else {
+                        tokens.insert(token);
+                        None
+                    }
+                }
+                None => {
+                    let tokens = existing
+                        .auth_tokens
+                        .lock()
+                        .expect("openclaw-channel reply auth token set poisoned");
+                    if tokens.is_empty() {
+                        None
+                    } else {
+                        Some(format!(
+                            "reply port {port} is already registered with reply_auth_token"
+                        ))
+                    }
+                }
             };
             return Self {
                 shared: existing.clone(),
@@ -216,9 +239,14 @@ impl ReplyServerHandle {
             };
         }
 
+        let mut auth_tokens = HashSet::new();
+        if let Some(token) = auth_token {
+            auth_tokens.insert(token);
+        }
+
         let shared = SharedReplyServer {
             port,
-            auth_token,
+            auth_tokens: Arc::new(StdMutex::new(auth_tokens)),
             router: ReplyRouter::new(),
             once: Arc::new(OnceLock::new()),
             ready_notify: Arc::new(Notify::new()),
@@ -240,13 +268,18 @@ async fn handle_reply(
     headers: HeaderMap,
     Json(payload): Json<ReplyPayload>,
 ) -> (StatusCode, Json<AckResponse>) {
-    if let Some(expected) = state.auth_token.as_deref() {
+    let auth_tokens = state
+        .auth_tokens
+        .lock()
+        .expect("openclaw-channel reply auth token set poisoned")
+        .clone();
+    if !auth_tokens.is_empty() {
         let auth = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let token = auth.strip_prefix("Bearer ").unwrap_or(auth);
-        if token != expected {
+        if !auth_tokens.contains(token) {
             return (StatusCode::UNAUTHORIZED, Json(AckResponse { ok: false }));
         }
     }
@@ -408,7 +441,7 @@ impl OpenClawChannelAdapter {
             let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
             let state = ReplyServerState {
                 router: shared.router.clone(),
-                auth_token: shared.auth_token.clone(),
+                auth_tokens: shared.auth_tokens.clone(),
             };
             let port = shared.port;
 
@@ -673,7 +706,7 @@ mod tests {
     }
 
     fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
+        std::net::TcpListener::bind("0.0.0.0:0")
             .unwrap()
             .local_addr()
             .unwrap()
@@ -794,7 +827,6 @@ mod tests {
     async fn test_dispatch_returns_reply_from_hooks_reply() {
         let captured = Arc::new(TokioMutex::new(None));
         let reply_port = free_port();
-
         let state = CaptureState {
             last_body: captured,
             reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
@@ -827,9 +859,10 @@ mod tests {
         let _no_proxy = EnvRestore::set("NO_PROXY", "");
         let _no_proxy_lower = EnvRestore::set("no_proxy", "");
 
-        let captured = Arc::new(TokioMutex::new(None));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inbound_port = listener.local_addr().unwrap().port();
         let reply_port = free_port();
-
+        let captured = Arc::new(TokioMutex::new(None));
         let state = CaptureState {
             last_body: captured,
             reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
@@ -839,8 +872,6 @@ mod tests {
         let app = Router::new()
             .route("/calciforge/inbound", post(inbound_handler))
             .with_state(state);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let inbound_port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
@@ -1226,7 +1257,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reply_port_auth_mismatch_fails_before_dispatch() {
+    async fn test_same_reply_port_accepts_multiple_reply_auth_tokens() {
+        let first_captured = Arc::new(TokioMutex::new(None));
+        let second_captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let first_state = CaptureState {
+            last_body: first_captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: Some("reply-secret-a".to_string()),
+            reply_attachments: None,
+        };
+        let first_endpoint = format!(
+            "http://127.0.0.1:{}",
+            start_inbound_server(first_state).await
+        );
+        let first = make_adapter(
+            first_endpoint,
+            reply_port,
+            Some("reply-secret-a".to_string()),
+        );
+        let first_reply = first
+            .dispatch_with_context(DispatchContext {
+                message: "first",
+                sender: Some("brian"),
+                model_override: None,
+                session: None,
+                channel: None,
+            })
+            .await
+            .expect("first dispatch should start reply server");
+        assert_eq!(first_reply, "reply from openclaw");
+
+        let second_state = CaptureState {
+            last_body: second_captured,
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: Some("reply-secret-b".to_string()),
+            reply_attachments: None,
+        };
+        let second_endpoint = format!(
+            "http://127.0.0.1:{}",
+            start_inbound_server(second_state).await
+        );
+        let second = make_adapter(
+            second_endpoint,
+            reply_port,
+            Some("reply-secret-b".to_string()),
+        );
+        let second_reply = second
+            .dispatch_with_context(DispatchContext {
+                message: "second",
+                sender: Some("renee"),
+                model_override: None,
+                session: None,
+                channel: None,
+            })
+            .await
+            .expect("same reply port should accept each configured token");
+        assert_eq!(second_reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_authenticated_reply_port_rejects_unauthenticated_adapter() {
         let reply_port = free_port();
         let first = make_adapter(
             "http://127.0.0.1:1".to_string(),
@@ -1235,11 +1327,7 @@ mod tests {
         );
         let _ = first.ensure_reply_server_started().await;
 
-        let second = make_adapter(
-            "http://127.0.0.1:1".to_string(),
-            reply_port,
-            Some("different-secret".to_string()),
-        );
+        let second = make_adapter("http://127.0.0.1:1".to_string(), reply_port, None);
         let err = second
             .dispatch_with_context(DispatchContext {
                 message: "will not send",
@@ -1249,11 +1337,11 @@ mod tests {
                 channel: None,
             })
             .await
-            .expect_err("conflicting reply auth token should fail");
+            .expect_err("unauthenticated callback config should fail");
 
         assert!(err
             .to_string()
-            .contains("already registered with a different reply_auth_token"));
+            .contains("already registered with reply_auth_token"));
     }
 
     #[tokio::test]

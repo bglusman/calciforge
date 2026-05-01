@@ -44,6 +44,13 @@ CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE="${CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE:-$C
 CALCIFORGE_OPENCLAW_POLICY_ENDPOINT="${CALCIFORGE_OPENCLAW_POLICY_ENDPOINT:-http://127.0.0.1:${CLASHD_PORT}/evaluate}"
 CALCIFORGE_OPENCLAW_PROXY_ENDPOINT="${CALCIFORGE_OPENCLAW_PROXY_ENDPOINT:-${SECURITY_PROXY_URL}}"
 CALCIFORGE_OPENCLAW_NO_PROXY="${CALCIFORGE_OPENCLAW_NO_PROXY:-${SECURITY_PROXY_NO_PROXY}}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT:-http://127.0.0.1:18083/v1}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER:-calciforge}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL:-local-dispatcher}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT:-60000}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS:-8192}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY:-}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE:-}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
@@ -907,6 +914,89 @@ print(f"added calciforge agent {agent_id!r} to {path}")
 PYEOF
 }
 
+configure_openclaw_model_gateway() {
+    python3 - "$ZC_CONFIG" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE" <<'PYEOF' | openclaw config patch --stdin >/dev/null
+import json
+import pathlib
+import sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None
+
+config_path = pathlib.Path(sys.argv[1]).expanduser()
+endpoint, provider, model, context, max_tokens, inline_key, key_file = sys.argv[2:10]
+provider = provider.strip() or "calciforge"
+model = model.strip() or "local-dispatcher"
+model_id = model.split("/", 1)[1] if model.startswith(f"{provider}/") else model
+context_tokens = int(context)
+max_output_tokens = int(max_tokens)
+
+def read_key_file(path):
+    if not path:
+        return None
+    file_path = pathlib.Path(path).expanduser()
+    if not file_path.exists():
+        return None
+    value = file_path.read_text(encoding="utf-8").strip()
+    return value or None
+
+api_key = inline_key.strip() or read_key_file(key_file)
+if api_key is None and tomllib is not None and config_path.exists():
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    proxy = config.get("proxy", {})
+    api_key = (proxy.get("api_key") or "").strip() or read_key_file(proxy.get("api_key_file"))
+
+if api_key is None:
+    raise SystemExit(
+        "OpenClaw model gateway wiring requires [proxy].api_key or [proxy].api_key_file "
+        "in Calciforge config, or CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY(_FILE)."
+    )
+
+print(json.dumps({
+    "agents": {
+        "defaults": {
+            "agentRuntime": {"id": "pi", "fallback": "pi"},
+            "model": {"primary": f"{provider}/{model_id}"},
+            "models": {f"{provider}/{model_id}": {}},
+        }
+    },
+    "models": {
+        "mode": "merge",
+        "providers": {
+            provider: {
+                "baseUrl": endpoint,
+                "apiKey": api_key,
+                "api": "openai-completions",
+                "contextWindow": context_tokens,
+                "maxTokens": max_output_tokens,
+                "request": {"allowPrivateNetwork": True},
+                "models": [{
+                    "id": model_id,
+                    "name": f"Calciforge {model_id}",
+                    "api": "openai-completions",
+                    "contextWindow": context_tokens,
+                    "maxTokens": max_output_tokens,
+                    "input": ["text"],
+                    "cost": {"input": 0, "output": 0},
+                }],
+            }
+        },
+    },
+}))
+PYEOF
+    ok "openclaw default model routed through Calciforge model gateway (${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER}/${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL})"
+    openclaw gateway restart --json >/dev/null 2>&1 || \
+        warn "openclaw gateway restart failed after model gateway patch; restart it manually before testing"
+}
+
 configure_managed_openclaw() {
     truthy "$CALCIFORGE_MANAGED_OPENCLAW" || {
         warn "Skipping managed OpenClaw configuration (CALCIFORGE_MANAGED_OPENCLAW=false)"
@@ -927,6 +1017,7 @@ configure_managed_openclaw() {
         --claw "$claw_spec" \
         --yes || die "managed OpenClaw configuration failed; inspect installer output above"
     ensure_managed_openclaw_calciforge_agent
+    configure_openclaw_model_gateway || die "managed OpenClaw model gateway configuration failed"
 }
 
 # ── banner ────────────────────────────────────────────────────────────────────
