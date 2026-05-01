@@ -203,9 +203,11 @@ remembers the right rules, Calciforge puts the rules at visible request
 boundaries where secrets, destinations, model routes, and tool permissions can
 be checked before traffic leaves the machine.
 
-Ambient `HTTPS_PROXY` is deliberately not presented as full protection:
-standard HTTPS proxying uses CONNECT tunnels, and the current proxy does not
-terminate those tunnels or inspect encrypted request bodies.
+Ambient `HTTPS_PROXY` is deliberately not presented as full protection unless
+it points at Calciforge's MITM listener and the target runtime trusts the
+Calciforge CA. Standard HTTPS proxying uses CONNECT tunnels; the experimental
+hudsucker-backed MITM mode terminates those tunnels so Calciforge can scan and
+rewrite decrypted request/response bodies.
 For agents that do not work with cooperative proxy env, Calciforge's
 security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
 audited recipe wrappers, or future container/VM isolation profiles that deny
@@ -698,8 +700,9 @@ that can route Calciforge's own provider and control-plane traffic through
 its security proxy. Do not assume CLI agents can be protected by generic
 `HTTP_PROXY` or `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and
 streaming clients may use CONNECT, WebSockets, or browser-backed auth flows
-that the current proxy cannot inspect and may break. Use model-gateway routes,
-explicit fetch/tool integration, audited recipes, or tested runtime-specific
+that can break unless the runtime has been tested with Calciforge's proxy and,
+for HTTPS, trusts the MITM CA. Use model-gateway routes, explicit fetch/tool
+integration, audited recipes, tested MITM proxy setup, or runtime-specific
 wrappers for traffic that must pass through Calciforge.
 
 For externally managed agent daemons that Calciforge does not launch, configure

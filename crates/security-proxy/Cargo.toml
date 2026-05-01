@@ -11,6 +11,7 @@ axum = { version = "0.7", features = ["tokio", "http1", "http2"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
+hudsucker = { version = "0.24.0", features = ["http2"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 adversary-detector = { path = "../adversary-detector" }
 # Shared secret-resolver library (env → fnox → vaultwarden). The secrets
@@ -37,5 +38,7 @@ name = "security-proxy"
 path = "src/main.rs"
 
 [dev-dependencies]
+hyper-rustls = "0.27"
+rustls-pemfile = "2"
 wiremock = "0.6"
 tempfile = "3"

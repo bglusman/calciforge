@@ -5,6 +5,7 @@ use tracing::{error, info};
 use adversary_detector::{RateLimitConfig, ScannerCheckConfig, ScannerConfig};
 use security_proxy::agent_config::AgentsConfig;
 use security_proxy::config::GatewayConfig;
+use security_proxy::mitm::{install_default_crypto_provider, load_rcgen_authority, serve_mitm};
 use security_proxy::proxy::SecurityProxy;
 use security_proxy::router::build_app;
 
@@ -16,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "security_proxy=info".into()),
         )
         .init();
+    install_default_crypto_provider();
 
     let port = std::env::var("SECURITY_PROXY_PORT")
         .ok()
@@ -26,6 +28,19 @@ async fn main() -> anyhow::Result<()> {
         port,
         ..GatewayConfig::default()
     };
+    config.mitm_enabled = std::env::var("SECURITY_PROXY_MITM_ENABLED")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(config.mitm_enabled);
+    if let Ok(path) = std::env::var("SECURITY_PROXY_CA_CERT") {
+        if !path.trim().is_empty() {
+            config.ca_cert_path = Some(path);
+        }
+    }
+    if let Ok(path) = std::env::var("SECURITY_PROXY_CA_KEY") {
+        if !path.trim().is_empty() {
+            config.ca_key_path = Some(path);
+        }
+    }
     if let Ok(url) = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_URL") {
         if !url.trim().is_empty() {
             let fail_closed = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED")
@@ -95,6 +110,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = Arc::new(proxy);
+
+    if config.mitm_enabled {
+        let cert_path = config.ca_cert_path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("SECURITY_PROXY_MITM_ENABLED requires SECURITY_PROXY_CA_CERT")
+        })?;
+        let key_path = config.ca_key_path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("SECURITY_PROXY_MITM_ENABLED requires SECURITY_PROXY_CA_KEY")
+        })?;
+        let ca = load_rcgen_authority(cert_path, key_path)?;
+        let bind_host = std::env::var("SECURITY_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+        let addr = format!("{}:{}", bind_host, port).parse()?;
+        serve_mitm(addr, state, ca).await?;
+        return Ok(());
+    }
 
     // The router is built by the library so tests can spin up the same
     // routes in-process without spawning the binary. See

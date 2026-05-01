@@ -97,10 +97,14 @@ export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
-Do not treat ambient `HTTPS_PROXY` as a security boundary. HTTPS clients use
-CONNECT tunnels; the current proxy does not terminate those tunnels or scan the
-encrypted payload. Use a Calciforge-owned model gateway, fetch/tool path, or
-audited recipe when HTTPS content needs scanning or secret substitution.
+Do not treat ambient `HTTPS_PROXY` as a security boundary unless it points at
+Calciforge's MITM listener and the agent runtime trusts the Calciforge CA. The
+experimental hudsucker-backed mode is enabled with
+`SECURITY_PROXY_MITM_ENABLED=true`, `SECURITY_PROXY_CA_CERT=...`, and
+`SECURITY_PROXY_CA_KEY=...`; otherwise HTTPS clients use opaque CONNECT
+tunnels. Use a Calciforge-owned model gateway, fetch/tool path, audited recipe,
+or tested MITM proxy setup when HTTPS content needs scanning or secret
+substitution.
 
 ## Tiny Config Sketch
 

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -19,7 +19,7 @@ use crate::proxy::{health_handler, proxy_handler, SecurityProxy};
 /// Unset → the vault route returns 503 (refuses to act as an oracle).
 /// This is intentionally separate from any cred-injection token; it
 /// guards the resolve-and-return path that has no other authn.
-const VAULT_TOKEN_ENV: &str = "SECURITY_PROXY_VAULT_TOKEN";
+pub(crate) const VAULT_TOKEN_ENV: &str = "SECURITY_PROXY_VAULT_TOKEN";
 
 /// Constant-time byte comparison to keep the bearer-token check from
 /// leaking length/prefix information via timing. Std doesn't provide
@@ -69,6 +69,14 @@ pub async fn vault_handler(
     headers: HeaderMap,
     Path(secret_name): Path<String>,
 ) -> impl IntoResponse {
+    let (status, body) = vault_json_response(&headers, secret_name).await;
+    (status, Json(body)).into_response()
+}
+
+pub(crate) async fn vault_json_response(
+    headers: &HeaderMap,
+    secret_name: String,
+) -> (StatusCode, serde_json::Value) {
     // Defense in depth: the binary defaults to binding 127.0.0.1 (see
     // main.rs), but if an operator opens it up to 0.0.0.0 the vault
     // route would otherwise be an unauthenticated secret oracle for
@@ -78,7 +86,7 @@ pub async fn vault_handler(
     match std::env::var(VAULT_TOKEN_ENV) {
         Ok(expected) if !expected.is_empty() => {
             let provided = headers
-                .get(axum::http::header::AUTHORIZATION)
+                .get(header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .unwrap_or("");
@@ -86,9 +94,8 @@ pub async fn vault_handler(
                 debug!(secret = %secret_name, "vault auth failed");
                 return (
                     StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({"status": "error", "message": "unauthorized"})),
-                )
-                    .into_response();
+                    serde_json::json!({"status": "error", "message": "unauthorized"}),
+                );
             }
         }
         _ => {
@@ -98,21 +105,22 @@ pub async fn vault_handler(
             );
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"status": "error", "message": "vault route disabled"})),
-            )
-                .into_response();
+                serde_json::json!({"status": "error", "message": "vault route disabled"}),
+            );
         }
     }
 
     match secrets_client::vault::get_secret(&secret_name).await {
         Ok(token) => {
             debug!(secret = %secret_name, "vault route resolved secret");
-            Json(serde_json::json!({
-                "status": "ok",
-                "secret": secret_name,
-                "token": token,
-            }))
-            .into_response()
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "ok",
+                    "secret": secret_name,
+                    "token": token,
+                }),
+            )
         }
         Err(_) => {
             // Name only; no error text. If you need to debug, enable
@@ -123,12 +131,11 @@ pub async fn vault_handler(
             debug!(secret = %secret_name, "vault lookup failed");
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
+                serde_json::json!({
                     "status": "error",
                     "message": "Secret not found",
-                })),
+                }),
             )
-                .into_response()
         }
     }
 }

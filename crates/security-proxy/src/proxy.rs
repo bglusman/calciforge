@@ -47,7 +47,7 @@ pub struct SecurityProxy {
     /// Fetch-mode detector — wraps scanner + digest cache + rate limiter.
     fetch_proxy: AdversaryDetector,
     /// Direct scanner for intercept-mode scanning.
-    scanner: AdversaryScanner,
+    pub(crate) scanner: AdversaryScanner,
     /// Credential injector for known providers.
     pub credentials: CredentialInjector,
     /// Shared audit logger (same logger for both modes).
@@ -458,7 +458,7 @@ impl SecurityProxy {
     /// we return without a resolver round-trip. The cost of substitution
     /// is thus proportional to the number of refs, not the size of the
     /// input string.
-    async fn resolve_and_substitute(
+    pub(crate) async fn resolve_and_substitute(
         &self,
         input: &str,
         dest_host: Option<&str>,
@@ -554,7 +554,7 @@ impl SecurityProxy {
     /// claims `multipart/form-data` would otherwise bypass substitution
     /// entirely; the raw scan makes sure any ref-shaped content either
     /// substitutes or blocks the request.
-    fn body_substitution_mode(content_type: Option<&str>) -> BodyMode {
+    pub(crate) fn body_substitution_mode(content_type: Option<&str>) -> BodyMode {
         let Some(ct) = content_type else {
             return BodyMode::RawScan;
         };
@@ -576,7 +576,7 @@ impl SecurityProxy {
     /// only, never against path/query/fragment — otherwise a URL like
     /// `https://evil.com/?redirect=localhost` would "match" the bypass
     /// list by substring and smuggle the request past the scanner.
-    fn check_bypassed(&self, url: &str) -> bool {
+    pub(crate) fn check_bypassed(&self, url: &str) -> bool {
         let Some(host) = reqwest::Url::parse(url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
@@ -649,7 +649,7 @@ enum BypassMatcher {
 
 /// How to handle substitution for a request body of a given
 /// content-type. See `SecurityProxy::body_substitution_mode`.
-enum BodyMode {
+pub(crate) enum BodyMode {
     /// Full find-and-substitute pass over the body text. Used for
     /// JSON, form-urlencoded, and text/* content-types.
     FullSubstitute,
@@ -690,14 +690,14 @@ pub async fn health_handler(State(state): State<Arc<SecurityProxy>>) -> impl Int
 /// Used only for the defensive "body claims multipart/form-data but has
 /// `{{secret:` in it" raw-bytes check. Naive O(n*m); fine because
 /// `needle` is a fixed 9-byte literal and we exit on first hit.
-fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
+pub(crate) fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
     }
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-fn blocked_response(reason: &str) -> Response {
+pub(crate) fn blocked_response(reason: &str) -> Response {
     Response::builder()
         .status(StatusCode::FORBIDDEN)
         .header("content-type", "application/json")

@@ -40,7 +40,7 @@ the strongest mode the target agent can actually run under.
 | Model gateway | API | Working | Route OpenAI-compatible model calls through Calciforge's gateway. This is the most reliable path for providers and local dispatcher routes because Calciforge owns the HTTP request. |
 | Explicit tools/fetch | App | Working/expanding | Give agents Calciforge-provided fetch, MCP, or recipe wrappers for network actions that need scanning or secret substitution. |
 | Cooperative HTTP proxy | App | Limited | Set `HTTP_PROXY` only for agents and tools that have been tested with the proxy. This is useful for plaintext HTTP and simple HTTP clients. |
-| HTTPS MITM | App/host trust | Roadmap | Trust a Calciforge CA and terminate CONNECT traffic for clients that support custom trust stores. This would add inspection but increases operational and legal/safety burden. |
+| HTTPS MITM | App/host trust | Experimental | Trust a Calciforge CA and terminate CONNECT traffic for clients that support custom trust stores. The hudsucker-backed prototype runs the existing scan/substitution pipeline over decrypted requests and responses. |
 | OS redirect | Host | Roadmap | Use firewall rules such as Linux `iptables`/`nftables` or macOS `pf` to redirect outbound traffic from a controlled UID/process group to the gateway. |
 | Container or VM isolation | Runtime | Roadmap | Run the agent in Docker, a Linux namespace, LXC, or a VM where egress is denied except through Calciforge-managed gateways. This is the likely path for agents that ignore proxy env or use complex transports. |
 | Placeholder injection | Secret boundary | Roadmap | Give off-the-shelf agents fake env credentials and substitute real secrets only at the gateway. This keeps raw secrets out of agent memory but still needs a network enforcement path. |
@@ -55,13 +55,16 @@ have a tested wrapper for that specific runtime, and prefer OpenAI-compatible
 gateway routes or explicit fetch/tool integrations for traffic that must be
 scanned.
 
-`HTTPS_PROXY` is not a complete protection story for Calciforge today. Standard
-HTTPS proxying uses CONNECT tunnels; the current `security-proxy` does not
-terminate those tunnels and does not run a trusted MITM CA flow. That means it
-cannot inspect request or response bodies or substitute secrets inside the
-encrypted stream. Prefer Calciforge-owned model gateway routes, explicit
-fetch/tool integration, or audited recipe wrappers for HTTPS content that must
-be scanned or rewritten.
+Ambient `HTTPS_PROXY` is not a complete protection story unless it points at a
+Calciforge MITM listener and the client trusts the Calciforge CA. Standard
+HTTPS proxying uses CONNECT tunnels; without MITM, the proxy can only see the
+destination host and encrypted bytes. With
+`SECURITY_PROXY_MITM_ENABLED=true`, `security-proxy` uses hudsucker to
+terminate CONNECT traffic, mint per-host certificates from the configured CA,
+and run the existing request/response substitution and scanner pipeline over
+the decrypted HTTP messages. Prefer Calciforge-owned model gateway routes,
+explicit fetch/tool integration, or audited recipe wrappers for runtimes that
+cannot use the MITM trust setup.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
@@ -92,26 +95,53 @@ as a reliable security mechanism.
   OpenClaw installer path can write a systemd drop-in with `HTTP_PROXY` via
   `proxy_endpoint`, after checking that the configured `security-proxy` is
   reachable from the OpenClaw host.
-- `HTTPS_PROXY` is not set by the installer today because the current proxy
-  does not inspect CONNECT tunnels. Setting it globally can break streaming
-  clients, WebSockets, browser/OAuth flows, and npm-backed adapters while
-  giving a false impression that encrypted payloads are being scanned.
+- `HTTPS_PROXY` should only be set for agent runtimes that have been tested
+  with Calciforge's MITM mode and trust the configured CA. Setting it globally
+  can break streaming clients, WebSockets, browser/OAuth flows, and npm-backed
+  adapters.
 - Ambient proxy env on the Calciforge daemon itself is avoided because it can
   route Calciforge provider calls, channel callbacks, health checks, and local
   control-plane traffic through its own proxy boundary.
 - Secret injection works when the request reaches Calciforge in a visible form:
   model-gateway/provider routes, explicit fetch/MCP/tool wrappers, audited
-  recipes, or plaintext HTTP intercept mode. It does not happen for an
-  external daemon's direct HTTPS egress unless that daemon is configured to use
-  a future inspected transport or a Calciforge-owned tool path.
+  recipes, plaintext HTTP intercept mode, or HTTPS MITM mode. It does not
+  happen for an external daemon's direct HTTPS egress unless that daemon is
+  configured to use Calciforge's MITM listener or another Calciforge-owned tool
+  path.
+
+### HTTPS MITM Prototype
+
+Enable the hudsucker-backed MITM listener with:
+
+```sh
+SECURITY_PROXY_MITM_ENABLED=true \
+SECURITY_PROXY_CA_CERT=/etc/calciforge/mitm-ca.pem \
+SECURITY_PROXY_CA_KEY=/etc/calciforge/mitm-ca-key.pem \
+SECURITY_PROXY_PORT=8888 \
+security-proxy
+```
+
+Then configure the target agent process, not the Calciforge daemon itself:
+
+```sh
+export HTTP_PROXY=http://127.0.0.1:8888
+export HTTPS_PROXY=http://127.0.0.1:8888
+export NO_PROXY=localhost,127.0.0.1,::1
+```
+
+The agent runtime must trust `mitm-ca.pem`. Depending on the runtime that can
+mean the system trust store, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+`NODE_EXTRA_CA_CERTS`, browser trust settings, or tool-specific configuration.
+The current prototype covers explicit proxy mode; OS-level transparent
+redirects and installer-managed trust setup are next.
 
 Practical tiers:
 
 - Direct Mac Mini/Studio OpenClaw: use the channel plugin for inbound chat,
   point provider/model calls at Calciforge's model gateway where possible, and
-  use `proxy_endpoint` only for tested plaintext HTTP egress. This is convenient
-  but cooperative; OpenClaw can still bypass Calciforge if it opens its own
-  direct HTTPS connections.
+  use `proxy_endpoint` plus MITM CA trust for tested HTTP/HTTPS egress. This is
+  convenient but cooperative; OpenClaw can still bypass Calciforge if it opens
+  its own direct connections outside the configured proxy environment.
 - Linux service host: add systemd drop-ins, dedicated service users, and later
   `iptables`/`nftables` rules so the agent process has fewer unmanaged egress
   paths.

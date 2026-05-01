@@ -127,12 +127,21 @@ export HTTP_PROXY=http://127.0.0.1:8080
 export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 ```
 
-`HTTPS_PROXY` is intentionally omitted from the basic setup because standard
-HTTPS proxying uses CONNECT tunnels and the current proxy does not terminate or
-inspect those tunnels. Use Calciforge model-gateway routes, explicit
-fetch/tool integration, or audited recipes for HTTPS content that must be
-scanned or rewritten, or run the agent inside a controlled container/VM profile
-that forces egress through Calciforge services.
+`HTTPS_PROXY` is intentionally omitted from the basic setup unless you enable
+the MITM listener and install the Calciforge CA into the target runtime's trust
+store:
+
+```bash
+SECURITY_PROXY_MITM_ENABLED=true
+SECURITY_PROXY_CA_CERT=/etc/calciforge/mitm-ca.pem
+SECURITY_PROXY_CA_KEY=/etc/calciforge/mitm-ca-key.pem
+```
+
+Without MITM, standard HTTPS proxying uses opaque CONNECT tunnels. Use
+Calciforge model-gateway routes, explicit fetch/tool integration, audited
+recipes, or tested MITM proxy setup for HTTPS content that must be scanned or
+rewritten, or run the agent inside a controlled container/VM profile that
+forces egress through Calciforge services.
 
 ## Step 6: Set API credentials
 
