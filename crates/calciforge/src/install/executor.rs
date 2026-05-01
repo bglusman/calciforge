@@ -51,6 +51,7 @@ use super::{
 
 const DEFAULT_AGENT_NO_PROXY: &str = "localhost,127.0.0.1,::1";
 const OPENCLAW_CHANNEL_PLUGIN_ID: &str = "calciforge-channel";
+const OPENCLAW_POLICY_PLUGIN_ID: &str = "calciforge-policy";
 const OPENCLAW_CHANNEL_PLUGIN_DIR: &str = "~/.openclaw/extensions/calciforge-channel";
 const OPENCLAW_CHANNEL_PLUGIN_MANIFEST: &str =
     include_str!("../../../calciforge-openclaw-channel-plugin/openclaw.plugin.json");
@@ -1230,7 +1231,7 @@ fn patch_openclaw_channel_plugin(
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("plugins field is not a JSON object"))?;
     plugins_obj.insert("enabled".to_string(), serde_json::json!(true));
-    add_openclaw_plugin_allow_entry_if_present(plugins_obj)?;
+    add_openclaw_plugin_allow_entry_if_present(plugins_obj, OPENCLAW_CHANNEL_PLUGIN_ID)?;
 
     let entries = plugins_obj
         .entry("entries")
@@ -1260,6 +1261,7 @@ fn patch_openclaw_channel_plugin(
 
 fn add_openclaw_plugin_allow_entry_if_present(
     plugins_obj: &mut serde_json::Map<String, serde_json::Value>,
+    plugin_id: &str,
 ) -> Result<()> {
     let Some(allow) = plugins_obj.get_mut("allow") else {
         return Ok(());
@@ -1269,9 +1271,9 @@ fn add_openclaw_plugin_allow_entry_if_present(
         .ok_or_else(|| anyhow::anyhow!("plugins.allow is not an array"))?;
     if !allow_arr
         .iter()
-        .any(|entry| entry.as_str() == Some(OPENCLAW_CHANNEL_PLUGIN_ID))
+        .any(|entry| entry.as_str() == Some(plugin_id))
     {
-        allow_arr.push(serde_json::json!(OPENCLAW_CHANNEL_PLUGIN_ID));
+        allow_arr.push(serde_json::json!(plugin_id));
     }
     Ok(())
 }
@@ -1325,6 +1327,7 @@ fn patch_openclaw_policy_plugin(
         plugins_obj
             .entry("enabled")
             .or_insert(serde_json::json!(true));
+        add_openclaw_plugin_allow_entry_if_present(plugins_obj, OPENCLAW_POLICY_PLUGIN_ID)?;
     }
 
     let entries = plugins_obj
@@ -1348,7 +1351,7 @@ fn patch_openclaw_policy_plugin(
     };
 
     entries_obj.insert(
-        "calciforge-policy".to_string(),
+        OPENCLAW_POLICY_PLUGIN_ID.to_string(),
         serde_json::json!({
             "enabled": true,
             "config": {
@@ -1915,25 +1918,26 @@ mod tests {
 
     #[test]
     fn patch_openclaw_config_extends_existing_plugin_allowlist() {
-        let input = r#"{"plugins": {"allow": ["calciforge-policy"]}}"#;
+        let input = r#"{"plugins": {"allow": ["kimi"]}}"#;
         let patched = patch_openclaw_config(
             input,
             "calciforge",
             Some(TEST_AUTH_TOKEN),
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
-            None,
+            Some("http://clashd.internal:9001/evaluate"),
         )
         .expect("patch should succeed");
 
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         let allow = v["plugins"]["allow"].as_array().unwrap();
-        assert!(allow
-            .iter()
-            .any(|entry| entry.as_str() == Some("calciforge-policy")));
+        assert!(allow.iter().any(|entry| entry.as_str() == Some("kimi")));
         assert!(allow
             .iter()
             .any(|entry| entry.as_str() == Some("calciforge-channel")));
+        assert!(allow
+            .iter()
+            .any(|entry| entry.as_str() == Some("calciforge-policy")));
     }
 
     /// patch_openclaw_config preserves existing hooks fields without mutation.

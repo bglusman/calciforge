@@ -95,8 +95,8 @@ aliases = [
 
 [[routing]]
 identity = "operator"
-default_agent = "research"
-allowed_agents = ["research"]
+default_agent = "librarian"
+allowed_agents = ["librarian"]
 ```
 
 Messages from Matrix users not in `allowed_users` are ignored before identity resolution.

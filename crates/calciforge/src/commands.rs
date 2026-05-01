@@ -2111,7 +2111,7 @@ mod tests {
                 AgentConfig {
                     id: "librarian".to_string(),
                     kind: "openclaw-channel".to_string(),
-                    endpoint: "http://10.0.0.20:18789".to_string(),
+                    endpoint: "http://example.invalid:18789".to_string(),
                     timeout_ms: Some(120000),
                     model: None,
                     auth_token: Some("REPLACE_WITH_AUTH_TOKEN".to_string()),
@@ -2394,7 +2394,7 @@ mod tests {
         let reply = h.handle("!agents").unwrap();
         assert!(reply.contains("librarian"), "should show agent id");
         assert!(
-            !reply.contains("10.0.0.20"),
+            !reply.contains("example.invalid"),
             "summary should not show noisy endpoint details: {reply}"
         );
         assert!(
@@ -2429,7 +2429,7 @@ mod tests {
         let reply = h.handle("!agent details librarian").unwrap();
         assert!(reply.contains("librarian"), "should show agent id: {reply}");
         assert!(
-            reply.contains("10.0.0.20"),
+            reply.contains("example.invalid"),
             "details should show endpoint: {reply}"
         );
         assert!(

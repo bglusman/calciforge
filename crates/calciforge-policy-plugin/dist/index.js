@@ -3,7 +3,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 const DEFAULT_CONFIG = {
   clashdEndpoint: process.env.CLASHD_ENDPOINT || "http://localhost:9001/evaluate",
   timeoutMs: Number.parseInt(process.env.CLASHD_TIMEOUT_MS || "500", 10),
-  fallbackOnError: process.env.CLASHD_FALLBACK || "deny",
+  fallbackOnError: normalizeFallbackOnError(process.env.CLASHD_FALLBACK),
 };
 
 export default definePluginEntry({
@@ -16,6 +16,10 @@ export default definePluginEntry({
       ...DEFAULT_CONFIG,
       ...(api.pluginConfig ?? {}),
     };
+    config.fallbackOnError = normalizeFallbackOnError(
+      config.fallbackOnError,
+      api.logger,
+    );
 
     api.logger.info("[calciforge-policy] Initializing policy enforcement");
     api.logger.info(
@@ -81,7 +85,7 @@ export default definePluginEntry({
           `[calciforge-policy] Error contacting clashd: ${errorMsg}`,
         );
 
-        if (config.fallbackOnError === "deny") {
+        if (config.fallbackOnError !== "allow") {
           return {
             block: true,
             blockReason: "Policy enforcement unavailable; failing closed",
@@ -96,6 +100,18 @@ export default definePluginEntry({
     });
   },
 });
+
+function normalizeFallbackOnError(value, logger) {
+  if (value === "allow" || value === "deny") {
+    return value;
+  }
+  if (value !== undefined && value !== null && value !== "") {
+    logger?.warn(
+      `[calciforge-policy] Invalid fallbackOnError=${String(value)}; defaulting to deny`,
+    );
+  }
+  return "deny";
+}
 
 async function evaluateWithClashd(config, toolName, args, identity) {
   const controller = new AbortController();
