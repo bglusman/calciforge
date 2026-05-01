@@ -73,7 +73,7 @@ The stub is tested (marker appears in config, idempotent on second run) but the 
 
 Step 4 (channel routing) collects `ChannelRouting` assignments but doesn't actually write them anywhere. The `ChannelRouting` struct is the right shape to feed into `CalciforgeConfig::routing` entries. The Opus session should:
 1. Generate `[[routing]]` TOML entries from the wizard's collected assignments
-2. Write them to `~/.calciforge/config.toml` (or the specified config path)
+2. Write them to `~/.config/calciforge/config.toml` (or the specified config path)
 3. Optionally disable the same channels in the OpenClaw config (with backup)
 
 ### Vault integration
@@ -155,7 +155,7 @@ From Workstream 2 requirements:
 
 3. **`--yes` flag propagation** — wire through to suppress `Confirm` dialogs in scripted runs.
 
-4. **Config write-back** — the wizard collects channel routing assignments but doesn't persist them to `~/.calciforge/config.toml`. This needs implementing.
+4. **Config write-back** — the wizard collects channel routing assignments but doesn't persist them to `~/.config/calciforge/config.toml`. This needs implementing.
 
 5. **Vault integration hooks** — `apply_remote_config` should call `VaultAdapter::store_secret` for generated credentials when vault is configured.
 

@@ -9,6 +9,8 @@ This directory is for user-facing and maintainer-facing documentation
 that should be reasonably stable:
 
 - `index.md` — GitHub Pages feature tour
+- `agent-runtime-contract.md` — how agents learn Calciforge CLI, optional MCP,
+  artifact, proxy, and future API surfaces
 - `agent-adapters.md` — agent adapter selection and evaluation notes
 - `agents.md` — agent backends, identities, and routing rules
 - `agent-adapters.md` also covers secured recipes, artifact-producing

@@ -192,32 +192,9 @@ struct Login {
 /// resolver, not a specific backend (which would leak implementation
 /// choice and couple consumers to fnox).
 async fn get_secret_from_fnox(name: &str) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    use tokio::process::Command;
-
     debug!("Looking up {} in fnox", name);
-
-    let output = Command::new("fnox")
-        .args(["get", name])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    crate::FnoxClient::new()
+        .get(name)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to execute fnox: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("fnox get {} failed: {}", name, stderr);
-    }
-
-    let secret = String::from_utf8(output.stdout)
-        .map_err(|e| anyhow::anyhow!("fnox returned invalid UTF-8: {}", e))?
-        .trim()
-        .to_string();
-
-    if secret.is_empty() {
-        anyhow::bail!("fnox returned empty secret for {}", name);
-    }
-
-    Ok(secret)
+        .map_err(|e| anyhow::anyhow!("fnox get {} failed: {}", name, e))
 }

@@ -111,7 +111,12 @@ as a reliable security mechanism.
 
 ### HTTPS MITM Prototype
 
-Enable the hudsucker-backed MITM listener with:
+The installer now starts `security-proxy` with the hudsucker-backed MITM
+listener enabled by default and generates a persistent local CA if one does not
+already exist. That makes inspected HTTPS the default available proxy mode, but
+it does not automatically make every agent or browser trust that CA.
+
+To run the binary manually, use:
 
 ```sh
 SECURITY_PROXY_MITM_ENABLED=true \
@@ -133,7 +138,7 @@ The agent runtime must trust `mitm-ca.pem`. Depending on the runtime that can
 mean the system trust store, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
 `NODE_EXTRA_CA_CERTS`, browser trust settings, or tool-specific configuration.
 The current prototype covers explicit proxy mode; OS-level transparent
-redirects and installer-managed trust setup are next.
+redirects and installer-managed per-runtime trust setup are next.
 
 Practical tiers:
 
@@ -243,8 +248,8 @@ service:
 
 ```sh
 CALCIFORGE_REMOTE_SCANNER_ENABLED=1 \
-REMOTE_SCANNER_API_KEY_FILE=~/.calciforge/secrets/remote-scanner-api-key \
-REMOTE_SCANNER_PROMPT_FILE=~/.calciforge/remote-llm-scanner-prompt.txt \
+REMOTE_SCANNER_API_KEY_FILE=~/.config/calciforge/secrets/remote-scanner-api-key \
+REMOTE_SCANNER_PROMPT_FILE=~/.config/calciforge/remote-llm-scanner-prompt.txt \
 bash scripts/install.sh
 ```
 

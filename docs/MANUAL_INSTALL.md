@@ -127,9 +127,10 @@ export HTTP_PROXY=http://127.0.0.1:8080
 export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 ```
 
-`HTTPS_PROXY` is intentionally omitted from the basic setup unless you enable
-the MITM listener and install the Calciforge CA into the target runtime's trust
-store:
+`HTTPS_PROXY` is intentionally omitted from the basic setup unless the target
+runtime trusts the Calciforge CA. The unified installer enables the MITM
+listener by default and generates the CA if needed; manual service definitions
+can do the same with:
 
 ```bash
 SECURITY_PROXY_MITM_ENABLED=true

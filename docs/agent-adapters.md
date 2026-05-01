@@ -25,6 +25,12 @@ tools should not become first-class adapters until they expose a scriptable
 protocol; otherwise Calciforge inherits the GUI's state model, auth prompts,
 and failure modes.
 
+Every adapter and recipe also needs an instruction path. The
+[agent runtime contract](agent-runtime-contract.html) is the shared baseline:
+default to CLI guidance via `calciforge-secrets`, opt into MCP only when the
+operator configures it for that runtime, and document any advertised artifact,
+proxy, model-gateway, or future Calciforge API surfaces.
+
 ## Current Adapter Posture
 
 | Agent | Calciforge path | Notes |

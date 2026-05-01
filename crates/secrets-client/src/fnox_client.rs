@@ -120,6 +120,15 @@ pub struct FnoxClient {
     /// fake shell script.
     binary: PathBuf,
     timeout: Duration,
+    /// Working directory for the fnox subprocess.
+    ///
+    /// fnox discovers and may create `fnox.toml` relative to the
+    /// process cwd. launchd services commonly start at `/`; leaving cwd
+    /// inherited there makes writes fail on macOS with "Read-only file
+    /// system" because fnox tries `/fnox.toml`. Production clients pin
+    /// cwd to Calciforge's app config dir; test clients leave it
+    /// inherited unless a test explicitly sets one.
+    working_dir: Option<PathBuf>,
 }
 
 impl Default for FnoxClient {
@@ -127,6 +136,7 @@ impl Default for FnoxClient {
         Self {
             binary: PathBuf::from("fnox"),
             timeout: DEFAULT_FNOX_TIMEOUT,
+            working_dir: default_fnox_working_dir(),
         }
     }
 }
@@ -144,6 +154,7 @@ impl FnoxClient {
         Self {
             binary: binary.into(),
             timeout: DEFAULT_FNOX_TIMEOUT,
+            working_dir: None,
         }
     }
 
@@ -153,6 +164,19 @@ impl FnoxClient {
         Self {
             binary: binary.into(),
             timeout,
+            working_dir: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_binary_and_working_dir(
+        binary: impl Into<PathBuf>,
+        working_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            binary: binary.into(),
+            timeout: DEFAULT_FNOX_TIMEOUT,
+            working_dir: Some(working_dir.into()),
         }
     }
 
@@ -195,11 +219,9 @@ impl FnoxClient {
     /// `fnox set <name>` — store a secret, value supplied on stdin.
     ///
     /// Stdin (not argv) so the value never appears in `ps`/`/proc`
-    /// output. fnox accepts stdin when invoked with `set <name> -`
-    /// (single-dash convention; fnox >= 0.3 supports it). Older
-    /// versions that need positional value will fail loudly via
-    /// FnoxError::Failed; the per-call message will name the version
-    /// constraint so operators can upgrade.
+    /// output. Modern fnox reads stdin when the positional value is omitted.
+    /// Passing `-` as a value stores a literal dash, so keep argv to only
+    /// `set <name>` and close stdin after writing.
     pub async fn set(&self, name: &str, value: &str) -> Result<(), FnoxError> {
         debug!("fnox set {}", name);
         use tokio::io::AsyncWriteExt;
@@ -274,6 +296,7 @@ impl FnoxClient {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            self.configure_command(&mut command);
             let result =
                 timeout(self.timeout, command.output())
                     .await
@@ -299,11 +322,12 @@ impl FnoxClient {
         for attempt in 0..FNOX_ETXTBSY_ATTEMPTS {
             let mut command = Command::new(&self.binary);
             command
-                .args(["set", name, "-"])
+                .args(["set", name])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            self.configure_command(&mut command);
 
             match command.spawn() {
                 Ok(child) => return Ok(child),
@@ -315,6 +339,38 @@ impl FnoxClient {
             }
         }
         unreachable!("for loop above always returns")
+    }
+
+    fn configure_command(&self, command: &mut Command) {
+        if let Some(working_dir) = &self.working_dir {
+            command.current_dir(working_dir);
+        }
+    }
+}
+
+fn default_fnox_working_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CALCIFORGE_FNOX_DIR").map(PathBuf::from) {
+        return ensure_fnox_working_dir(path);
+    }
+    if let Some(path) = std::env::var_os("CALCIFORGE_CONFIG_HOME").map(PathBuf::from) {
+        return ensure_fnox_working_dir(path);
+    }
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .map(|base| base.join("calciforge"))
+    {
+        return ensure_fnox_working_dir(path);
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".config").join("calciforge"))
+        .and_then(ensure_fnox_working_dir)
+}
+
+fn ensure_fnox_working_dir(path: PathBuf) -> Option<PathBuf> {
+    match std::fs::create_dir_all(&path) {
+        Ok(()) if path.is_dir() => Some(path),
+        _ => None,
     }
 }
 
@@ -525,7 +581,7 @@ mod tests {
 
     /// Given a fake fnox that captures its argv AND its stdin,
     /// when set("KEY", "value") is called,
-    /// then argv contains exactly `set KEY -` (value NOT in argv —
+    /// then argv contains exactly `set KEY` (value NOT in argv —
     /// argv leaks via /proc, ps, audit logs) and the value arrives on
     /// stdin. Defense in depth against the realistic shoulder-surf /
     /// process-list adversary on shared dev hosts.
@@ -549,7 +605,7 @@ mod tests {
         let argv = fs::read_to_string(&argv_log).expect("argv.log written");
         assert_eq!(
             argv.trim(),
-            "set MY_KEY -",
+            "set MY_KEY",
             "value must NOT appear in argv (leaks via ps); got: {argv:?}"
         );
         let stdin = fs::read_to_string(&stdin_log).expect("stdin.log written");
@@ -695,5 +751,28 @@ OUT"#,
         let bin = fake_fnox(&dir, "exit 0");
         let client = FnoxClient::with_binary(bin);
         assert!(client.is_available().await);
+    }
+
+    /// Given an explicit fnox working directory,
+    /// when a subprocess is spawned,
+    /// then fnox runs from that directory instead of inheriting `/` or
+    /// another service cwd. This prevents launchd-started Calciforge
+    /// from making fnox try to write `/fnox.toml` on macOS.
+    #[tokio::test]
+    async fn run_uses_configured_working_dir() {
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.path().join("fnox-cwd");
+        fs::create_dir(&cwd).unwrap();
+        let pwd_log = dir.path().join("pwd.log");
+        let bin = fake_fnox(&dir, &format!(r#"pwd > "{}"; exit 0"#, pwd_log.display()));
+        let client = FnoxClient::with_binary_and_working_dir(bin, &cwd);
+
+        assert!(client.is_available().await);
+
+        let pwd = fs::read_to_string(pwd_log).expect("fake fnox wrote pwd");
+        assert_eq!(
+            std::path::Path::new(pwd.trim()).canonicalize().unwrap(),
+            cwd.canonicalize().unwrap()
+        );
     }
 }

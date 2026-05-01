@@ -63,6 +63,32 @@ slash-style commands, quick replies, buttons, or a local web control
 panel when the channel supports them. The text grammar should remain
 the source of truth so agents and humans can use the same operations.
 
+## Channel-Native Affordances
+
+Calciforge should not force every channel into plain text when the
+transport offers better controls. Keep text as the universal fallback,
+but model richer controls as optional channel capabilities:
+
+- Choice controls: buttons, quick replies, polls, or menus for actions
+  such as switching agent/model, selecting a dispatcher, approving a
+  tool call, or choosing a secret-input flow.
+- Media and artifact controls: native image/file/audio delivery where
+  the channel supports it, with text fallback that names the artifact
+  and gives the safe next action.
+- State signals: reactions, read receipts, typing indicators, status
+  updates, or pinned summaries when those affordances exist and do not
+  leak sensitive information.
+- Forms/deep links: local web forms for secret input, policy review, or
+  dispatcher configuration when chat controls are too limited.
+
+iMessage and WhatsApp likely have useful non-text surfaces. Telegram,
+Matrix, and SMS/iMessage need explicit research against their current
+APIs and the libraries Calciforge uses before committing to a shared
+abstraction. A reasonable architecture is a channel capability trait:
+handlers ask for a high-level interaction such as "single choice",
+"approval", "artifact", or "form link"; each channel renders the best
+native affordance it can, then falls back to deterministic text.
+
 ## Secret Input UX
 
 `!secure input` and `!secure bulk` should read as local-network paste

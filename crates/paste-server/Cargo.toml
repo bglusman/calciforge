@@ -2,7 +2,7 @@
 name = "paste-server"
 version = "0.1.0"
 edition = "2024"
-description = "Localhost-only HTTP server for one-shot secret paste-in. Implements the !secure request flow per docs/rfcs/secret-input-web-ui.md — input-only, new-by-default, single-use URL with random token, 5-min expiry."
+description = "Short-lived local/LAN HTTP server for one-shot secret paste-in. Implements the !secure request flow per docs/rfcs/secret-input-web-ui.md — input-only, new-by-default, single-use URL with random token, 5-min expiry."
 license = "MIT"
 
 [dependencies]

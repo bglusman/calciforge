@@ -24,14 +24,14 @@ phone user  <-  Linq API      <-  Calciforge  <-  agent
 [[channels]]
 kind = "sms"
 enabled = true
-sms_linq_api_token_file = "~/.calciforge/secrets/linq-token"
+sms_linq_api_token_file = "~/.config/calciforge/secrets/linq-token"
 sms_from_phone = "+15555550001"
 sms_webhook_listen = "0.0.0.0:18798"
 sms_webhook_path = "/webhooks/sms"
 allowed_numbers = ["+15555550100"]
 
 # Recommended for public webhooks.
-# sms_linq_signing_secret_file = "~/.calciforge/secrets/linq-webhook-secret"
+# sms_linq_signing_secret_file = "~/.config/calciforge/secrets/linq-webhook-secret"
 
 # Optional security scan for inbound messages.
 # scan_messages = true

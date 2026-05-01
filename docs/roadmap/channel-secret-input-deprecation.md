@@ -18,11 +18,12 @@ path, not as the normal onboarding flow. The preferred paths are:
 - future MCP-driven local paste URLs for agents that discover missing
   secrets
 
-Calciforge and `fnox` can share the same `fnox.toml` and profile.
+Calciforge uses `~/.config/calciforge` as its default fnox working
+directory, while fnox provider definitions remain in fnox's global config.
 Installing the `fnox` binary remains useful for manual management
-(`fnox set/list/tui`) and as the current default local storage backend
-for `paste-server`, even if Calciforge eventually grows a no-external-
-binary store or a fnox-library write path.
+(`cd ~/.config/calciforge && fnox set/list/tui`) and as the current default
+local storage backend for `paste-server`, even if Calciforge eventually grows
+a no-external-binary store or a fnox-library write path.
 
 The channel path is attractive when traveling or operating from a
 phone, but raw secret values then land in chat transport, client

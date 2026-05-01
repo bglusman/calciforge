@@ -453,7 +453,7 @@ fn bracket_ipv6_host(host: &str) -> String {
 }
 
 fn detect_lan_ip() -> Option<IpAddr> {
-    for target in ["8.8.8.8:80", "1.1.1.1:80", "192.168.1.1:80"] {
+    for target in ["192.0.2.1:80", "198.51.100.1:80", "203.0.113.1:80"] {
         let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
         if socket.connect(target).is_err() {
             continue;
@@ -518,9 +518,9 @@ async fn post_bulk_submit(
         let ok = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|o| is_localhost_origin(o, allow_null));
+            .is_some_and(|o| is_allowed_origin(o, &state.config, allow_null));
         if !ok {
-            warn!("rejecting bulk POST: missing/non-localhost Origin header");
+            warn!("rejecting bulk POST: missing/untrusted Origin header");
             return (
                 StatusCode::FORBIDDEN,
                 Html("Rejected: missing/invalid Origin header (anti-rebinding)".to_string()),
@@ -691,9 +691,9 @@ async fn post_submit(
         let ok = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|o| is_localhost_origin(o, allow_null));
+            .is_some_and(|o| is_allowed_origin(o, &state.config, allow_null));
         if !ok {
-            warn!("rejecting paste POST: missing/non-localhost Origin header");
+            warn!("rejecting paste POST: missing/untrusted Origin header");
             return (
                 StatusCode::FORBIDDEN,
                 Html("Rejected: missing/invalid Origin header (anti-rebinding)".to_string()),
@@ -793,10 +793,27 @@ async fn post_submit(
     }
 }
 
-fn is_localhost_origin(origin: &str, allow_null: bool) -> bool {
+fn is_allowed_origin(origin: &str, config: &PasteConfig, allow_null: bool) -> bool {
     if origin == "null" {
         return allow_null;
     }
+
+    if let Some(base) = configured_public_base_url(config)
+        && origin_matches_base_url(origin, &base)
+    {
+        return true;
+    }
+
+    if let Some(host) = configured_public_host(config)
+        && origin_matches_public_host(origin, &host)
+    {
+        return true;
+    }
+
+    is_localhost_origin(origin)
+}
+
+fn is_localhost_origin(origin: &str) -> bool {
     if origin.starts_with("http://127.0.0.1:")
         || origin.starts_with("http://localhost:")
         || origin == "http://localhost"
@@ -807,6 +824,76 @@ fn is_localhost_origin(origin: &str, allow_null: bool) -> bool {
     // the same LAN can submit. Treats the home network as trusted —
     // the check still blocks origins from the public internet.
     is_rfc1918_http_origin(origin)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OriginParts<'a> {
+    scheme: &'a str,
+    host: &'a str,
+    port: Option<u16>,
+}
+
+fn parse_origin_like(input: &str) -> Option<OriginParts<'_>> {
+    let (scheme, rest) = input.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+
+    let (host, port) = if let Some(after_bracket) = authority.strip_prefix('[') {
+        let (host, remainder) = after_bracket.split_once(']')?;
+        let port = if let Some(port_text) = remainder.strip_prefix(':') {
+            Some(port_text.parse().ok()?)
+        } else if remainder.is_empty() {
+            None
+        } else {
+            return None;
+        };
+        (host, port)
+    } else {
+        let mut pieces = authority.split(':');
+        let host = pieces.next()?;
+        let port = match pieces.next() {
+            Some(port_text) => Some(port_text.parse().ok()?),
+            None => None,
+        };
+        if pieces.next().is_some() {
+            return None;
+        }
+        (host, port)
+    };
+
+    if host.is_empty() {
+        return None;
+    }
+    Some(OriginParts { scheme, host, port })
+}
+
+fn origin_matches_base_url(origin: &str, base_url: &str) -> bool {
+    let Some(origin) = parse_origin_like(origin) else {
+        return false;
+    };
+    let Some(base) = parse_origin_like(base_url) else {
+        return false;
+    };
+    origin.scheme == base.scheme
+        && origin.host.eq_ignore_ascii_case(base.host)
+        && origin.port == base.port
+}
+
+fn origin_matches_public_host(origin: &str, public_host: &str) -> bool {
+    let Some(origin) = parse_origin_like(origin) else {
+        return false;
+    };
+    let normalized = public_host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    origin.host.eq_ignore_ascii_case(normalized)
 }
 
 fn is_rfc1918_http_origin(origin: &str) -> bool {
@@ -1292,25 +1379,65 @@ mod tests {
     #[test]
     fn origin_predicate_accepts_loopback_and_rfc1918_rejects_public() {
         // loopback
-        assert!(is_localhost_origin("http://127.0.0.1:8080", false));
-        assert!(is_localhost_origin("http://localhost:8080", false));
+        assert!(is_localhost_origin("http://127.0.0.1:8080"));
+        assert!(is_localhost_origin("http://localhost:8080"));
         // RFC 1918 ranges
-        assert!(is_localhost_origin("http://192.168.1.175:58083", false));
-        assert!(is_localhost_origin("http://10.0.0.5:9000", false));
-        assert!(is_localhost_origin("http://172.16.5.1:80", false));
-        assert!(is_localhost_origin("http://172.31.255.1:80", false));
+        assert!(is_localhost_origin("http://192.168.1.175:58083"));
+        assert!(is_localhost_origin("http://10.0.0.5:9000"));
+        assert!(is_localhost_origin("http://172.16.5.1:80"));
+        assert!(is_localhost_origin("http://172.31.255.1:80"));
         // boundary: 172.32 is NOT private
-        assert!(!is_localhost_origin("http://172.32.0.1:80", false));
+        assert!(!is_localhost_origin("http://172.32.0.1:80"));
         // public
-        assert!(!is_localhost_origin("http://example.com", false));
-        assert!(!is_localhost_origin("http://8.8.8.8:80", false));
+        assert!(!is_localhost_origin("http://example.com"));
+        assert!(!is_localhost_origin("http://8.8.8.8:80"));
         // CGNAT-adjacent — explicitly NOT in the allowed set
-        assert!(!is_localhost_origin("http://100.64.0.1:80", false));
+        assert!(!is_localhost_origin("http://100.64.0.1:80"));
         // https not http (paste server is plain http; https can't have come from us)
-        assert!(!is_localhost_origin("https://192.168.1.1:443", false));
+        assert!(!is_localhost_origin("https://192.168.1.1:443"));
         // null still gated by allow_null_origin
-        assert!(!is_localhost_origin("null", false));
-        assert!(is_localhost_origin("null", true));
+        assert!(!is_allowed_origin("null", &PasteConfig::default(), false));
+        assert!(is_allowed_origin("null", &PasteConfig::default(), true));
+    }
+
+    #[test]
+    fn origin_predicate_accepts_configured_public_base_url_origin() {
+        let cfg = PasteConfig {
+            public_base_url: Some("https://calciforge.example.net/secret-paste".to_string()),
+            ..PasteConfig::default()
+        };
+
+        assert!(is_allowed_origin(
+            "https://calciforge.example.net",
+            &cfg,
+            false
+        ));
+        assert!(!is_allowed_origin(
+            "http://calciforge.example.net",
+            &cfg,
+            false
+        ));
+        assert!(!is_allowed_origin(
+            "https://attacker.example.net",
+            &cfg,
+            false
+        ));
+    }
+
+    #[test]
+    fn origin_predicate_accepts_configured_public_host_origin() {
+        let cfg = PasteConfig {
+            public_host: Some("calciforge.local".to_string()),
+            ..PasteConfig::default()
+        };
+
+        assert!(is_allowed_origin(
+            "http://calciforge.local:58083",
+            &cfg,
+            false
+        ));
+        assert!(is_allowed_origin("https://calciforge.local", &cfg, false));
+        assert!(!is_allowed_origin("http://other.local:58083", &cfg, false));
     }
 
     /// Given a POST whose Origin is an RFC 1918 LAN IP (192.168.x.y),

@@ -87,7 +87,7 @@ service.
 id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/librarian-token"
 reply_auth_token = "{{secret:LIBRARIAN_REPLY_TOKEN}}"
 timeout_ms = 120000
 aliases = ["lib", "main"]
@@ -147,7 +147,7 @@ Required: `endpoint`, `api_key`.
 id = "zeroclaw"
 kind = "zeroclaw"
 endpoint = "http://127.0.0.1:18792"
-api_key_file = "~/.calciforge/secrets/zeroclaw-token"
+api_key_file = "~/.config/calciforge/secrets/zeroclaw-token"
 timeout_ms = 90000
 ```
 
@@ -235,7 +235,7 @@ The optional `registry` table is not used at dispatch time — it populates the
 id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/librarian-token"
 timeout_ms = 120000
 
 [agents.registry]
@@ -333,7 +333,7 @@ aliases = [{ channel = "telegram", id = "7000000001" }]
 id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/librarian-token"
 timeout_ms = 120000
 
 [[routing]]
@@ -344,7 +344,7 @@ allowed_agents = ["librarian"]
 [[channels]]
 kind = "telegram"
 enabled = true
-bot_token_file = "~/.calciforge/secrets/telegram-token"
+bot_token_file = "~/.config/calciforge/secrets/telegram-token"
 ```
 
 ## Verify

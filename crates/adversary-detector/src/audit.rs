@@ -1,4 +1,4 @@
-//! Audit logging: append JSONL events to `~/.calciforge/logs/adversary-audit.jsonl`.
+//! Audit logging: append JSONL events to `~/.config/calciforge/logs/adversary-audit.jsonl`.
 
 use crate::verdict::{ScanContext, ScanVerdict};
 use chrono::Utc;
@@ -41,7 +41,7 @@ impl AuditEntry {
     }
 }
 
-/// Async audit logger that appends JSONL to `~/.calciforge/logs/adversary-audit.jsonl`.
+/// Async audit logger that appends JSONL to `~/.config/calciforge/logs/adversary-audit.jsonl`.
 pub struct AuditLogger {
     log_path: PathBuf,
     claw_id: String,
@@ -52,9 +52,10 @@ pub struct AuditLogger {
 impl AuditLogger {
     /// Create a logger with the given claw ID and default log path.
     pub fn new(claw_id: impl Into<String>) -> Self {
-        let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
         Self {
-            log_path: home.join(".calciforge/logs/adversary-audit.jsonl"),
+            log_path: calciforge_config_home()
+                .join("logs")
+                .join("adversary-audit.jsonl"),
             claw_id: claw_id.into(),
             total_requests: AtomicU64::new(0),
             blocked_or_reviewed: AtomicU64::new(0),
@@ -108,4 +109,18 @@ impl AuditLogger {
             Err(e) => warn!("adversary audit open error: {e}"),
         }
     }
+}
+
+fn calciforge_config_home() -> PathBuf {
+    std::env::var_os("CALCIFORGE_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME").map(|base| PathBuf::from(base).join("calciforge"))
+        })
+        .unwrap_or_else(|| {
+            home::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/root"))
+                .join(".config")
+                .join("calciforge")
+        })
 }

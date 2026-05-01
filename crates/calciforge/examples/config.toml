@@ -1,5 +1,5 @@
 # Example Calciforge Configuration with ACP Support
-# Copy to ~/.calciforge/config.toml and customize
+# Copy to ~/.config/calciforge/config.toml and customize
 
 [calciforge]
 version = 1
@@ -188,15 +188,15 @@ capabilities = ["message", "command"]
 
 [[channels]]
 kind = "telegram"
-bot_token_file = "~/.calciforge/secrets/telegram-token"
+bot_token_file = "~/.config/calciforge/secrets/telegram-token"
 enabled = true
 
 [[channels]]
 kind = "matrix"
 homeserver = "https://matrix-client.matrix.org"
 user_id = "@calciforge-bot:matrix.org"
-token_file = "~/.calciforge/secrets/matrix-token"
-refresh_token_file = "~/.calciforge/secrets/matrix-refresh-token"
+token_file = "~/.config/calciforge/secrets/matrix-token"
+refresh_token_file = "~/.config/calciforge/secrets/matrix-refresh-token"
 token_ttl_seconds = 14400
 enabled = true
 
@@ -226,4 +226,4 @@ embedding_top_k = 5
 embedding_threshold = 0.75
 post_write_hook = "heuristic"
 store = "sqlite"
-store_path = "~/.calciforge/memory/store.db"
+store_path = "~/.config/calciforge/memory/store.db"

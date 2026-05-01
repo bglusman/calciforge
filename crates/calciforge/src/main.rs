@@ -50,7 +50,7 @@ use crate::{
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    /// Path to config file (default: ~/.calciforge/config.toml, then /etc/calciforge/config.toml)
+    /// Path to config file (default: ~/.config/calciforge/config.toml, then legacy/system fallbacks)
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 

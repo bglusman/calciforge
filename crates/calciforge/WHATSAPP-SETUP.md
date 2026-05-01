@@ -11,7 +11,7 @@ WA user  ──→  ZeroClaw (wa-rs session host)  ──→  POST /webhooks/wha
 WA user  ←──  ZeroClaw (wa-rs session host)  ←──  POST /tools/invoke  ←──  Calciforge reply
 ```
 
-## Step 1: Calciforge config (`/root/.calciforge/config.toml` on 10.0.0.10)
+## Step 1: Calciforge config (`/root/.config/calciforge/config.toml` on 10.0.0.10)
 
 Add this `[[channels]]` block:
 

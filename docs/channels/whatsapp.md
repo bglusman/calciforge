@@ -25,7 +25,7 @@ WhatsApp user  <->  WhatsApp Web session  <->  Calciforge  <->  agent
 [[channels]]
 kind = "whatsapp"
 enabled = true
-whatsapp_session_path = "~/.calciforge/whatsapp/session.db"
+whatsapp_session_path = "~/.config/calciforge/whatsapp/session.db"
 allowed_numbers = ["+15555550001"]
 
 # Optional pairing-code login. Use digits only.

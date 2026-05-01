@@ -1029,7 +1029,7 @@ mod tests {
     };
 
     /// Create a CommandHandler backed by a temp state directory so tests are
-    /// isolated from `~/.calciforge/state/active-agents.json` on disk.
+    /// isolated from the default active-agent state file on disk.
     fn make_handler(config: Arc<CalciforgeConfig>) -> CommandHandler {
         let tmp = tempfile::tempdir().expect("tempdir for telegram test state isolation");
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
@@ -1073,7 +1073,7 @@ mod tests {
             }],
             channels: vec![ChannelConfig {
                 kind: "telegram".to_string(),
-                bot_token_file: Some("~/.calciforge/secrets/telegram-token".to_string()),
+                bot_token_file: Some("~/.config/calciforge/secrets/telegram-token".to_string()),
                 enabled: true,
                 ..Default::default()
             }],
