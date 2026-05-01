@@ -179,7 +179,7 @@ raw API keys or trusting the agent's own restraint.</p>
 <div class="nav">
 <a href="https://github.com/bglusman/calciforge">GitHub</a>
 <a href="#quick-install-mac">Install</a>
-<a href="agents.md">Agents</a>
+<a href="agents.html">Agents</a>
 </div>
 
 </div>

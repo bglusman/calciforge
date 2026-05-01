@@ -1,3 +1,8 @@
+---
+layout: default
+title: Documentation Tree
+---
+
 # Documentation Tree
 
 This directory is for user-facing and maintainer-facing documentation

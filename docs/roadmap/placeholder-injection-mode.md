@@ -1,3 +1,8 @@
+---
+layout: default
+title: Placeholder Injection Mode
+---
+
 # Placeholder-injection mode (Kloak-inspired transparency)
 
 Status: ROADMAP — captured 2026-04-25 from a discussion of

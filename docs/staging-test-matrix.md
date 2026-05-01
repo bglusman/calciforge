@@ -1,3 +1,8 @@
+---
+layout: default
+title: Staging Test Matrix
+---
+
 # Staging Test Matrix (Local + GitHub Actions + Cloud)
 
 This document defines a practical, security-first test pyramid for Calciforge.

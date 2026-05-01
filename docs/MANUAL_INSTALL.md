@@ -1,3 +1,8 @@
+---
+layout: default
+title: Manual Installation
+---
+
 # Manual Installation Guide (Fallback)
 
 If the automated `install-security-stack.sh` fails, follow these steps manually on each target host.

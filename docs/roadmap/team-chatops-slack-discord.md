@@ -1,3 +1,8 @@
+---
+layout: default
+title: Team ChatOps
+---
+
 # Team ChatOps: Slack, Discord, and Castle Federation
 
 **Status:** sketch

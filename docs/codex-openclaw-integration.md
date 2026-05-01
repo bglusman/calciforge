@@ -1,3 +1,8 @@
+---
+layout: default
+title: Codex and OpenClaw Integration
+---
+
 # Codex, OpenClaw, and CLI-backed subscriptions
 
 Calciforge supports Codex in two practical ways:

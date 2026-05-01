@@ -1,3 +1,8 @@
+---
+layout: default
+title: Agent Adapter Notes
+---
+
 # Agent Adapter Notes
 
 Calciforge can dispatch to agents in three broad ways:

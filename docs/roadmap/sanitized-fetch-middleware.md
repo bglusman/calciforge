@@ -1,3 +1,8 @@
+---
+layout: default
+title: Sanitized Fetch Middleware
+---
+
 # Sanitized Fetch Middleware
 
 Calciforge currently focuses on flagging external content with `clean`,

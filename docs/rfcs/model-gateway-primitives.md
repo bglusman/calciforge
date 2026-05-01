@@ -1,3 +1,8 @@
+---
+layout: default
+title: Model Gateway Primitives RFC
+---
+
 # RFC: Model-gateway primitives (Alloy + Cascade + Dispatcher)
 
 Status: **implemented for the core runtime.** Alloy context-window
