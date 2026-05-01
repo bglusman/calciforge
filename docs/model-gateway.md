@@ -1,3 +1,8 @@
+---
+layout: default
+title: Model Gateway
+---
+
 # Model Gateway
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
@@ -264,7 +269,7 @@ context_window = 262144
 
 - Codex and Claude subscription-backed CLI routes can be configured as
   agent integrations or as `[[exec_models]]`. See
-  [Codex/OpenClaw integration](codex-openclaw-integration.md) for direct
+  [Codex/OpenClaw integration](codex-openclaw-integration.html) for direct
   `codex-cli`, OpenClaw `openai-codex/*`, OpenClaw `codex/*`, and
   Claude CLI setup choices.
 - The model gateway uses a shared `TokenEstimator` trait for fit

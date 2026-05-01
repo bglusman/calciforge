@@ -1,3 +1,8 @@
+---
+layout: default
+title: Local Secret Input Web UI RFC
+---
+
 # Local secret-input web UI — RFC
 
 Status: PARTIALLY IMPLEMENTED — `crates/paste-server` provides the

@@ -1,3 +1,8 @@
+---
+layout: default
+title: Outbound Sensitive Data Detection
+---
+
 # Outbound Sensitive Data Detection
 
 **Status:** Research / Future Roadmap  

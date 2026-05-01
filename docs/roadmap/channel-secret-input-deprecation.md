@@ -1,3 +1,8 @@
+---
+layout: default
+title: Channel Secret Input Deprecation
+---
+
 # Channel Secret Input Deprecation
 
 Status: proposed direction

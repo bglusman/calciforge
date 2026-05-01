@@ -1,3 +1,8 @@
+---
+layout: default
+title: Claude Code via acpx
+---
+
 # Claude Code via acpx — Setup Guide
 
 Calciforge supports routing messages to [Claude Code](https://code.claude.com) via the `acpx` CLI adapter. This lets you chat with Claude through WhatsApp, Signal, Telegram, or any other Calciforge channel.

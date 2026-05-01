@@ -1,3 +1,8 @@
+---
+layout: default
+title: Security Gateway
+---
+
 # Security Gateway Architecture
 
 The `security-gateway` is the mandatory network enforcement point for agent

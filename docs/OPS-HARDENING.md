@@ -1,3 +1,8 @@
+---
+layout: default
+title: Host-Agent Privilege Hardening
+---
+
 # OPS-HARDENING.md — Calciforge Host-Agent Privilege Hardening Guide
 
 > **TL;DR:** Replace broad `/sbin/zfs`, `/usr/sbin/pct`, and `/usr/bin/git`

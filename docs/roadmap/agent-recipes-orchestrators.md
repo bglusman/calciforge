@@ -1,3 +1,8 @@
+---
+layout: default
+title: Agent Recipes and Orchestrators
+---
+
 # Agent Recipes, Artifacts, and Orchestrators
 
 Calciforge should support more agent runtimes without pretending every upstream
