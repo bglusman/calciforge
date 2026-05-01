@@ -254,6 +254,7 @@ async fn handle_reply(
     let correlation_key = payload
         .request_id
         .as_deref()
+        .filter(|request_id| !request_id.trim().is_empty())
         .unwrap_or(&payload.session_key)
         .to_string();
 
@@ -957,6 +958,69 @@ mod tests {
             .expect("legacy callback should still route by sessionKey");
 
         assert_eq!(reply, "legacy reply");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_treats_empty_request_id_as_legacy_callback() {
+        #[derive(Clone)]
+        struct LegacyState {
+            reply_webhook: String,
+        }
+
+        async fn legacy_inbound_handler(
+            State(state): State<LegacyState>,
+            Json(body): Json<Value>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            let session_key = body
+                .get("sessionKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let reply = serde_json::json!({
+                "sessionKey": session_key,
+                "requestId": "",
+                "message": "empty request id legacy reply",
+            });
+
+            tokio::spawn(async move {
+                let _ = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("test reqwest client")
+                    .post(state.reply_webhook)
+                    .json(&reply)
+                    .send()
+                    .await;
+            });
+
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+        }
+
+        let reply_port = free_port();
+        let app = Router::new()
+            .route("/calciforge/inbound", post(legacy_inbound_handler))
+            .with_state(LegacyState {
+                reply_webhook: format!("http://127.0.0.1:{reply_port}/hooks/reply"),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inbound_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+        let reply = adapter
+            .dispatch_with_context(DispatchContext {
+                message: "route this with empty request id fallback",
+                sender: Some("renee"),
+                model_override: None,
+                session: None,
+                channel: None,
+            })
+            .await
+            .expect("empty requestId should fall back to sessionKey");
+
+        assert_eq!(reply, "empty request id legacy reply");
     }
 
     #[tokio::test]
