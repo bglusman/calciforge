@@ -27,36 +27,24 @@ pub fn create_run_dir(root_name: &str) -> Result<PathBuf, String> {
     ensure_artifact_root(&root)?;
     cleanup_old_run_dirs(&root, DEFAULT_ARTIFACT_RETENTION);
     let run_dir = root.join(Uuid::new_v4().to_string());
-    std::fs::create_dir(&run_dir).map_err(|e| {
-        format!(
-            "failed to create artifact directory {}: {e}",
-            run_dir.display()
-        )
-    })?;
-    set_private_dir_permissions(&run_dir)?;
+    create_private_dir(&run_dir)
+        .map_err(|e| format!("failed to create artifact run directory: {e}"))?;
     Ok(run_dir)
 }
 
 fn ensure_artifact_root(root: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(root) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(format!(
-                    "artifact root {} must not be a symlink",
-                    root.display()
-                ));
+        Ok(metadata) => validate_artifact_root(root, &metadata)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match create_private_dir(root) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = std::fs::symlink_metadata(root).map_err(|e| {
+                    format!("failed to inspect artifact root {}: {e}", root.display())
+                })?;
+                validate_artifact_root(root, &metadata)?;
             }
-            if !metadata.is_dir() {
-                return Err(format!(
-                    "artifact root {} exists but is not a directory",
-                    root.display()
-                ));
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(root)
-                .map_err(|e| format!("failed to create artifact root {}: {e}", root.display()))?;
-        }
+            Err(e) => return Err(format!("failed to create artifact root: {e}")),
+        },
         Err(e) => {
             return Err(format!(
                 "failed to inspect artifact root {}: {e}",
@@ -65,6 +53,34 @@ fn ensure_artifact_root(root: &Path) -> Result<(), String> {
         }
     }
     set_private_dir_permissions(root)
+}
+
+fn validate_artifact_root(root: &Path, metadata: &std::fs::Metadata) -> Result<(), String> {
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "artifact root {} must not be a symlink",
+            root.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "artifact root {} exists but is not a directory",
+            root.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
 }
 
 #[cfg(unix)]
@@ -111,12 +127,9 @@ pub fn collect_run_artifacts(
     max_artifact_bytes: u64,
     max_artifacts: usize,
 ) -> Result<Vec<OutboundAttachment>, String> {
-    let base = artifact_dir.canonicalize().map_err(|e| {
-        format!(
-            "artifact directory {} is not accessible: {e}",
-            artifact_dir.display()
-        )
-    })?;
+    let base = artifact_dir
+        .canonicalize()
+        .map_err(|e| format!("artifact directory is not accessible: {e}"))?;
 
     let mut attachments = Vec::new();
     let mut total_artifact_bytes: u64 = 0;
@@ -128,19 +141,26 @@ pub fn collect_run_artifacts(
         for entry in entries {
             let entry = entry.map_err(|e| format!("failed to read artifact entry: {e}"))?;
             let path = entry.path();
-            let canonical = path
-                .canonicalize()
-                .map_err(|e| format!("failed to canonicalize artifact {}: {e}", path.display()))?;
+            let canonical = path.canonicalize().map_err(|e| {
+                format!(
+                    "failed to canonicalize artifact {}: {e}",
+                    artifact_label(&path, &base)
+                )
+            })?;
 
             if !canonical.starts_with(&base) {
                 return Err(format!(
                     "artifact path escaped run directory: {}",
-                    path.display()
+                    artifact_label(&path, &base)
                 ));
             }
 
-            let metadata = std::fs::metadata(&canonical)
-                .map_err(|e| format!("failed to inspect artifact {}: {e}", canonical.display()))?;
+            let metadata = std::fs::metadata(&canonical).map_err(|e| {
+                format!(
+                    "failed to inspect artifact {}: {e}",
+                    artifact_label(&canonical, &base)
+                )
+            })?;
             if metadata.is_dir() {
                 pending.push_back(canonical);
                 continue;
@@ -151,7 +171,7 @@ pub fn collect_run_artifacts(
             if metadata.len() > max_artifact_bytes {
                 return Err(format!(
                     "artifact {} exceeds {} byte limit",
-                    canonical.display(),
+                    artifact_label(&canonical, &base),
                     max_artifact_bytes
                 ));
             }
@@ -171,7 +191,12 @@ pub fn collect_run_artifacts(
                 ));
             }
 
-            let mime_type = detect_mime_type(&canonical);
+            let mime_type = detect_mime_type(&canonical).map_err(|e| {
+                format!(
+                    "failed to inspect artifact {} MIME type: {e}",
+                    artifact_label(&canonical, &base)
+                )
+            })?;
             attachments.push(OutboundAttachment {
                 kind: AttachmentKind::from_mime(&mime_type),
                 path: canonical,
@@ -184,6 +209,21 @@ pub fn collect_run_artifacts(
 
     attachments.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(attachments)
+}
+
+fn artifact_label(path: &Path, base: &Path) -> String {
+    path.strip_prefix(base)
+        .ok()
+        .and_then(|relative| {
+            let value = relative.display().to_string();
+            (!value.is_empty()).then_some(value)
+        })
+        .or_else(|| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "artifact".to_string())
 }
 
 pub fn write_inline_attachment(
@@ -226,11 +266,7 @@ pub fn write_inline_attachment(
     }
 
     let filename = sanitize_attachment_name(name, &mime_type, index);
-    let path = unique_attachment_path(run_dir, filename, index);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
+    let (path, mut file) = create_unique_attachment_file(run_dir, &filename, index)
         .map_err(|e| format!("failed to write callback attachment: {e}"))?;
     file.write_all(&data)
         .map_err(|e| format!("failed to write callback attachment: {e}"))?;
@@ -244,28 +280,28 @@ pub fn write_inline_attachment(
     })
 }
 
-pub fn detect_mime_type(path: &Path) -> String {
+pub fn detect_mime_type(path: &Path) -> Result<String, String> {
     let mut header = [0_u8; 16];
     let bytes_read = std::fs::File::open(path)
         .and_then(|mut file| file.read(&mut header))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let bytes = &header[..bytes_read];
     if !bytes.is_empty() {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return "image/png".to_string();
+            return Ok("image/png".to_string());
         }
         if bytes.starts_with(b"\xff\xd8\xff") {
-            return "image/jpeg".to_string();
+            return Ok("image/jpeg".to_string());
         }
         if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-            return "image/gif".to_string();
+            return Ok("image/gif".to_string());
         }
         if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-            return "image/webp".to_string();
+            return Ok("image/webp".to_string());
         }
     }
 
-    match path
+    Ok(match path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
@@ -283,7 +319,7 @@ pub fn detect_mime_type(path: &Path) -> String {
         Some("txt") | Some("md") => "text/plain",
         _ => "application/octet-stream",
     }
-    .to_string()
+    .to_string())
 }
 
 pub fn strip_data_url_prefix(value: &str) -> &str {
@@ -335,14 +371,36 @@ pub fn sanitize_attachment_name(name: Option<&str>, mime_type: &str, index: usiz
     sanitized
 }
 
-pub fn unique_attachment_path(run_dir: &Path, filename: String, index: usize) -> PathBuf {
-    let candidate = run_dir.join(&filename);
-    if !candidate.exists() {
-        return candidate;
+fn create_unique_attachment_file(
+    run_dir: &Path,
+    filename: &str,
+    index: usize,
+) -> std::io::Result<(PathBuf, std::fs::File)> {
+    for attempt in 0..1024 {
+        let path = run_dir.join(disambiguated_attachment_name(filename, index, attempt));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
 
-    let disambiguated = format!("attachment-{}-{}", index + 1, filename);
-    run_dir.join(disambiguated)
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no unique callback attachment filename available",
+    ))
+}
+
+fn disambiguated_attachment_name(filename: &str, index: usize, attempt: usize) -> String {
+    match attempt {
+        0 => filename.to_string(),
+        1 => format!("attachment-{}-{filename}", index + 1),
+        _ => format!("attachment-{}-{attempt}-{filename}", index + 1),
+    }
 }
 
 pub fn default_extension_for_mime(mime_type: &str) -> &'static str {
@@ -403,6 +461,64 @@ mod tests {
         assert_eq!(attachment.mime_type, "image/png");
         assert_eq!(attachment.caption.as_deref(), Some("Generated diagram"));
         assert!(std::fs::metadata(attachment.path).unwrap().is_file());
+    }
+
+    #[test]
+    fn inline_attachment_disambiguates_existing_names_until_create_succeeds() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("diagram.png"), "existing").expect("write first");
+        std::fs::write(temp.path().join("attachment-2-diagram.png"), "existing")
+            .expect("write collision");
+
+        let attachment = write_inline_attachment(
+            temp.path(),
+            1,
+            Some("diagram.png"),
+            Some("image/png"),
+            None,
+            "iVBORw0KGgo=",
+            DEFAULT_MAX_ARTIFACT_BYTES as usize,
+        )
+        .expect("inline attachment should find an unused filename");
+
+        assert_eq!(
+            attachment.path.file_name().and_then(|name| name.to_str()),
+            Some("attachment-2-2-diagram.png")
+        );
+    }
+
+    #[test]
+    fn collect_artifact_errors_do_not_expose_absolute_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let artifact = temp.path().join("oversized.txt");
+        std::fs::write(&artifact, "too large").expect("write artifact");
+
+        let err =
+            collect_run_artifacts(temp.path(), 4, DEFAULT_MAX_ARTIFACTS).expect_err("oversized");
+
+        assert!(err.contains("artifact oversized.txt exceeds"));
+        assert!(
+            !err.contains(&temp.path().display().to_string()),
+            "error leaked temp path: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_mime_type_reports_read_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let artifact = temp.path().join("unreadable.png");
+        std::fs::write(&artifact, b"\x89PNG\r\n\x1a\n").expect("write artifact");
+        std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod artifact");
+
+        let err = detect_mime_type(&artifact).expect_err("unreadable artifact should fail");
+        assert!(!err.is_empty());
+
+        std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+            .expect("restore perms");
     }
 
     #[cfg(unix)]

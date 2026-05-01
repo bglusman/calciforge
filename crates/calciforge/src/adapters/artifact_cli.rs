@@ -15,7 +15,8 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::artifacts::{
-    collect_run_artifacts, create_run_dir, DEFAULT_MAX_ARTIFACTS, DEFAULT_MAX_ARTIFACT_BYTES,
+    artifact_root, collect_run_artifacts, create_run_dir, DEFAULT_MAX_ARTIFACTS,
+    DEFAULT_MAX_ARTIFACT_BYTES,
 };
 use crate::messages::{OutboundAttachment, OutboundMessage};
 
@@ -119,7 +120,7 @@ impl ArtifactCliAdapter {
     }
 
     fn run_artifact_dir(&self) -> Result<PathBuf, AdapterError> {
-        if self.artifact_root == crate::artifacts::artifact_root(ARTIFACT_ROOT_NAME) {
+        if self.uses_default_artifact_root() {
             return create_run_dir(ARTIFACT_ROOT_NAME).map_err(AdapterError::Unavailable);
         }
 
@@ -131,6 +132,21 @@ impl ArtifactCliAdapter {
             ))
         })?;
         Ok(run_dir)
+    }
+
+    fn uses_default_artifact_root(&self) -> bool {
+        let default_root = artifact_root(ARTIFACT_ROOT_NAME);
+        if self.artifact_root == default_root {
+            return true;
+        }
+
+        match (
+            self.artifact_root.canonicalize(),
+            default_root.canonicalize(),
+        ) {
+            (Ok(configured), Ok(default)) => configured == default,
+            _ => false,
+        }
     }
 
     fn stderr_preview(stderr: &[u8]) -> String {
@@ -402,5 +418,29 @@ mod tests {
             AdapterError::Protocol(msg) => assert!(msg.contains("artifact count exceeds")),
             other => panic!("expected protocol error, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_artifact_root_detection_handles_equivalent_paths() {
+        use std::os::unix::fs::symlink;
+
+        let default_root = artifact_root(ARTIFACT_ROOT_NAME);
+        std::fs::create_dir_all(&default_root).expect("default root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let linked_root = temp.path().join("linked-default");
+        symlink(&default_root, &linked_root).expect("symlink default root");
+
+        let adapter = ArtifactCliAdapter::with_artifact_root(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::new(),
+            None,
+            Some(5000),
+            linked_root,
+            DEFAULT_MAX_ARTIFACT_BYTES,
+        );
+
+        assert!(adapter.uses_default_artifact_root());
     }
 }
