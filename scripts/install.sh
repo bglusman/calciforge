@@ -1824,7 +1824,10 @@ REMOTE_BUILD
         if [[ "$bin" == "clashd" ]]; then
             local remote_policy_tmp="/tmp/calciforge-default-policy-$$.star"
             local remote_agents_tmp="/tmp/calciforge-agents-example-$$.json"
-            ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $config_dir"
+            ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$config_dir" <<'REMOTE_MKDIR'
+set -euo pipefail
+mkdir -p -- "$1"
+REMOTE_MKDIR
             rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
             rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
             ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$config_dir" "$remote_policy_tmp" "$remote_agents_tmp" <<'REMOTE_CLASHD_CONFIG'

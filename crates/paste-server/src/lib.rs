@@ -664,7 +664,7 @@ async fn claim_request(
     let Some(req) = map.get_mut(token) else {
         return Err(PasteStateError::NotFound);
     };
-    validate_request_state(req.clone())?;
+    validate_request_state(req)?;
     req.in_progress = true;
     Ok(req.clone())
 }
@@ -684,14 +684,14 @@ async fn release_request(requests: &Arc<Mutex<HashMap<String, PendingRequest>>>,
     }
 }
 
-fn validate_request_state(req: PendingRequest) -> Result<PendingRequest, PasteStateError> {
+fn validate_request_state(req: &PendingRequest) -> Result<(), PasteStateError> {
     if chrono::Utc::now() > req.expires_at {
         return Err(PasteStateError::Expired);
     }
     if req.completed || req.in_progress {
         return Err(PasteStateError::InUse);
     }
-    Ok(req)
+    Ok(())
 }
 
 async fn claim_bulk_request(
@@ -702,7 +702,7 @@ async fn claim_bulk_request(
     let Some(req) = map.get_mut(token) else {
         return Err(PasteStateError::NotFound);
     };
-    validate_bulk_request_state(req.clone())?;
+    validate_bulk_request_state(req)?;
     req.in_progress = true;
     Ok(req.clone())
 }
@@ -728,16 +728,14 @@ async fn release_bulk_request(
     }
 }
 
-fn validate_bulk_request_state(
-    req: PendingBulkRequest,
-) -> Result<PendingBulkRequest, PasteStateError> {
+fn validate_bulk_request_state(req: &PendingBulkRequest) -> Result<(), PasteStateError> {
     if chrono::Utc::now() > req.expires_at {
         return Err(PasteStateError::Expired);
     }
     if req.completed || req.in_progress {
         return Err(PasteStateError::InUse);
     }
-    Ok(req)
+    Ok(())
 }
 
 fn mint_token() -> String {

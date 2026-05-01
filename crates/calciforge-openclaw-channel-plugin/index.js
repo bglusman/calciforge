@@ -581,11 +581,14 @@ async function recoverReplyAfterRunError({
   let lastResult = initialResult;
 
   while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
     const reply = await safeReadLatestAssistantReply({
       runtime,
       sessionKey,
       log,
       withGatewayClient,
+      timeoutMs: Math.min(5000, remainingMs),
     });
     const attachments = normalizeAttachments(lastResult?.attachments);
     if (
@@ -597,9 +600,6 @@ async function recoverReplyAfterRunError({
       );
       return { replyText: reply?.text ?? "", attachments };
     }
-
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) break;
 
     try {
       lastResult = await withGatewayClient(() =>
@@ -613,6 +613,7 @@ async function recoverReplyAfterRunError({
         sessionKey,
         log,
         withGatewayClient,
+        timeoutMs: Math.min(5000, Math.max(1, deadline - Date.now())),
       });
       const waitedAttachments = normalizeAttachments(lastResult.attachments);
       if (
@@ -730,14 +731,19 @@ function parseTimestampMillis(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function withOptionalTimeout(promise, timeoutMs) {
+async function withOptionalTimeout(promise, timeoutMs) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
-  return Promise.race([
-    promise,
-    sleep(timeoutMs).then(() => {
-      throw new Error(`timed out after ${timeoutMs}ms`);
-    }),
-  ]);
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function deliverReply({
