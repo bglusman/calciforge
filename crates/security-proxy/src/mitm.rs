@@ -30,6 +30,10 @@ use hudsucker::{Body as MitmBody, HttpContext, HttpHandler, Proxy, RequestOrResp
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+use crate::agent_web::{
+    self, host_is_known_llm_api, host_matches_search_engine, BrowsingDecision,
+    SearchResponseDecision,
+};
 use crate::proxy::{self, BodyMode, SecurityProxy};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
@@ -100,6 +104,10 @@ pub async fn serve_mitm(
 pub struct CalciforgeMitmHandler {
     state: Arc<SecurityProxy>,
     last_url: Option<String>,
+    /// True when the last forwarded request was sent to a host matching
+    /// `[security.agent_web].search_engine_patterns`. Used in
+    /// `process_response` to apply (B) search-response scanning.
+    last_was_search_host: bool,
 }
 
 impl CalciforgeMitmHandler {
@@ -107,6 +115,7 @@ impl CalciforgeMitmHandler {
         Self {
             state,
             last_url: None,
+            last_was_search_host: false,
         }
     }
 
@@ -197,6 +206,26 @@ impl CalciforgeMitmHandler {
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned));
 
+        // (A) Search-engine egress block. Fires before body decoding so
+        // we don't waste cycles on a request we're going to refuse.
+        let policy = &self.state.config.agent_web;
+        let host_is_search = match dest_host.as_deref() {
+            Some(h) => host_matches_search_engine(h, &policy.search_engine_patterns),
+            None => false,
+        };
+        self.last_was_search_host = host_is_search;
+        if policy.forbid_search_engines && host_is_search {
+            info!(
+                policy = "agent_web.forbid_search_engines",
+                dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
+                decision = "block",
+                "blocked search-engine egress"
+            );
+            return RequestOrResponse::Response(mitm_blocked_response(
+                "search engines disabled by [security.agent_web].forbid_search_engines",
+            ));
+        }
+
         let content_type = req
             .headers()
             .get(header::CONTENT_TYPE)
@@ -251,6 +280,61 @@ impl CalciforgeMitmHandler {
                 return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
             }
         };
+
+        // (C) Provider-browsing strip / block — only when body looks
+        // like a JSON LLM request to a known LLM API.
+        let body_bytes = {
+            let policy = &self.state.config.agent_web;
+            let dest = dest_host.as_deref().unwrap_or("<unknown>");
+            let is_llm_api = dest_host
+                .as_deref()
+                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
+                .unwrap_or(false);
+            let looks_json = content_type
+                .as_deref()
+                .map(looks_like_json_content_type)
+                .unwrap_or(false);
+            if is_llm_api && looks_json && !body_bytes.is_empty() {
+                match agent_web::inspect_browsing_body(&body_bytes, policy, dest) {
+                    BrowsingDecision::Allow => body_bytes,
+                    BrowsingDecision::Stripped { body, .. } => Bytes::from(body),
+                    BrowsingDecision::Block { reason } => {
+                        return RequestOrResponse::Response(mitm_blocked_response(&reason));
+                    }
+                }
+            } else {
+                body_bytes
+            }
+        };
+
+        // (D) URL pre-flight — scan messages / tool descriptions for
+        // URLs whose host is on the agent_web URL denylist. Same gate
+        // as (C): only fires for JSON-shaped LLM requests.
+        {
+            let policy = &self.state.config.agent_web;
+            let is_llm_api = dest_host
+                .as_deref()
+                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
+                .unwrap_or(false);
+            let looks_json = content_type
+                .as_deref()
+                .map(looks_like_json_content_type)
+                .unwrap_or(false);
+            if is_llm_api && looks_json && !body_bytes.is_empty() {
+                if let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy) {
+                    info!(
+                        policy = "agent_web.preflight_message_urls",
+                        dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
+                        denied_host = host.as_str(),
+                        decision = "block",
+                        "blocked LLM request: references forbidden URL"
+                    );
+                    return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                        "request references forbidden URL: {host}"
+                    )));
+                }
+            }
+        }
 
         if !self.state.check_bypassed(&target_url)
             && self.state.config.scan_outbound
@@ -324,6 +408,27 @@ impl CalciforgeMitmHandler {
                 error!("Failed to read MITM response body: {err}");
                 return mitm_blocked_response("Failed to read response body");
             }
+        };
+
+        // (B) Search-response scanning. Runs only when the originating
+        // request hit a host matched by `search_engine_patterns`.
+        let body_bytes = if self.last_was_search_host {
+            let policy = &self.state.config.agent_web;
+            let dest = self
+                .last_url
+                .as_deref()
+                .and_then(|u| reqwest::Url::parse(u).ok())
+                .and_then(|u| u.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            match agent_web::scan_search_response(&body_bytes, policy, &dest) {
+                SearchResponseDecision::Pass => body_bytes,
+                SearchResponseDecision::Block { reason } => {
+                    return mitm_blocked_response(&reason);
+                }
+                SearchResponseDecision::Strip { body, .. } => Bytes::from(body),
+            }
+        } else {
+            body_bytes
         };
 
         if self.state.config.scan_inbound && content_type.starts_with("text/") {
@@ -454,6 +559,23 @@ async fn substitute_body(
             Ok(body_bytes)
         }
     }
+}
+
+fn looks_like_json_content_type(ct: &str) -> bool {
+    looks_like_json_content_type_pub(ct)
+}
+
+/// Public wrapper for `looks_like_json_content_type` so the
+/// `proxy::intercept` axum handler can reuse the exact same content-type
+/// classification as the MITM path.
+pub fn looks_like_json_content_type_pub(ct: &str) -> bool {
+    let head = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    head == "application/json" || head.ends_with("+json")
 }
 
 fn is_hop_by_hop_or_recomputed(name: &header::HeaderName) -> bool {
