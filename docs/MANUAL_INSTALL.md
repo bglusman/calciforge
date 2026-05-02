@@ -131,9 +131,9 @@ export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 Only set `HTTPS_PROXY` when the target runtime trusts the Calciforge CA. The
 unified installer enables the MITM listener by default and generates the CA if
 needed. On macOS it explains the trust step before the password prompt and can
-add the CA to the login keychain for managed browser-backed agents; set
-`SECURITY_PROXY_TRUST_MITM_CA=false` to skip that step. Manual service
-definitions can do the same with:
+add the CA to the login keychain for any tested client that sends HTTPS traffic
+through `security-proxy`; set `SECURITY_PROXY_TRUST_MITM_CA=false` to skip
+that step. Manual service definitions can do the same with:
 
 ```bash
 SECURITY_PROXY_MITM_ENABLED=true

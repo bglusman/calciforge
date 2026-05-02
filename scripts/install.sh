@@ -212,11 +212,12 @@ trust_mitm_ca_if_supported() {
     fi
 
     echo ""
-    echo "Calciforge HTTPS inspection uses a local MITM CA for tested browser-backed agents."
+    echo "Calciforge HTTPS inspection uses a local MITM CA for tested proxied clients."
     echo "macOS may ask for your password before adding this CA to the login keychain."
-    echo "This lets managed OpenClaw browser traffic trust Calciforge's local proxy."
-    echo "Skip with SECURITY_PROXY_TRUST_MITM_CA=false; without trust, browser-backed"
-    echo "agents may show certificate errors instead of inspected HTTPS pages."
+    echo "This lets browsers, tools, and agent runtimes trust Calciforge's local proxy"
+    echo "when they are configured to send HTTPS traffic through security-proxy."
+    echo "Skip with SECURITY_PROXY_TRUST_MITM_CA=false; without trust, proxied HTTPS"
+    echo "clients may show certificate errors instead of inspected pages."
     echo ""
     if [[ "$YES" != true ]]; then
         if [[ ! -t 0 ]]; then
