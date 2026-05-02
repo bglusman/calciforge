@@ -1800,7 +1800,8 @@ PYEOF
 
         ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
         local remote_tmp="/tmp/calciforge-install-${bin}-$$"
-        if ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+        if command -v rsync >/dev/null 2>&1 && \
+            ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
             rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${remote_tmp}"
         else
             scp "${ssh_opts[@]}" "$bin_path" "${ssh_target}:${remote_tmp}"
@@ -2087,7 +2088,8 @@ REMOTE_BUILD
         # ── rsync binary ─────────────────────────────────────────────────────
         ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
         local remote_tmp="/tmp/calciforge-install-${bin}-$$"
-        if ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+        if command -v rsync >/dev/null 2>&1 && \
+            ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
             rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${remote_tmp}"
         else
             scp "${ssh_opts[@]}" "$bin_path" "${ssh_target}:${remote_tmp}"
@@ -2102,8 +2104,14 @@ REMOTE_BUILD
 set -euo pipefail
 mkdir -p -- "$1"
 REMOTE_MKDIR
-            rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
-            rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            if command -v rsync >/dev/null 2>&1 && \
+                ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+                rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
+                rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            else
+                scp "${ssh_opts[@]}" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
+                scp "${ssh_opts[@]}" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            fi
             ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$config_dir" "$remote_policy_tmp" "$remote_agents_tmp" <<'REMOTE_CLASHD_CONFIG'
 set -euo pipefail
 config_dir="$1"
