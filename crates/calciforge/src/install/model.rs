@@ -142,6 +142,30 @@ pub struct ClawTarget {
     ///
     /// When omitted, installer-managed daemons keep loopback traffic local.
     pub no_proxy: Option<String>,
+    /// Enable Linux installer hardening pass for this claw.
+    ///
+    /// When `true` (and the target is a Linux/systemd host), the installer:
+    /// - Discovers all agent-related services (browsers, orchestrators) via
+    ///   heuristics on `systemctl list-units`
+    /// - Writes ExecStart-override drop-ins for browser services so Chrome
+    ///   gets `--proxy-server=...` (HTTPS_PROXY env is unreliable headless)
+    /// - Installs the Calciforge MITM CA into the system bundle and per-user
+    ///   NSS DBs via `certutil`
+    /// - Verifies the result by hitting a known-blocked URL through the
+    ///   proxy and asserting the block page comes back. Fails loud if any
+    ///   service still bypasses.
+    ///
+    /// Default `false` to preserve the legacy env-only flow for callers
+    /// that haven't opted in.
+    pub linux_hardening: bool,
+    /// Extra service names (without or with `.service` suffix) to also
+    /// route through the proxy in addition to the heuristic-discovered
+    /// set. Operator-supplied; never speculative.
+    pub linux_hardening_extras: Vec<String>,
+    /// URL to hit through the proxy as the post-install verification
+    /// step. Defaults to
+    /// [`super::linux_hardening::DEFAULT_VERIFY_URL`] when `None`.
+    pub linux_hardening_verify_url: Option<String>,
 }
 
 impl ClawTarget {
@@ -340,6 +364,9 @@ mod tests {
             reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         assert!(zeroclaw.needs_ssh_config());
 
@@ -357,6 +384,9 @@ mod tests {
             reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         assert!(!openai.needs_ssh_config());
     }
@@ -375,6 +405,9 @@ mod tests {
             reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         let key = target.ssh_key_required().unwrap();
         assert_eq!(key, &PathBuf::from("/keys/id_rsa"));
@@ -394,6 +427,9 @@ mod tests {
             reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         let result = target.ssh_key_required();
         assert!(result.is_err());

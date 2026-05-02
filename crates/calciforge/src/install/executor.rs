@@ -1072,10 +1072,349 @@ fn configure_remote_openclaw_proxy_env(
         );
     }
 
-    Ok(Some(format!(
+    let mut summary = format!(
         "configured OpenClaw {} service proxy env and noninteractive pnpm env via systemd drop-in",
         service_mode
-    )))
+    );
+
+    if claw.linux_hardening {
+        let hardening_summary =
+            run_linux_hardening_pass(claw, deps, proxy_endpoint, &no_proxy, service_mode)?;
+        summary.push_str("; ");
+        summary.push_str(&hardening_summary);
+    }
+
+    Ok(Some(summary))
+}
+
+/// Run the Linux hardening pass: discover agent services, write
+/// ExecStart-override drop-ins for browser services, install the
+/// Calciforge MITM CA into the system bundle and any discovered NSS DBs,
+/// restart in dependency order, then verify by hitting a known-blocked
+/// URL through the proxy.
+///
+/// All sub-steps reuse [`super::linux_hardening`] for the pure logic
+/// (parsing, drop-in rendering, response classification) and shell out
+/// via [`SshClient`] for the side-effecting parts (systemctl, certutil,
+/// curl).
+fn run_linux_hardening_pass(
+    claw: &ClawTarget,
+    deps: &ExecutorDeps,
+    proxy_endpoint: &str,
+    no_proxy: &str,
+    service_mode: &'static str,
+) -> Result<String> {
+    use super::linux_hardening::{
+        check_block_response, classify_service, detect_binary_path, extract_exec_start,
+        inject_proxy_server, render_exec_start_override, DropInShape, PackageManager,
+        VerifyOutcome, BLOCK_PAGE_MARKER, DEFAULT_VERIFY_URL, SHARED_HOST_BANNER,
+    };
+
+    let key = claw.ssh_key.as_deref();
+
+    // 1) Banner — operator-facing, prominent, scope-clarifying.
+    info!("{}", SHARED_HOST_BANNER);
+
+    // 2) Service discovery via `systemctl list-units` + per-unit cat.
+    //    We use `--no-pager --no-legend --plain` so output is stable for parsing.
+    let list_cmd = "systemctl list-units --type=service --state=running --no-legend --no-pager --plain || true";
+    let list_out = deps.ssh.run(&claw.host, key, list_cmd)?;
+    if !list_out.success {
+        bail!(
+            "failed to list running services on {}: {}",
+            claw.host,
+            list_out.stderr.trim()
+        );
+    }
+
+    let extras_owned: Vec<String> = claw.linux_hardening_extras.clone();
+    let mut configured: Vec<(String, DropInShape)> = Vec::new();
+
+    for line in list_out.stdout.lines() {
+        let unit = line.split_whitespace().next().unwrap_or("");
+        if !unit.ends_with(".service") {
+            continue;
+        }
+
+        // Pull description + ExecStart from `systemctl cat`. May fail for
+        // generated/transient units; we treat that as "skip silently".
+        let cat_cmd = format!("systemctl cat {} 2>/dev/null || true", shell_quote(unit));
+        let cat_out = deps.ssh.run(&claw.host, key, &cat_cmd)?;
+        let body = cat_out.stdout;
+        let description = body
+            .lines()
+            .find_map(|l| l.trim_start().strip_prefix("Description="))
+            .unwrap_or("")
+            .to_string();
+        let exec_start = extract_exec_start(&body).unwrap_or_default();
+
+        let Some((shape, reason)) =
+            classify_service(unit, &description, &exec_start, &extras_owned)
+        else {
+            continue;
+        };
+        info!(
+            target: "calciforge::install::hardening",
+            "discovered agent service {} (shape={:?}, reason={})",
+            unit, shape, reason,
+        );
+
+        match shape {
+            DropInShape::EnvOnly => {
+                // openclaw-gateway already got its drop-in from the caller;
+                // don't double-write.
+                if unit.starts_with("openclaw-gateway") {
+                    configured.push((unit.to_string(), shape));
+                    continue;
+                }
+                let dir = format!("/etc/systemd/system/{unit}.d");
+                let path = format!("{dir}/10-calciforge-proxy.conf");
+                let content = render_env_only_dropin(proxy_endpoint, no_proxy)?;
+                deps.ssh
+                    .run(&claw.host, key, &format!("mkdir -p {}", shell_quote(&dir)))?;
+                deps.ssh.write_file(&claw.host, key, &path, &content)?;
+                configured.push((unit.to_string(), shape));
+            }
+            DropInShape::ExecStartOverride => {
+                if exec_start.is_empty() {
+                    warn!(
+                        "skipping ExecStart override for {} on {}: no ExecStart= found",
+                        unit, claw.host
+                    );
+                    continue;
+                }
+                let _bin = detect_binary_path(&exec_start);
+                let rewritten = inject_proxy_server(&exec_start, proxy_endpoint);
+                if rewritten == exec_start {
+                    info!(
+                        "{} on {}: --proxy-server already present, skipping",
+                        unit, claw.host
+                    );
+                }
+                let dir = format!("/etc/systemd/system/{unit}.d");
+                let path = format!("{dir}/10-calciforge-proxy.conf");
+                let content = render_exec_start_override(&exec_start, proxy_endpoint, no_proxy);
+                deps.ssh
+                    .run(&claw.host, key, &format!("mkdir -p {}", shell_quote(&dir)))?;
+                deps.ssh.write_file(&claw.host, key, &path, &content)?;
+                configured.push((unit.to_string(), shape));
+            }
+        }
+    }
+
+    if configured.is_empty() {
+        warn!(
+            "Linux hardening: no agent-related services discovered on {}; \
+             nothing to configure beyond openclaw-gateway",
+            claw.host
+        );
+    }
+
+    // 3) Install the Calciforge MITM CA into the system bundle. The CA is
+    //    expected at `~/.config/calciforge/secrets/mitm-ca.pem` per the
+    //    install.sh contract; if absent, we bail with a clear hint.
+    let ca_remote = "$HOME/.config/calciforge/secrets/mitm-ca.pem";
+    let ca_check = deps.ssh.run(
+        &claw.host,
+        key,
+        &format!("test -s {} && echo OK || echo MISSING", ca_remote),
+    )?;
+    if ca_check.stdout.trim() != "OK" {
+        bail!(
+            "Calciforge MITM CA is missing on {} at ~/.config/calciforge/secrets/mitm-ca.pem; \
+             generate it via the install.sh bootstrap before running --linux-hardening",
+            claw.host
+        );
+    }
+
+    let pm_probe = deps
+        .ssh
+        .run(&claw.host, key, PackageManager::PROBE_COMMAND)?;
+    let pm = PackageManager::parse(&pm_probe.stdout)?;
+
+    // System CA bundle: copy + refresh.
+    let install_system_ca = format!(
+        "sudo -n cp {} /usr/local/share/ca-certificates/calciforge-ca.crt && sudo -n {}",
+        ca_remote,
+        pm.update_ca_certificates(),
+    );
+    let sys_ca_out = deps.ssh.run(&claw.host, key, &install_system_ca)?;
+    if !sys_ca_out.success {
+        warn!(
+            "Linux hardening: failed to install system CA bundle on {} ({}); \
+             continuing — `curl` and Node will not trust MITM until this is fixed manually",
+            claw.host,
+            sys_ca_out.stderr.trim(),
+        );
+    }
+
+    // NSS DB CA install: `~/.pki/nssdb` (per-user). Ensure libnss3-tools.
+    let install_nss_pkg = format!("sudo -n {}", pm.install_nss_tools());
+    let _ = deps.ssh.run(&claw.host, key, &install_nss_pkg)?;
+    let nss_install = format!(
+        "mkdir -p $HOME/.pki/nssdb && \
+         certutil -d sql:$HOME/.pki/nssdb -A -t \"C,,\" -n \"Calciforge MITM CA\" -i {} && \
+         echo NSS_OK",
+        ca_remote
+    );
+    let nss_out = deps.ssh.run(&claw.host, key, &nss_install)?;
+    if !nss_out.success || !nss_out.stdout.contains("NSS_OK") {
+        warn!(
+            "Linux hardening: failed to install Calciforge CA into per-user NSS DB on {}: {}",
+            claw.host,
+            nss_out.stderr.trim(),
+        );
+    }
+
+    // 4) Dependency-ordered restart with health check.
+    //    Order: browser → orchestrators → gateway → others.
+    let mut restart_order: Vec<&str> = Vec::new();
+    for (name, shape) in &configured {
+        if matches!(shape, DropInShape::ExecStartOverride) {
+            restart_order.push(name.as_str());
+        }
+    }
+    for (name, shape) in &configured {
+        if matches!(shape, DropInShape::EnvOnly) && !name.starts_with("openclaw-gateway") {
+            restart_order.push(name.as_str());
+        }
+    }
+    for (name, _) in &configured {
+        if name.starts_with("openclaw-gateway") {
+            restart_order.push(name.as_str());
+        }
+    }
+
+    let systemctl_prefix = match service_mode {
+        "user" => "systemctl --user",
+        _ => "systemctl",
+    };
+    let _ = deps.ssh.run(
+        &claw.host,
+        key,
+        &format!("{} daemon-reload", systemctl_prefix),
+    )?;
+    for unit in &restart_order {
+        let cmd = format!("{} restart {}", systemctl_prefix, shell_quote(unit));
+        let out = deps.ssh.run(&claw.host, key, &cmd)?;
+        if !out.success {
+            // Capture journalctl tail for context.
+            let log = deps.ssh.run(
+                &claw.host,
+                key,
+                &format!(
+                    "journalctl -u {} -n 20 --no-pager 2>&1 || true",
+                    shell_quote(unit)
+                ),
+            )?;
+            bail!(
+                "Linux hardening: failed to restart {} on {}: {}\n--- journalctl -n 20 ---\n{}",
+                unit,
+                claw.host,
+                out.stderr.trim(),
+                log.stdout
+            );
+        }
+        let active = deps.ssh.run(
+            &claw.host,
+            key,
+            &format!("{} is-active {}", systemctl_prefix, shell_quote(unit)),
+        )?;
+        if active.stdout.trim() != "active" {
+            let log = deps.ssh.run(
+                &claw.host,
+                key,
+                &format!(
+                    "journalctl -u {} -n 20 --no-pager 2>&1 || true",
+                    shell_quote(unit)
+                ),
+            )?;
+            bail!(
+                "Linux hardening: {} did not become active on {}: state={}\n--- journalctl -n 20 ---\n{}",
+                unit,
+                claw.host,
+                active.stdout.trim(),
+                log.stdout
+            );
+        }
+    }
+
+    // 5) Post-install verification — fail loud if any service still bypasses.
+    let verify_url = claw
+        .linux_hardening_verify_url
+        .as_deref()
+        .unwrap_or(DEFAULT_VERIFY_URL);
+    let verify_cmd = format!(
+        "curl --max-time 10 -sS -i -x {} --cacert /etc/ssl/certs/ca-certificates.crt {} 2>&1 || true",
+        shell_quote(proxy_endpoint),
+        shell_quote(verify_url),
+    );
+    let verify_out = deps.ssh.run(&claw.host, key, &verify_cmd)?;
+    let combined = verify_out.stdout;
+    match check_block_response(&combined) {
+        VerifyOutcome::Blocked => {
+            info!(
+                "Linux hardening: verified that {} is blocked by Calciforge ({} marker present)",
+                verify_url, BLOCK_PAGE_MARKER,
+            );
+        }
+        VerifyOutcome::NotBlocked { snippet } => {
+            let configured_list = configured
+                .iter()
+                .map(|(n, s)| format!("  {} ({:?})", n, s))
+                .collect::<Vec<_>>()
+                .join("\n");
+            bail!(
+                "Linux hardening verification FAILED: {} did not return the Calciforge \
+                 block page through the proxy.\nResponse (truncated):\n{}\n\nConfigured services:\n{}",
+                verify_url,
+                snippet,
+                configured_list,
+            );
+        }
+    }
+
+    // 6) Bypass audit — warn (not error) if anything is talking to :443 directly.
+    let proxy_port = endpoint_port(proxy_endpoint).unwrap_or(0);
+    let audit_cmd = format!(
+        "ss -tnp state established '( dport = :443 )' 2>/dev/null | grep -v '127.0.0.1:{}' || true",
+        proxy_port
+    );
+    let audit_out = deps.ssh.run(&claw.host, key, &audit_cmd)?;
+    if !audit_out.stdout.trim().is_empty() {
+        warn!(
+            "Linux hardening bypass audit on {}: the following processes are talking to upstream HTTPS \
+             directly. Either they're not agent processes (false positive — add to ignore list) \
+             or they're bypassing the proxy and need investigation:\n{}",
+            claw.host,
+            audit_out.stdout.trim(),
+        );
+    }
+
+    Ok(format!(
+        "Linux hardening: configured {} service(s); CA installed; verification passed at {}",
+        configured.len(),
+        verify_url
+    ))
+}
+
+/// Render an env-only systemd drop-in for non-browser agent services.
+///
+/// Same shape as the OpenClaw drop-in body, minus the OpenClaw-specific
+/// `OPENCLAW_PROXY_URL` and `PNPM_*` vars (those are scoped to the
+/// gateway service itself).
+fn render_env_only_dropin(proxy_endpoint: &str, no_proxy: &str) -> Result<String> {
+    Ok(format!(
+        "# Managed by calciforge install. Do not put secrets in this file.\n\
+         # HTTPS inspection requires Calciforge MITM mode plus target runtime CA trust.\n\
+         [Service]\n{}{}{}{}{}{}\n",
+        systemd_environment_line("HTTP_PROXY", proxy_endpoint)?,
+        systemd_environment_line("HTTPS_PROXY", proxy_endpoint)?,
+        systemd_environment_line("ALL_PROXY", proxy_endpoint)?,
+        systemd_environment_line("NO_PROXY", no_proxy)?,
+        systemd_environment_line("NODE_USE_SYSTEM_CA", "1")?,
+        systemd_environment_line("CI", "true")?,
+    ))
 }
 
 fn configure_launchd_openclaw_proxy_env(
@@ -1651,6 +1990,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1701,6 +2043,9 @@ mod tests {
             reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         let ssh = MockSshClient::new();
         let health = MockHealthChecker::new();
@@ -1849,6 +2194,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1929,6 +2277,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = MockSshClient::new();
@@ -1962,6 +2313,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = MockSshClient::new();
@@ -2318,6 +2672,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = MockSshClient::new();
@@ -2390,6 +2747,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: Some("http://127.0.0.1:8888".into()),
             no_proxy: Some("localhost,127.0.0.1,::1,calciforge.host".into()),
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = Arc::new(MockSshClient::new());
@@ -2467,6 +2827,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = Arc::new(MockSshClient::new());
@@ -2514,6 +2877,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: Some("http://127.0.0.1:8888".into()),
             no_proxy: Some("localhost,127.0.0.1,::1,calciforge.host".into()),
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let no_proxy = merged_openclaw_no_proxy(&claw).expect("valid no_proxy");
@@ -2537,6 +2903,9 @@ mod tests {
             reply_auth_token: None,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
 
         let ssh = MockSshClient::new();
@@ -2597,6 +2966,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         assert_eq!(remote_config_path(&claw), "~/.openclaw/openclaw.json");
     }
@@ -2615,6 +2987,9 @@ mod tests {
             reply_auth_token: Some("reply-token".into()),
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         };
         assert_eq!(remote_config_path(&claw), "~/.config/zeroclaw/config.toml");
     }

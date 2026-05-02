@@ -205,6 +205,22 @@ pub fn parse_claw_spec(spec: &str) -> Result<ClawTarget> {
         reply_auth_token,
         proxy_endpoint: kv.get("proxy_endpoint").cloned(),
         no_proxy: kv.get("no_proxy").map(|value| value.replace(';', ",")),
+        linux_hardening: kv
+            .get("linux_hardening")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false),
+        linux_hardening_extras: kv
+            .get("linux_hardening_extras")
+            .map(|value| {
+                value
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        linux_hardening_verify_url: kv.get("linux_hardening_verify_url").cloned(),
     })
 }
 
