@@ -836,6 +836,7 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
             claw.reply_webhook.as_deref(),
             claw.reply_auth_token.as_deref(),
             claw.policy_endpoint.as_deref(),
+            claw.proxy_endpoint.as_deref(),
         )
         .map_err(|e| anyhow::anyhow!("failed to patch openclaw.json: {}", e))?,
         ClawKind::ZeroClawNative => {
@@ -1036,12 +1037,14 @@ fn configure_remote_openclaw_proxy_env(
 
     let content = format!(
         "# Managed by calciforge install. Do not put secrets in this file.\n\
-         # HTTPS_PROXY is intentionally not set: Calciforge security-proxy does\n\
-         # not inspect TLS CONNECT tunnels. Use explicit fetch/tool integration\n\
-         # for HTTPS content scanning and credential substitution.\n\
-         [Service]\n{}{}{}{}\n",
+         # HTTPS inspection requires Calciforge MITM mode plus target runtime CA trust.\n\
+         [Service]\n{}{}{}{}{}{}{}{}\n",
         systemd_environment_line("HTTP_PROXY", proxy_endpoint)?,
+        systemd_environment_line("HTTPS_PROXY", proxy_endpoint)?,
+        systemd_environment_line("ALL_PROXY", proxy_endpoint)?,
+        systemd_environment_line("OPENCLAW_PROXY_URL", proxy_endpoint)?,
         systemd_environment_line("NO_PROXY", &no_proxy)?,
+        systemd_environment_line("NODE_USE_SYSTEM_CA", "1")?,
         systemd_environment_line("CI", "true")?,
         systemd_environment_line("PNPM_CONFIG_CONFIRM_MODULES_PURGE", "false")?,
     );
@@ -1070,7 +1073,7 @@ fn configure_remote_openclaw_proxy_env(
     }
 
     Ok(Some(format!(
-        "configured OpenClaw {} service HTTP_PROXY and noninteractive pnpm env via systemd drop-in",
+        "configured OpenClaw {} service proxy env and noninteractive pnpm env via systemd drop-in",
         service_mode
     )))
 }
@@ -1101,10 +1104,18 @@ fn configure_launchd_openclaw_proxy_env(
         "#!/bin/sh\n\
          # Managed by calciforge install. Do not put secrets in this file.\n\
          export HTTP_PROXY={}\n\
+         export HTTPS_PROXY={}\n\
+         export ALL_PROXY={}\n\
+         export OPENCLAW_PROXY_URL={}\n\
          export NO_PROXY={}\n\
+         export NODE_USE_SYSTEM_CA=1\n\
+         export NODE_EXTRA_CA_CERTS=\"${{CALCIFORGE_MITM_CA_CERT:-$HOME/.config/calciforge/secrets/mitm-ca.pem}}\"\n\
          export CI=true\n\
          export PNPM_CONFIG_CONFIRM_MODULES_PURGE=false\n\
          exec openclaw \"$@\"\n",
+        shell_export_value(proxy_endpoint),
+        shell_export_value(proxy_endpoint),
+        shell_export_value(proxy_endpoint),
         shell_export_value(proxy_endpoint),
         shell_export_value(no_proxy)
     );
@@ -1126,7 +1137,7 @@ fn configure_launchd_openclaw_proxy_env(
 
     install_or_restart_launchd_openclaw_service(claw, deps, Some(wrapper_path))?;
     Ok(Some(
-        "configured OpenClaw launchd service HTTP_PROXY via managed wrapper".to_string(),
+        "configured OpenClaw launchd service proxy env via managed wrapper".to_string(),
     ))
 }
 
@@ -1324,6 +1335,7 @@ fn patch_openclaw_config(
     reply_webhook: Option<&str>,
     reply_auth_token: Option<&str>,
     policy_endpoint: Option<&str>,
+    proxy_endpoint: Option<&str>,
 ) -> Result<String> {
     // Parse the existing config (handles JSON5 / JSONC comments).
     let mut config = parse_json5_relaxed(current_content)
@@ -1336,10 +1348,80 @@ fn patch_openclaw_config(
     remove_legacy_openclaw_hook_entries(config_obj)?;
     patch_openclaw_channel_plugin(config_obj, auth_token, reply_webhook, reply_auth_token)?;
     patch_openclaw_policy_plugin(config_obj, policy_endpoint)?;
+    patch_openclaw_proxy_config(config_obj, proxy_endpoint)?;
 
     // Serialize back to pretty JSON (no comments — they were stripped on read).
     serde_json::to_string_pretty(&config)
         .map_err(|e| anyhow::anyhow!("failed to serialize patched config: {}", e))
+}
+
+fn patch_openclaw_proxy_config(
+    config_obj: &mut serde_json::Map<String, serde_json::Value>,
+    proxy_endpoint: Option<&str>,
+) -> Result<()> {
+    let Some(proxy_endpoint) = proxy_endpoint.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    if proxy_endpoint.contains('\n') || proxy_endpoint.contains('\r') {
+        bail!("proxy_endpoint must be a single-line URL");
+    }
+    let parsed = Url::parse(proxy_endpoint)
+        .map_err(|e| anyhow::anyhow!("proxy_endpoint is invalid: {e}"))?;
+    if parsed.scheme() != "http" {
+        bail!("OpenClaw proxy_endpoint must use http://");
+    }
+
+    let proxy = config_obj
+        .entry("proxy")
+        .or_insert_with(|| serde_json::json!({}));
+    let proxy_obj = proxy
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("proxy field is not a JSON object"))?;
+    proxy_obj.insert("enabled".to_string(), serde_json::json!(true));
+    proxy_obj.insert("proxyUrl".to_string(), serde_json::json!(proxy_endpoint));
+
+    let browser = config_obj
+        .entry("browser")
+        .or_insert_with(|| serde_json::json!({}));
+    let browser_obj = browser
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("browser field is not a JSON object"))?;
+    let extra_args = browser_obj
+        .entry("extraArgs")
+        .or_insert_with(|| serde_json::json!([]));
+    let extra_args = extra_args
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("browser.extraArgs is not an array"))?;
+
+    let mut filtered_extra_args = Vec::with_capacity(extra_args.len() + 1);
+    let mut skip_next_proxy_value = false;
+    for arg in extra_args.drain(..) {
+        if skip_next_proxy_value {
+            skip_next_proxy_value = false;
+            continue;
+        }
+        let Some(arg_str) = arg.as_str() else {
+            filtered_extra_args.push(arg);
+            continue;
+        };
+        if arg_str == "--no-proxy-server" {
+            continue;
+        }
+        if arg_str == "--proxy-server" {
+            skip_next_proxy_value = true;
+            continue;
+        }
+        if arg_str.starts_with("--proxy-server=") {
+            continue;
+        }
+        filtered_extra_args.push(arg);
+    }
+    *extra_args = filtered_extra_args;
+    extra_args.push(serde_json::json!(format!(
+        "--proxy-server={proxy_endpoint}"
+    )));
+
+    Ok(())
 }
 
 fn patch_openclaw_channel_plugin(
@@ -2017,6 +2099,7 @@ mod tests {
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
             None,
+            None,
         )
         .expect("patch should succeed");
 
@@ -2053,6 +2136,7 @@ mod tests {
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
             Some("http://clashd.internal:9001/evaluate"),
+            None,
         )
         .expect("patch should succeed");
 
@@ -2079,6 +2163,7 @@ mod tests {
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
             None,
+            None,
         )
         .expect("should patch");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
@@ -2097,6 +2182,7 @@ mod tests {
             Some(TEST_AUTH_TOKEN),
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -2123,6 +2209,7 @@ mod tests {
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
             Some("http://clashd.internal:9001/evaluate"),
+            None,
         )
         .expect("patch succeeds");
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
@@ -2138,6 +2225,59 @@ mod tests {
         assert_eq!(
             entries["calciforge-policy"]["config"]["fallbackOnError"],
             "deny"
+        );
+    }
+
+    #[test]
+    fn patch_openclaw_config_routes_browser_through_security_proxy() {
+        let input = r#"{
+          "proxy": {"enabled": false, "proxyUrl": "http://old-proxy.invalid:8888"},
+          "browser": {
+            "extraArgs": [
+              "--window-size=1280,900",
+              "--no-proxy-server",
+              "--proxy-server=http://old-proxy.invalid:8888",
+              "--proxy-server",
+              "http://older-proxy.invalid:8888"
+            ]
+          }
+        }"#;
+
+        let patched = patch_openclaw_config(
+            input,
+            "custodian",
+            Some(TEST_AUTH_TOKEN),
+            Some(TEST_REPLY_WEBHOOK),
+            Some(TEST_REPLY_AUTH_TOKEN),
+            None,
+            Some("http://127.0.0.1:8888"),
+        )
+        .expect("patch succeeds");
+        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
+
+        assert_eq!(v["proxy"]["enabled"], true);
+        assert_eq!(v["proxy"]["proxyUrl"], "http://127.0.0.1:8888");
+        let extra_args = v["browser"]["extraArgs"].as_array().unwrap();
+        assert!(extra_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--window-size=1280,900")));
+        assert!(extra_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--proxy-server=http://127.0.0.1:8888")));
+        assert!(!extra_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--no-proxy-server")));
+        assert!(!extra_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("http://older-proxy.invalid:8888")));
+        assert_eq!(
+            extra_args
+                .iter()
+                .filter(|arg| arg
+                    .as_str()
+                    .is_some_and(|arg| arg.starts_with("--proxy-server")))
+                .count(),
+            1
         );
     }
 
@@ -2267,7 +2407,7 @@ mod tests {
             health: Arc::new(MockHealthChecker::new()),
         };
         let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
-        assert!(detail.contains("HTTP_PROXY"));
+        assert!(detail.contains("proxy env"));
         assert!(
             detail.contains("installed Calciforge OpenClaw policy plugin"),
             "policy endpoint should install policy plugin files: {detail}"
@@ -2300,6 +2440,9 @@ mod tests {
         )
         .expect("drop-in content should be utf-8");
         assert!(decoded.contains("Environment=\"HTTP_PROXY=http://127.0.0.1:8888\""));
+        assert!(decoded.contains("Environment=\"HTTPS_PROXY=http://127.0.0.1:8888\""));
+        assert!(decoded.contains("Environment=\"ALL_PROXY=http://127.0.0.1:8888\""));
+        assert!(decoded.contains("Environment=\"OPENCLAW_PROXY_URL=http://127.0.0.1:8888\""));
         assert!(decoded.contains("Environment=\"CI=true\""));
         assert!(decoded.contains("Environment=\"PNPM_CONFIG_CONFIRM_MODULES_PURGE=false\""));
         assert!(
@@ -2425,6 +2568,7 @@ mod tests {
             Some(TEST_AUTH_TOKEN),
             Some(TEST_REPLY_WEBHOOK),
             Some(TEST_REPLY_AUTH_TOKEN),
+            None,
             None,
         )
         .expect("patch succeeds");

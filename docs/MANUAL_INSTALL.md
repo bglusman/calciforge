@@ -119,18 +119,18 @@ For an external agent daemon that you have tested with `security-proxy`, set
 proxy environment in that daemon's service manager instead of in
 `/etc/profile.d`. For OpenClaw hosts managed by `calciforge install`, prefer
 the `--claw ... proxy_endpoint=http://<calciforge-host>:8888` option; the
-installer writes the OpenClaw service drop-in after verifying the proxy is
-reachable from that host. For a manually managed daemon:
+installer writes OpenClaw service proxy env and browser proxy settings after
+verifying the proxy is reachable from that host. For a manually managed daemon:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:8080
+export HTTPS_PROXY=http://127.0.0.1:8080
 export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
 ```
 
-`HTTPS_PROXY` is intentionally omitted from the basic setup unless the target
-runtime trusts the Calciforge CA. The unified installer enables the MITM
-listener by default and generates the CA if needed; manual service definitions
-can do the same with:
+Only set `HTTPS_PROXY` when the target runtime trusts the Calciforge CA. The
+unified installer enables the MITM listener by default and generates the CA if
+needed; manual service definitions can do the same with:
 
 ```bash
 SECURITY_PROXY_MITM_ENABLED=true

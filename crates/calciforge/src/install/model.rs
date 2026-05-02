@@ -133,11 +133,10 @@ pub struct ClawTarget {
     pub reply_auth_token: Option<String>,
     /// Optional HTTP proxy endpoint for managed agent outbound traffic.
     ///
-    /// For `openclaw-channel`, the installer writes a systemd drop-in for the
-    /// remote OpenClaw gateway service so plain HTTP model/tool traffic uses
-    /// Calciforge's `security-proxy`. `HTTPS_PROXY` is intentionally not set:
-    /// the current proxy is not a TLS MITM, so HTTPS inspection must use
-    /// explicit fetch/tool integration rather than ambient CONNECT tunneling.
+    /// For `openclaw-channel`, the installer writes service proxy env and
+    /// OpenClaw browser proxy settings so tested HTTP and HTTPS model/tool
+    /// traffic uses Calciforge's `security-proxy`. HTTPS inspection requires
+    /// MITM mode and runtime trust for the Calciforge CA.
     pub proxy_endpoint: Option<String>,
     /// Optional `NO_PROXY` value used with [`Self::proxy_endpoint`].
     ///

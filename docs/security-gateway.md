@@ -99,13 +99,17 @@ Calciforge did not remove proxy support; it narrowed where proxy env is treated
 as a reliable security mechanism.
 
 - `HTTP_PROXY` remains useful for tested plaintext HTTP clients. The
-  OpenClaw installer path can write a systemd drop-in with `HTTP_PROXY` via
-  `proxy_endpoint`, after checking that the configured `security-proxy` is
-  reachable from the OpenClaw host.
+  OpenClaw installer path can write service proxy env via `proxy_endpoint`,
+  after checking that the configured `security-proxy` is reachable from the
+  OpenClaw host.
 - `HTTPS_PROXY` should only be set for agent runtimes that have been tested
   with Calciforge's MITM mode and trust the configured CA. Setting it globally
   can break streaming clients, WebSockets, browser/OAuth flows, and npm-backed
   adapters.
+- Browser-backed tools usually need runtime-specific wiring. Managed OpenClaw
+  gets `browser.extraArgs = ["--proxy-server=..."]`; relying on ambient env is
+  not enough because OpenClaw strips Chrome proxy env and otherwise starts
+  Chrome with `--no-proxy-server`.
 - Ambient proxy env on the Calciforge daemon itself is avoided because it can
   route Calciforge provider calls, channel callbacks, health checks, and local
   control-plane traffic through its own proxy boundary.
