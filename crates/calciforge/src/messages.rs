@@ -98,18 +98,16 @@ impl OutboundMessage {
             }
             for (control_index, control) in self.controls.iter().enumerate() {
                 if control_index > 0 {
-                    rendered.push('\n');
+                    rendered.push_str("\n\n");
                 }
                 if !control.title.trim().is_empty() {
                     rendered.push_str(control.title.trim());
                     rendered.push('\n');
                 }
-                for option in &control.options {
-                    rendered.push_str("- ");
+                rendered.push_str("(reply with name or number)\n");
+                for (idx, option) in control.options.iter().enumerate() {
+                    rendered.push_str(&format!("{}. ", idx + 1));
                     rendered.push_str(option.label.trim());
-                    rendered.push_str(": `");
-                    rendered.push_str(option.command.trim());
-                    rendered.push('`');
                     rendered.push('\n');
                 }
                 if rendered.ends_with('\n') {
@@ -199,6 +197,125 @@ impl ChoiceOption {
     }
 }
 
+#[allow(dead_code)] // wired into per-channel inbound matchers in a follow-up PR
+impl ChoiceControl {
+    /// Try to resolve a free-text user reply to one of this control's options.
+    ///
+    /// The reply is accepted as either a 1-based number ("2", "#3"),
+    /// or a fuzzy match against an option label (case-insensitive,
+    /// trimmed whitespace, ignoring punctuation, prefix-or-substring).
+    /// Ambiguous matches (>1 hit, no exact label/number match) return
+    /// `Match::Ambiguous` so the channel can re-prompt instead of
+    /// dispatching the wrong action.
+    ///
+    /// Returns `Match::None` if the reply doesn't match anything —
+    /// caller should fall through to normal command/agent dispatch.
+    pub fn match_reply(&self, reply: &str) -> Match<'_> {
+        let trimmed = reply.trim().trim_start_matches('#').trim();
+        if trimmed.is_empty() {
+            return Match::None;
+        }
+
+        // 1-based number selection: "2", "#3", " 1 ".
+        if let Ok(n) = trimmed.parse::<usize>() {
+            if n >= 1 && n <= self.options.len() {
+                return Match::One(&self.options[n - 1]);
+            }
+            // Numeric but out-of-range → tell the caller it was a number
+            // attempt that didn't fit. Caller decides whether to re-prompt.
+            return Match::OutOfRange;
+        }
+
+        // Label match: exact (case/punct/whitespace-insensitive), then
+        // prefix, then substring. Each tier short-circuits.
+        let normalised_reply = normalize_for_match(trimmed);
+        if normalised_reply.is_empty() {
+            return Match::None;
+        }
+
+        let normalised_options: Vec<String> = self
+            .options
+            .iter()
+            .map(|o| normalize_for_match(&o.label))
+            .collect();
+
+        // Exact label match
+        let exact: Vec<usize> = normalised_options
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == normalised_reply)
+            .map(|(i, _)| i)
+            .collect();
+        if exact.len() == 1 {
+            return Match::One(&self.options[exact[0]]);
+        }
+        if exact.len() > 1 {
+            return Match::Ambiguous;
+        }
+
+        // Prefix match
+        let prefix: Vec<usize> = normalised_options
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.starts_with(&normalised_reply))
+            .map(|(i, _)| i)
+            .collect();
+        if prefix.len() == 1 {
+            return Match::One(&self.options[prefix[0]]);
+        }
+        if prefix.len() > 1 {
+            return Match::Ambiguous;
+        }
+
+        // Substring match — only if the reply is at least 2 chars to
+        // avoid silly matches on single letters.
+        if normalised_reply.len() >= 2 {
+            let substr: Vec<usize> = normalised_options
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.contains(&normalised_reply))
+                .map(|(i, _)| i)
+                .collect();
+            if substr.len() == 1 {
+                return Match::One(&self.options[substr[0]]);
+            }
+            if substr.len() > 1 {
+                return Match::Ambiguous;
+            }
+        }
+
+        Match::None
+    }
+}
+
+/// Result of matching a free-text reply against a `ChoiceControl`.
+#[allow(dead_code)] // wired into per-channel inbound matchers in a follow-up PR
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Match<'a> {
+    /// Single unambiguous match — caller should dispatch the option's command.
+    One(&'a ChoiceOption),
+    /// Reply parsed as a number but no option at that index. Caller may
+    /// want to re-prompt with the available range.
+    OutOfRange,
+    /// Reply matched more than one option. Caller should re-prompt and
+    /// ask the user to be more specific.
+    Ambiguous,
+    /// Reply doesn't look like a selection at all. Caller should treat
+    /// the message as freeform input and run normal command/agent dispatch.
+    None,
+}
+
+#[allow(dead_code)] // used by ChoiceControl::match_reply, public-pending
+fn normalize_for_match(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_renders_choice_commands_for_text_only_channels() {
+    fn fallback_renders_numbered_options_with_name_or_number_hint() {
         let msg = OutboundMessage::text("Choose an agent").with_control(ChoiceControl::new(
             "Options",
             vec![
@@ -241,13 +358,123 @@ mod tests {
         assert!(rendered.contains("Choose an agent"));
         assert!(rendered.contains("Options"));
         assert!(
-            rendered.contains("- Librarian: `!agent switch librarian`"),
-            "fallback must expose the command users can type: {rendered}"
+            rendered.contains("(reply with name or number)"),
+            "fallback must tell the user how to select an option: {rendered}"
         );
         assert!(
-            rendered.contains("- Critic: `!agent switch critic`"),
-            "fallback must include every available choice: {rendered}"
+            rendered.contains("1. Librarian"),
+            "options must be numbered for selection by index: {rendered}"
         );
+        assert!(
+            rendered.contains("2. Critic"),
+            "every option must get its own number: {rendered}"
+        );
+        // The underlying command should NOT be exposed in the fallback —
+        // it's an implementation detail. The user picks by name or number;
+        // the channel-side matcher resolves to the command.
+        assert!(
+            !rendered.contains("!agent switch"),
+            "fallback should not leak internal command syntax: {rendered}"
+        );
+    }
+
+    #[test]
+    fn fallback_separates_multiple_choice_controls_with_blank_line() {
+        let msg = OutboundMessage::text("Configure")
+            .with_control(ChoiceControl::new(
+                "Agent",
+                vec![ChoiceOption::agent("Librarian", "librarian")],
+            ))
+            .with_control(ChoiceControl::new(
+                "Model",
+                vec![ChoiceOption::model("Sonnet", "anthropic/claude-sonnet-4.6")],
+            ));
+
+        let rendered = msg.render_text_fallback();
+        // Two separate "(reply with name or number)" hints, one per control,
+        // separated by blank lines so the user can disambiguate.
+        let hints: Vec<_> = rendered
+            .match_indices("(reply with name or number)")
+            .collect();
+        assert_eq!(
+            hints.len(),
+            2,
+            "each control must have its own selection hint: {rendered}"
+        );
+    }
+
+    fn agent_options(labels: &[(&str, &str)]) -> ChoiceControl {
+        ChoiceControl::new(
+            "Pick one",
+            labels
+                .iter()
+                .map(|(label, id)| ChoiceOption::agent(*label, *id))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn match_reply_resolves_numeric_selection() {
+        let ctrl = agent_options(&[("Librarian", "lib"), ("Critic", "crit")]);
+        assert_eq!(ctrl.match_reply("1"), Match::One(&ctrl.options[0]));
+        assert_eq!(ctrl.match_reply("2"), Match::One(&ctrl.options[1]));
+        assert_eq!(ctrl.match_reply("  #2  "), Match::One(&ctrl.options[1]));
+    }
+
+    #[test]
+    fn match_reply_reports_out_of_range_for_bad_numbers() {
+        let ctrl = agent_options(&[("Librarian", "lib"), ("Critic", "crit")]);
+        assert_eq!(ctrl.match_reply("0"), Match::OutOfRange);
+        assert_eq!(ctrl.match_reply("3"), Match::OutOfRange);
+        assert_eq!(ctrl.match_reply("99"), Match::OutOfRange);
+    }
+
+    #[test]
+    fn match_reply_resolves_exact_label_case_insensitively() {
+        let ctrl = agent_options(&[("Librarian", "lib"), ("Critic", "crit")]);
+        assert_eq!(ctrl.match_reply("Librarian"), Match::One(&ctrl.options[0]));
+        assert_eq!(ctrl.match_reply("librarian"), Match::One(&ctrl.options[0]));
+        assert_eq!(ctrl.match_reply("  CRITIC "), Match::One(&ctrl.options[1]));
+    }
+
+    #[test]
+    fn match_reply_resolves_prefix_when_unambiguous() {
+        let ctrl = agent_options(&[("Librarian", "lib"), ("Critic", "crit")]);
+        assert_eq!(ctrl.match_reply("lib"), Match::One(&ctrl.options[0]));
+        assert_eq!(ctrl.match_reply("Cri"), Match::One(&ctrl.options[1]));
+    }
+
+    #[test]
+    fn match_reply_returns_ambiguous_when_prefix_collides() {
+        let ctrl = agent_options(&[("Critic", "crit"), ("Critique", "criq")]);
+        assert_eq!(ctrl.match_reply("Cri"), Match::Ambiguous);
+        // Exact label still wins over prefix collision
+        assert_eq!(ctrl.match_reply("Critic"), Match::One(&ctrl.options[0]));
+    }
+
+    #[test]
+    fn match_reply_returns_none_for_freeform_text() {
+        let ctrl = agent_options(&[("Librarian", "lib"), ("Critic", "crit")]);
+        assert_eq!(ctrl.match_reply(""), Match::None);
+        assert_eq!(
+            ctrl.match_reply("hey there what's the weather"),
+            Match::None,
+        );
+        assert_eq!(ctrl.match_reply("z"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_ignores_punctuation_in_label() {
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::new("Sonnet 4.6", "!model use anthropic/sonnet-4.6"),
+                ChoiceOption::new("Opus 4.7 (1M context)", "!model use anthropic/opus-4.7-1m"),
+            ],
+        );
+        assert_eq!(ctrl.match_reply("Sonnet 46"), Match::One(&ctrl.options[0]));
+        // Substring match — "Opus" appears uniquely
+        assert_eq!(ctrl.match_reply("Opus"), Match::One(&ctrl.options[1]));
     }
 
     #[test]
