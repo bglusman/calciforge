@@ -2,7 +2,7 @@
 name = "clashd"
 version = "0.1.0"
 edition = "2021"
-description = "Policy sidecar for OpenClaw - evaluates tool calls using Starlark"
+description = "Policy sidecar for Calciforge-managed agents - evaluates tool calls using Starlark"
 
 [lib]
 name = "clashd"

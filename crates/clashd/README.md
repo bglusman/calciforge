@@ -1,10 +1,10 @@
 # clashd
 
-Policy sidecar for OpenClaw — centralized Starlark-based policy enforcement with domain filtering, threat intelligence feeds, and per-agent scoping.
+Policy sidecar for Calciforge-managed agents — centralized Starlark-based policy enforcement with domain filtering, threat intelligence feeds, and per-agent scoping.
 
 ## Overview
 
-clashd evaluates every OpenClaw tool call through a Starlark policy before execution. Policies can:
+clashd evaluates agent tool calls through a Starlark policy before execution. Policies can:
 
 - **Block/allow based on tool and arguments**
 - **Filter by domain** (exact match, regex patterns, subdomain matching)

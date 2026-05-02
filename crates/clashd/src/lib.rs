@@ -1,4 +1,4 @@
-//! clashd - Policy sidecar for OpenClaw
+//! clashd - Starlark policy sidecar for Calciforge-managed agents
 //!
 //! Evaluates tool calls against Starlark policies with domain filtering
 //! and per-agent policy scoping.

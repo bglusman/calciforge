@@ -60,6 +60,9 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     // Validate identities have valid channels
     validate_identities(config, &mut result);
 
+    // Validate enabled channels before long-lived tasks start.
+    validate_channels(config, &mut result);
+
     // Validate alloys have valid constituents
     validate_alloys(config, &mut result);
 
@@ -193,6 +196,62 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
 fn is_openclaw_model_id(model: &str) -> bool {
     let trimmed = model.trim();
     trimmed == "openclaw" || trimmed.starts_with("openclaw/")
+}
+
+fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
+    for channel in &config.channels {
+        match channel.kind.as_str() {
+            "whatsapp" => {
+                validate_no_legacy_embedded_channel_fields("WhatsApp", channel, result);
+                if channel.enabled && channel.whatsapp_session_path.is_none() {
+                    result.add_error(
+                        "WhatsApp channel requires whatsapp_session_path when enabled".to_string(),
+                    );
+                }
+            }
+            "signal" => {
+                validate_no_legacy_embedded_channel_fields("Signal", channel, result);
+                if channel.enabled && channel.signal_cli_url.is_none() {
+                    result.add_error(
+                        "Signal channel requires signal_cli_url when enabled".to_string(),
+                    );
+                }
+                if channel.enabled && channel.signal_account.is_none() {
+                    result.add_error(
+                        "Signal channel requires signal_account when enabled".to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_no_legacy_embedded_channel_fields(
+    channel_name: &str,
+    channel: &crate::config::ChannelConfig,
+    result: &mut ValidationResult,
+) {
+    let legacy_fields = [
+        ("zeroclaw_endpoint", channel.zeroclaw_endpoint.as_ref()),
+        ("zeroclaw_auth_token", channel.zeroclaw_auth_token.as_ref()),
+        ("webhook_listen", channel.webhook_listen.as_ref()),
+        ("webhook_path", channel.webhook_path.as_ref()),
+        ("webhook_secret", channel.webhook_secret.as_ref()),
+    ];
+
+    for (field, value) in legacy_fields {
+        if value.is_some() {
+            let msg = format!(
+                "{channel_name} channel uses legacy field '{field}'. Embedded {channel_name} no longer supports ZeroClaw/OpenClaw webhook sidecars; remove the legacy field and use the embedded channel schema."
+            );
+            if channel.enabled {
+                result.add_error(msg);
+            } else {
+                result.add_warning(msg);
+            }
+        }
+    }
 }
 
 /// Check for duplicate IDs across all config sections.
@@ -525,6 +584,89 @@ bot_token_file = "/tmp/nope"
         assert!(
             result.is_valid(),
             "baseline fixture should validate clean; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn whatsapp_legacy_webhook_fields_are_config_errors() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "whatsapp"
+enabled = true
+whatsapp_session_path = "/tmp/calciforge-wa.db"
+webhook_listen = "0.0.0.0:18795"
+webhook_path = "/webhooks/whatsapp"
+zeroclaw_endpoint = "http://127.0.0.1:18796"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "legacy webhook fields must fail before startup"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("WhatsApp")
+                && e.contains("webhook_listen")
+                && e.contains("embedded channel schema")),
+            "error should explain the embedded-channel migration; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn enabled_whatsapp_requires_session_path() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "whatsapp"
+enabled = true
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "enabled WhatsApp without session storage should fail"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("whatsapp_session_path")),
+            "error should name whatsapp_session_path; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn signal_legacy_webhook_fields_are_config_errors() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "signal"
+enabled = true
+signal_cli_url = "http://127.0.0.1:8080"
+signal_account = "+15555550001"
+webhook_path = "/webhooks/signal"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "legacy webhook fields must fail before startup"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("Signal")
+                && e.contains("webhook_path")
+                && e.contains("embedded channel schema")),
+            "error should explain the embedded-channel migration; errors: {:?}",
             result.errors
         );
     }

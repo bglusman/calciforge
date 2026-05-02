@@ -973,14 +973,16 @@ PYEOF
 }
 
 configure_openclaw_model_gateway() {
-    python3 - "$ZC_CONFIG" \
+    local patch_json patch_stderr
+    patch_stderr="$(mktemp)"
+    if ! patch_json="$(python3 - "$ZC_CONFIG" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY" \
-        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE" <<'PYEOF' | openclaw config patch --stdin >/dev/null
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE" 2>"$patch_stderr" <<'PYEOF'
 import json
 import pathlib
 import sys
@@ -1009,11 +1011,69 @@ def read_key_file(path):
     value = file_path.read_text(encoding="utf-8").strip()
     return value or None
 
+def unquote_toml_string(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+def strip_toml_comment(value):
+    quote = None
+    escaped = False
+    out = []
+    for ch in value:
+        if quote:
+            out.append(ch)
+            if quote == '"' and ch == "\\" and not escaped:
+                escaped = True
+                continue
+            if ch == quote and not escaped:
+                quote = None
+            escaped = False
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            out.append(ch)
+            continue
+        if ch == "#":
+            break
+        out.append(ch)
+    return "".join(out).strip()
+
+def normalize_table_header(line):
+    stripped = strip_toml_comment(line)
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return None
+    return stripped[1:-1].strip()
+
+def read_proxy_key_without_toml(path):
+    if not path.exists():
+        return None
+    in_proxy = False
+    proxy = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        table = normalize_table_header(stripped)
+        if table is not None:
+            in_proxy = table == "proxy"
+            continue
+        if not in_proxy or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if key in {"api_key", "api_key_file"}:
+            proxy[key] = unquote_toml_string(strip_toml_comment(value))
+    return (proxy.get("api_key") or "").strip() or read_key_file(proxy.get("api_key_file"))
+
 api_key = inline_key.strip() or read_key_file(key_file)
 if api_key is None and tomllib is not None and config_path.exists():
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     proxy = config.get("proxy", {})
     api_key = (proxy.get("api_key") or "").strip() or read_key_file(proxy.get("api_key_file"))
+elif api_key is None:
+    api_key = read_proxy_key_without_toml(config_path)
 
 if api_key is None:
     raise SystemExit(
@@ -1053,6 +1113,17 @@ print(json.dumps({
     },
 }))
 PYEOF
+    )"; then
+        warn "$(cat "$patch_stderr")"
+        rm -f "$patch_stderr"
+        return 1
+    fi
+    if [[ -s "$patch_stderr" ]]; then
+        warn "$(cat "$patch_stderr")"
+    fi
+    rm -f "$patch_stderr"
+
+    printf '%s\n' "$patch_json" | openclaw config patch --stdin >/dev/null
     ok "openclaw default model routed through Calciforge model gateway (${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER}/${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL})"
     openclaw gateway restart --json >/dev/null 2>&1 || \
         warn "openclaw gateway restart failed after model gateway patch; restart it manually before testing"
@@ -1800,7 +1871,8 @@ PYEOF
 
         ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
         local remote_tmp="/tmp/calciforge-install-${bin}-$$"
-        if ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+        if command -v rsync >/dev/null 2>&1 && \
+            ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
             rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${remote_tmp}"
         else
             scp "${ssh_opts[@]}" "$bin_path" "${ssh_target}:${remote_tmp}"
@@ -2087,7 +2159,8 @@ REMOTE_BUILD
         # ── rsync binary ─────────────────────────────────────────────────────
         ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p $install_dir" 2>/dev/null
         local remote_tmp="/tmp/calciforge-install-${bin}-$$"
-        if ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+        if command -v rsync >/dev/null 2>&1 && \
+            ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
             rsync -az --checksum -e "$rsync_ssh" "$bin_path" "${ssh_target}:${remote_tmp}"
         else
             scp "${ssh_opts[@]}" "$bin_path" "${ssh_target}:${remote_tmp}"
@@ -2102,8 +2175,14 @@ REMOTE_BUILD
 set -euo pipefail
 mkdir -p -- "$1"
 REMOTE_MKDIR
-            rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
-            rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            if command -v rsync >/dev/null 2>&1 && \
+                ssh "${ssh_opts[@]}" "$ssh_target" "command -v rsync >/dev/null 2>&1" 2>/dev/null; then
+                rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
+                rsync -az -e "$rsync_ssh" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            else
+                scp "${ssh_opts[@]}" "$CLASHD_DEFAULT_POLICY" "${ssh_target}:${remote_policy_tmp}"
+                scp "${ssh_opts[@]}" "$CLASHD_DEFAULT_AGENTS" "${ssh_target}:${remote_agents_tmp}"
+            fi
             ssh "${ssh_opts[@]}" "$ssh_target" bash -s -- "$config_dir" "$remote_policy_tmp" "$remote_agents_tmp" <<'REMOTE_CLASHD_CONFIG'
 set -euo pipefail
 config_dir="$1"

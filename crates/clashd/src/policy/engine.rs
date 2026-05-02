@@ -1,7 +1,7 @@
 //! Policy execution engine
 //!
 //! Combines the Starlark evaluator with domain lists and per-agent config
-//! to provide centralized policy enforcement for OpenClaw tool calls.
+//! to provide centralized policy enforcement for agent tool calls.
 
 use std::collections::HashMap;
 use std::path::Path;
