@@ -240,7 +240,16 @@ async fn allowlist_blocks_substitution_to_disallowed_host() {
         .send()
         .await
         .expect("gateway returns SOME response");
-    assert_eq!(resp.status(), 403, "disallowed dest must be 403");
+    // Block responses are 200/HTML so LLM agents see the explanation. The
+    // machine-readable signal is X-Calciforge-Blocked. See proxy::blocked_response.
+    assert_eq!(resp.status(), 200, "disallowed dest returns explanatory page");
+    assert_eq!(
+        resp.headers()
+            .get("X-Calciforge-Blocked")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
+        "block must carry X-Calciforge-Blocked: true header"
+    );
 
     let body = resp.text().await.unwrap_or_default();
     assert!(
@@ -288,10 +297,18 @@ async fn empty_allowlist_locks_secret_completely() {
         .send()
         .await
         .expect("gateway responds");
+    // Block responses are 200 with explanatory HTML; X-Calciforge-Blocked
+    // is the structured signal. See proxy::blocked_response.
     assert_eq!(
         resp.status(),
-        403,
+        200,
         "empty-allowlist secret must never substitute"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("X-Calciforge-Blocked")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
     );
 
     remove_env("TDA_DISABLED_API_KEY");
@@ -377,8 +394,14 @@ async fn allowlist_blocks_url_embedded_secret_to_disallowed_host() {
         .expect("gateway responds");
     assert_eq!(
         resp.status(),
-        403,
-        "URL-embedded secret to disallowed host must be 403"
+        200,
+        "URL-embedded secret to disallowed host must serve block page"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("X-Calciforge-Blocked")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
     );
 
     let body = resp.text().await.unwrap_or_default();

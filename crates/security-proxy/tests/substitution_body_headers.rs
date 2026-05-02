@@ -217,9 +217,15 @@ async fn ref_in_unsupported_content_type_body_is_blocked() {
         .expect("gateway returns SOME response, even if blocked");
     assert_eq!(
         resp.status(),
-        403,
-        "unsupported content-type with ref must be blocked; got {}",
+        200,
+        "unsupported content-type with ref must serve block page; got {}",
         resp.status()
+    );
+    assert_eq!(
+        resp.headers()
+            .get("X-Calciforge-Blocked")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
     );
 }
 
@@ -255,11 +261,32 @@ async fn unresolvable_ref_in_body_blocks_request() {
         .send()
         .await
         .expect("gateway responds");
-    assert_eq!(resp.status(), 403);
-    // And crucially, the error body must not echo the ref name.
+    // Block responses are 200/HTML by design (see proxy::blocked_response).
+    assert_eq!(resp.status(), 200);
+    let blocked_header = resp
+        .headers()
+        .get("X-Calciforge-Blocked")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let reason_header = resp
+        .headers()
+        .get("X-Calciforge-Reason")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    assert_eq!(blocked_header.as_deref(), Some("true"));
+    // Explanation body must not echo the ref name; header reason
+    // (which currently does include the failure context) also must not
+    // leak the literal secret-name token.
     let body = resp.text().await.unwrap_or_default();
     assert!(
         !body.contains("tsb_missing"),
-        "error body must not leak the ref name; got: {body}"
+        "block body must not leak the ref name; got: {body}"
+    );
+    assert!(
+        reason_header
+            .as_deref()
+            .map(|s| !s.contains("tsb_missing"))
+            .unwrap_or(true),
+        "block reason header must not leak ref name; got: {reason_header:?}"
     );
 }

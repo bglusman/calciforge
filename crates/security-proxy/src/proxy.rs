@@ -697,15 +697,77 @@ pub(crate) fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Build a block response that an LLM agent can read and reason about.
+///
+/// Returns HTTP 200 with an HTML body so that downstream agent tooling
+/// surfaces the explanation to the model even when only `response.ok`
+/// is checked. The fetch *succeeded* in the protocol sense; the page
+/// content explains that the operator's security gateway intercepted
+/// and refused the request. Structured signals are also exposed via
+/// `X-Calciforge-*` headers so non-LLM tooling can branch without
+/// parsing HTML.
 pub(crate) fn blocked_response(reason: &str) -> Response {
+    let escaped = html_escape_block(reason);
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Page blocked by Calciforge security gateway</title></head>\
+         <body>\
+         <h1>Page blocked by Calciforge security gateway</h1>\
+         <p><strong>Reason:</strong> {escaped}</p>\
+         <h2>What this means</h2>\
+         <p>This URL or response was blocked by the operator's security policy. \
+         The original content has not been delivered. There is no payload to \
+         evaluate; treat this as if the page were unavailable.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>Look for the same information on a different source.</li>\
+         <li>If you specifically need this URL, ask the operator to allowlist it \
+         or to relax the scanner rule that triggered.</li>\
+         <li>Do not attempt to bypass the gateway via another proxy or tool — \
+         every attempt is recorded in the audit log.</li>\
+         </ul>\
+         </body></html>"
+    );
+    let header_safe_reason: String = reason
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && c != '\r' && c != '\n' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
     Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header("content-type", "application/json")
-        .body(Body::from(format!(
-            r#"{{"blocked":true,"reason":"{}"}}"#,
-            reason.replace('"', "\\\"")
-        )))
-        .unwrap()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Reason", header_safe_reason)
+        .body(Body::from(html))
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(
+                    "Page blocked by Calciforge security gateway.\n",
+                ))
+                .unwrap()
+        })
+}
+
+fn html_escape_block(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -808,10 +870,20 @@ mod tests {
             .unwrap();
 
         let resp = proxy.intercept(req).await.unwrap();
+        // Block responses are 200/HTML on purpose so LLM agents that only
+        // check `response.ok` still surface the explanation to the model.
+        // The structured signal lives in the X-Calciforge-Blocked header.
         assert_eq!(
             resp.status(),
-            StatusCode::FORBIDDEN,
-            "response with injection should be blocked"
+            StatusCode::OK,
+            "block response should be 200 with explanatory HTML body"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("X-Calciforge-Blocked")
+                .and_then(|v| v.to_str().ok()),
+            Some("true"),
+            "block response must carry X-Calciforge-Blocked: true"
         );
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -932,8 +1004,15 @@ mod tests {
             .unwrap();
 
         let resp = proxy.intercept(req).await.unwrap();
-        // Should be blocked because request body contains injection phrases
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Block responses are 200/HTML by design (see blocked_response docs);
+        // X-Calciforge-Blocked is the machine-readable signal.
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("X-Calciforge-Blocked")
+                .and_then(|v| v.to_str().ok()),
+            Some("true"),
+        );
     }
 
     #[tokio::test]

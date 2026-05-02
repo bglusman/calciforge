@@ -144,7 +144,9 @@ impl CalciforgeMitmHandler {
             Ok(req) => req,
             Err(err) => {
                 warn!("BLOCKED: failed to decode MITM request: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "Failed to decode incoming request: {err}"
+                )));
             }
         };
 
@@ -153,7 +155,10 @@ impl CalciforgeMitmHandler {
             Some(url) => url,
             None => {
                 warn!("BLOCKED: MITM request target is not reconstructable");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(
+                    "Request URL could not be reconstructed; the gateway refuses requests \
+                     it cannot identify a destination for.",
+                ));
             }
         };
         info!("MITM {} {}", method, target_url);
@@ -163,7 +168,10 @@ impl CalciforgeMitmHandler {
             .and_then(|u| u.host_str().map(str::to_owned));
         if url_dest_host.is_none() && target_url.contains("{{secret:") {
             warn!("BLOCKED: MITM URL contains secret ref but host is unparseable");
-            return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+            return RequestOrResponse::Response(mitm_blocked_response(
+                "URL contains a secret reference but the host portion could not be parsed; \
+                 the gateway refuses to substitute secrets without a known destination.",
+            ));
         }
 
         let target_url = match self
@@ -174,7 +182,9 @@ impl CalciforgeMitmHandler {
             Ok(url) => url,
             Err(err) => {
                 warn!("BLOCKED: MITM URL substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "URL secret substitution failed: {err}"
+                )));
             }
         };
         self.last_url = Some(target_url.clone());
@@ -194,7 +204,9 @@ impl CalciforgeMitmHandler {
             Ok(uri) => uri,
             Err(err) => {
                 warn!("BLOCKED: substituted MITM URL is invalid: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "Substituted URL is not a valid URI: {err}"
+                )));
             }
         };
 
@@ -202,7 +214,9 @@ impl CalciforgeMitmHandler {
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
         {
             warn!("BLOCKED: MITM header substitution failed: {err}");
-            return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+            return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                "Header secret substitution failed: {err}"
+            )));
         }
 
         let body_bytes = match body.collect().await {
@@ -225,7 +239,9 @@ impl CalciforgeMitmHandler {
             Ok(bytes) => bytes,
             Err(err) => {
                 warn!("BLOCKED: MITM body substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "Request body secret substitution failed: {err}"
+                )));
             }
         };
 
@@ -280,7 +296,9 @@ impl CalciforgeMitmHandler {
             Ok(res) => res,
             Err(err) => {
                 warn!("BLOCKED: failed to decode MITM response: {err}");
-                return mitm_blocked_response("Response rejected");
+                return mitm_blocked_response(&format!(
+                    "Failed to decode upstream response: {err}"
+                ));
             }
         };
 
@@ -468,15 +486,72 @@ fn mitm_body_from_bytes(bytes: Bytes) -> MitmBody {
     MitmBody::from(Full::new(bytes))
 }
 
+/// Build a block response that an LLM agent can read and reason about.
+///
+/// Returns HTTP 200 with an HTML body so that downstream agent tooling that
+/// only checks `response.ok` still surfaces the explanation to the model.
+/// The fetch *succeeded* in the protocol sense; the page content explains
+/// that the operator's security gateway intercepted and refused the request.
+/// Structured signals are also exposed via `X-Calciforge-*` headers so
+/// non-LLM tooling can branch on the block without parsing HTML.
 fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
+    let escaped = html_escape(reason);
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Page blocked by Calciforge security gateway</title></head>\
+         <body>\
+         <h1>Page blocked by Calciforge security gateway</h1>\
+         <p><strong>Reason:</strong> {escaped}</p>\
+         <h2>What this means</h2>\
+         <p>This URL or response was blocked by the operator's security policy. \
+         The original content has not been delivered to the agent. There is no \
+         payload to evaluate; treat this as if the page were unavailable.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>Look for the same information on a different source.</li>\
+         <li>If you specifically need this URL, ask the operator to allowlist it \
+         or to relax the scanner rule that triggered.</li>\
+         <li>Do not attempt to bypass the gateway via another proxy or tool — \
+         every attempt is recorded in the audit log.</li>\
+         </ul>\
+         </body></html>"
+    );
     Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(MitmBody::from(format!(
-            r#"{{"blocked":true,"reason":"{}"}}"#,
-            reason.replace('"', "\\\"")
-        )))
-        .unwrap_or_else(|_| Response::new(MitmBody::from(r#"{"blocked":true}"#)))
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header(
+            "X-Calciforge-Reason",
+            reason
+                .chars()
+                .map(|c| if c.is_ascii() && c != '\r' && c != '\n' { c } else { ' ' })
+                .collect::<String>(),
+        )
+        .body(MitmBody::from(html))
+        .unwrap_or_else(|_| {
+            // Last-resort fallback if the builder above somehow fails (e.g. an
+            // unexpected header value). Plain-text 200 keeps the agent-friendly
+            // shape: still a successful fetch, still a readable explanation.
+            Response::new(MitmBody::from(
+                "Page blocked by Calciforge security gateway.\n",
+            ))
+        })
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmBody> {
