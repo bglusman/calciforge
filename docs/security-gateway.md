@@ -124,8 +124,13 @@ as a reliable security mechanism.
 
 The installer now starts `security-proxy` with the hudsucker-backed MITM
 listener enabled by default and generates a persistent local CA if one does not
-already exist. That makes inspected HTTPS the default available proxy mode, but
-it does not automatically make every agent or browser trust that CA.
+already exist. On macOS, the installer explains why the trust step is needed
+before it asks the system to add that CA to the login keychain. This is required
+for managed browser-backed agents such as OpenClaw to load inspected HTTPS
+pages without certificate errors. Set `SECURITY_PROXY_TRUST_MITM_CA=false` to
+skip the keychain prompt. That makes inspected HTTPS the default available
+proxy mode, but it does not automatically make every non-browser runtime trust
+that CA.
 
 To run the binary manually, use:
 

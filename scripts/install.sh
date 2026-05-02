@@ -33,6 +33,7 @@ SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
 SECURITY_PROXY_MITM_ENABLED="${SECURITY_PROXY_MITM_ENABLED:-true}"
 SECURITY_PROXY_CA_CERT="${SECURITY_PROXY_CA_CERT:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca.pem}"
 SECURITY_PROXY_CA_KEY="${SECURITY_PROXY_CA_KEY:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca-key.pem}"
+SECURITY_PROXY_TRUST_MITM_CA="${SECURITY_PROXY_TRUST_MITM_CA:-true}"
 CALCIFORGE_MANAGED_OPENCLAW="${CALCIFORGE_MANAGED_OPENCLAW:-true}"
 CALCIFORGE_OPENCLAW_NAME="${CALCIFORGE_OPENCLAW_NAME:-openclaw-local}"
 CALCIFORGE_OPENCLAW_AGENT_ID="${CALCIFORGE_OPENCLAW_AGENT_ID:-main}"
@@ -192,6 +193,52 @@ ensure_mitm_ca() {
     chmod 600 "$SECURITY_PROXY_CA_KEY"
     chmod 644 "$SECURITY_PROXY_CA_CERT"
     ok "Generated MITM CA → $SECURITY_PROXY_CA_CERT"
+}
+
+trust_mitm_ca_if_supported() {
+    truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
+    truthy "$SECURITY_PROXY_TRUST_MITM_CA" || {
+        warn "Skipping macOS MITM CA trust (SECURITY_PROXY_TRUST_MITM_CA=false)"
+        return 0
+    }
+    [[ "$PLATFORM" == "Darwin" ]] || return 0
+    command -v security >/dev/null 2>&1 || {
+        warn "macOS security CLI not found; trust $SECURITY_PROXY_CA_CERT manually for browser MITM"
+        return 0
+    }
+    if security dump-trust-settings 2>/dev/null | grep -F "Calciforge Local MITM CA" >/dev/null; then
+        ok "Calciforge MITM CA is already trusted in the macOS login keychain"
+        return 0
+    fi
+
+    echo ""
+    echo "Calciforge HTTPS inspection uses a local MITM CA for tested browser-backed agents."
+    echo "macOS may ask for your password before adding this CA to the login keychain."
+    echo "This lets managed OpenClaw browser traffic trust Calciforge's local proxy."
+    echo "Skip with SECURITY_PROXY_TRUST_MITM_CA=false; without trust, browser-backed"
+    echo "agents may show certificate errors instead of inspected HTTPS pages."
+    echo ""
+    if [[ "$YES" != true ]]; then
+        if [[ ! -t 0 ]]; then
+            warn "Skipping macOS MITM CA trust prompt because stdin is not interactive"
+            warn "Rerun with --yes or run: security add-trusted-cert -r trustRoot -p ssl -p basic -k \"\$HOME/Library/Keychains/login.keychain-db\" \"$SECURITY_PROXY_CA_CERT\""
+            return 0
+        fi
+        read -r -p "  Trust the Calciforge MITM CA in the macOS login keychain now? [Y/n] " ans
+        if [[ ! "${ans:-Y}" =~ ^[Yy] ]]; then
+            warn "Skipping macOS MITM CA trust at operator request"
+            return 0
+        fi
+    fi
+
+    if security add-trusted-cert -r trustRoot -p ssl -p basic \
+        -k "$HOME/Library/Keychains/login.keychain-db" \
+        "$SECURITY_PROXY_CA_CERT"; then
+        ok "Trusted Calciforge MITM CA in the macOS login keychain"
+    else
+        warn "Could not trust Calciforge MITM CA automatically; browser MITM may show certificate errors"
+        warn "Manual command: security add-trusted-cert -r trustRoot -p ssl -p basic -k \"\$HOME/Library/Keychains/login.keychain-db\" \"$SECURITY_PROXY_CA_CERT\""
+    fi
 }
 
 write_log_rotator() {
@@ -1230,6 +1277,7 @@ hdr "security-proxy"
 
 mkdir -p "$SEC_LOG_DIR"
 ensure_mitm_ca
+trust_mitm_ca_if_supported
 disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-security-proxy"
 disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-proxy"
 
