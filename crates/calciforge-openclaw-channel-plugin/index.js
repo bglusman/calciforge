@@ -312,7 +312,16 @@ async function dispatchViaSubagentRuntime({
     );
     const attachments = normalizeAttachments(result.attachments);
     if (isSilentReply(reply.text) && attachments.length === 0) {
-      log?.info?.("[calciforge-channel] silent reply - not forwarding");
+      log?.warn?.("[calciforge-channel] silent reply - reporting no visible reply");
+      await deliverNoVisibleReply({
+        replyWebhook,
+        replyAuthToken,
+        sessionKey,
+        requestId,
+        channel,
+        replyTo,
+        log,
+      });
       return true;
     }
 
@@ -413,7 +422,18 @@ async function dispatchViaChannelRuntime({
 
   const reply = dispatcher.takeReply();
   if (!reply || isSilentReply(reply.text)) {
-    log?.info?.("[calciforge-channel] silent channel-runtime reply - not forwarding");
+    log?.warn?.(
+      "[calciforge-channel] silent channel-runtime reply - reporting no visible reply",
+    );
+    await deliverNoVisibleReply({
+      replyWebhook,
+      replyAuthToken,
+      sessionKey,
+      requestId,
+      channel: sourceChannel,
+      replyTo,
+      log,
+    });
     return;
   }
 
@@ -752,6 +772,7 @@ async function deliverReply({
   sessionKey,
   requestId,
   message,
+  error,
   attachments,
   channel,
   replyTo,
@@ -763,7 +784,7 @@ async function deliverReply({
   }
 
   try {
-    const payload = { sessionKey, message, channel, to: replyTo };
+    const payload = { sessionKey, message, error, channel, to: replyTo };
     if (requestId) {
       payload.requestId = requestId;
     }
@@ -789,6 +810,13 @@ async function deliverReply({
   } catch (err) {
     log?.error?.(`[calciforge-channel] reply webhook error - ${err.message}`);
   }
+}
+
+async function deliverNoVisibleReply(args) {
+  await deliverReply({
+    ...args,
+    error: "OpenClaw completed without a visible reply for this Calciforge request",
+  });
 }
 
 function normalizeAttachments(value) {
@@ -833,5 +861,6 @@ export const testInternals = {
   recoverReplyAfterRunError,
   buildCalciforgeChannelContext,
   createSingleReplyDispatcher,
+  dispatchViaSubagentRuntime,
   dispatchViaChannelRuntime,
 };

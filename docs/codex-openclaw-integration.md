@@ -160,6 +160,9 @@ it. Attachment names are sanitized, local paths are not exposed in fallback
 text, and malformed attachment payloads fail the pending dispatch instead of
 hanging. Callback artifacts share the same local cleanup policy as artifact CLI
 recipes: new runs opportunistically prune run directories older than 24 hours.
+If the OpenClaw bridge completes a run but has no visible text or attachment to
+return, it should callback with an `error` field for the correlated request so
+Calciforge can fail immediately instead of waiting for the full adapter timeout.
 Remote URL ingestion is intentionally not part of this callback contract yet; it
 needs an explicit SSRF-safe policy and should prefer local push/upload or
 short-lived signed URLs over arbitrary fetches.

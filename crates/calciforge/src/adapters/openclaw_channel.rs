@@ -118,6 +118,8 @@ struct ReplyPayload {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
     attachments: Vec<ReplyAttachmentPayload>,
     #[allow(dead_code)]
     channel: Option<String>,
@@ -315,6 +317,10 @@ async fn handle_reply(
 
 impl ReplyPayload {
     fn into_outbound_message(self) -> Result<OutboundMessage, String> {
+        if let Some(error) = self.error.filter(|error| !error.trim().is_empty()) {
+            return Err(error);
+        }
+
         if self.attachments.len() > MAX_REPLY_ATTACHMENTS {
             return Err(format!(
                 "openclaw-channel callback included {} attachments, limit is {}",
@@ -850,6 +856,78 @@ mod tests {
             .expect("dispatch should return reply callback");
 
         assert_eq!(reply, "reply from openclaw");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_fails_fast_when_callback_reports_no_visible_reply() {
+        #[derive(Clone)]
+        struct ErrorState {
+            reply_webhook: String,
+        }
+
+        async fn error_inbound_handler(
+            State(state): State<ErrorState>,
+            Json(body): Json<Value>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            let session_key = body
+                .get("sessionKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let request_id = body
+                .get("requestId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let reply = serde_json::json!({
+                "sessionKey": session_key,
+                "requestId": request_id,
+                "error": "OpenClaw completed without a visible reply for this Calciforge request",
+            });
+
+            tokio::spawn(async move {
+                let _ = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("test reqwest client")
+                    .post(state.reply_webhook)
+                    .json(&reply)
+                    .send()
+                    .await;
+            });
+
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+        }
+
+        let reply_port = free_port();
+        let app = Router::new()
+            .route("/calciforge/inbound", post(error_inbound_handler))
+            .with_state(ErrorState {
+                reply_webhook: format!("http://127.0.0.1:{reply_port}/hooks/reply"),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inbound_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+        let err = adapter
+            .dispatch_with_context(DispatchContext {
+                message: "route this",
+                sender: Some("renee"),
+                model_override: None,
+                session: None,
+                channel: None,
+            })
+            .await
+            .expect_err("no visible OpenClaw reply should fail without waiting for timeout");
+
+        assert!(matches!(
+            err,
+            AdapterError::Protocol(msg)
+                if msg.contains("completed without a visible reply")
+        ));
     }
 
     #[tokio::test]
