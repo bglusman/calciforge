@@ -268,19 +268,20 @@ async fn handle_reply(
     headers: HeaderMap,
     Json(payload): Json<ReplyPayload>,
 ) -> (StatusCode, Json<AckResponse>) {
-    let auth_tokens = state
-        .auth_tokens
-        .lock()
-        .expect("openclaw-channel reply auth token set poisoned")
-        .clone();
-    if !auth_tokens.is_empty() {
-        let auth = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let token = auth.strip_prefix("Bearer ").unwrap_or(auth);
-        if !auth_tokens.contains(token) {
-            return (StatusCode::UNAUTHORIZED, Json(AckResponse { ok: false }));
+    {
+        let auth_tokens = state
+            .auth_tokens
+            .lock()
+            .expect("openclaw-channel reply auth token set poisoned");
+        if !auth_tokens.is_empty() {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let token = auth.strip_prefix("Bearer ").unwrap_or(auth);
+            if !auth_tokens.contains(token) {
+                return (StatusCode::UNAUTHORIZED, Json(AckResponse { ok: false }));
+            }
         }
     }
 

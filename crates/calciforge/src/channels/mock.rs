@@ -54,6 +54,8 @@ struct MockState {
     context_store: ContextStore,
     /// Configuration
     config: Arc<CalciforgeConfig>,
+    #[cfg(test)]
+    _state_dir: Option<Arc<tempfile::TempDir>>,
 }
 
 /// A mock message for logging
@@ -115,6 +117,8 @@ pub async fn run(
         command_handler: command_handler.clone(),
         context_store: context_store.clone(),
         config: config.clone(),
+        #[cfg(test)]
+        _state_dir: None,
     };
 
     let control_port = mock_channel.control_port.unwrap_or(9090);
@@ -539,6 +543,7 @@ mod tests {
             )),
             context_store: ContextStore::new(4, 4),
             config,
+            _state_dir: Some(Arc::new(temp)),
         }
     }
 

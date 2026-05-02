@@ -168,6 +168,15 @@ truthy() {
     esac
 }
 
+expand_home_path() {
+    local path="$1"
+    case "$path" in
+        "~") printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s/%s\n' "$HOME" "${path#~/}" ;;
+        *) printf '%s\n' "$path" ;;
+    esac
+}
+
 ensure_mitm_ca() {
     truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
 
@@ -206,7 +215,7 @@ trust_mitm_ca_if_supported() {
         warn "macOS security CLI not found; trust $SECURITY_PROXY_CA_CERT manually for browser MITM"
         return 0
     }
-    if security dump-trust-settings 2>/dev/null | grep -F "Calciforge Local MITM CA" >/dev/null; then
+    if security verify-cert -c "$SECURITY_PROXY_CA_CERT" -p ssl >/dev/null 2>&1; then
         ok "Calciforge MITM CA is already trusted in the macOS login keychain"
         return 0
     fi
@@ -883,6 +892,7 @@ ensure_tool() {
 
 ensure_secret_token_file() {
     local path="$1" label="$2"
+    path="$(expand_home_path "$path")"
     mkdir -p "$(dirname "$path")"
     if [[ -s "$path" ]]; then
         chmod 600 "$path" 2>/dev/null || true
@@ -977,7 +987,10 @@ import sys
 try:
     import tomllib
 except ModuleNotFoundError:
-    tomllib = None
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        tomllib = None
 
 config_path = pathlib.Path(sys.argv[1]).expanduser()
 endpoint, provider, model, context, max_tokens, inline_key, key_file = sys.argv[2:10]

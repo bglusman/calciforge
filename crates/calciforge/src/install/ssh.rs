@@ -208,16 +208,18 @@ fn run_local_shell(command: &str) -> Result<SshOutput> {
 
 pub fn is_local_host(host: &str) -> bool {
     let host = host.trim();
-    if host.eq_ignore_ascii_case("local") || host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    if matches!(host, "127.0.0.1" | "::1") {
-        return true;
-    }
-
     let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
-    let host = host.split_once(':').map_or(host, |(host, _)| host);
-    matches!(host, "127.0.0.1" | "::1")
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        stripped.split_once(']').map_or(host, |(host, _)| host)
+    } else if host.matches(':').count() == 1 {
+        host.split_once(':').map_or(host, |(host, _)| host)
+    } else {
+        host
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "local" | "localhost" | "127.0.0.1" | "::1"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -685,8 +687,13 @@ mod tests {
     fn local_host_detection_accepts_common_local_targets() {
         assert!(is_local_host("local"));
         assert!(is_local_host("localhost"));
+        assert!(is_local_host("admin@localhost"));
+        assert!(is_local_host("localhost:22"));
+        assert!(is_local_host("admin@localhost:22"));
         assert!(is_local_host("admin@127.0.0.1:22"));
         assert!(is_local_host("::1"));
+        assert!(is_local_host("[::1]:22"));
+        assert!(is_local_host("admin@[::1]:22"));
         assert!(!is_local_host("admin@example.internal"));
     }
 

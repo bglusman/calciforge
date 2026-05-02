@@ -436,10 +436,22 @@ fn resolve_optional_agent_token_file(
         let path = crate::config::expand_tilde(&path.to_string_lossy());
         let token = std::fs::read_to_string(path)
             .map_err(|e| format!("agent '{}': failed to read {field}: {e}", agent.id))?;
-        return Ok(Some(token.trim().to_string()));
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err(format!("agent '{}': {field} must not be empty", agent.id));
+        }
+        return Ok(Some(token));
     }
 
-    Ok(inline.map(str::to_string))
+    if let Some(token) = inline {
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err(format!("agent '{}': {field} must not be empty", agent.id));
+        }
+        return Ok(Some(token));
+    }
+
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -895,6 +907,75 @@ mod tests {
 
         let adapter = build_adapter(&agent).expect("should build");
         assert_eq!(adapter.kind(), "openclaw-channel");
+    }
+
+    #[test]
+    fn test_openclaw_channel_rejects_empty_reply_auth_token_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reply_file = dir.path().join("reply-token");
+        std::fs::write(&reply_file, "  \n").expect("write reply token");
+        let agent = AgentConfig {
+            id: "gateway-empty-reply-file".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://localhost".to_string(),
+            timeout_ms: None,
+            model: None,
+            auth_token: None,
+            api_key: Some("inbound-token".to_string()),
+            api_key_file: None,
+            openclaw_agent_id: None,
+            allow_model_override: None,
+            reply_port: Some(18809),
+            reply_auth_token: None,
+            reply_auth_token_file: Some(reply_file),
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+
+        let err = match build_adapter(&agent) {
+            Ok(_) => panic!("empty reply token file should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("must not be empty"),
+            "error should explain the empty token file: {err}"
+        );
+    }
+
+    #[test]
+    fn test_openclaw_channel_rejects_empty_inline_reply_auth_token() {
+        let agent = AgentConfig {
+            id: "gateway-empty-inline-reply".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://localhost".to_string(),
+            timeout_ms: None,
+            model: None,
+            auth_token: None,
+            api_key: Some("inbound-token".to_string()),
+            api_key_file: None,
+            openclaw_agent_id: None,
+            allow_model_override: None,
+            reply_port: Some(18809),
+            reply_auth_token: Some("  ".to_string()),
+            reply_auth_token_file: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+
+        let err = match build_adapter(&agent) {
+            Ok(_) => panic!("empty inline reply token should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("must not be empty"),
+            "error should explain the empty inline token: {err}"
+        );
     }
 
     #[test]

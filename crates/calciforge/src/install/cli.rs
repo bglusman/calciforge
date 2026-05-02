@@ -19,6 +19,8 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
+use crate::config::expand_tilde;
+
 use super::model::{CalciforgeTarget, ClawKind, ClawTarget, InstallTarget, WebhookFormat};
 
 // ---------------------------------------------------------------------------
@@ -295,14 +297,7 @@ fn redact_claw_spec(spec: &str) -> String {
 fn is_secret_spec_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
-        "auth_token"
-            | "api_key"
-            | "reply_auth_token"
-            | "token"
-            | "bearer_token"
-            | "auth_token_file"
-            | "api_key_file"
-            | "reply_auth_token_file"
+        "auth_token" | "api_key" | "reply_auth_token" | "token" | "bearer_token"
     )
 }
 
@@ -310,8 +305,13 @@ fn resolve_token_file(path: Option<&String>, field: &str, spec: &str) -> Result<
     let Some(path) = path else {
         return Ok(None);
     };
-    let value = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {field} in spec: {spec}"))?;
+    let expanded_path = expand_tilde(path);
+    let value = std::fs::read_to_string(&expanded_path).with_context(|| {
+        format!(
+            "failed to read {field} at {} in spec: {spec}",
+            expanded_path.display()
+        )
+    })?;
     Ok(Some(value.trim().to_string()))
 }
 
@@ -445,6 +445,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_openclaw_claw_expands_home_relative_token_files() {
+        let Some(home) = home::home_dir() else {
+            return;
+        };
+        let dir = tempfile::Builder::new()
+            .prefix(".calciforge-install-cli-test-")
+            .tempdir_in(&home)
+            .unwrap();
+        let auth_path = dir.path().join("inbound-token");
+        let reply_path = dir.path().join("reply-token");
+        std::fs::write(&auth_path, "home-inbound\n").unwrap();
+        std::fs::write(&reply_path, "home-reply\n").unwrap();
+        let relative_dir = dir.path().strip_prefix(&home).unwrap().to_string_lossy();
+
+        let spec = format!(
+            "name=custodian,adapter=openclaw-channel,host=local,endpoint=http://127.0.0.1:18789,auth_token_file=~/{relative_dir}/inbound-token,reply_webhook=http://127.0.0.1:18797/hooks/reply,reply_auth_token_file=~/{relative_dir}/reply-token",
+        );
+        let claw = parse_claw_spec(&spec).unwrap();
+        assert_eq!(claw.auth_token.as_deref(), Some("home-inbound"));
+        assert_eq!(claw.reply_auth_token.as_deref(), Some("home-reply"));
+    }
+
+    #[test]
     fn parse_openclaw_claw_prefers_inline_tokens_over_token_files() {
         let spec = "name=custodian,adapter=openclaw-channel,host=local,endpoint=http://127.0.0.1:18789,auth_token=inline-inbound,auth_token_file=/does/not/exist,reply_webhook=http://127.0.0.1:18797/hooks/reply,reply_auth_token=inline-reply,reply_auth_token_file=/also/missing";
         let claw = parse_claw_spec(spec).unwrap();
@@ -488,6 +511,21 @@ mod tests {
         assert!(
             !msg.contains("secret-inbound-token"),
             "error must not leak auth token: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_openclaw_claw_error_keeps_token_file_paths_visible() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=local,endpoint=http://127.0.0.1:18789,auth_token_file=/missing/inbound-token,reply_webhook=http://127.0.0.1:18797/hooks/reply";
+        let err = parse_claw_spec(spec).expect_err("missing token file should fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("/missing/inbound-token"),
+            "token file path should remain visible for diagnostics: {msg}"
+        );
+        assert!(
+            !msg.contains("auth_token_file=<redacted>"),
+            "token file paths are not secret token material: {msg}"
         );
     }
 
