@@ -97,8 +97,19 @@ h2 {
   padding-bottom: 0.4rem;
 }
 h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--calci-stone); }
-a { color: var(--calci-fire); text-decoration: none; border-bottom: 1px solid transparent; }
-a:hover { border-bottom-color: var(--calci-fire); }
+a {
+  color: var(--calci-fire);
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
+}
+a:hover,
+a:focus-visible { color: #b45309; }
+a:focus-visible {
+  outline: 2px solid rgba(217, 119, 6, 0.45);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 .nav { margin: 1.2rem 0 2rem; padding: 0.6rem 0; border-top: 1px solid var(--calci-line); border-bottom: 1px solid var(--calci-line); font-size: 0.95rem; }
 .nav a { margin-right: 1.4rem; font-weight: 500; }
 .hero .nav {
