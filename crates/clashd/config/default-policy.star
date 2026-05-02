@@ -1,6 +1,6 @@
 # Default clashd policy — Starlark
 #
-# This policy is evaluated for every OpenClaw tool call.
+# This policy is evaluated for every agent tool call routed through clashd.
 # Return "allow", "deny", or "review" (or {"verdict": "...", "reason": "..."}).
 #
 # Available context:

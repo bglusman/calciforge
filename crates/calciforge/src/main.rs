@@ -391,7 +391,9 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Run enabled channels concurrently via tokio::join!
+    // Run enabled channels concurrently and fail fast if any enabled channel
+    // exits with an error. Otherwise a dead channel can be masked by the
+    // long-lived proxy task and systemd will report a healthy service.
     // Channels that are not enabled resolve immediately with Ok(()).
     let telegram_fut = async {
         if !args.proxy_only && has_telegram {
@@ -536,7 +538,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (tg_result, mx_result, wa_result, sig_result, sms_result, mock_result, proxy_result) = tokio::join!(
+    tokio::try_join!(
         telegram_fut,
         matrix_fut,
         whatsapp_fut,
@@ -544,14 +546,7 @@ async fn main() -> Result<()> {
         sms_fut,
         mock_fut,
         proxy_fut
-    );
-    tg_result?;
-    proxy_result?;
-    mx_result?;
-    wa_result?;
-    sig_result?;
-    sms_result?;
-    mock_result?;
+    )?;
 
     Ok(())
 }

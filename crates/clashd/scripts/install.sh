@@ -41,7 +41,7 @@ fi
 echo "Creating systemd service..."
 sudo tee /etc/systemd/system/$SERVICE_NAME.service > /dev/null <<EOF
 [Unit]
-Description=clashd - OpenClaw Policy Sidecar
+Description=clashd - Calciforge Policy Sidecar
 After=network.target
 
 [Service]
