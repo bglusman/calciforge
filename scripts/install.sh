@@ -33,6 +33,25 @@ SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
 SECURITY_PROXY_MITM_ENABLED="${SECURITY_PROXY_MITM_ENABLED:-true}"
 SECURITY_PROXY_CA_CERT="${SECURITY_PROXY_CA_CERT:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca.pem}"
 SECURITY_PROXY_CA_KEY="${SECURITY_PROXY_CA_KEY:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca-key.pem}"
+SECURITY_PROXY_TRUST_MITM_CA="${SECURITY_PROXY_TRUST_MITM_CA:-true}"
+CALCIFORGE_MANAGED_OPENCLAW="${CALCIFORGE_MANAGED_OPENCLAW:-true}"
+CALCIFORGE_OPENCLAW_NAME="${CALCIFORGE_OPENCLAW_NAME:-openclaw-local}"
+CALCIFORGE_OPENCLAW_AGENT_ID="${CALCIFORGE_OPENCLAW_AGENT_ID:-main}"
+CALCIFORGE_OPENCLAW_PORT="${CALCIFORGE_OPENCLAW_PORT:-18789}"
+CALCIFORGE_OPENCLAW_ENDPOINT="${CALCIFORGE_OPENCLAW_ENDPOINT:-http://127.0.0.1:${CALCIFORGE_OPENCLAW_PORT}}"
+CALCIFORGE_OPENCLAW_REPLY_WEBHOOK="${CALCIFORGE_OPENCLAW_REPLY_WEBHOOK:-http://127.0.0.1:18797/hooks/reply}"
+CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE="${CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/openclaw-inbound-token}"
+CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE="${CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/openclaw-reply-token}"
+CALCIFORGE_OPENCLAW_POLICY_ENDPOINT="${CALCIFORGE_OPENCLAW_POLICY_ENDPOINT:-http://127.0.0.1:${CLASHD_PORT}/evaluate}"
+CALCIFORGE_OPENCLAW_PROXY_ENDPOINT="${CALCIFORGE_OPENCLAW_PROXY_ENDPOINT:-${SECURITY_PROXY_URL}}"
+CALCIFORGE_OPENCLAW_NO_PROXY="${CALCIFORGE_OPENCLAW_NO_PROXY:-${SECURITY_PROXY_NO_PROXY}}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT:-http://127.0.0.1:18083/v1}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER:-calciforge}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL:-local-dispatcher}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT:-60000}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS:-8192}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY:-}"
+CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE:-}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
@@ -149,6 +168,15 @@ truthy() {
     esac
 }
 
+expand_home_path() {
+    local path="$1"
+    case "$path" in
+        "~") printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s/%s\n' "$HOME" "${path#~/}" ;;
+        *) printf '%s\n' "$path" ;;
+    esac
+}
+
 ensure_mitm_ca() {
     truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
 
@@ -174,6 +202,53 @@ ensure_mitm_ca() {
     chmod 600 "$SECURITY_PROXY_CA_KEY"
     chmod 644 "$SECURITY_PROXY_CA_CERT"
     ok "Generated MITM CA → $SECURITY_PROXY_CA_CERT"
+}
+
+trust_mitm_ca_if_supported() {
+    truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
+    truthy "$SECURITY_PROXY_TRUST_MITM_CA" || {
+        warn "Skipping macOS MITM CA trust (SECURITY_PROXY_TRUST_MITM_CA=false)"
+        return 0
+    }
+    [[ "$PLATFORM" == "Darwin" ]] || return 0
+    command -v security >/dev/null 2>&1 || {
+        warn "macOS security CLI not found; trust $SECURITY_PROXY_CA_CERT manually for browser MITM"
+        return 0
+    }
+    if security verify-cert -c "$SECURITY_PROXY_CA_CERT" -p ssl >/dev/null 2>&1; then
+        ok "Calciforge MITM CA is already trusted in the macOS login keychain"
+        return 0
+    fi
+
+    echo ""
+    echo "Calciforge HTTPS inspection uses a local MITM CA for tested proxied clients."
+    echo "macOS may ask for your password before adding this CA to the login keychain."
+    echo "This lets browsers, tools, and agent runtimes trust Calciforge's local proxy"
+    echo "when they are configured to send HTTPS traffic through security-proxy."
+    echo "Skip with SECURITY_PROXY_TRUST_MITM_CA=false; without trust, proxied HTTPS"
+    echo "clients may show certificate errors instead of inspected pages."
+    echo ""
+    if [[ "$YES" != true ]]; then
+        if [[ ! -t 0 ]]; then
+            warn "Skipping macOS MITM CA trust prompt because stdin is not interactive"
+            warn "Rerun with --yes or run: security add-trusted-cert -r trustRoot -p ssl -p basic -k \"\$HOME/Library/Keychains/login.keychain-db\" \"$SECURITY_PROXY_CA_CERT\""
+            return 0
+        fi
+        read -r -p "  Trust the Calciforge MITM CA in the macOS login keychain now? [Y/n] " ans
+        if [[ ! "${ans:-Y}" =~ ^[Yy] ]]; then
+            warn "Skipping macOS MITM CA trust at operator request"
+            return 0
+        fi
+    fi
+
+    if security add-trusted-cert -r trustRoot -p ssl -p basic \
+        -k "$HOME/Library/Keychains/login.keychain-db" \
+        "$SECURITY_PROXY_CA_CERT"; then
+        ok "Trusted Calciforge MITM CA in the macOS login keychain"
+    else
+        warn "Could not trust Calciforge MITM CA automatically; browser MITM may show certificate errors"
+        warn "Manual command: security add-trusted-cert -r trustRoot -p ssl -p basic -k \"\$HOME/Library/Keychains/login.keychain-db\" \"$SECURITY_PROXY_CA_CERT\""
+    fi
 }
 
 write_log_rotator() {
@@ -815,6 +890,197 @@ ensure_tool() {
     esac
 }
 
+ensure_secret_token_file() {
+    local path="$1" label="$2"
+    path="$(expand_home_path "$path")"
+    mkdir -p "$(dirname "$path")"
+    if [[ -s "$path" ]]; then
+        chmod 600 "$path" 2>/dev/null || true
+        ok "$label token file already present → $path"
+        return 0
+    fi
+    command -v openssl >/dev/null 2>&1 || die "openssl is required to generate $label token"
+    ( umask 077; openssl rand -hex 32 > "$path" )
+    chmod 600 "$path"
+    ok "Generated $label token → $path"
+}
+
+managed_openclaw_claw_spec() {
+    local no_proxy_spec="${CALCIFORGE_OPENCLAW_NO_PROXY//,/;}"
+    local spec="name=${CALCIFORGE_OPENCLAW_NAME},adapter=openclaw-channel,host=local,endpoint=${CALCIFORGE_OPENCLAW_ENDPOINT},auth_token_file=${CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE},reply_webhook=${CALCIFORGE_OPENCLAW_REPLY_WEBHOOK},reply_auth_token_file=${CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE}"
+    if [[ -n "$CALCIFORGE_OPENCLAW_POLICY_ENDPOINT" ]]; then
+        spec="${spec},policy_endpoint=${CALCIFORGE_OPENCLAW_POLICY_ENDPOINT}"
+    fi
+    if [[ -n "$CALCIFORGE_OPENCLAW_PROXY_ENDPOINT" ]]; then
+        spec="${spec},proxy_endpoint=${CALCIFORGE_OPENCLAW_PROXY_ENDPOINT}"
+    fi
+    if [[ -n "$no_proxy_spec" ]]; then
+        spec="${spec},no_proxy=${no_proxy_spec}"
+    fi
+    printf '%s' "$spec"
+}
+
+ensure_managed_openclaw_calciforge_agent() {
+    mkdir -p "$(dirname "$ZC_CONFIG")"
+    python3 - "$ZC_CONFIG" \
+        "$CALCIFORGE_OPENCLAW_NAME" \
+        "$CALCIFORGE_OPENCLAW_ENDPOINT" \
+        "$CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE" \
+        "$CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE" \
+        "$CALCIFORGE_OPENCLAW_AGENT_ID" <<'PYEOF'
+import json
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1]).expanduser()
+agent_id, endpoint, api_key_file, reply_token_file, openclaw_agent_id = sys.argv[2:7]
+
+if not path.exists() or not path.read_text().strip():
+    path.write_text("[calciforge]\nversion = 2\n")
+
+text = path.read_text()
+agent_blocks = re.split(r"(?m)^\[\[agents\]\]\s*$", text)[1:]
+for block in agent_blocks:
+    next_table = re.split(r"(?m)^\[", block, maxsplit=1)[0]
+    match = re.search(r"(?m)^\s*id\s*=\s*[\"']([^\"']+)[\"']", next_table)
+    if match and match.group(1) == agent_id:
+        print(f"calciforge agent {agent_id!r} already present in {path}")
+        raise SystemExit(0)
+
+def q(value: str) -> str:
+    return json.dumps(value)
+
+block = f"""
+
+# Managed by calciforge install for the local OpenClaw gateway.
+[[agents]]
+id = {q(agent_id)}
+kind = "openclaw-channel"
+endpoint = {q(endpoint)}
+api_key_file = {q(api_key_file)}
+reply_auth_token_file = {q(reply_token_file)}
+openclaw_agent_id = {q(openclaw_agent_id)}
+timeout_ms = 600000
+aliases = ["openclaw"]
+registry = {{ display_name = "OpenClaw Local", specialties = ["local", "managed-openclaw"] }}
+"""
+
+with path.open("a", encoding="utf-8") as fh:
+    fh.write(block)
+print(f"added calciforge agent {agent_id!r} to {path}")
+PYEOF
+}
+
+configure_openclaw_model_gateway() {
+    python3 - "$ZC_CONFIG" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY" \
+        "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE" <<'PYEOF' | openclaw config patch --stdin >/dev/null
+import json
+import pathlib
+import sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        tomllib = None
+
+config_path = pathlib.Path(sys.argv[1]).expanduser()
+endpoint, provider, model, context, max_tokens, inline_key, key_file = sys.argv[2:10]
+provider = provider.strip() or "calciforge"
+model = model.strip() or "local-dispatcher"
+model_id = model.split("/", 1)[1] if model.startswith(f"{provider}/") else model
+context_tokens = int(context)
+max_output_tokens = int(max_tokens)
+
+def read_key_file(path):
+    if not path:
+        return None
+    file_path = pathlib.Path(path).expanduser()
+    if not file_path.exists():
+        return None
+    value = file_path.read_text(encoding="utf-8").strip()
+    return value or None
+
+api_key = inline_key.strip() or read_key_file(key_file)
+if api_key is None and tomllib is not None and config_path.exists():
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    proxy = config.get("proxy", {})
+    api_key = (proxy.get("api_key") or "").strip() or read_key_file(proxy.get("api_key_file"))
+
+if api_key is None:
+    raise SystemExit(
+        "OpenClaw model gateway wiring requires [proxy].api_key or [proxy].api_key_file "
+        "in Calciforge config, or CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY(_FILE)."
+    )
+
+print(json.dumps({
+    "agents": {
+        "defaults": {
+            "agentRuntime": {"id": "pi", "fallback": "pi"},
+            "model": {"primary": f"{provider}/{model_id}"},
+            "models": {f"{provider}/{model_id}": {}},
+        }
+    },
+    "models": {
+        "mode": "merge",
+        "providers": {
+            provider: {
+                "baseUrl": endpoint,
+                "apiKey": api_key,
+                "api": "openai-completions",
+                "contextWindow": context_tokens,
+                "maxTokens": max_output_tokens,
+                "request": {"allowPrivateNetwork": True},
+                "models": [{
+                    "id": model_id,
+                    "name": f"Calciforge {model_id}",
+                    "api": "openai-completions",
+                    "contextWindow": context_tokens,
+                    "maxTokens": max_output_tokens,
+                    "input": ["text"],
+                    "cost": {"input": 0, "output": 0},
+                }],
+            }
+        },
+    },
+}))
+PYEOF
+    ok "openclaw default model routed through Calciforge model gateway (${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER}/${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL})"
+    openclaw gateway restart --json >/dev/null 2>&1 || \
+        warn "openclaw gateway restart failed after model gateway patch; restart it manually before testing"
+}
+
+configure_managed_openclaw() {
+    truthy "$CALCIFORGE_MANAGED_OPENCLAW" || {
+        warn "Skipping managed OpenClaw configuration (CALCIFORGE_MANAGED_OPENCLAW=false)"
+        return 0
+    }
+    if [[ ! -x "$BIN_DIR/calciforge" ]]; then
+        warn "Skipping managed OpenClaw configuration — calciforge binary not found at $BIN_DIR/calciforge"
+        return 0
+    fi
+
+    ensure_secret_token_file "$CALCIFORGE_OPENCLAW_AUTH_TOKEN_FILE" "OpenClaw inbound"
+    ensure_secret_token_file "$CALCIFORGE_OPENCLAW_REPLY_TOKEN_FILE" "OpenClaw reply"
+
+    local claw_spec
+    claw_spec="$(managed_openclaw_claw_spec)"
+    "$BIN_DIR/calciforge" --config "$ZC_CONFIG" install \
+        --calciforge-host local \
+        --claw "$claw_spec" \
+        --yes || die "managed OpenClaw configuration failed; inspect installer output above"
+    ensure_managed_openclaw_calciforge_agent
+    configure_openclaw_model_gateway || die "managed OpenClaw model gateway configuration failed"
+}
+
 # ── banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1025,6 +1291,7 @@ hdr "security-proxy"
 
 mkdir -p "$SEC_LOG_DIR"
 ensure_mitm_ca
+trust_mitm_ca_if_supported
 disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-security-proxy"
 disable_legacy_local_service "calciforge-security-proxy" "${LEGACY_SERVICE_PREFIX}-proxy"
 
@@ -1104,8 +1371,13 @@ run_calciforge_doctor() {
         if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES"; then
             doctor_env=(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
         fi
-        "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
-            || warn "calciforge doctor reported issues; see output above"
+        if [[ ${#doctor_env[@]} -gt 0 ]]; then
+            "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
+                || warn "calciforge doctor reported issues; see output above"
+        else
+            "$BIN_DIR/calciforge" "${doctor_args[@]}" \
+                || warn "calciforge doctor reported issues; see output above"
+        fi
     else
         warn "Skipping calciforge doctor — config or binary not available yet"
     fi
@@ -1122,7 +1394,29 @@ hdr "fnox (secret resolver)"
 ensure_fnox || true
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. calciforge — main agent gateway (channels + router + proxy)
+# 6. openclaw — package bootstrap + managed channel/plugin configuration
+# ══════════════════════════════════════════════════════════════════════════════
+if agent_enabled openclaw; then
+    hdr "openclaw"
+    ensure_npm openclaw || true
+
+    if command -v openclaw &>/dev/null; then
+        python3 - <<'PYEOF' | openclaw approvals set --stdin 2>&1 | head -2
+import json
+print(json.dumps({"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},
+    "agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd",
+        "wc","head","tail","curl","wget","python","python3","node","npm","cargo",
+        "make","cmake","rustc"]}}}))
+PYEOF
+        ok "openclaw exec-approvals configured (restricted+ask, common tools allowlisted)"
+        configure_managed_openclaw
+    else
+        warn "openclaw not available — skipping managed OpenClaw configuration"
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. calciforge — main agent gateway (channels + router + proxy)
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs as a system service so channels (Telegram, Matrix, WhatsApp) reconnect
 # across reboots. Expects config at $CALCIFORGE_CONFIG_HOME/config.toml by
@@ -1210,7 +1504,7 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. Claude Code hook
+# 8. Claude Code hook
 # ══════════════════════════════════════════════════════════════════════════════
 # ── acpx — required for any agent with kind = "acpx" (claude, opencode, kilo, …)
 # Needs to be installed regardless of which specific agent is enabled, since
@@ -1287,7 +1581,7 @@ PYEOF
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. opencode
+# 9. opencode
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled opencode; then
     hdr "opencode"
@@ -1307,27 +1601,7 @@ if agent_enabled opencode; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. openclaw
-# ══════════════════════════════════════════════════════════════════════════════
-if agent_enabled openclaw; then
-    hdr "openclaw"
-    ensure_npm openclaw || true
-
-    if command -v openclaw &>/dev/null; then
-        python3 - <<'PYEOF' | openclaw approvals set --stdin 2>&1 | head -2
-import json
-print(json.dumps({"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},
-    "agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd",
-        "wc","head","tail","curl","wget","python","python3","node","npm","cargo",
-        "make","cmake","rustc"]}}}))
-PYEOF
-        ok "openclaw exec-approvals configured (restricted+ask, common tools allowlisted)"
-        warn "Start openclaw gateway: openclaw gateway --port 18789"
-    fi
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 9. dirac
+# 10. dirac
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled dirac; then
     hdr "dirac"
@@ -1340,7 +1614,7 @@ if agent_enabled dirac; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. zeroclaw
+# 11. zeroclaw
 # ══════════════════════════════════════════════════════════════════════════════
 if agent_enabled zeroclaw; then
     hdr "zeroclaw"

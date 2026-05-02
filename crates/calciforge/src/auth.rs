@@ -128,6 +128,7 @@ mod tests {
                 allow_model_override: None,
                 reply_port: None,
                 reply_auth_token: None,
+                reply_auth_token_file: None,
                 command: None,
                 args: None,
                 env: None,

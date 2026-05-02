@@ -763,8 +763,12 @@ against `security-proxy` logs:
 ```bash
 # External agent process environment
 export HTTP_PROXY=http://127.0.0.1:8888
+export HTTPS_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
+
+Managed OpenClaw installs also write OpenClaw browser proxy settings, because
+Chrome does not reliably inherit ambient proxy env from the gateway process.
 
 ---
 

@@ -74,11 +74,14 @@ service to use a tested proxy/tool/policy integration; installing the channel
 plugin alone does not prove outbound egress enforcement.
 
 Required at runtime: `endpoint`, plus `api_key` or `api_key_file` unless the
-deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`.
+deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`. Use
+`reply_auth_token_file` for callback auth on managed installs; inline
+`reply_auth_token` remains supported for small local tests.
 
 For installer-managed OpenClaw hosts, `calciforge install` also requires the
-matching `auth_token`/`api_key`, `reply_webhook`, and `reply_auth_token` in the
-`--claw` spec. The installer writes those into the remote
+matching `auth_token`/`auth_token_file`, `reply_webhook`, and
+`reply_auth_token`/`reply_auth_token_file` in the `--claw` spec. The installer
+writes those into the remote
 `calciforge-channel` plugin entry, installs the plugin files under
 `~/.openclaw/extensions/calciforge-channel`, adds the plugin to
 `plugins.allow` when an allowlist is present, and restarts the OpenClaw gateway
@@ -90,7 +93,7 @@ id = "librarian"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
 api_key_file = "~/.config/calciforge/secrets/librarian-token"
-reply_auth_token = "{{secret:LIBRARIAN_REPLY_TOKEN}}"
+reply_auth_token_file = "~/.config/calciforge/secrets/librarian-reply-token"
 timeout_ms = 120000
 aliases = ["lib", "main"]
 registry = { display_name = "Librarian", specialties = ["general", "homelab-ops"] }
@@ -103,8 +106,8 @@ to this agent's `id`.
 for async `/hooks/reply` callbacks when the gateway pushes replies
 asynchronously instead of returning them synchronously.
 
-`reply_auth_token` (optional) — bearer token required on incoming
-`/hooks/reply` callbacks.
+`reply_auth_token_file` or `reply_auth_token` (optional) — bearer token required
+on incoming `/hooks/reply` callbacks.
 
 Installer example:
 
@@ -115,7 +118,7 @@ calciforge install \
 ```
 
 Use the same inbound token in the Calciforge agent `api_key`/`api_key_file`,
-and the same reply token in `reply_auth_token`.
+and the same reply token in `reply_auth_token_file`/`reply_auth_token`.
 
 ### `kind = "openai-compat"`
 

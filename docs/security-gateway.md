@@ -99,13 +99,17 @@ Calciforge did not remove proxy support; it narrowed where proxy env is treated
 as a reliable security mechanism.
 
 - `HTTP_PROXY` remains useful for tested plaintext HTTP clients. The
-  OpenClaw installer path can write a systemd drop-in with `HTTP_PROXY` via
-  `proxy_endpoint`, after checking that the configured `security-proxy` is
-  reachable from the OpenClaw host.
+  OpenClaw installer path can write service proxy env via `proxy_endpoint`,
+  after checking that the configured `security-proxy` is reachable from the
+  OpenClaw host.
 - `HTTPS_PROXY` should only be set for agent runtimes that have been tested
   with Calciforge's MITM mode and trust the configured CA. Setting it globally
   can break streaming clients, WebSockets, browser/OAuth flows, and npm-backed
   adapters.
+- Browser-backed tools usually need runtime-specific wiring. Managed OpenClaw
+  gets `browser.extraArgs = ["--proxy-server=..."]`; relying on ambient env is
+  not enough because OpenClaw strips Chrome proxy env and otherwise starts
+  Chrome with `--no-proxy-server`.
 - Ambient proxy env on the Calciforge daemon itself is avoided because it can
   route Calciforge provider calls, channel callbacks, health checks, and local
   control-plane traffic through its own proxy boundary.
@@ -120,8 +124,13 @@ as a reliable security mechanism.
 
 The installer now starts `security-proxy` with the hudsucker-backed MITM
 listener enabled by default and generates a persistent local CA if one does not
-already exist. That makes inspected HTTPS the default available proxy mode, but
-it does not automatically make every agent or browser trust that CA.
+already exist. On macOS, the installer explains why the trust step is needed
+before it asks the system to add that CA to the login keychain. This is required
+for any tested browser, tool, or agent runtime that sends HTTPS traffic through
+`security-proxy` and expects inspected pages without certificate errors. Set
+`SECURITY_PROXY_TRUST_MITM_CA=false` to skip the keychain prompt. That makes
+inspected HTTPS the default available proxy mode, but it does not automatically
+make every runtime trust that CA.
 
 To run the binary manually, use:
 

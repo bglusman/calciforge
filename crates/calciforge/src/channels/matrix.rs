@@ -1702,6 +1702,7 @@ printf 'mock-agent saw: %s\n' "$1"
                 allow_model_override: None,
                 reply_port: None,
                 reply_auth_token: None,
+                reply_auth_token_file: None,
                 command: Some(agent_path.to_string_lossy().to_string()),
                 args: Some(vec!["{message}".to_string()]),
                 env: None,
