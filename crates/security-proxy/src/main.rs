@@ -1,13 +1,23 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use adversary_detector::{RateLimitConfig, ScannerCheckConfig, ScannerConfig};
 use security_proxy::agent_config::AgentsConfig;
 use security_proxy::config::GatewayConfig;
 use security_proxy::mitm::{install_default_crypto_provider, load_rcgen_authority, serve_mitm};
 use security_proxy::proxy::SecurityProxy;
-use security_proxy::router::build_app;
+
+/// Default location for the auto-generated MITM CA. Picked over
+/// `/etc/calciforge/...` because the systemd unit installer ships the
+/// CA into `/etc/calciforge/secrets/...` itself; if that's already
+/// populated, operators set `SECURITY_PROXY_CA_*` and we never touch
+/// `/var/lib`. The standalone-test path uses /var/lib so an ad-hoc
+/// `cargo run -p security-proxy` works without root-owning /etc.
+const DEFAULT_CA_DIR: &str = "/var/lib/calciforge";
+const DEFAULT_CA_CERT: &str = "/var/lib/calciforge/ca.pem";
+const DEFAULT_CA_KEY: &str = "/var/lib/calciforge/ca.key";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,9 +38,6 @@ async fn main() -> anyhow::Result<()> {
         port,
         ..GatewayConfig::default()
     };
-    config.mitm_enabled = std::env::var("SECURITY_PROXY_MITM_ENABLED")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(config.mitm_enabled);
     if let Ok(path) = std::env::var("SECURITY_PROXY_CA_CERT") {
         if !path.trim().is_empty() {
             config.ca_cert_path = Some(path);
@@ -111,38 +118,140 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(proxy);
 
-    if config.mitm_enabled {
-        let cert_path = config.ca_cert_path.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("SECURITY_PROXY_MITM_ENABLED requires SECURITY_PROXY_CA_CERT")
-        })?;
-        let key_path = config.ca_key_path.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("SECURITY_PROXY_MITM_ENABLED requires SECURITY_PROXY_CA_KEY")
-        })?;
-        let ca = load_rcgen_authority(cert_path, key_path)?;
-        let bind_host = std::env::var("SECURITY_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
-        let addr = format!("{}:{}", bind_host, port).parse()?;
-        serve_mitm(addr, state, ca).await?;
-        return Ok(());
+    // Resolve CA paths: configured → file → auto-generate at default
+    // location → error. MITM is the only mode in 2026, so the binary
+    // must come up with a CA on its own for ad-hoc testing while still
+    // honoring the install-script-provisioned CA in production.
+    let (cert_path, key_path) = resolve_or_generate_ca(
+        config.ca_cert_path.as_deref(),
+        config.ca_key_path.as_deref(),
+    )?;
+    let ca = load_rcgen_authority(&cert_path, &key_path)?;
+
+    let bind_host = std::env::var("SECURITY_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let addr = format!("{}:{}", bind_host, port).parse()?;
+    serve_mitm(addr, state, ca).await?;
+    Ok(())
+}
+
+/// Decide which CA cert/key paths to hand to the MITM authority loader.
+///
+/// Preference order:
+///   1. Both `cert` and `key` env-overrides set → use them as-is. The
+///      loader will surface a useful error if either path is missing.
+///   2. Both unset and the default cert+key files already exist → load
+///      the persistent on-disk pair.
+///   3. Both unset and at least one is missing → generate a new
+///      self-signed CA at the default location and persist it (key
+///      mode 0600). This makes `cargo run -p security-proxy` work for
+///      ad-hoc local testing without requiring the install script.
+///   4. Default-dir not writeable → return an error pointing the
+///      operator at `scripts/install.sh` (which provisions the CA in
+///      `/etc/calciforge/secrets`).
+///
+/// The "exactly one configured" case is rejected explicitly — pairing a
+/// custom cert with the default-location key (or vice-versa) is almost
+/// always a misconfiguration and would race with the auto-generate path.
+fn resolve_or_generate_ca(
+    cert: Option<&str>,
+    key: Option<&str>,
+) -> anyhow::Result<(String, String)> {
+    match (cert, key) {
+        (Some(c), Some(k)) => Ok((c.to_string(), k.to_string())),
+        (Some(_), None) | (None, Some(_)) => Err(anyhow::anyhow!(
+            "SECURITY_PROXY_CA_CERT and SECURITY_PROXY_CA_KEY must both be set or both unset; \
+             configuring only one of the pair is almost always a mistake"
+        )),
+        (None, None) => ensure_default_ca(),
+    }
+}
+
+/// Load the default-location CA pair, generating it on first start if
+/// absent. The generated cert is a self-signed CA with subject
+/// `CN=Calciforge Local MITM CA`, valid for 10 years; the key is
+/// written with mode 0600 to deny world/group access on multi-user
+/// hosts. If the default directory isn't writeable we surface a clear
+/// error that points the operator at the install script.
+fn ensure_default_ca() -> anyhow::Result<(String, String)> {
+    let cert_path = PathBuf::from(DEFAULT_CA_CERT);
+    let key_path = PathBuf::from(DEFAULT_CA_KEY);
+    if cert_path.exists() && key_path.exists() {
+        info!(
+            "Using existing MITM CA at {} / {}",
+            cert_path.display(),
+            key_path.display()
+        );
+        return Ok((
+            cert_path.to_string_lossy().into_owned(),
+            key_path.to_string_lossy().into_owned(),
+        ));
+    }
+    if cert_path.exists() ^ key_path.exists() {
+        return Err(anyhow::anyhow!(
+            "incomplete MITM CA at default location: cert={} key={} (one exists, the other does not). \
+             Delete the orphan or set SECURITY_PROXY_CA_CERT and SECURITY_PROXY_CA_KEY explicitly.",
+            cert_path.display(),
+            key_path.display()
+        ));
     }
 
-    // The router is built by the library so tests can spin up the same
-    // routes in-process without spawning the binary. See
-    // `security_proxy::router::build_app`.
-    let app = build_app(state);
+    if let Err(err) = std::fs::create_dir_all(DEFAULT_CA_DIR) {
+        return Err(anyhow::anyhow!(
+            "no MITM CA configured and default location {DEFAULT_CA_DIR} is not writeable ({err}); \
+             set SECURITY_PROXY_CA_CERT/_KEY or run scripts/install.sh"
+        ));
+    }
+    generate_persistent_ca(&cert_path, &key_path)?;
+    warn!(
+        "Generated new MITM CA at {} — install in agent trust store before agent traffic will work",
+        cert_path.display()
+    );
+    Ok((
+        cert_path.to_string_lossy().into_owned(),
+        key_path.to_string_lossy().into_owned(),
+    ))
+}
 
-    // Default to loopback-only because the router exposes a
-    // `GET /vault/:secret` endpoint that resolves to a real token. Even
-    // with the bearer-token guard we added, having the binary bind
-    // 0.0.0.0 by default put the entire LAN one network hop from a
-    // secret-exfil attempt. Operators who need remote access set
-    // SECURITY_PROXY_BIND=0.0.0.0 explicitly (and should pair it with
-    // SECURITY_PROXY_VAULT_TOKEN, which gates the vault route).
-    let bind_host = std::env::var("SECURITY_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
-    let addr = format!("{}:{}", bind_host, port);
-    info!("Security proxy listening on {}", addr);
+/// Generate a self-signed CA pair and persist it. Uses `rcgen` directly
+/// (already a dep of the crate via the hudsucker authority loader) so we
+/// don't shell out to openssl. Key file gets 0600 to keep prying eyes
+/// off in the multi-user case; cert file is 0644.
+fn generate_persistent_ca(cert_path: &Path, key_path: &Path) -> anyhow::Result<()> {
+    use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    let key_pair = KeyPair::generate().map_err(|e| anyhow::anyhow!("generate CA key: {e}"))?;
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, "Calciforge Local MITM CA");
+    params.distinguished_name = dn;
+    // Default not_before/not_after from rcgen is 4 years; explicitly
+    // bump to ~10y so a long-lived dev box doesn't churn through
+    // expirations annually. Operators who care about rotation use the
+    // install-script CA, which sets its own validity window.
+    let now = std::time::SystemTime::now();
+    let in_ten_years = now + std::time::Duration::from_secs(60 * 60 * 24 * 365 * 10);
+    params.not_before = now.into();
+    params.not_after = in_ten_years.into();
 
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| anyhow::anyhow!("self-sign CA: {e}"))?;
+
+    std::fs::write(cert_path, cert.pem())
+        .map_err(|e| anyhow::anyhow!("write CA cert {}: {e}", cert_path.display()))?;
+    std::fs::write(key_path, key_pair.serialize_pem())
+        .map_err(|e| anyhow::anyhow!("write CA key {}: {e}", key_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(key_path)
+            .map_err(|e| anyhow::anyhow!("stat CA key: {e}"))?
+            .permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(key_path, perms)
+            .map_err(|e| anyhow::anyhow!("chmod 600 CA key: {e}"))?;
+    }
     Ok(())
 }

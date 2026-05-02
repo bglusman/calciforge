@@ -164,17 +164,26 @@ async fn test_service(
 }
 
 async fn start_mitm_proxy(ca_cert: &str, ca_key: &str) -> String {
-    let proxy = SecurityProxy::new(
+    start_mitm_proxy_with_config(
+        ca_cert,
+        ca_key,
         GatewayConfig {
             scan_outbound: false,
             scan_inbound: false,
             bypass_domains: vec![],
             ..GatewayConfig::default()
         },
-        ScannerConfig::default(),
-        RateLimitConfig::default(),
     )
-    .await;
+    .await
+}
+
+async fn start_mitm_proxy_with_config(
+    ca_cert: &str,
+    ca_key: &str,
+    config: GatewayConfig,
+) -> String {
+    let proxy =
+        SecurityProxy::new(config, ScannerConfig::default(), RateLimitConfig::default()).await;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -253,5 +262,179 @@ async fn https_mitm_substitutes_header_and_json_body_before_forwarding() {
 
     let _ = stop_upstream.send(());
     remove_env("MITM_TEST_API_KEY");
+    remove_env("SECURITY_PROXY_VAULT_TOKEN");
+}
+
+/// Given an allowlist that ONLY allows `api.anthropic.com`,
+/// when the agent sends a header `{{secret:mitm_locked}}` to a different
+/// host (the wiremock-style upstream),
+/// then substitution is REFUSED and upstream is never hit.
+///
+/// This is the headline §11.1 attack: a prompt-injected agent
+/// constructing a request to attacker-controlled host. Without this
+/// check, the gateway would substitute and exfiltrate. Equivalent to
+/// the deleted axum-mode test in destination_allowlist.rs.
+#[tokio::test]
+async fn https_mitm_destination_allowlist_blocks_disallowed_host() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
+    set_env("MITM_LOCKED_API_KEY", "should-never-leave-the-process");
+
+    let (ca_cert, ca_key) = make_test_ca();
+    let (upstream, _seen_rx, stop_upstream) =
+        start_https_upstream(rcgen_authority(&ca_cert, &ca_key)).await;
+
+    let mut allow = std::collections::HashMap::new();
+    allow.insert("mitm_locked".into(), vec!["api.anthropic.com".into()]);
+    let proxy = start_mitm_proxy_with_config(
+        &ca_cert,
+        &ca_key,
+        GatewayConfig {
+            scan_outbound: false,
+            scan_inbound: false,
+            bypass_domains: vec![],
+            secret_destination_allowlist: allow,
+            ..GatewayConfig::default()
+        },
+    )
+    .await;
+
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .proxy(reqwest::Proxy::all(&proxy).unwrap())
+        .add_root_certificate(Certificate::from_pem(ca_cert.as_bytes()).unwrap())
+        .no_brotli()
+        .no_deflate()
+        .no_gzip()
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("{upstream}/secret"))
+        .header("Content-Type", "application/json")
+        .header("X-Api-Key", "{{secret:mitm_locked}}")
+        .body("{}")
+        .send()
+        .await
+        .expect("gateway returns SOME response");
+
+    // Block responses are 200/HTML by design (see mitm_blocked_response);
+    // X-Calciforge-Blocked is the structured signal.
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("X-Calciforge-Blocked")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
+    );
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        !body.contains("should-never-leave-the-process"),
+        "body must not echo the secret value"
+    );
+    assert!(
+        !body.contains("mitm_locked"),
+        "body must not echo the secret name"
+    );
+
+    let _ = stop_upstream.send(());
+    remove_env("MITM_LOCKED_API_KEY");
+}
+
+/// Given a request body with content-type `application/octet-stream`
+/// containing `{{secret:NAME}}` as ASCII bytes,
+/// when the client forwards through the MITM gateway,
+/// then the gateway serves a block page rather than forwarding.
+/// Covers RFC §11.8 — an agent can't hide a ref in an unsupported
+/// content-type to skip substitution. Equivalent to the deleted
+/// axum-mode test in substitution_body_headers.rs.
+#[tokio::test]
+async fn https_mitm_blocks_ref_in_unsupported_content_type() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    remove_env("SECRETS_VAULT_TOKEN");
+    remove_env("SECRETS_VAULT_URL");
+    remove_env("MITM_RAW_API_KEY");
+
+    let (ca_cert, ca_key) = make_test_ca();
+    let (upstream, _seen_rx, stop_upstream) =
+        start_https_upstream(rcgen_authority(&ca_cert, &ca_key)).await;
+    let proxy = start_mitm_proxy(&ca_cert, &ca_key).await;
+
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .proxy(reqwest::Proxy::all(&proxy).unwrap())
+        .add_root_certificate(Certificate::from_pem(ca_cert.as_bytes()).unwrap())
+        .no_brotli()
+        .no_deflate()
+        .no_gzip()
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("{upstream}/secret"))
+        .header("Content-Type", "application/octet-stream")
+        .body(b"prefix {{secret:mitm_raw}} suffix".to_vec())
+        .send()
+        .await
+        .expect("gateway returns SOME response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("X-Calciforge-Blocked")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
+    );
+
+    let _ = stop_upstream.send(());
+}
+
+/// Given the vault bearer token env var is unset,
+/// when a client hits `GET /vault/anything` on the MITM proxy port,
+/// then the response is 503 (route disabled / not an oracle).
+/// Equivalent to the deleted axum-mode test in vault_route.rs.
+#[tokio::test]
+async fn https_mitm_vault_route_503_when_token_env_unset() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    remove_env("SECURITY_PROXY_VAULT_TOKEN");
+
+    let (ca_cert, ca_key) = make_test_ca();
+    let proxy = start_mitm_proxy(&ca_cert, &ca_key).await;
+
+    let resp = reqwest::get(format!("{proxy}/vault/anything"))
+        .await
+        .expect("control-plane request succeeds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "vault route must be disabled when bearer token env unset"
+    );
+}
+
+/// Given the vault bearer token IS set but the request omits/wrongs
+/// the Bearer header,
+/// when a client hits `GET /vault/anything` on the MITM proxy port,
+/// then the response is 401. Equivalent to the deleted axum-mode test
+/// in vault_route.rs.
+#[tokio::test]
+async fn https_mitm_vault_route_401_when_bearer_missing_or_wrong() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    set_env("SECURITY_PROXY_VAULT_TOKEN", "expected-vault-token");
+
+    let (ca_cert, ca_key) = make_test_ca();
+    let proxy = start_mitm_proxy(&ca_cert, &ca_key).await;
+
+    let resp_no_header = reqwest::get(format!("{proxy}/vault/anything"))
+        .await
+        .expect("control-plane request succeeds");
+    assert_eq!(resp_no_header.status(), StatusCode::UNAUTHORIZED);
+
+    let resp_wrong = reqwest::Client::new()
+        .get(format!("{proxy}/vault/anything"))
+        .header("Authorization", "Bearer wrong-token")
+        .send()
+        .await
+        .expect("control-plane request succeeds");
+    assert_eq!(resp_wrong.status(), StatusCode::UNAUTHORIZED);
+
     remove_env("SECURITY_PROXY_VAULT_TOKEN");
 }

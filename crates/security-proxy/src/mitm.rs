@@ -1,10 +1,16 @@
-//! HTTPS MITM proxy mode built on hudsucker.
+//! HTTPS MITM proxy mode built on hudsucker — the *only* proxy mode in
+//! the security-proxy binary as of 2026-04.
 //!
-//! The existing Axum router remains the default explicit/plain HTTP proxy and
-//! control-plane path. This module is the HTTPS interception path: clients trust
-//! the configured Calciforge CA, send `HTTP_PROXY`/`HTTPS_PROXY` traffic here,
-//! and hudsucker gives Calciforge decrypted HTTP requests/responses to scan and
-//! rewrite before forwarding upstream.
+//! Clients trust the configured Calciforge CA, send `HTTP_PROXY` /
+//! `HTTPS_PROXY` traffic to this listener, and hudsucker hands Calciforge
+//! decrypted HTTP requests/responses to scan and rewrite before forwarding
+//! upstream. Plain-HTTP requests come through the same listener and use
+//! the same pipeline; the local `/health` and `/vault/:secret` control
+//! routes are also served from here so there's a single entry point.
+//!
+//! The legacy axum forward-proxy was deleted in this revision: it could
+//! not inspect HTTPS (returned 400 to CONNECT) so in 2026 it functioned
+//! as silent broken protection. One mode, one audit trail.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -25,7 +31,6 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 use crate::proxy::{self, BodyMode, SecurityProxy};
-use crate::router;
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
@@ -181,10 +186,9 @@ impl CalciforgeMitmHandler {
         {
             Ok(url) => url,
             Err(err) => {
+                // Bland message; the err text contains the secret name.
                 warn!("BLOCKED: MITM URL substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                    "URL secret substitution failed: {err}"
-                )));
+                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
             }
         };
         self.last_url = Some(target_url.clone());
@@ -213,10 +217,13 @@ impl CalciforgeMitmHandler {
         if let Err(err) =
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
         {
+            // Echoing `err` would leak the secret name in the block
+            // page (the resolver/allowlist error includes the literal
+            // ref name). Log details server-side, return a bland
+            // explanation to the caller — same pattern as the original
+            // axum blocked_response.
             warn!("BLOCKED: MITM header substitution failed: {err}");
-            return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                "Header secret substitution failed: {err}"
-            )));
+            return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
         }
 
         let body_bytes = match body.collect().await {
@@ -238,10 +245,10 @@ impl CalciforgeMitmHandler {
         {
             Ok(bytes) => bytes,
             Err(err) => {
+                // Bland message; the err text may contain the secret name
+                // (resolver / allowlist failures include the literal ref).
                 warn!("BLOCKED: MITM body substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                    "Request body secret substitution failed: {err}"
-                )));
+                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
             }
         };
 
@@ -348,7 +355,7 @@ impl CalciforgeMitmHandler {
         headers: &header::HeaderMap,
         secret_name: String,
     ) -> Response<MitmBody> {
-        let (status, value) = router::vault_json_response(headers, secret_name).await;
+        let (status, value) = vault_json_response(headers, secret_name).await;
         json_response(status, value)
     }
 }
@@ -525,7 +532,13 @@ fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
             "X-Calciforge-Reason",
             reason
                 .chars()
-                .map(|c| if c.is_ascii() && c != '\r' && c != '\n' { c } else { ' ' })
+                .map(|c| {
+                    if c.is_ascii() && c != '\r' && c != '\n' {
+                        c
+                    } else {
+                        ' '
+                    }
+                })
                 .collect::<String>(),
         )
         .body(MitmBody::from(html))
@@ -560,4 +573,103 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
         .header(header::CONTENT_TYPE, "application/json")
         .body(MitmBody::from(value.to_string()))
         .unwrap_or_else(|_| mitm_blocked_response("Failed to build response"))
+}
+
+/// Env var holding the bearer token required to call `/vault/:secret`.
+/// Unset → the vault route returns 503 (refuses to act as an oracle).
+/// This is intentionally separate from any cred-injection token; it
+/// guards the resolve-and-return path that has no other authn.
+pub(crate) const VAULT_TOKEN_ENV: &str = "SECURITY_PROXY_VAULT_TOKEN";
+
+/// Constant-time byte comparison to keep the bearer-token check from
+/// leaking length/prefix information via timing. Std doesn't provide
+/// one; we keep it tiny rather than pull a crate.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Resolve a secret for the `GET /vault/:secret` control-plane route
+/// (now served only by the MITM handler — the plain-HTTP forward proxy
+/// was removed in 2026-04).
+///
+/// Returns the (status, json) tuple for the caller to wrap in the
+/// hudsucker `Response<MitmBody>` envelope. Neither the response body
+/// nor ops logs contain the resolver's raw error text: a verbose error
+/// would name the env vars probed and the vault URL queried, either of
+/// which reveals shape of the secret store to anyone reading logs.
+/// We log the secret *name* at `debug!` so you can correlate requests
+/// to attempts during incident investigation, but the underlying error
+/// stays redacted.
+pub(crate) async fn vault_json_response(
+    headers: &header::HeaderMap,
+    secret_name: String,
+) -> (StatusCode, serde_json::Value) {
+    use tracing::debug;
+
+    // Defense in depth: the binary defaults to binding 127.0.0.1 (see
+    // main.rs), but if an operator opens it up to 0.0.0.0 the vault
+    // route would otherwise be an unauthenticated secret oracle for
+    // anyone on the network. Require a bearer token; if the env var is
+    // unset, refuse to serve the route at all rather than silently
+    // accepting "no token".
+    match std::env::var(VAULT_TOKEN_ENV) {
+        Ok(expected) if !expected.is_empty() => {
+            let provided = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .unwrap_or("");
+            if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+                debug!(secret = %secret_name, "vault auth failed");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    serde_json::json!({"status": "error", "message": "unauthorized"}),
+                );
+            }
+        }
+        _ => {
+            debug!(
+                "vault route called but {} unset; refusing as oracle",
+                VAULT_TOKEN_ENV
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({"status": "error", "message": "vault route disabled"}),
+            );
+        }
+    }
+
+    match secrets_client::vault::get_secret(&secret_name).await {
+        Ok(token) => {
+            debug!(secret = %secret_name, "vault route resolved secret");
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "ok",
+                    "secret": secret_name,
+                    "token": token,
+                }),
+            )
+        }
+        Err(_) => {
+            // Name only; no error text. If you need to debug, enable
+            // `RUST_LOG=secrets_client=debug` to see the underlying
+            // resolver's own debug output.
+            debug!(secret = %secret_name, "vault lookup failed");
+            (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({
+                    "status": "error",
+                    "message": "Secret not found",
+                }),
+            )
+        }
+    }
 }
