@@ -235,6 +235,9 @@ fallback, or any future channel. URL ingestion remains future work and needs
 its own SSRF-safe policy: allowed origins, no ambient credentials, bounded
 redirects, content sniffing, byte limits before full reads, and a preference
 for local push/upload or short-lived signed URLs over arbitrary fetches.
+Callbacks can also carry an `error` field for a correlated request when the
+agent or orchestrator has exhausted its reply paths but has no visible result.
+That keeps operators out of long timeouts and makes no-reply failures explicit.
 
 There are two complementary integration shapes:
 

@@ -88,6 +88,128 @@ test("dispatches through OpenClaw channel runtime with calciforge command contex
   });
 });
 
+test("reports channel-runtime requests that complete without a visible reply", async () => {
+  const delivered = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      delivered.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const replyWebhook = `http://127.0.0.1:${server.address().port}/reply`;
+  const runtime = {
+    config: { current: () => ({ session: {} }) },
+    channel: {
+      session: {
+        resolveStorePath: () => "/tmp/openclaw-test-sessions.json",
+        readSessionUpdatedAt: () => undefined,
+        recordInboundSession: async () => {},
+      },
+      reply: {
+        resolveEnvelopeFormatOptions: () => ({}),
+        formatInboundEnvelope: ({ body }) => body,
+        finalizeInboundContext: (ctx) => ctx,
+        withReplyDispatcher: async ({ run }) => run(),
+        dispatchReplyFromConfig: async ({ dispatcher }) => {
+          assert.equal(dispatcher.getQueuedCounts().final, 0);
+          return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
+        },
+      },
+      turn: {
+        run: async ({ raw, adapter }) => {
+          const input = adapter.ingest(raw);
+          const resolved = adapter.resolveTurn(input);
+          return resolved.runDispatch();
+        },
+      },
+    },
+  };
+
+  try {
+    await testInternals.dispatchViaChannelRuntime({
+      runtime,
+      message: "hello?",
+      sessionKey: "calciforge:main:brian",
+      requestId: "silent-req",
+      channel: "telegram",
+      sender: "brian",
+      replyWebhook,
+      replyAuthToken: "reply-secret",
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  assert.equal(delivered.length, 1);
+  assert.deepEqual(delivered[0], {
+    sessionKey: "calciforge:main:brian",
+    requestId: "silent-req",
+    error: "OpenClaw completed without a visible reply for this Calciforge request",
+    channel: "telegram",
+  });
+});
+
+test("reports subagent-runtime requests that complete without a visible reply", async () => {
+  const delivered = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      delivered.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const replyWebhook = `http://127.0.0.1:${server.address().port}/reply`;
+  const runtime = {
+    subagent: {
+      async getSessionMessages({ sessionKey }) {
+        assert.equal(sessionKey, "calciforge:main:brian");
+        return { messages: [{ role: "assistant", id: "silent", content: "" }] };
+      },
+      async run({ sessionKey, message, deliver }) {
+        assert.equal(sessionKey, "calciforge:main:brian");
+        assert.equal(message, "hello?");
+        assert.equal(deliver, false);
+        return { runId: "run-silent" };
+      },
+      async waitForRun({ runId }) {
+        assert.equal(runId, "run-silent");
+        return { status: "ok" };
+      },
+    },
+  };
+
+  try {
+    await testInternals.dispatchViaSubagentRuntime({
+      runtime,
+      message: "hello?",
+      sessionKey: "calciforge:main:brian",
+      requestId: "silent-subagent-req",
+      channel: "telegram",
+      replyWebhook,
+      replyAuthToken: "reply-secret",
+      runTimeoutMs: 1000,
+      errorRecoveryMs: 1,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  assert.equal(delivered.length, 1);
+  assert.deepEqual(delivered[0], {
+    sessionKey: "calciforge:main:brian",
+    requestId: "silent-subagent-req",
+    error: "OpenClaw completed without a visible reply for this Calciforge request",
+    channel: "telegram",
+  });
+});
+
 test("recovers a later assistant reply after an early run error", async () => {
   let latestText = "previous reply";
   const runtime = {
