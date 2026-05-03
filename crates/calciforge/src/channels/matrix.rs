@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
+    choice_state::{ChoiceMatchResult, ChoiceState},
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
@@ -550,6 +551,7 @@ pub async fn run(
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    choice_state: Arc<ChoiceState>,
 ) -> Result<()> {
     let channel = config
         .channels
@@ -768,6 +770,7 @@ pub async fn run(
                 let router = router.clone();
                 let command_handler = command_handler.clone();
                 let context_store = context_store.clone();
+                let choice_state = choice_state.clone();
 
                 tokio::spawn(async move {
                     handle_message(
@@ -783,6 +786,7 @@ pub async fn run(
                         &router,
                         &command_handler,
                         &context_store,
+                        &choice_state,
                         received_at,
                     )
                     .await;
@@ -795,6 +799,34 @@ pub async fn run(
 // ---------------------------------------------------------------------------
 // Message handling (runs in spawned task)
 // ---------------------------------------------------------------------------
+
+async fn dispatch_resolved_command(
+    homeserver: &str,
+    http: &reqwest::Client,
+    auth_header: &str,
+    room_id: &str,
+    cmd_handler: &Arc<CommandHandler>,
+    identity_id: &str,
+    command: &str,
+) {
+    let reply = if CommandHandler::is_switch_command(command) {
+        Some(cmd_handler.handle_switch(command, identity_id))
+    } else if CommandHandler::is_model_command(command) {
+        Some(cmd_handler.handle_model(command, identity_id))
+    } else {
+        cmd_handler.handle(command)
+    };
+    if let Some(text) = reply {
+        if let Err(e) = send_matrix_message(homeserver, http, auth_header, room_id, &text).await {
+            warn!(error = %e, "Matrix: failed to send resolved choice reply");
+        }
+    } else {
+        warn!(
+            command = %command,
+            "Matrix: resolved choice command did not match any handler branch — dropped"
+        );
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_message(
@@ -810,6 +842,7 @@ async fn handle_message(
     router: &Arc<Router>,
     cmd_handler: &Arc<CommandHandler>,
     ctx_store: &ContextStore,
+    choice_state: &Arc<ChoiceState>,
     received_at: std::time::Instant,
 ) {
     let send = |text: String, reply_kind: &'static str| {
@@ -843,7 +876,12 @@ async fn handle_message(
         let http = http.clone();
         let auth_header = auth_header.to_string();
         let room_id = room_id.to_string();
+        let choice_state = choice_state.clone();
+        let identity_id_owned = identity_id.to_string();
         async move {
+            if !message.controls.is_empty() {
+                choice_state.record("matrix", &identity_id_owned, message.controls.clone());
+            }
             let start = std::time::Instant::now();
             let response_len = message.response_len();
             match send_matrix_outbound_message(&homeserver, &http, &auth_header, &room_id, &message)
@@ -866,6 +904,50 @@ async fn handle_message(
             }
         }
     };
+
+    // ── Pending-choice resolution (free-text only) ─────────────────────
+    //
+    // Matrix has no native interactive controls, so all choices are
+    // rendered as numbered text. The user replies with a number or
+    // label, and we match it against pending state here BEFORE the
+    // command fast-paths so "2" isn't misinterpreted as freeform input.
+    match choice_state.match_reply("matrix", identity_id, body) {
+        ChoiceMatchResult::Match { command, label, .. } => {
+            info!(
+                identity = %identity_id,
+                label = %label,
+                "Matrix: text reply matched pending choice"
+            );
+            dispatch_resolved_command(
+                homeserver,
+                http,
+                auth_header,
+                room_id,
+                cmd_handler,
+                identity_id,
+                &command,
+            )
+            .await;
+            return;
+        }
+        ChoiceMatchResult::Ambiguous => {
+            send(
+                "Multiple options match. Reply with the number, or be more specific.".to_string(),
+                "choice_ambiguous",
+            )
+            .await;
+            return;
+        }
+        ChoiceMatchResult::OutOfRange => {
+            send(
+                "That number isn't one of the options. Reply with a number from the list, or the option name.".to_string(),
+                "choice_out_of_range",
+            )
+            .await;
+            return;
+        }
+        _ => {}
+    }
 
     // --- Command fast-path ---
     if let Some(reply) = cmd_handler.agent_choice_message_for_identity(body, identity_id) {
@@ -1743,7 +1825,14 @@ printf 'mock-agent saw: %s\n' "$1"
         ));
         let context_store = ContextStore::new(20, 5);
 
-        let matrix_task = tokio::spawn(run(config, router, command_handler, context_store));
+        let choice_state = Arc::new(crate::choice_state::ChoiceState::new());
+        let matrix_task = tokio::spawn(run(
+            config,
+            router,
+            command_handler,
+            context_store,
+            choice_state,
+        ));
 
         let reply = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx)
             .await

@@ -425,6 +425,7 @@ async fn main() -> Result<()> {
                 router.clone(),
                 command_handler.clone(),
                 context_store.clone(),
+                choice_state.clone(),
             )
             .await
             .context("Matrix channel error")
@@ -478,6 +479,7 @@ async fn main() -> Result<()> {
                 command_handler.clone(),
                 context_store.clone(),
                 channel_scanner.clone(),
+                choice_state.clone(),
             )
             .await
             .context("Text/iMessage channel error")
@@ -494,6 +496,7 @@ async fn main() -> Result<()> {
                 router.clone(),
                 command_handler.clone(),
                 context_store.clone(),
+                choice_state.clone(),
             )
             .await
             .context("Mock channel error")

@@ -23,6 +23,7 @@ use zeroclaw_channels::linq::LinqChannel as ZclLinqChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},
+    choice_state::{ChoiceMatchResult, ChoiceState},
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig},
     context::ContextStore,
@@ -42,6 +43,7 @@ pub struct SmsChannel<C: Channel + ?Sized = ZclLinqChannel> {
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
     transport: Arc<C>,
+    choice_state: Option<Arc<ChoiceState>>,
 }
 
 impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
@@ -60,7 +62,13 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             context_store,
             channel_scanner,
             transport,
+            choice_state: None,
         }
+    }
+
+    pub fn with_choice_state(mut self, choice_state: Arc<ChoiceState>) -> Self {
+        self.choice_state = Some(choice_state);
+        self
     }
 
     fn scan_enabled(&self) -> bool {
@@ -102,9 +110,38 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
         }
     }
 
-    async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
+    async fn send_outbound(&self, recipient: &str, identity_id: &str, message: &OutboundMessage) {
+        if let Some(state) = self.choice_state.as_ref() {
+            if !message.controls.is_empty() {
+                state.record("sms", identity_id, message.controls.clone());
+            }
+        }
         self.send_reply(recipient, &message.render_text_fallback())
             .await;
+    }
+
+    async fn dispatch_resolved_command(
+        self: &Arc<Self>,
+        identity_id: &str,
+        reply_target: &str,
+        command: &str,
+    ) {
+        let reply = if CommandHandler::is_switch_command(command) {
+            Some(self.command_handler.handle_switch(command, identity_id))
+        } else if CommandHandler::is_model_command(command) {
+            Some(self.command_handler.handle_model(command, identity_id))
+        } else {
+            self.command_handler.handle(command)
+        };
+        if let Some(text) = reply {
+            self.send_reply(reply_target, &text).await;
+        } else {
+            warn!(
+                identity = %identity_id,
+                command = %command,
+                "Text/iMessage: resolved choice command did not match any handler branch — dropped"
+            );
+        }
     }
 
     pub async fn handle_message(self: Arc<Self>, msg: ChannelMessage) {
@@ -166,6 +203,49 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                 adversary_detector::verdict::ScanVerdict::Clean => {
                     debug!(identity = %identity.id, "Text/iMessage: inbound scan clean");
                 }
+            }
+        }
+
+        // ── Pending-choice resolution (free-text only) ───────────────────
+        if let Some(state) = self.choice_state.as_ref() {
+            match state.match_reply("sms", &identity.id, &text) {
+                ChoiceMatchResult::Match { command, label, .. } => {
+                    info!(
+                        identity = %identity.id,
+                        label = %label,
+                        "Text/iMessage: text reply matched pending choice"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &command)
+                        .await;
+                    return;
+                }
+                ChoiceMatchResult::Ambiguous => {
+                    let channel = self.clone();
+                    let target = reply_target.clone();
+                    tokio::spawn(async move {
+                        channel
+                            .send_reply(
+                                &target,
+                                "Multiple options match. Reply with the number, or be more specific.",
+                            )
+                            .await;
+                    });
+                    return;
+                }
+                ChoiceMatchResult::OutOfRange => {
+                    let channel = self.clone();
+                    let target = reply_target.clone();
+                    tokio::spawn(async move {
+                        channel
+                            .send_reply(
+                                &target,
+                                "That number isn't one of the options. Reply with a number from the list, or the option name.",
+                            )
+                            .await;
+                    });
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -383,7 +463,8 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                         preserve_native_commands,
                     );
 
-                    self.send_outbound(&reply_target, &response).await;
+                    self.send_outbound(&reply_target, &identity_id, &response)
+                        .await;
                 }
                 Err(e) => {
                     warn!(identity = %identity_id, error = %e, "Text/iMessage: agent dispatch failed");
@@ -480,6 +561,7 @@ pub async fn run(
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
+    choice_state: Arc<ChoiceState>,
 ) -> Result<()> {
     let sms_cfg = config
         .channels
@@ -530,14 +612,17 @@ pub async fn run(
     );
 
     let transport = Arc::new(ZclLinqChannel::new(api_token, from_phone, allowed));
-    let bridge = Arc::new(SmsChannel::<ZclLinqChannel>::new(
-        config,
-        router,
-        command_handler,
-        context_store,
-        channel_scanner,
-        transport.clone(),
-    ));
+    let bridge = Arc::new(
+        SmsChannel::<ZclLinqChannel>::new(
+            config,
+            router,
+            command_handler,
+            context_store,
+            channel_scanner,
+            transport.clone(),
+        )
+        .with_choice_state(choice_state),
+    );
 
     let state = WebhookState {
         bridge,

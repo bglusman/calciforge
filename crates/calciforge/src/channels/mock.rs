@@ -32,6 +32,7 @@ use crate::sync::Arc;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender, ResolvedIdentity},
+    choice_state::{ChoiceMatchResult, ChoiceState},
     commands::CommandHandler,
     config::CalciforgeConfig,
     context::ContextStore,
@@ -54,6 +55,8 @@ struct MockState {
     context_store: ContextStore,
     /// Configuration
     config: Arc<CalciforgeConfig>,
+    /// Per-identity pending-choice tracker
+    choice_state: Arc<ChoiceState>,
     #[cfg(test)]
     _state_dir: Option<Arc<tempfile::TempDir>>,
 }
@@ -99,6 +102,7 @@ pub async fn run(
     router: Arc<CalciforgeRouter>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    choice_state: Arc<ChoiceState>,
 ) -> Result<()> {
     // Find the mock channel config
     let mock_channel = config
@@ -117,6 +121,7 @@ pub async fn run(
         command_handler: command_handler.clone(),
         context_store: context_store.clone(),
         config: config.clone(),
+        choice_state,
         #[cfg(test)]
         _state_dir: None,
     };
@@ -259,6 +264,31 @@ async fn route_mock_message(
     let identity_id = identity.id;
     let chat_key = format!("mock-{}-{}", sender, identity_id);
 
+    // ── Pending-choice resolution (free-text only) ───────────────────
+    match state.choice_state.match_reply("mock", &identity_id, text) {
+        ChoiceMatchResult::Match { command, .. } => {
+            if CommandHandler::is_switch_command(&command) {
+                return Ok(state.command_handler.handle_switch(&command, &identity_id));
+            }
+            if CommandHandler::is_model_command(&command) {
+                return Ok(state.command_handler.handle_model(&command, &identity_id));
+            }
+            if let Some(reply) = state.command_handler.handle(&command) {
+                return Ok(reply);
+            }
+            return Err(format!("Resolved choice command not handled: {command}"));
+        }
+        ChoiceMatchResult::Ambiguous => {
+            return Ok(
+                "Multiple options match. Reply with the number, or be more specific.".to_string(),
+            );
+        }
+        ChoiceMatchResult::OutOfRange => {
+            return Ok("That number isn't one of the options. Reply with a number from the list, or the option name.".to_string());
+        }
+        _ => {}
+    }
+
     if let Some(reply) = state
         .command_handler
         .agent_choice_message_for_identity(text, &identity_id)
@@ -387,6 +417,11 @@ async fn route_mock_message(
         .await
     {
         Ok(response_message) => {
+            if !response_message.controls.is_empty() {
+                state
+                    .choice_state
+                    .record("mock", &identity_id, response_message.controls.clone());
+            }
             let response = response_message.render_text_fallback();
             state
                 .command_handler
@@ -543,6 +578,7 @@ mod tests {
             )),
             context_store: ContextStore::new(4, 4),
             config,
+            choice_state: Arc::new(ChoiceState::new()),
             _state_dir: Some(Arc::new(temp)),
         }
     }
