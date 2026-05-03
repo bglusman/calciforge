@@ -199,6 +199,8 @@ fn is_openclaw_model_id(model: &str) -> bool {
 }
 
 fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
+    use crate::config::ChannelUiMode;
+
     for channel in &config.channels {
         match channel.kind.as_str() {
             "whatsapp" => {
@@ -222,7 +224,41 @@ fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     );
                 }
             }
+            "telegram" => {
+                if channel.enabled && channel.bot_token_file.is_none() {
+                    result.add_error(
+                        "Telegram channel requires bot_token_file when enabled".to_string(),
+                    );
+                }
+            }
+            "sms" => {
+                if channel.enabled && channel.sms_from_phone.is_none() {
+                    result
+                        .add_error("SMS channel requires sms_from_phone when enabled".to_string());
+                }
+                if channel.enabled
+                    && channel.sms_linq_api_token.is_none()
+                    && channel.sms_linq_api_token_file.is_none()
+                {
+                    result.add_error(
+                        "SMS channel requires sms_linq_api_token or sms_linq_api_token_file when enabled".to_string(),
+                    );
+                }
+            }
             _ => {}
+        }
+
+        if channel.enabled && channel.ui_mode == ChannelUiMode::Auto {
+            match channel.kind.as_str() {
+                "matrix" | "sms" | "mock" => {
+                    result.add_warning(format!(
+                        "{} channel has ui_mode = \"auto\" but does not support native interactive controls; \
+                         choice menus will always render as text. Set ui_mode = \"text\" to suppress this warning.",
+                        channel.kind
+                    ));
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -996,6 +1032,85 @@ endpoint = "http://127.0.0.1:18799"
             "error should name both the identity 'alice' and missing agent \
              'ghost'; errors: {:?}",
             result.errors
+        );
+    }
+
+    #[test]
+    fn enabled_telegram_requires_bot_token_file() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "telegram"
+enabled = true
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "enabled Telegram without bot_token_file should fail"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("bot_token_file")),
+            "error should name bot_token_file; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn enabled_sms_requires_from_phone_and_token() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "sms"
+enabled = true
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "enabled SMS without required fields should fail"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("sms_from_phone")),
+            "error should name sms_from_phone; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("sms_linq_api_token")),
+            "error should name sms_linq_api_token; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn text_only_channel_warns_on_auto_ui_mode() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "matrix"
+enabled = true
+matrix_homeserver = "https://matrix.example.com"
+matrix_access_token = "test-token"
+matrix_user_id = "@bot:example.com"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("matrix") && w.contains("ui_mode")),
+            "matrix with default auto ui_mode should warn; warnings: {:?}",
+            result.warnings
         );
     }
 }
