@@ -46,7 +46,7 @@ use crate::{
         ChoiceMatchResult, ChoiceState, CHOICE_INDEX_SENTINEL_PREFIX, CHOICE_SENTINEL_PREFIX,
     },
     commands::CommandHandler,
-    config::CalciforgeConfig,
+    config::{channel_allows_rich_ui, CalciforgeConfig},
     context::ContextStore,
     messages::OutboundMessage,
     router::Router,
@@ -197,54 +197,38 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
     }
 
     async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
-        // Native-interactive path: when the OutboundMessage carries
-        // ChoiceControls AND we have a ChoiceState attached, register
-        // the pending choices and route through the transport's
-        // send_choice (which Signal overrides to send a native poll).
-        // Falls back to plain text for messages without controls or
-        // when no ChoiceState is configured.
         if let (Some(state), Some(control)) = (self.choice_state.as_ref(), message.controls.first())
         {
-            // Multi-control messages aren't natively representable as a
-            // single Signal poll; the trait default text rendering is
-            // safer there. We record only the first control, which is
-            // the same control match_reply will resolve below.
-            //
-            // Key: recipient string. For DMs that's the E.164 phone;
-            // for groups, "group:<id>". The inbound side keys by
-            // msg.reply_target which is the same value.
             state.record("signal", recipient, message.controls.clone());
 
-            // Build (callback_id, label) pairs. callback_data is the
-            // primary identifier; fall back to label when absent so
-            // the trait default text rendering still numbers + labels.
-            let pairs: Vec<(String, String)> = control
-                .options
-                .iter()
-                .map(|o| {
-                    (
-                        o.callback_data.clone().unwrap_or_else(|| o.label.clone()),
-                        o.label.clone(),
-                    )
-                })
-                .collect();
-            let prompt = if control.title.trim().is_empty() {
-                message.text.as_deref().unwrap_or("").to_string()
-            } else {
-                control.title.clone()
-            };
-            match self.transport.send_choice(recipient, &prompt, &pairs).await {
-                Ok(()) => {
-                    telemetry::reply_sent("signal", recipient, "choice", prompt.len(), 0);
-                    return;
-                }
-                Err(e) => {
-                    warn!(
-                        recipient = %recipient,
-                        error = %e,
-                        "Signal: send_choice failed, falling back to text"
-                    );
-                    // Fall through to plain text below.
+            if channel_allows_rich_ui(&self.config, "signal") {
+                let pairs: Vec<(String, String)> = control
+                    .options
+                    .iter()
+                    .map(|o| {
+                        (
+                            o.callback_data.clone().unwrap_or_else(|| o.label.clone()),
+                            o.label.clone(),
+                        )
+                    })
+                    .collect();
+                let prompt = if control.title.trim().is_empty() {
+                    message.text.as_deref().unwrap_or("").to_string()
+                } else {
+                    control.title.clone()
+                };
+                match self.transport.send_choice(recipient, &prompt, &pairs).await {
+                    Ok(()) => {
+                        telemetry::reply_sent("signal", recipient, "choice", prompt.len(), 0);
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(
+                            recipient = %recipient,
+                            error = %e,
+                            "Signal: send_choice failed, falling back to text"
+                        );
+                    }
                 }
             }
         }

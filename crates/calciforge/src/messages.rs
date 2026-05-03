@@ -546,4 +546,153 @@ mod tests {
         assert_eq!(deny.command, "!deny req-1");
         assert_eq!(deny.callback_data.as_deref(), Some("cf:deny:req-1"));
     }
+
+    #[test]
+    fn match_reply_label_that_looks_like_number_prefers_numeric_tier() {
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::agent("42", "agent-42"),
+                ChoiceOption::agent("Regular", "regular"),
+            ],
+        );
+        // "1" should select the first option by numeric index, NOT match
+        // label "42" as a substring.
+        assert_eq!(ctrl.match_reply("1"), Match::One(&ctrl.options[0]));
+        // "42" is parsed as numeric index 42 → out of range, NOT as
+        // exact label match. This is the expected tradeoff: numbers
+        // always mean index.
+        assert_eq!(ctrl.match_reply("42"), Match::OutOfRange);
+    }
+
+    #[test]
+    fn match_reply_negative_and_zero_numbers() {
+        let ctrl = agent_options(&[("Alpha", "a"), ("Beta", "b")]);
+        assert_eq!(ctrl.match_reply("0"), Match::OutOfRange);
+        // Negative numbers fail to parse as usize → fall through to
+        // label matching, which returns None (no label starts with "-").
+        assert_eq!(ctrl.match_reply("-1"), Match::None);
+        assert_eq!(ctrl.match_reply("-0"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_huge_number_stays_out_of_range() {
+        let ctrl = agent_options(&[("Alpha", "a")]);
+        assert_eq!(ctrl.match_reply("999999999"), Match::OutOfRange);
+        // usize::MAX as string — should not panic.
+        assert_eq!(ctrl.match_reply(&usize::MAX.to_string()), Match::OutOfRange,);
+    }
+
+    #[test]
+    fn match_reply_single_option_still_requires_selection() {
+        let ctrl = ChoiceControl::new("Confirm", vec![ChoiceOption::approve("req-x")]);
+        // "1" selects the only option.
+        assert_eq!(ctrl.match_reply("1"), Match::One(&ctrl.options[0]));
+        // Freeform text doesn't auto-select.
+        assert_eq!(ctrl.match_reply("yes"), Match::None);
+        assert_eq!(ctrl.match_reply("ok"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_unicode_labels() {
+        let ctrl = ChoiceControl::new(
+            "Choose",
+            vec![
+                ChoiceOption::new("Bibliothécaire", "!agent switch lib"),
+                ChoiceOption::new("Crítico", "!agent switch crit"),
+            ],
+        );
+        // Exact match with accented characters.
+        assert_eq!(
+            ctrl.match_reply("Bibliothécaire"),
+            Match::One(&ctrl.options[0]),
+        );
+        // Prefix match.
+        assert_eq!(ctrl.match_reply("Crít"), Match::One(&ctrl.options[1]));
+    }
+
+    #[test]
+    fn match_reply_emoji_in_label() {
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::new("📚 Librarian", "!agent switch lib"),
+                ChoiceOption::new("🎭 Critic", "!agent switch crit"),
+            ],
+        );
+        // Substring match on text portion.
+        assert_eq!(ctrl.match_reply("Librarian"), Match::One(&ctrl.options[0]),);
+        assert_eq!(ctrl.match_reply("1"), Match::One(&ctrl.options[0]));
+    }
+
+    #[test]
+    fn match_reply_whitespace_only_is_none() {
+        let ctrl = agent_options(&[("A", "a")]);
+        assert_eq!(ctrl.match_reply("   "), Match::None);
+        assert_eq!(ctrl.match_reply("\t\n"), Match::None);
+        assert_eq!(ctrl.match_reply("  #  "), Match::None);
+    }
+
+    #[test]
+    fn match_reply_hash_with_number() {
+        let ctrl = agent_options(&[("A", "a"), ("B", "b"), ("C", "c")]);
+        assert_eq!(ctrl.match_reply("#1"), Match::One(&ctrl.options[0]));
+        assert_eq!(ctrl.match_reply("# 3"), Match::One(&ctrl.options[2]));
+        assert_eq!(ctrl.match_reply("#0"), Match::OutOfRange);
+    }
+
+    #[test]
+    fn match_reply_substring_needs_two_chars_minimum() {
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::new("Alpha Fox", "!a"),
+                ChoiceOption::new("Beta Fox", "!b"),
+            ],
+        );
+        // Single-char "F" — both labels contain "fox" but substring
+        // matching requires at least 2 chars, so it returns None.
+        // (Prefix matching on "f" also fails since neither starts with "f".)
+        assert_eq!(ctrl.match_reply("F"), Match::None);
+        // Two chars "Fo" — both contain "fo" → substring Ambiguous.
+        assert_eq!(ctrl.match_reply("Fo"), Match::Ambiguous);
+        // "Fox" is still ambiguous — substring in both.
+        assert_eq!(ctrl.match_reply("Fox"), Match::Ambiguous);
+        // Unique prefix resolves.
+        assert_eq!(ctrl.match_reply("Al"), Match::One(&ctrl.options[0]));
+    }
+
+    #[test]
+    fn normalize_for_match_strips_punctuation_consistently() {
+        assert_eq!(normalize_for_match("Hello, World!"), "hello world");
+        assert_eq!(normalize_for_match("v4.7-beta (1M)"), "v47beta 1m");
+        assert_eq!(normalize_for_match("  "), "");
+        assert_eq!(normalize_for_match("..."), "");
+    }
+
+    #[test]
+    fn render_text_fallback_no_text_controls_only() {
+        let msg = OutboundMessage {
+            text: None,
+            attachments: vec![],
+            controls: vec![ChoiceControl::new(
+                "Pick",
+                vec![ChoiceOption::agent("Alpha", "alpha")],
+            )],
+        };
+        let rendered = msg.render_text_fallback();
+        assert!(rendered.contains("Pick"), "{rendered}");
+        assert!(rendered.contains("Alpha"), "{rendered}");
+    }
+
+    #[test]
+    fn render_text_fallback_no_text_no_controls_shows_placeholder() {
+        let msg = OutboundMessage {
+            text: None,
+            attachments: vec![],
+            controls: vec![],
+        };
+        let rendered = msg.render_text_fallback();
+        assert_eq!(rendered, "Agent completed without a text response.");
+    }
 }

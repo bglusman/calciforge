@@ -27,7 +27,6 @@
 //! replaces any prior pending state; sending a message WITHOUT
 //! controls clears it.
 
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -387,5 +386,166 @@ mod tests {
         assert_eq!(state.pending_len(), 2);
         state.evict_expired();
         assert_eq!(state.pending_len(), 1);
+    }
+
+    #[test]
+    fn record_replaces_prior_pending_state() {
+        let state = ChoiceState::new();
+        state.record("signal", "alice", vec![ctrl_two()]);
+        // Replace with different controls.
+        let new_ctrl = ChoiceControl::new(
+            "Models",
+            vec![
+                ChoiceOption::model("Fast", "local/fast"),
+                ChoiceOption::model("Smart", "cloud/smart"),
+            ],
+        );
+        state.record("signal", "alice", vec![new_ctrl]);
+        assert_eq!(state.pending_len(), 1);
+        // Old labels no longer match.
+        let r = state.match_reply("signal", "alice", "Librarian");
+        assert_eq!(r, ChoiceMatchResult::NoMatch);
+    }
+
+    #[test]
+    fn match_reply_freeform_does_not_consume_pending() {
+        let state = ChoiceState::new();
+        state.record("signal", "alice", vec![ctrl_two()]);
+        // Freeform text — no match, pending preserved.
+        let r = state.match_reply("signal", "alice", "what's the weather");
+        assert_eq!(r, ChoiceMatchResult::NoMatch);
+        assert_eq!(state.pending_len(), 1);
+        // Subsequent numeric match should still work.
+        let r = state.match_reply("signal", "alice", "1");
+        assert!(matches!(r, ChoiceMatchResult::Match { .. }));
+        assert_eq!(state.pending_len(), 0);
+    }
+
+    #[test]
+    fn resolve_sentinel_expired_returns_none_and_cleans_up() {
+        let state = ChoiceState::with_ttl(Duration::from_millis(0));
+        state.record("signal", "alice", vec![ctrl_two()]);
+        std::thread::sleep(Duration::from_millis(1));
+        let r = state.resolve_sentinel("signal", "alice", "cf:agent:librarian");
+        assert!(r.is_none());
+        assert_eq!(state.pending_len(), 0);
+    }
+
+    #[test]
+    fn resolve_sentinel_unknown_id_leaves_state() {
+        let state = ChoiceState::new();
+        state.record("signal", "alice", vec![ctrl_two()]);
+        let r = state.resolve_sentinel("signal", "alice", "cf:agent:nonexistent");
+        assert!(r.is_none());
+        // State NOT removed — user might try again.
+        assert_eq!(state.pending_len(), 1);
+    }
+
+    #[test]
+    fn choice_index_sentinel_round_trip_via_match_reply() {
+        // Simulates the [choice-index]N path: channel strips the
+        // sentinel prefix and feeds the index string to match_reply.
+        let state = ChoiceState::new();
+        state.record("signal", "alice", vec![ctrl_two()]);
+        // Index "1" → first option (Librarian).
+        let r = state.match_reply("signal", "alice", "1");
+        match r {
+            ChoiceMatchResult::Match {
+                ref command,
+                ref label,
+                ..
+            } => {
+                assert!(command.contains("librarian"), "{command}");
+                assert_eq!(label, "Librarian");
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choice_index_sentinel_out_of_range_preserves_state() {
+        // Index sentinel "99" → OutOfRange, state preserved for retry.
+        let state = ChoiceState::new();
+        state.record("signal", "alice", vec![ctrl_two()]);
+        let r = state.match_reply("signal", "alice", "99");
+        assert_eq!(r, ChoiceMatchResult::OutOfRange);
+        assert_eq!(state.pending_len(), 1);
+    }
+
+    #[test]
+    fn multiple_controls_first_match_wins() {
+        let state = ChoiceState::new();
+        let ctrl_agents = ChoiceControl::new(
+            "Agents",
+            vec![ChoiceOption::agent("Librarian", "librarian")],
+        );
+        let ctrl_models =
+            ChoiceControl::new("Models", vec![ChoiceOption::model("Fast", "local/fast")]);
+        state.record("signal", "alice", vec![ctrl_agents, ctrl_models]);
+        // "1" matches the first option in the first control.
+        let r = state.match_reply("signal", "alice", "1");
+        match r {
+            ChoiceMatchResult::Match { ref command, .. } => {
+                assert!(command.contains("librarian"), "{command}");
+            }
+            other => panic!("expected agent match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concurrent_record_and_match() {
+        use std::sync::Arc;
+        let state = Arc::new(ChoiceState::new());
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let s = state.clone();
+                let key = format!("user-{i}");
+                std::thread::spawn(move || {
+                    s.record("signal", &key, vec![ctrl_two()]);
+                    let r = s.match_reply("signal", &key, "1");
+                    assert!(
+                        matches!(r, ChoiceMatchResult::Match { .. }),
+                        "thread {i}: expected Match, got {r:?}",
+                    );
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+        assert_eq!(state.pending_len(), 0);
+    }
+
+    #[test]
+    fn resolve_sentinel_case_insensitive_label_fallback() {
+        let state = ChoiceState::new();
+        state.record("signal", "alice", vec![ctrl_two()]);
+        // Label "Librarian" but queried as "librarian" (lowercase).
+        let r = state.resolve_sentinel("signal", "alice", "librarian");
+        let resolved = r.expect("case-insensitive label lookup should resolve");
+        assert_eq!(resolved.label, "Librarian");
+    }
+
+    #[test]
+    fn resolve_sentinel_prefers_callback_data_over_label() {
+        let state = ChoiceState::new();
+        // Create a control where one option's label equals another's
+        // callback_data — callback_data must win.
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::new("cf:agent:critic", "!custom-cmd").with_callback_data("cb-first"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        state.record("signal", "alice", vec![ctrl]);
+        let r = state
+            .resolve_sentinel("signal", "alice", "cf:agent:critic")
+            .expect("should resolve");
+        // callback_data match on second option wins over label match on first.
+        assert_eq!(r.label, "Critic");
+        assert_eq!(r.command, "!agent switch critic");
     }
 }

@@ -1206,11 +1206,7 @@ async fn check_channel_health(
     no_network: bool,
     report: &mut DoctorReport,
 ) {
-    let enabled_channels: Vec<_> = config
-        .channels
-        .iter()
-        .filter(|c| c.enabled)
-        .collect();
+    let enabled_channels: Vec<_> = config.channels.iter().filter(|c| c.enabled).collect();
 
     if enabled_channels.is_empty() {
         report.warn("no enabled channels configured");
@@ -1322,9 +1318,7 @@ async fn check_channel_health(
                         ));
                     }
                     Ok(Err(e)) => {
-                        report.error(format!(
-                            "sms channel: Linq API unreachable: {e}"
-                        ));
+                        report.error(format!("sms channel: Linq API unreachable: {e}"));
                     }
                     Err(_) => {
                         report.error("sms channel: Linq API health check timed out");
@@ -1406,10 +1400,8 @@ async fn check_channel_health(
                 }
             }
             "whatsapp" => {
-                report.ok(
-                    "whatsapp channel: session-based (WhatsApp Web); \
-                     no external service to health-check at startup"
-                );
+                report.ok("whatsapp channel: session-based (WhatsApp Web); \
+                     no external service to health-check at startup");
             }
             "telegram" => {
                 report.ok("telegram channel: health check not yet implemented");
@@ -1418,7 +1410,10 @@ async fn check_channel_health(
                 report.ok("mock channel: no external dependencies to health-check");
             }
             other => {
-                report.warn(format!("channel kind '{}': unknown, no health check available", other));
+                report.warn(format!(
+                    "channel kind '{}': unknown, no health check available",
+                    other
+                ));
             }
         }
     }

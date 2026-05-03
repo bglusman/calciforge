@@ -25,7 +25,7 @@ use crate::{
         ChoiceMatchResult, ChoiceState, CHOICE_INDEX_SENTINEL_PREFIX, CHOICE_SENTINEL_PREFIX,
     },
     commands::CommandHandler,
-    config::{expand_tilde, CalciforgeConfig, ChannelConfig},
+    config::{channel_allows_rich_ui, expand_tilde, CalciforgeConfig, ChannelConfig},
     context::ContextStore,
     messages::OutboundMessage,
     router::Router,
@@ -126,39 +126,38 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
     }
 
     async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
-        // Native-render path (Cloud mode only — Web mode's transport
-        // doesn't override send_choice). Either way, record the
-        // pending control so the inbound matcher can resolve the
-        // user's reply.
         if let (Some(state), Some(control)) = (self.choice_state.as_ref(), message.controls.first())
         {
             state.record("whatsapp", recipient, message.controls.clone());
-            let pairs: Vec<(String, String)> = control
-                .options
-                .iter()
-                .map(|o| {
-                    (
-                        o.callback_data.clone().unwrap_or_else(|| o.label.clone()),
-                        o.label.clone(),
-                    )
-                })
-                .collect();
-            let prompt = if control.title.trim().is_empty() {
-                message.text.as_deref().unwrap_or("").to_string()
-            } else {
-                control.title.clone()
-            };
-            match self.transport.send_choice(recipient, &prompt, &pairs).await {
-                Ok(()) => {
-                    telemetry::reply_sent("whatsapp", recipient, "choice", prompt.len(), 0);
-                    return;
-                }
-                Err(e) => {
-                    warn!(
-                        recipient = %recipient,
-                        error = %e,
-                        "WhatsApp: send_choice failed, falling back to text"
-                    );
+
+            if channel_allows_rich_ui(&self.config, "whatsapp") {
+                let pairs: Vec<(String, String)> = control
+                    .options
+                    .iter()
+                    .map(|o| {
+                        (
+                            o.callback_data.clone().unwrap_or_else(|| o.label.clone()),
+                            o.label.clone(),
+                        )
+                    })
+                    .collect();
+                let prompt = if control.title.trim().is_empty() {
+                    message.text.as_deref().unwrap_or("").to_string()
+                } else {
+                    control.title.clone()
+                };
+                match self.transport.send_choice(recipient, &prompt, &pairs).await {
+                    Ok(()) => {
+                        telemetry::reply_sent("whatsapp", recipient, "choice", prompt.len(), 0);
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(
+                            recipient = %recipient,
+                            error = %e,
+                            "WhatsApp: send_choice failed, falling back to text"
+                        );
+                    }
                 }
             }
         }
