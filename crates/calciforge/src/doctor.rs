@@ -1416,6 +1416,12 @@ async fn check_channel_health(
                 ));
             }
         }
+
+        let ui_label = match ch.ui_mode {
+            config::ChannelUiMode::Auto => "auto (native buttons when supported, text fallback)",
+            config::ChannelUiMode::Text => "text (buttons disabled, text-only fallback)",
+        };
+        report.ok(format!("{} channel: ui_mode = {ui_label}", ch.kind));
     }
 }
 
