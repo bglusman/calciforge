@@ -1,4 +1,5 @@
 pub mod agent_config;
+pub mod agent_web;
 pub mod audit;
 pub mod config;
 pub mod credentials;

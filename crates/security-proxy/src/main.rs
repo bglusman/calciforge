@@ -29,15 +29,49 @@ async fn main() -> anyhow::Result<()> {
         .init();
     install_default_crypto_provider();
 
-    let port = std::env::var("SECURITY_PROXY_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| GatewayConfig::default().port);
+    // Load gateway config: TOML file first (deserialises every field
+    // including `[security.agent_web]`), then env-var overrides on top
+    // for the legacy/operator-friendly knobs. Env wins so a deployed
+    // box can flip a runtime flag without re-deploying the file.
+    //
+    // SECURITY_PROXY_CONFIG → explicit path (preferred when set)
+    // /etc/calciforge/security-proxy.toml → default
+    // missing file → fall back to GatewayConfig::default()
+    let config_path = std::env::var("SECURITY_PROXY_CONFIG")
+        .unwrap_or_else(|_| "/etc/calciforge/security-proxy.toml".to_string());
 
-    let mut config = GatewayConfig {
-        port,
-        ..GatewayConfig::default()
+    let mut config: GatewayConfig = match std::fs::read_to_string(&config_path) {
+        Ok(toml_str) => match toml::from_str::<GatewayConfig>(&toml_str) {
+            Ok(cfg) => {
+                info!(
+                    "loaded security-proxy config from {} ({} bytes)",
+                    config_path,
+                    toml_str.len()
+                );
+                cfg
+            }
+            Err(e) => {
+                error!(
+                    "failed to parse security-proxy config at {}: {}; using defaults",
+                    config_path, e
+                );
+                GatewayConfig::default()
+            }
+        },
+        Err(_) => {
+            // File missing is the common case for fresh installs; not an error.
+            GatewayConfig::default()
+        }
     };
+
+    // Env-var override for port keeps the legacy operator knob working
+    // even when the TOML config sets it differently. SECURITY_PROXY_MITM_ENABLED
+    // is no longer parsed: MITM is the only mode after PR #112.
+    if let Ok(p) = std::env::var("SECURITY_PROXY_PORT") {
+        if let Ok(p) = p.parse() {
+            config.port = p;
+        }
+    }
     if let Ok(path) = std::env::var("SECURITY_PROXY_CA_CERT") {
         if !path.trim().is_empty() {
             config.ca_cert_path = Some(path);
@@ -72,6 +106,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // Surface operator mistakes in policy config — e.g. "gate enabled
+    // but matching list is empty so nothing is actually inspected".
+    config.agent_web.warn_on_inconsistent_policy();
+
     let scanner_config = ScannerConfig {
         checks: config.scanner_checks.clone(),
         ..ScannerConfig::default()
@@ -129,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
     let ca = load_rcgen_authority(&cert_path, &key_path)?;
 
     let bind_host = std::env::var("SECURITY_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
-    let addr = format!("{}:{}", bind_host, port).parse()?;
+    let addr = format!("{}:{}", bind_host, config.port).parse()?;
     serve_mitm(addr, state, ca).await?;
     Ok(())
 }

@@ -447,3 +447,79 @@ Good sources for new fixture families include:
   off-screen content, and zero-width text.
 - scurl-style sanitized-fetch middleware; see the
   [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.html).
+
+## `[security.agent_web]` — agent-web-content defenses
+
+Calciforge's MITM gateway already scans every outbound HTTPS, but the highest-likelihood leak path for blocked content is *not* a direct egress to a denied host — it's the **search-API response** that contains pre-indexed snippets of the same denied host, or a **provider-side browsing tool** that the model invokes from inside an allowed `api.openai.com` session.
+
+`[security.agent_web]` adds four configurable defenses against this class of leak. All default to safe values; operators opt into stricter modes.
+
+This complements but does **not** replace `secret_destination_allowlist` — the allowlist gates *secrets-into-hosts*, while `agent_web` gates *content* (search snippets, provider browsing tool defs, URLs in LLM message bodies).
+
+### (A) `forbid_search_engines`
+
+Block all egress to known search APIs entirely. When `true`, requests to any host matching `search_engine_patterns` are denied.
+
+```toml
+[security.agent_web]
+forbid_search_engines = true
+# Override the default curated list (api.search.brave.com, duckduckgo.com,
+# api.tavily.com, serpapi.com, serper.dev, api.firecrawl.dev, api.you.com,
+# api.exa.ai, api.kimi.com, api.minimax.com).
+search_engine_patterns = ["api.search.brave.com", "api.tavily.com"]
+```
+
+### (B) `scan_search_responses`
+
+Scan responses from search APIs for prompt-injection AND for URLs that fail the `url_destination_denylist`.
+
+- `search_response_strategy = "block"` (default) — replace the entire response with the standard block page.
+- `search_response_strategy = "strip"` — parse the JSON and drop only the offending result entries; falls back to "block" if the JSON can't be parsed.
+
+```toml
+[security.agent_web]
+forbid_search_engines = false
+scan_search_responses = true
+search_response_strategy = "strip"
+url_destination_denylist = ["leaked-corp-docs.example.com", "intranet.acme.local"]
+```
+
+### (C) `forbid_provider_browsing`
+
+Inspect outbound LLM API request bodies and either strip or block known provider-side browsing tools (`web_search`, `web_search_preview`, `web_search_20250305`, `computer_use_*`, `google_search`, `google_search_retrieval`, `browser`, `browser_use`, …).
+
+Always-search models (`gpt-4o-search-preview*`) cannot be stripped — they're always blocked when this is on.
+
+- `provider_browsing_strategy = "strip"` (default) — rewrite request body to drop the tool defs.
+- `provider_browsing_strategy = "block"` — refuse the request entirely.
+
+```toml
+[security.agent_web]
+forbid_provider_browsing = true
+provider_browsing_strategy = "strip"
+# Override the curated tool / model lists if needed.
+forbidden_browsing_tools = ["web_search", "web_search_20250305", "google_search"]
+forbidden_browsing_models = ["gpt-4o-search-preview"]
+known_llm_apis = [
+    "api.openai.com",
+    "api.anthropic.com",
+    "openrouter.ai",
+    "generativelanguage.googleapis.com",
+    "api.groq.com",
+]
+```
+
+### (D) `preflight_message_urls`
+
+Extract `https?://…` URLs from outbound LLM `messages[].content` (string AND Anthropic content-array shape) and from `tools[].description` (when `preflight_tool_descriptions = true`); test each against `url_destination_denylist`. If any URL would be blocked at fetch time, the LLM request is refused before forwarding to the provider.
+
+```toml
+[security.agent_web]
+preflight_message_urls = true
+preflight_tool_descriptions = true
+url_destination_denylist = ["leaked-corp-docs.example.com"]
+```
+
+### Audit
+
+Each policy hit emits a `tracing` INFO event with structured fields (`policy = "agent_web.<feature>"`, `dest_host`, `decision`, plus `tool`/`model`/`denied_host` when relevant) — these flow into the existing Calciforge audit pipeline.
