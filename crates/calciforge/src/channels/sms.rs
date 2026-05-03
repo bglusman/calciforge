@@ -301,6 +301,8 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             && !CommandHandler::is_sessions_command(&text)
             && !CommandHandler::is_model_command(&text)
             && !CommandHandler::is_secure_command(&text)
+            && !CommandHandler::is_approve_command(&text)
+            && !CommandHandler::is_deny_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
@@ -402,6 +404,27 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                 channel
                     .send_reply(&target, "Conversation context cleared.")
                     .await;
+            });
+            return;
+        }
+
+        if CommandHandler::is_approve_command(&text) || CommandHandler::is_deny_command(&text) {
+            if let Some((ack, follow_up)) = self.command_handler.handle_async(&text).await {
+                let channel = self.clone();
+                let target = reply_target.clone();
+                tokio::spawn(async move {
+                    channel.send_reply(&target, &ack).await;
+                    if let Some(resp) = follow_up {
+                        channel.send_reply(&target, &resp).await;
+                    }
+                });
+                return;
+            }
+            let reply = self.command_handler.unknown_command(&text);
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
