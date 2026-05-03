@@ -199,7 +199,6 @@ impl ChoiceOption {
     }
 }
 
-#[allow(dead_code)] // wired into per-channel inbound matchers in a follow-up PR
 impl ChoiceControl {
     /// Try to resolve a free-text user reply to one of this control's options.
     ///
@@ -294,7 +293,6 @@ impl ChoiceControl {
 }
 
 /// Result of matching a free-text reply against a `ChoiceControl`.
-#[allow(dead_code)] // wired into per-channel inbound matchers in a follow-up PR
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Match<'a> {
     /// Single unambiguous match — caller should dispatch the option's command.
@@ -310,7 +308,6 @@ pub enum Match<'a> {
     None,
 }
 
-#[allow(dead_code)] // used by ChoiceControl::match_reply, public-pending
 fn normalize_for_match(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric() || c.is_whitespace())

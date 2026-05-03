@@ -9,6 +9,7 @@ mod adapters;
 mod artifacts;
 mod auth;
 mod channels;
+mod choice_state;
 mod commands;
 mod config;
 mod context;
