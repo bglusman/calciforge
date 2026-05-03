@@ -348,4 +348,134 @@ mod tests {
         let err = adapter.dispatch("hello").await.unwrap_err().to_string();
         assert!(err.contains("configured model"), "got: {err}");
     }
+
+    #[tokio::test]
+    async fn connection_refused_is_unavailable_error() {
+        let adapter = OpenAiCompatAdapter::new(
+            "http://127.0.0.1:1".to_string(),
+            String::new(),
+            Some("test".to_string()),
+            Some(2000),
+        );
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(
+            matches!(err, AdapterError::Unavailable(_)),
+            "connection refused should be Unavailable, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_error_status_is_protocol_error() {
+        async fn error_handler() -> (axum::http::StatusCode, Json<Value>) {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": {"message": "model overloaded"}})),
+            )
+        }
+
+        let app = Router::new().route("/v1/chat/completions", post(error_handler));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = OpenAiCompatAdapter::new(
+            format!("http://{addr}"),
+            String::new(),
+            Some("test".to_string()),
+            None,
+        );
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(
+            matches!(err, AdapterError::Protocol(ref msg) if msg.contains("500")),
+            "HTTP 500 should be Protocol error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_json_response_is_protocol_error() {
+        async fn bad_json_handler() -> &'static str {
+            "this is not json"
+        }
+
+        let app = Router::new().route("/v1/chat/completions", post(bad_json_handler));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = OpenAiCompatAdapter::new(
+            format!("http://{addr}"),
+            String::new(),
+            Some("test".to_string()),
+            None,
+        );
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(
+            matches!(err, AdapterError::Protocol(ref msg) if msg.contains("JSON parse")),
+            "malformed JSON should be Protocol error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_choices_array_is_protocol_error() {
+        async fn empty_choices_handler() -> Json<Value> {
+            Json(json!({"choices": []}))
+        }
+
+        let app = Router::new().route("/v1/chat/completions", post(empty_choices_handler));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = OpenAiCompatAdapter::new(
+            format!("http://{addr}"),
+            String::new(),
+            Some("test".to_string()),
+            None,
+        );
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(
+            matches!(err, AdapterError::Protocol(ref msg) if msg.contains("choices")),
+            "empty choices should be Protocol error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_error_field_takes_precedence() {
+        async fn api_error_handler() -> Json<Value> {
+            Json(json!({
+                "choices": [{"message": {"content": "ignored"}}],
+                "error": {"message": "rate limit exceeded"}
+            }))
+        }
+
+        let app = Router::new().route("/v1/chat/completions", post(api_error_handler));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = OpenAiCompatAdapter::new(
+            format!("http://{addr}"),
+            String::new(),
+            Some("test".to_string()),
+            None,
+        );
+
+        let err = adapter.dispatch("hello").await.unwrap_err();
+        assert!(
+            matches!(err, AdapterError::Protocol(ref msg) if msg.contains("rate limit")),
+            "API error field should take precedence, got: {err}"
+        );
+    }
 }
