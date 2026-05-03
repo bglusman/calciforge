@@ -279,6 +279,9 @@ fn collect_claws() -> Result<Vec<ClawTarget>> {
             reply_auth_token,
             proxy_endpoint: None,
             no_proxy: None,
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
         });
 
         let add_another = Confirm::new()
@@ -650,6 +653,9 @@ mod tests {
                     reply_auth_token: None,
                     proxy_endpoint: None,
                     no_proxy: None,
+                    linux_hardening: false,
+                    linux_hardening_extras: Vec::new(),
+                    linux_hardening_verify_url: None,
                 },
                 ClawTarget {
                     name: "openai".into(),
@@ -665,6 +671,9 @@ mod tests {
                     reply_auth_token: None,
                     proxy_endpoint: None,
                     no_proxy: None,
+                    linux_hardening: false,
+                    linux_hardening_extras: Vec::new(),
+                    linux_hardening_verify_url: None,
                 },
             ],
         };

@@ -33,6 +33,7 @@ pub mod cli;
 pub mod executor;
 pub mod health;
 pub mod json5;
+pub mod linux_hardening;
 pub mod migration_types;
 pub mod model;
 pub mod ssh;
