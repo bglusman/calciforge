@@ -444,6 +444,84 @@ mod tests {
     }
 
     #[test]
+    fn render_text_fallback_includes_all_options_and_commands() {
+        let msg = OutboundMessage::text("Choose your agent").with_control(ChoiceControl::new(
+            "Options",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        ));
+        let rendered = msg.render_text_fallback();
+        assert!(rendered.contains("Choose your agent"), "{rendered}");
+        assert!(rendered.contains("Librarian"), "{rendered}");
+        assert!(rendered.contains("Critic"), "{rendered}");
+        assert!(rendered.contains("!agent switch librarian"), "{rendered}");
+        assert!(rendered.contains("!agent switch critic"), "{rendered}");
+    }
+
+    #[test]
+    fn match_reply_numbering_matches_control_option_order() {
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::agent("Alpha", "alpha"),
+                ChoiceOption::agent("Beta", "beta"),
+                ChoiceOption::agent("Gamma", "gamma"),
+            ],
+        );
+        assert_eq!(ctrl.match_reply("1"), Match::One(&ctrl.options[0]));
+        assert_eq!(ctrl.match_reply("2"), Match::One(&ctrl.options[1]));
+        assert_eq!(ctrl.match_reply("3"), Match::One(&ctrl.options[2]));
+        assert_eq!(ctrl.match_reply("0"), Match::OutOfRange);
+        assert_eq!(ctrl.match_reply("4"), Match::OutOfRange);
+    }
+
+    #[test]
+    fn match_reply_label_resolution_handles_special_chars() {
+        let ctrl = ChoiceControl::new(
+            "Models",
+            vec![
+                ChoiceOption::new("Claude 4.7 (Opus)", "!model use anthropic/opus-4.7"),
+                ChoiceOption::new("GPT-4.1", "!model use openai/gpt-4.1"),
+            ],
+        );
+        assert_eq!(
+            ctrl.match_reply("Claude 47 Opus"),
+            Match::One(&ctrl.options[0])
+        );
+        assert_eq!(ctrl.match_reply("GPT41"), Match::One(&ctrl.options[1]));
+    }
+
+    #[test]
+    fn render_text_fallback_multiple_controls_preserves_all() {
+        let msg = OutboundMessage::text("Pick")
+            .with_control(ChoiceControl::new(
+                "Agents",
+                vec![ChoiceOption::agent("Librarian", "librarian")],
+            ))
+            .with_control(ChoiceControl::new(
+                "Sessions",
+                vec![ChoiceOption::session("backend", "claude-acpx", "backend")],
+            ));
+        let rendered = msg.render_text_fallback();
+        assert!(rendered.contains("Agents"), "{rendered}");
+        assert!(rendered.contains("Sessions"), "{rendered}");
+        assert!(rendered.contains("!agent switch librarian"), "{rendered}");
+        assert!(
+            rendered.contains("!switch claude-acpx backend"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn render_text_fallback_empty_controls_suppressed() {
+        let msg = OutboundMessage::text("Hello");
+        let rendered = msg.render_text_fallback();
+        assert_eq!(rendered, "Hello");
+    }
+
+    #[test]
     fn typed_choice_options_keep_text_and_callback_actions_in_sync() {
         let agent = ChoiceOption::agent("Librarian", "librarian");
         assert_eq!(agent.command, "!agent switch librarian");
