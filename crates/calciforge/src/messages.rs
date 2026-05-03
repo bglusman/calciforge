@@ -695,4 +695,69 @@ mod tests {
         let rendered = msg.render_text_fallback();
         assert_eq!(rendered, "Agent completed without a text response.");
     }
+
+    #[test]
+    fn text_fallback_round_trip_every_option_matchable_by_number() {
+        let labels = [
+            ("Alpha", "alpha"),
+            ("Beta", "beta"),
+            ("Gamma", "gamma"),
+            ("Delta", "delta"),
+            ("Epsilon", "epsilon"),
+            ("Zeta", "zeta"),
+            ("Eta", "eta"),
+            ("Theta", "theta"),
+        ];
+        let ctrl = agent_options(&labels);
+        let msg = OutboundMessage::text("Pick an agent").with_control(ctrl.clone());
+        let rendered = msg.render_text_fallback();
+
+        for (i, (label, _id)) in labels.iter().enumerate() {
+            assert!(
+                rendered.contains(label),
+                "rendered fallback must show label '{label}': {rendered}",
+            );
+            let n = (i + 1).to_string();
+            let m = ctrl.match_reply(&n);
+            assert_eq!(
+                m,
+                Match::One(&ctrl.options[i]),
+                "option {n} ('{label}') must be matchable by its 1-based index",
+            );
+        }
+        assert_eq!(
+            ctrl.match_reply("0"),
+            Match::OutOfRange,
+            "0 must be out of range",
+        );
+        assert_eq!(
+            ctrl.match_reply(&(labels.len() + 1).to_string()),
+            Match::OutOfRange,
+            "N+1 must be out of range",
+        );
+    }
+
+    #[test]
+    fn text_fallback_round_trip_every_option_matchable_by_label() {
+        let options = vec![
+            ChoiceOption::agent("Librarian", "librarian"),
+            ChoiceOption::model("Claude Sonnet", "anthropic/sonnet-4.6"),
+            ChoiceOption::session("backend", "codex", "backend"),
+            ChoiceOption::approve("req-42"),
+            ChoiceOption::deny("req-42"),
+        ];
+        let ctrl = ChoiceControl::new("Actions", options);
+        let msg = OutboundMessage::text("What next?").with_control(ctrl.clone());
+        let _rendered = msg.render_text_fallback();
+
+        let label_queries = ["Librarian", "Claude Sonnet", "backend", "Approve", "Deny"];
+        for (i, query) in label_queries.iter().enumerate() {
+            let m = ctrl.match_reply(query);
+            assert_eq!(
+                m,
+                Match::One(&ctrl.options[i]),
+                "label '{query}' must match option {i}",
+            );
+        }
+    }
 }
