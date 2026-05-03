@@ -692,7 +692,7 @@ impl SecurityProxy {
     ///     in some cases failing compile altogether (unintended
     ///     allow-all-or-allow-none). Caller pre-compiles, so the cost
     ///     of regex-building is paid once at config load.
-    fn host_matches_pattern(host: &str, pattern: &str) -> bool {
+    pub(crate) fn host_matches_pattern(host: &str, pattern: &str) -> bool {
         match Self::compile_bypass_pattern(pattern) {
             BypassMatcher::Exact(p) => host == p || host.ends_with(&format!(".{p}")),
             BypassMatcher::Glob(re) => re.is_match(host),

@@ -411,7 +411,15 @@ impl CalciforgeMitmHandler {
         };
 
         // (B) Search-response scanning. Runs only when the originating
-        // request hit a host matched by `search_engine_patterns`.
+        // request hit a host matched by `search_engine_patterns`. Two
+        // passes here:
+        //   1. Adversary scanner for prompt-injection content. Search
+        //      APIs return JSON, which the generic `text/*` filter
+        //      below skips — but those JSON snippets carry indexed
+        //      page content that's the most common prompt-injection
+        //      vector for an agent that "summarizes a URL". Run the
+        //      scanner explicitly here regardless of content-type.
+        //   2. Denylist check / strip via `scan_search_response`.
         let body_bytes = if self.last_was_search_host {
             let policy = &self.state.config.agent_web;
             let dest = self
@@ -420,6 +428,41 @@ impl CalciforgeMitmHandler {
                 .and_then(|u| reqwest::Url::parse(u).ok())
                 .and_then(|u| u.host_str().map(str::to_owned))
                 .unwrap_or_else(|| "<unknown>".to_owned());
+
+            // Pass 1: prompt-injection scan on the (likely JSON) body.
+            if self.state.config.scan_inbound {
+                if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+                    let verdict = self
+                        .state
+                        .scanner
+                        .scan(target_url, body_str, ScanContext::WebFetch)
+                        .await;
+                    match verdict {
+                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                            warn!(
+                                policy = "agent_web.scan_search_responses",
+                                dest_host = %dest,
+                                reason = %reason,
+                                "blocked search response: prompt-injection content"
+                            );
+                            return mitm_blocked_response(&format!(
+                                "Search response blocked by prompt-injection scanner: {reason}"
+                            ));
+                        }
+                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                            info!(
+                                policy = "agent_web.scan_search_responses",
+                                dest_host = %dest,
+                                reason = %reason,
+                                "REVIEW search response from search API"
+                            );
+                        }
+                        adversary_detector::verdict::ScanVerdict::Clean => {}
+                    }
+                }
+            }
+
+            // Pass 2: denylist check / strip via `scan_search_response`.
             match agent_web::scan_search_response(&body_bytes, policy, &dest) {
                 SearchResponseDecision::Pass => body_bytes,
                 SearchResponseDecision::Block { reason } => {

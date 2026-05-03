@@ -98,7 +98,12 @@ pub struct AgentWebPolicy {
 
     /// Hostname patterns Calciforge treats as search APIs. Used by both
     /// `forbid_search_engines` (A) and `scan_search_responses` (B).
-    /// Defaults to a curated list when empty.
+    /// Defaults to a curated list when the field is **omitted from
+    /// config**. An explicit empty list (`search_engine_patterns = []`)
+    /// disables both A and B entirely — operators who want to opt out
+    /// can do so this way; the runtime emits a warning at startup if
+    /// either gate is enabled with an empty list (see
+    /// `AgentWebPolicy::warn_on_inconsistent_policy`).
     #[serde(default = "default_search_engine_patterns")]
     pub search_engine_patterns: Vec<String>,
 
@@ -149,12 +154,70 @@ pub struct AgentWebPolicy {
     #[serde(default = "default_true")]
     pub preflight_tool_descriptions: bool,
 
-    /// Per-host destination allowlist used by (D) URL pre-flight. Same
-    /// host-matching semantics as `bypass_domains`. When empty, every
-    /// URL passes pre-flight (defaults are intentionally permissive —
-    /// operators opt in to a tighter list).
+    /// Per-host destination **denylist** used by (B) search-response
+    /// scanning and (D) URL pre-flight. Same wildcard-aware host-matching
+    /// semantics as `bypass_domains`: a host is denied when it matches
+    /// any pattern (exact, DNS-suffix, or `*`-glob with single-label
+    /// expansion). When empty, NO URL is denied — neither pre-flight
+    /// (D) nor search-response scanning (B) will reject anything on
+    /// content-host grounds. Operators opt in by listing the hosts they
+    /// want forbidden (e.g. internal-only domains, known-bad hosts).
     #[serde(default)]
     pub url_destination_denylist: Vec<String>,
+}
+
+impl AgentWebPolicy {
+    /// Audit the policy at startup and emit warnings for combinations
+    /// that are technically valid but probably operator mistakes —
+    /// most notably "policy gate enabled, but the list it reads from
+    /// is empty so nothing is actually gated." Doesn't bail; the
+    /// operator may genuinely have wanted to disable that gate, and
+    /// the warning gives them a paper trail to verify intent.
+    pub fn warn_on_inconsistent_policy(&self) {
+        if self.forbid_search_engines && self.search_engine_patterns.is_empty() {
+            tracing::warn!(
+                policy = "agent_web.forbid_search_engines",
+                "forbid_search_engines = true but search_engine_patterns is empty; \
+                 NO search-API egress is actually blocked. \
+                 Either remove the empty list (to use the curated default) or \
+                 set forbid_search_engines = false."
+            );
+        }
+        if self.scan_search_responses && self.search_engine_patterns.is_empty() {
+            tracing::warn!(
+                policy = "agent_web.scan_search_responses",
+                "scan_search_responses = true but search_engine_patterns is empty; \
+                 NO response is actually scanned. Same mitigation as above."
+            );
+        }
+        if self.forbid_provider_browsing && self.forbidden_browsing_tools.is_empty() {
+            tracing::warn!(
+                policy = "agent_web.forbid_provider_browsing",
+                "forbid_provider_browsing = true but forbidden_browsing_tools is empty; \
+                 NO provider browsing tool def is actually inspected. Either remove \
+                 the empty list (to use the curated default) or set the gate = false."
+            );
+        }
+        if self.forbid_provider_browsing && self.known_llm_apis.is_empty() {
+            tracing::warn!(
+                policy = "agent_web.forbid_provider_browsing",
+                "forbid_provider_browsing = true but known_llm_apis is empty; \
+                 NO provider host is inspected for browsing tools. Same mitigation."
+            );
+        }
+        if (self.scan_search_responses || self.preflight_message_urls)
+            && self.url_destination_denylist.is_empty()
+        {
+            // Note: this isn't necessarily wrong — the denylist is the
+            // operator-supplied tighter setting. But we want to make
+            // sure the operator knows nothing is denied yet.
+            tracing::info!(
+                policy = "agent_web.url_destination_denylist",
+                "url_destination_denylist is empty; B/D denylist checks pass everything. \
+                 If you intend to deny specific hosts, populate the list."
+            );
+        }
+    }
 }
 
 impl Default for AgentWebPolicy {

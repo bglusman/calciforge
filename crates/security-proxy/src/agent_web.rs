@@ -29,19 +29,29 @@ use tracing::info;
 
 use crate::config::AgentWebPolicy;
 
-/// Returns true when `host` matches any pattern via the suffix rule
-/// (`host.ends_with(pattern)` OR `host == pattern`). We always lowercase
-/// the comparison so config patterns can be case-insensitive.
+/// Returns true when `host` matches any pattern using the same matching
+/// semantics as `bypass_domains` (`SecurityProxy::host_matches_pattern`):
+///
+///   - no `*`: host equals the pattern OR ends with `.<pattern>`
+///     (DNS-label boundary — `notduckduckgo.com` does NOT match
+///     `duckduckgo.com`)
+///   - with `*`: glob; each `*` matches `[^.]*` (single label, no
+///     dot-crossing) — so `*.corp.example` matches `a.corp.example`
+///     but not `a.b.corp.example`.
+///
+/// All comparisons are case-insensitive.
 pub fn host_matches_search_engine(host: &str, patterns: &[String]) -> bool {
     let h = host.to_ascii_lowercase();
     patterns.iter().any(|p| {
-        let p = p.to_ascii_lowercase();
-        h == p || h.ends_with(&format!(".{p}")) || h.ends_with(&p)
+        let pl = p.to_ascii_lowercase();
+        crate::proxy::SecurityProxy::host_matches_pattern(&h, &pl)
     })
 }
 
-/// Returns true when `host` is in the set of known LLM-provider hosts
-/// (suffix match, same as search-engine matching).
+/// Returns true when `host` is in the set of known LLM-provider hosts.
+/// Uses the same wildcard-aware semantics as
+/// [`host_matches_search_engine`] (and `bypass_domains`) so patterns
+/// behave consistently across the gateway.
 pub fn host_is_known_llm_api(host: &str, patterns: &[String]) -> bool {
     host_matches_search_engine(host, patterns)
 }
@@ -65,10 +75,36 @@ pub fn denied_url_in_text(text: &str, denylist: &[String]) -> Option<String> {
 }
 
 /// Extract all `http(s)://…` URLs from a free-text string.
+///
+/// Handles two encodings of the scheme separator that show up in the
+/// real world:
+///   - bare `https://` (text, headers, raw HTTP bodies)
+///   - JSON-escaped `https:\/\/` (every JSON string emitter is allowed
+///     by the spec to escape `/` as `\/`; some search APIs and OAuth
+///     providers do this routinely). Without this branch, a denylisted
+///     URL inside a JSON response slips past the regex and reaches the
+///     model.
+///
+/// We canonicalise by removing all `\/` → `/` before regex matching, so
+/// both encodings are captured by the same pattern. The extracted URL
+/// is the unescaped form (callers that need byte-exact slicing into the
+/// original buffer should re-find the match themselves; nothing in this
+/// crate currently does).
 pub fn extract_urls(text: &str) -> Vec<String> {
     static RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+").unwrap());
-    RE.find_iter(text).map(|m| m.as_str().to_owned()).collect()
+    let canonical: String = if text.contains("\\/") {
+        text.replace("\\/", "/")
+    } else {
+        // Hot path: no escapes present; avoid the allocation.
+        // Borrowing `text` would require lifetime gymnastics with the
+        // `Cow`; the small extra clone here keeps the function shape
+        // simple and the regex iterator is on owned strings anyway.
+        text.to_owned()
+    };
+    RE.find_iter(&canonical)
+        .map(|m| m.as_str().to_owned())
+        .collect()
 }
 
 fn url_host(url: &str) -> Option<String> {
