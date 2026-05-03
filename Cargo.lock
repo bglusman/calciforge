@@ -9175,6 +9175,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-rustls 0.27.7",
  "hyper-util",
+ "proptest",
  "rcgen 0.13.2",
  "regex",
  "reqwest 0.12.28",

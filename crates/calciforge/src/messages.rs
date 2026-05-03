@@ -814,4 +814,77 @@ mod tests {
             );
         }
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_agent_options() -> impl Strategy<Value = ChoiceControl> {
+            prop::collection::vec("[A-Za-z][A-Za-z0-9 ]{0,20}", 1..=8).prop_map(|labels| {
+                let options: Vec<ChoiceOption> = labels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| ChoiceOption::agent(l.trim(), &format!("agent-{i}")))
+                    .collect();
+                ChoiceControl::new("Pick", options)
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn match_reply_never_panics(input in ".*") {
+                let ctrl = ChoiceControl::new("Pick", vec![
+                    ChoiceOption::agent("Alpha", "alpha"),
+                    ChoiceOption::agent("Beta", "beta"),
+                ]);
+                let _ = ctrl.match_reply(&input);
+            }
+
+            #[test]
+            fn valid_index_always_matches(
+                ctrl in arb_agent_options(),
+                idx in 1usize..=8,
+            ) {
+                if idx <= ctrl.options.len() {
+                    let r = ctrl.match_reply(&idx.to_string());
+                    prop_assert!(matches!(r, Match::One(_)),
+                        "index {idx} within range should match, got {:?}", r);
+                }
+            }
+
+            #[test]
+            fn out_of_range_index_never_matches(
+                ctrl in arb_agent_options(),
+                idx in 9usize..1000,
+            ) {
+                let r = ctrl.match_reply(&idx.to_string());
+                prop_assert!(matches!(r, Match::OutOfRange),
+                    "index {idx} above max should be OutOfRange, got {:?}", r);
+            }
+
+            #[test]
+            fn exact_label_always_resolves_to_some_match(
+                ctrl in arb_agent_options(),
+            ) {
+                for option in &ctrl.options {
+                    let r = ctrl.match_reply(&option.label);
+                    prop_assert!(
+                        matches!(r, Match::One(_) | Match::Ambiguous),
+                        "exact label {:?} should resolve to One or Ambiguous, got {:?}",
+                        option.label, r
+                    );
+                }
+            }
+
+            #[test]
+            fn match_result_is_deterministic(
+                ctrl in arb_agent_options(),
+                input in ".*",
+            ) {
+                let r1 = ctrl.match_reply(&input);
+                let r2 = ctrl.match_reply(&input);
+                prop_assert_eq!(r1, r2);
+            }
+        }
+    }
 }

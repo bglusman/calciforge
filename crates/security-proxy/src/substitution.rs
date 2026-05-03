@@ -325,4 +325,68 @@ mod tests {
         let result = substitute("one { brace not a ref", &map).unwrap();
         assert!(matches!(result, Cow::Borrowed(_)));
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+        use std::collections::HashMap;
+
+        fn map_of(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect()
+        }
+
+        proptest! {
+            #[test]
+            fn find_refs_never_panics(input in ".*") {
+                let _ = find_refs(&input);
+            }
+
+            #[test]
+            fn substitute_never_panics(input in ".*") {
+                let map = map_of(&[("A", "1"), ("B", "2"), ("TEST", "val")]);
+                let _ = substitute(&input, &map);
+            }
+
+            #[test]
+            fn no_ref_input_returns_borrowed(input in "[^{]*") {
+                let map = map_of(&[]);
+                if let Ok(result) = substitute(&input, &map) {
+                    prop_assert!(matches!(result, std::borrow::Cow::Borrowed(_)),
+                        "input without {{ should return Borrowed");
+                }
+            }
+
+            #[test]
+            fn resolved_values_never_re_scanned(
+                value in ".*\\{\\{secret:[A-Z]+\\}\\}.*"
+            ) {
+                let map = map_of(&[("OUTER", &value)]);
+                if let Ok(result) = substitute("{{secret:OUTER}}", &map) {
+                    prop_assert_eq!(result.as_ref(), &value,
+                        "resolved value must appear verbatim, not re-scanned");
+                }
+            }
+
+            #[test]
+            fn find_refs_then_substitute_round_trips(
+                name in "[A-Za-z][A-Za-z0-9_-]{0,10}",
+                value in "[a-z0-9]{1,20}",
+                prefix in "[a-z ]{0,10}",
+                suffix in "[a-z ]{0,10}",
+            ) {
+                let input = format!("{prefix}{{{{secret:{name}}}}}{suffix}");
+                let refs = find_refs(&input).unwrap();
+                prop_assert!(refs.contains(&name),
+                    "find_refs should find {name:?} in {input:?}");
+                let map: HashMap<String, String> =
+                    refs.into_iter().map(|n| (n, value.clone())).collect();
+                let result = substitute(&input, &map).unwrap();
+                let expected = format!("{prefix}{value}{suffix}");
+                prop_assert_eq!(result.as_ref(), &expected);
+            }
+        }
+    }
 }
