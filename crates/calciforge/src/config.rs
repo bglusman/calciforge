@@ -389,15 +389,15 @@ pub struct ChannelConfig {
 
     /// WhatsApp Web operating mode.
     #[serde(default)]
-    pub whatsapp_mode: zeroclaw::config::WhatsAppWebMode,
+    pub whatsapp_mode: zeroclaw_config::schema::WhatsAppWebMode,
 
     /// Direct-message policy when `whatsapp_mode = "personal"`.
     #[serde(default)]
-    pub whatsapp_dm_policy: zeroclaw::config::WhatsAppChatPolicy,
+    pub whatsapp_dm_policy: zeroclaw_config::schema::WhatsAppChatPolicy,
 
     /// Group-chat policy when `whatsapp_mode = "personal"`.
     #[serde(default)]
-    pub whatsapp_group_policy: zeroclaw::config::WhatsAppChatPolicy,
+    pub whatsapp_group_policy: zeroclaw_config::schema::WhatsAppChatPolicy,
 
     /// When true, always respond in self-chat mode when `whatsapp_mode = "personal"`.
     #[serde(default)]

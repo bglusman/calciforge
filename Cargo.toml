@@ -28,7 +28,10 @@ resolver = "2"
 
 [workspace.dependencies]
 # External agent dependencies
-zeroclawlabs = "0.6.9"
+zeroclawlabs = { package = "zeroclawlabs", git = "https://github.com/bglusman/zeroclaw", branch = "calciforge-interactive" }
+zeroclaw-api = { git = "https://github.com/bglusman/zeroclaw", branch = "calciforge-interactive" }
+zeroclaw-channels = { git = "https://github.com/bglusman/zeroclaw", branch = "calciforge-interactive" }
+zeroclaw-config = { git = "https://github.com/bglusman/zeroclaw", branch = "calciforge-interactive" }
 clash = "0.6.2"
 claw-code = { git = "https://github.com/instructkr/claw-code" }
 

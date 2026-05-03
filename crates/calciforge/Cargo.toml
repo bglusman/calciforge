@@ -36,6 +36,9 @@ axum = "0.7"
 # SignalChannel that talks to signal-cli-rest-api, so we no longer host a
 # webhook receiver inside calciforge for Signal.
 zeroclawlabs = { workspace = true, features = ["whatsapp-web"] }
+zeroclaw-api = { workspace = true }
+zeroclaw-channels = { workspace = true }
+zeroclaw-config = { workspace = true }
 
 # Secret resolution helpers
 secrets-client = { path = "../secrets-client" }
