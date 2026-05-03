@@ -608,6 +608,195 @@ mod tests {
         );
     }
 
+    fn config_with_two_agents() -> Arc<CalciforgeConfig> {
+        Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
+            identities: vec![Identity {
+                id: "brian".to_string(),
+                display_name: Some("Brian".to_string()),
+                aliases: vec![ChannelAlias {
+                    channel: "mock".to_string(),
+                    id: "mock-brian".to_string(),
+                }],
+                role: Some("owner".to_string()),
+            }],
+            agents: vec![agent("librarian"), agent("critic")],
+            routing: vec![RoutingRule {
+                identity: "brian".to_string(),
+                default_agent: "librarian".to_string(),
+                allowed_agents: vec!["librarian".to_string(), "critic".to_string()],
+            }],
+            alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
+            exec_models: vec![],
+            channels: vec![ChannelConfig {
+                kind: "mock".to_string(),
+                enabled: true,
+                control_port: Some(0),
+                ..Default::default()
+            }],
+            permissions: None,
+            memory: None,
+            context: Default::default(),
+            model_shortcuts: vec![],
+            security: None,
+            proxy: None,
+            local_models: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn choice_state_free_text_match_by_number() {
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let s = state(config_with_two_agents());
+        let ctrl = ChoiceControl::new(
+            "Pick agent",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        s.choice_state.record("mock", "brian", vec![ctrl]);
+
+        let reply = route_mock_message(&s, "brian", "1")
+            .await
+            .expect("numeric reply should resolve");
+        assert!(
+            reply.contains("librarian"),
+            "reply should confirm switch to librarian: {reply}"
+        );
+        assert_eq!(
+            s.choice_state.pending_len(),
+            0,
+            "pending state should clear after match"
+        );
+    }
+
+    #[tokio::test]
+    async fn choice_state_free_text_match_by_label() {
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let s = state(config_with_two_agents());
+        let ctrl = ChoiceControl::new(
+            "Pick agent",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        s.choice_state.record("mock", "brian", vec![ctrl]);
+
+        let reply = route_mock_message(&s, "brian", "Critic")
+            .await
+            .expect("label reply should resolve");
+        assert!(
+            reply.contains("critic"),
+            "reply should confirm switch to critic: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn choice_state_out_of_range_preserves_state() {
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let s = state(config_with_two_agents());
+        let ctrl = ChoiceControl::new(
+            "Pick agent",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        s.choice_state.record("mock", "brian", vec![ctrl]);
+
+        let reply = route_mock_message(&s, "brian", "99")
+            .await
+            .expect("out-of-range should return a helpful message");
+        assert!(
+            reply.contains("isn't one of the options"),
+            "should get out-of-range message: {reply}"
+        );
+        assert_eq!(
+            s.choice_state.pending_len(),
+            1,
+            "state should be preserved for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn choice_state_ambiguous_preserves_state() {
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let s = state(config_with_two_agents());
+        let ctrl = ChoiceControl::new(
+            "Pick agent",
+            vec![
+                ChoiceOption::agent("Critic", "critic"),
+                ChoiceOption::agent("Critique", "critique"),
+            ],
+        );
+        s.choice_state.record("mock", "brian", vec![ctrl]);
+
+        let reply = route_mock_message(&s, "brian", "Cri")
+            .await
+            .expect("ambiguous reply should return a helpful message");
+        assert!(
+            reply.contains("Multiple options match"),
+            "should get ambiguity message: {reply}"
+        );
+        assert_eq!(
+            s.choice_state.pending_len(),
+            1,
+            "state should be preserved for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn choice_state_no_pending_falls_through_to_normal_dispatch() {
+        let s = state(config_with_mock_identity());
+        assert_eq!(s.choice_state.pending_len(), 0);
+
+        let reply = route_mock_message(&s, "brian", "hello world")
+            .await
+            .expect("should fall through to agent dispatch");
+        assert!(
+            reply.contains("hello world"),
+            "echo agent should echo back: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn choice_state_cross_channel_keys_dont_collide() {
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let s = state(config_with_two_agents());
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        // Record on signal, not mock — mock should not see it.
+        s.choice_state.record("signal", "brian", vec![ctrl]);
+
+        let reply = route_mock_message(&s, "brian", "1")
+            .await
+            .expect("should fall through to agent dispatch, not match signal's pending");
+        // "1" should go through as freeform text to the echo agent
+        assert!(
+            reply.contains("1"),
+            "freeform '1' should reach echo agent: {reply}"
+        );
+        assert_eq!(
+            s.choice_state.pending_len(),
+            1,
+            "signal pending should remain"
+        );
+    }
+
     #[tokio::test]
     async fn mock_api_accepts_identity_id_for_local_operator_tests() {
         let state = state(config_with_mock_identity());

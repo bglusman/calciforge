@@ -833,6 +833,210 @@ mod tests {
         assert_eq!(sent[0].recipient, "chat_123");
     }
 
+    fn make_two_agent_config() -> Arc<CalciforgeConfig> {
+        Arc::new(CalciforgeConfig {
+            calciforge: CalciforgeHeader { version: 2 },
+            identities: vec![Identity {
+                id: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                aliases: vec![ChannelAlias {
+                    channel: "sms".to_string(),
+                    id: "+15555550100".to_string(),
+                }],
+                role: Some("owner".to_string()),
+            }],
+            agents: vec![
+                AgentConfig {
+                    id: "librarian".to_string(),
+                    kind: "openclaw-channel".to_string(),
+                    endpoint: "http://127.0.0.1:18789".to_string(),
+                    ..Default::default()
+                },
+                AgentConfig {
+                    id: "critic".to_string(),
+                    kind: "openclaw-channel".to_string(),
+                    endpoint: "http://127.0.0.1:18789".to_string(),
+                    ..Default::default()
+                },
+            ],
+            routing: vec![RoutingRule {
+                identity: "alice".to_string(),
+                default_agent: "librarian".to_string(),
+                allowed_agents: vec!["librarian".to_string(), "critic".to_string()],
+            }],
+            channels: vec![ChannelConfig {
+                kind: "sms".to_string(),
+                enabled: true,
+                allowed_numbers: vec!["+15555550100".to_string()],
+                sms_linq_api_token: Some("test-token".to_string()),
+                sms_from_phone: Some("+15555550001".to_string()),
+                ..Default::default()
+            }],
+            permissions: None,
+            memory: None,
+            context: Default::default(),
+            model_shortcuts: vec![],
+            alloys: vec![],
+            cascades: vec![],
+            dispatchers: vec![],
+            exec_models: vec![],
+            security: None,
+            proxy: None,
+            local_models: None,
+        })
+    }
+
+    fn dummy_bridge_with_choice(
+        config: Arc<CalciforgeConfig>,
+        transport: Arc<MockChannel>,
+        choice_state: Arc<crate::choice_state::ChoiceState>,
+    ) -> TestBridge {
+        let router = Arc::new(Router::new());
+        let tmp = tempfile::tempdir().expect("tempdir for sms test state isolation");
+        let command_handler = Arc::new(CommandHandler::with_state_dir(
+            config.clone(),
+            tmp.path().to_path_buf(),
+        ));
+        TestBridge {
+            bridge: Arc::new(
+                SmsChannel::<MockChannel>::new(
+                    config,
+                    router,
+                    command_handler,
+                    ContextStore::new(20, 5),
+                    make_scanner(),
+                    transport,
+                )
+                .with_choice_state(choice_state),
+            ),
+            _state_dir: tmp,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_choice_state_free_text_match_dispatches_switch() {
+        use crate::choice_state::ChoiceState;
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let transport = Arc::new(MockChannel::new());
+        let choice_state = Arc::new(ChoiceState::new());
+        let bridge = dummy_bridge_with_choice(
+            make_two_agent_config(),
+            transport.clone(),
+            choice_state.clone(),
+        );
+
+        let ctrl = ChoiceControl::new(
+            "Pick agent",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        choice_state.record("sms", "alice", vec![ctrl]);
+
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+15555550100".into(),
+                reply_target: "+15555550100".into(),
+                content: "2".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+
+        transport.wait_for_sent_len(1).await;
+        let sent = transport.drain();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].content.contains("critic"),
+            "should switch to critic: {}",
+            sent[0].content
+        );
+        assert_eq!(choice_state.pending_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_choice_state_out_of_range_error_reply() {
+        use crate::choice_state::ChoiceState;
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let transport = Arc::new(MockChannel::new());
+        let choice_state = Arc::new(ChoiceState::new());
+        let bridge = dummy_bridge_with_choice(
+            make_two_agent_config(),
+            transport.clone(),
+            choice_state.clone(),
+        );
+
+        let ctrl = ChoiceControl::new(
+            "Pick agent",
+            vec![
+                ChoiceOption::agent("Librarian", "librarian"),
+                ChoiceOption::agent("Critic", "critic"),
+            ],
+        );
+        choice_state.record("sms", "alice", vec![ctrl]);
+
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+15555550100".into(),
+                reply_target: "+15555550100".into(),
+                content: "99".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+
+        transport.wait_for_sent_len(1).await;
+        let sent = transport.drain();
+        assert!(
+            sent[0].content.contains("isn't one of the options"),
+            "should get out-of-range message: {}",
+            sent[0].content
+        );
+        assert_eq!(choice_state.pending_len(), 1, "state preserved for retry");
+    }
+
+    #[tokio::test]
+    async fn test_choice_state_no_pending_falls_through() {
+        use crate::choice_state::ChoiceState;
+
+        let transport = Arc::new(MockChannel::new());
+        let choice_state = Arc::new(ChoiceState::new());
+        let bridge =
+            dummy_bridge_with_choice(make_test_config(), transport.clone(), choice_state.clone());
+
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+15555550100".into(),
+                reply_target: "+15555550100".into(),
+                content: "!ping".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+
+        transport.wait_for_sent_len(1).await;
+        let sent = transport.drain();
+        assert!(!sent.is_empty(), "should fall through to command handler");
+    }
+
     #[tokio::test]
     async fn test_conversation_ids_do_not_share_context_between_agents() {
         let mut config = (*make_test_config()).clone();
