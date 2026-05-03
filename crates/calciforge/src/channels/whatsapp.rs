@@ -21,6 +21,9 @@ use zeroclaw_channels::whatsapp_web::WhatsAppWebChannel as ZclWhatsAppWebChannel
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},
+    choice_state::{
+        ChoiceMatchResult, ChoiceState, CHOICE_INDEX_SENTINEL_PREFIX, CHOICE_SENTINEL_PREFIX,
+    },
     commands::CommandHandler,
     config::{expand_tilde, CalciforgeConfig, ChannelConfig},
     context::ContextStore,
@@ -43,6 +46,17 @@ pub struct WhatsAppChannel<C: Channel + ?Sized = ZclWhatsAppWebChannel> {
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
     transport: Arc<C>,
+    /// Per-identity pending-choice tracker. Shared across channels so a
+    /// reply on one transport can resolve a control sent via another.
+    /// `None` for older test fixtures that pre-date the matcher.
+    ///
+    /// Note: Calciforge embeds `whatsapp_web::WhatsAppWebChannel`, which
+    /// does NOT override `send_choice` — outbound calls fall through to
+    /// the trait default text rendering. The matcher still resolves
+    /// inbound free-text replies and any `[choice]<id>` sentinels the
+    /// fork's `parse_webhook_payload` produces (Cloud-API mode only;
+    /// Web mode never produces those sentinels today).
+    choice_state: Option<Arc<ChoiceState>>,
 }
 
 impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
@@ -61,7 +75,15 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             context_store,
             channel_scanner,
             transport,
+            choice_state: None,
         }
+    }
+
+    /// Attach a `ChoiceState` so this channel records pending choices on
+    /// outbound and resolves replies on inbound.
+    pub fn with_choice_state(mut self, choice_state: Arc<ChoiceState>) -> Self {
+        self.choice_state = Some(choice_state);
+        self
     }
 
     fn scan_enabled(&self) -> bool {
@@ -104,8 +126,82 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
     }
 
     async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
+        // Native-render path (Cloud mode only — Web mode's transport
+        // doesn't override send_choice). Either way, record the
+        // pending control so the inbound matcher can resolve the
+        // user's reply.
+        if let (Some(state), Some(control)) = (self.choice_state.as_ref(), message.controls.first())
+        {
+            state.record("whatsapp", recipient, message.controls.clone());
+            let pairs: Vec<(String, String)> = control
+                .options
+                .iter()
+                .map(|o| {
+                    (
+                        o.callback_data.clone().unwrap_or_else(|| o.label.clone()),
+                        o.label.clone(),
+                    )
+                })
+                .collect();
+            let prompt = if control.title.trim().is_empty() {
+                message.text.as_deref().unwrap_or("").to_string()
+            } else {
+                control.title.clone()
+            };
+            match self.transport.send_choice(recipient, &prompt, &pairs).await {
+                Ok(()) => {
+                    telemetry::reply_sent("whatsapp", recipient, "choice", prompt.len(), 0);
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        recipient = %recipient,
+                        error = %e,
+                        "WhatsApp: send_choice failed, falling back to text"
+                    );
+                }
+            }
+        }
         self.send_reply(recipient, &message.render_text_fallback())
             .await;
+    }
+
+    /// Dispatch a command resolved from a pending choice. Mirror of
+    /// the Signal helper — the resolved command always comes from a
+    /// `ChoiceOption` factory (agent / model / session / approve /
+    /// deny) so it's always a valid `!command`.
+    async fn dispatch_resolved_command(
+        self: &Arc<Self>,
+        identity_id: &str,
+        reply_target: &str,
+        command: &str,
+    ) {
+        let target = reply_target.to_string();
+        if CommandHandler::is_switch_command(command) {
+            let reply = self.command_handler.handle_switch(command, identity_id);
+            self.send_reply(&target, &reply).await;
+            return;
+        }
+        if CommandHandler::is_model_command(command) {
+            let reply = self.command_handler.handle_model(command, identity_id);
+            self.send_reply(&target, &reply).await;
+            return;
+        }
+        if CommandHandler::is_approve_command(command) || CommandHandler::is_deny_command(command) {
+            if let Some(reply) = self.command_handler.handle(command) {
+                self.send_reply(&target, &reply).await;
+                return;
+            }
+        }
+        if let Some(reply) = self.command_handler.handle(command) {
+            self.send_reply(&target, &reply).await;
+            return;
+        }
+        warn!(
+            identity = %identity_id,
+            command = %command,
+            "WhatsApp: resolved choice command did not match any command_handler branch — dropped"
+        );
     }
 
     fn command_reply_ready(
@@ -149,6 +245,88 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         telemetry::authorized_message("whatsapp", &identity.id, &from, text.len(), delivery_lag_ms);
 
         let chat_key = conversation_chat_key(&identity.id, &reply_target);
+
+        // ── Pending-choice resolution ─────────────────────────────────────
+        // Run BEFORE command fast-paths so a numeric reply ("2") doesn't
+        // get misinterpreted as freeform input. Both sentinel and
+        // free-text paths key by reply_target (matches the recipient
+        // passed to record() in send_outbound).
+        if let Some(state) = self.choice_state.as_ref() {
+            if let Some(stripped) = text.strip_prefix(CHOICE_SENTINEL_PREFIX) {
+                if let Some(resolved) = state.resolve_sentinel("whatsapp", &reply_target, stripped)
+                {
+                    info!(
+                        identity = %identity.id,
+                        label = %resolved.label,
+                        "WhatsApp: interactive reply resolved via [choice] sentinel"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &resolved.command)
+                        .await;
+                    return;
+                }
+                debug!(
+                    identity = %identity.id,
+                    payload = %stripped,
+                    "WhatsApp: [choice] sentinel with no matching pending state — ignoring"
+                );
+                return;
+            }
+            if let Some(idx_str) = text.strip_prefix(CHOICE_INDEX_SENTINEL_PREFIX) {
+                let idx_reply = idx_str.trim();
+                if let ChoiceMatchResult::Match { command, .. } =
+                    state.match_reply("whatsapp", &reply_target, idx_reply)
+                {
+                    info!(
+                        identity = %identity.id,
+                        idx = %idx_reply,
+                        "WhatsApp: reply resolved via [choice-index] sentinel"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &command)
+                        .await;
+                    return;
+                }
+                return;
+            }
+            match state.match_reply("whatsapp", &reply_target, &text) {
+                ChoiceMatchResult::Match { command, label, .. } => {
+                    info!(
+                        identity = %identity.id,
+                        label = %label,
+                        "WhatsApp: text reply matched pending choice"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &command)
+                        .await;
+                    return;
+                }
+                ChoiceMatchResult::Ambiguous => {
+                    let channel = self.clone();
+                    let target = reply_target.clone();
+                    tokio::spawn(async move {
+                        channel
+                            .send_reply(
+                                &target,
+                                "Multiple options match. Reply with the number, or be more specific.",
+                            )
+                            .await;
+                    });
+                    return;
+                }
+                ChoiceMatchResult::OutOfRange => {
+                    let channel = self.clone();
+                    let target = reply_target.clone();
+                    tokio::spawn(async move {
+                        channel
+                            .send_reply(
+                                &target,
+                                "That number isn't one of the options. Reply with a number from the list, or the option name.",
+                            )
+                            .await;
+                    });
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         if self.scan_enabled() {
             let verdict = self
@@ -624,6 +802,7 @@ pub async fn run(
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
+    choice_state: Arc<ChoiceState>,
 ) -> Result<()> {
     let whatsapp_cfg = config
         .channels
@@ -683,14 +862,17 @@ pub async fn run(
         .with_group_mention_patterns(group_mention_patterns),
     );
 
-    let bridge = Arc::new(WhatsAppChannel::<ZclWhatsAppWebChannel>::new(
-        config,
-        router,
-        command_handler,
-        context_store,
-        channel_scanner,
-        transport.clone(),
-    ));
+    let bridge = Arc::new(
+        WhatsAppChannel::<ZclWhatsAppWebChannel>::new(
+            config,
+            router,
+            command_handler,
+            context_store,
+            channel_scanner,
+            transport.clone(),
+        )
+        .with_choice_state(choice_state),
+    );
 
     run_transport_loop(bridge, transport).await
 }
@@ -896,6 +1078,7 @@ mod tests {
             command_handler,
             context_store,
             channel_scanner,
+            Arc::new(ChoiceState::new()),
         )
         .await
         .expect_err("legacy zeroclaw_endpoint must be rejected");

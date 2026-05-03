@@ -442,6 +442,7 @@ async fn main() -> Result<()> {
                 command_handler.clone(),
                 context_store.clone(),
                 channel_scanner.clone(),
+                choice_state.clone(),
             )
             .await
             .context("WhatsApp channel error")
