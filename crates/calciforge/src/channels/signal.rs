@@ -2,7 +2,7 @@
 //!
 //! ## Architecture
 //!
-//! Calciforge embeds [`zeroclaw::channels::SignalChannel`] directly. The
+//! Calciforge embeds [`zeroclaw_channels::signal::SignalChannel`] directly. The
 //! embedded channel talks to a `signal-cli-rest-api` daemon over HTTP/JSON-RPC
 //! and surfaces inbound messages via a `tokio::mpsc` `Receiver`. Calciforge
 //! drains that receiver, resolves the sender against its identity table,
@@ -37,8 +37,8 @@
 use crate::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use tracing::{debug, info, warn};
-use zeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
-use zeroclaw::channels::SignalChannel as ZclSignalChannel;
+use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
+use zeroclaw_channels::signal::SignalChannel as ZclSignalChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},

@@ -1,6 +1,6 @@
 //! WhatsApp channel adapter for Calciforge.
 //!
-//! Calciforge embeds [`zeroclaw::channels::WhatsAppWebChannel`] directly. The
+//! Calciforge embeds [`zeroclaw_channels::whatsapp_web::WhatsAppWebChannel`] directly. The
 //! embedded channel owns the WhatsApp Web session, surfaces inbound messages via
 //! a `tokio::mpsc` `Receiver`, and sends replies through the same
 //! `Channel::send` interface.
@@ -16,8 +16,8 @@
 use crate::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use tracing::{debug, info, warn};
-use zeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
-use zeroclaw::channels::WhatsAppWebChannel as ZclWhatsAppWebChannel;
+use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
+use zeroclaw_channels::whatsapp_web::WhatsAppWebChannel as ZclWhatsAppWebChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},

@@ -18,8 +18,8 @@ use axum::{
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
-use zeroclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
-use zeroclaw::channels::LinqChannel as ZclLinqChannel;
+use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
+use zeroclaw_channels::linq::LinqChannel as ZclLinqChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},
@@ -434,7 +434,7 @@ async fn webhook_handler(
             Ok(value) => value,
             Err(_) => return (StatusCode::BAD_REQUEST, "body must be utf-8 json"),
         };
-        if !zeroclaw::channels::linq::verify_linq_signature(secret, body_text, timestamp, signature)
+        if !zeroclaw_channels::linq::verify_linq_signature(secret, body_text, timestamp, signature)
         {
             return (StatusCode::UNAUTHORIZED, "invalid webhook signature");
         }
