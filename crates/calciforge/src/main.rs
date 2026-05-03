@@ -294,6 +294,11 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
     let router = Arc::new(Router::new());
 
+    // Per-identity pending-choice tracker. Shared across all channels
+    // so a poll/button/menu sent on one channel can resolve a reply
+    // arriving on the same identity-key. See `crate::choice_state`.
+    let choice_state = Arc::new(choice_state::ChoiceState::new());
+
     // Initialize model-gateway synthetic routing if configured.
     let has_synthetic_models = !config.alloys.is_empty()
         || !config.cascades.is_empty()
@@ -454,6 +459,7 @@ async fn main() -> Result<()> {
                 command_handler.clone(),
                 context_store.clone(),
                 channel_scanner.clone(),
+                choice_state.clone(),
             )
             .await
             .context("Signal channel error")

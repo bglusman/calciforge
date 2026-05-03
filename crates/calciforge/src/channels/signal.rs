@@ -42,6 +42,9 @@ use zeroclaw_channels::signal::SignalChannel as ZclSignalChannel;
 
 use crate::{
     auth::{find_agent, resolve_channel_sender},
+    choice_state::{
+        ChoiceMatchResult, ChoiceState, CHOICE_INDEX_SENTINEL_PREFIX, CHOICE_SENTINEL_PREFIX,
+    },
     commands::CommandHandler,
     config::CalciforgeConfig,
     context::ContextStore,
@@ -70,6 +73,13 @@ pub struct SignalChannel<C: Channel + ?Sized = ZclSignalChannel> {
     /// The actual transport used to send replies. Generic so tests can plug
     /// in a mock; defaults to the concrete `ZclSignalChannel`.
     transport: Arc<C>,
+    /// Per-identity pending-choice tracker. Shared across channels so a
+    /// reply on one transport can resolve a control sent via another (rare
+    /// but real — e.g. user receives a Signal poll, replies via Matrix
+    /// to the same identity). When `None`, the channel doesn't record /
+    /// resolve choices — used by older test fixtures that pre-date the
+    /// matcher.
+    choice_state: Option<Arc<ChoiceState>>,
 }
 
 impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
@@ -88,7 +98,16 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             context_store,
             channel_scanner,
             transport,
+            choice_state: None,
         }
+    }
+
+    /// Attach a `ChoiceState` so this channel records pending choices on
+    /// outbound and resolves replies on inbound. Returns `self` for
+    /// chained construction.
+    pub fn with_choice_state(mut self, choice_state: Arc<ChoiceState>) -> Self {
+        self.choice_state = Some(choice_state);
+        self
     }
 
     /// Whether adversary scanning is enabled for the `signal` channel.
@@ -125,7 +144,110 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         }
     }
 
+    /// Dispatch a command resolved from a pending choice. The resolved
+    /// command always comes from a `ChoiceOption` factory method
+    /// (agent / model / session / approve / deny) so it's always a
+    /// valid `!command` — never freeform input. Run the appropriate
+    /// `command_handler` branch directly.
+    ///
+    /// Skips the adversary scan and the matcher-resolution pass,
+    /// which would be redundant — the reply that produced this
+    /// command already passed both.
+    async fn dispatch_resolved_command(
+        self: &Arc<Self>,
+        identity_id: &str,
+        reply_target: &str,
+        command: &str,
+    ) {
+        let target = reply_target.to_string();
+
+        if CommandHandler::is_switch_command(command) {
+            let reply = self.command_handler.handle_switch(command, identity_id);
+            self.send_reply(&target, &reply).await;
+            return;
+        }
+        if CommandHandler::is_model_command(command) {
+            let reply = self.command_handler.handle_model(command, identity_id);
+            self.send_reply(&target, &reply).await;
+            return;
+        }
+        if CommandHandler::is_approve_command(command) || CommandHandler::is_deny_command(command) {
+            // Approve/deny go through the unified handler that the
+            // agent_choice flow uses today; mirror the existing branch
+            // shape rather than re-entering handle_message.
+            if let Some(reply) = self.command_handler.handle(command) {
+                self.send_reply(&target, &reply).await;
+                return;
+            }
+        }
+        // Last-resort: defer to the generic handler for unknown shapes.
+        // ChoiceOption::agent uses `!agent switch X` which the existing
+        // handle_switch path covers; future ChoiceOption factories
+        // should land here too. Using `handle` keeps it consistent
+        // with the pre-auth command path used elsewhere.
+        if let Some(reply) = self.command_handler.handle(command) {
+            self.send_reply(&target, &reply).await;
+            return;
+        }
+        warn!(
+            identity = %identity_id,
+            command = %command,
+            "Signal: resolved choice command did not match any command_handler branch — dropped"
+        );
+    }
+
     async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
+        // Native-interactive path: when the OutboundMessage carries
+        // ChoiceControls AND we have a ChoiceState attached, register
+        // the pending choices and route through the transport's
+        // send_choice (which Signal overrides to send a native poll).
+        // Falls back to plain text for messages without controls or
+        // when no ChoiceState is configured.
+        if let (Some(state), Some(control)) = (self.choice_state.as_ref(), message.controls.first())
+        {
+            // Multi-control messages aren't natively representable as a
+            // single Signal poll; the trait default text rendering is
+            // safer there. We record only the first control, which is
+            // the same control match_reply will resolve below.
+            //
+            // Key: recipient string. For DMs that's the E.164 phone;
+            // for groups, "group:<id>". The inbound side keys by
+            // msg.reply_target which is the same value.
+            state.record("signal", recipient, message.controls.clone());
+
+            // Build (callback_id, label) pairs. callback_data is the
+            // primary identifier; fall back to label when absent so
+            // the trait default text rendering still numbers + labels.
+            let pairs: Vec<(String, String)> = control
+                .options
+                .iter()
+                .map(|o| {
+                    (
+                        o.callback_data.clone().unwrap_or_else(|| o.label.clone()),
+                        o.label.clone(),
+                    )
+                })
+                .collect();
+            let prompt = if control.title.trim().is_empty() {
+                message.text.as_deref().unwrap_or("").to_string()
+            } else {
+                control.title.clone()
+            };
+            match self.transport.send_choice(recipient, &prompt, &pairs).await {
+                Ok(()) => {
+                    telemetry::reply_sent("signal", recipient, "choice", prompt.len(), 0);
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        recipient = %recipient,
+                        error = %e,
+                        "Signal: send_choice failed, falling back to text"
+                    );
+                    // Fall through to plain text below.
+                }
+            }
+        }
         self.send_reply(recipient, &message.render_text_fallback())
             .await;
     }
@@ -155,6 +277,107 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         telemetry::authorized_message("signal", &identity.id, &from, text.len(), delivery_lag_ms);
 
         let chat_key = format!("signal-{}", identity.id);
+
+        // ── Pending-choice resolution ─────────────────────────────────────
+        //
+        // Two paths:
+        //   1. `[choice]<id-or-title>` sentinel from a native poll vote
+        //      (zeroclawlabs fork's process_envelope emits this when
+        //      pollAnswer arrives over SSE). Resolve to the original
+        //      ChoiceOption via callback_data preferred, label fallback.
+        //   2. Free-text reply ("2", "Librarian") on a pending control.
+        //      Run the matcher; on Match dispatch the option's command.
+        //
+        // We do this BEFORE the command fast-paths so a numeric reply
+        // doesn't get accidentally interpreted by the freeform parser.
+        // Both paths key by reply_target (matches the recipient passed
+        // to record() in send_outbound).
+        if let Some(state) = self.choice_state.as_ref() {
+            if let Some(stripped) = text.strip_prefix(CHOICE_SENTINEL_PREFIX) {
+                if let Some(resolved) = state.resolve_sentinel("signal", &reply_target, stripped) {
+                    info!(
+                        identity = %identity.id,
+                        label = %resolved.label,
+                        "Signal: poll vote resolved via [choice] sentinel"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &resolved.command)
+                        .await;
+                    return;
+                }
+                // Sentinel arrived but no matching pending state (stale
+                // poll, or user deleted-and-replaced the original
+                // control). Drop silently — no useful action available.
+                debug!(
+                    identity = %identity.id,
+                    payload = %stripped,
+                    "Signal: [choice] sentinel with no matching pending state — ignoring"
+                );
+                return;
+            }
+            if let Some(idx_str) = text.strip_prefix(CHOICE_INDEX_SENTINEL_PREFIX) {
+                // Index-fallback sentinel (when signal-cli didn't expand
+                // selectedTitles). Treat the index as a free-text reply
+                // — the matcher's number tier resolves it.
+                let idx_reply = idx_str.trim();
+                let m = state.match_reply("signal", &reply_target, idx_reply);
+                if let ChoiceMatchResult::Match { command, .. } = m {
+                    info!(
+                        identity = %identity.id,
+                        idx = %idx_reply,
+                        "Signal: poll vote resolved via [choice-index] sentinel"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &command)
+                        .await;
+                    return;
+                }
+                // Index sentinel that didn't resolve — drop silently.
+                return;
+            }
+            // Free-text matcher path (text-fallback channels also hit
+            // this via shared trait).
+            match state.match_reply("signal", &reply_target, &text) {
+                ChoiceMatchResult::Match { command, label, .. } => {
+                    info!(
+                        identity = %identity.id,
+                        label = %label,
+                        "Signal: text reply matched pending choice"
+                    );
+                    self.dispatch_resolved_command(&identity.id, &reply_target, &command)
+                        .await;
+                    return;
+                }
+                ChoiceMatchResult::Ambiguous => {
+                    let channel = self.clone();
+                    let target = reply_target.clone();
+                    tokio::spawn(async move {
+                        channel
+                            .send_reply(
+                                &target,
+                                "Multiple options match. Reply with the number, or be more specific.",
+                            )
+                            .await;
+                    });
+                    return;
+                }
+                ChoiceMatchResult::OutOfRange => {
+                    let channel = self.clone();
+                    let target = reply_target.clone();
+                    tokio::spawn(async move {
+                        channel
+                            .send_reply(
+                                &target,
+                                "That number isn't one of the options. Reply with a number from the list, or the option name.",
+                            )
+                            .await;
+                    });
+                    return;
+                }
+                // NoMatch / NoPending / Expired → fall through to normal
+                // command/agent dispatch. The user is sending freeform
+                // input, not selecting from a stale prompt.
+                _ => {}
+            }
+        }
 
         // ── Adversary inbound scan ────────────────────────────────────────
         if self.scan_enabled() {
@@ -549,6 +772,7 @@ pub async fn run(
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
     channel_scanner: Arc<ChannelScanner>,
+    choice_state: Arc<ChoiceState>,
 ) -> Result<()> {
     // Locate the enabled signal channel config block.
     let signal_cfg = config
@@ -605,14 +829,17 @@ pub async fn run(
         ignore_stories,
     ));
 
-    let bridge = Arc::new(SignalChannel::<ZclSignalChannel>::new(
-        config,
-        router,
-        command_handler,
-        context_store,
-        channel_scanner,
-        transport.clone(),
-    ));
+    let bridge = Arc::new(
+        SignalChannel::<ZclSignalChannel>::new(
+            config,
+            router,
+            command_handler,
+            context_store,
+            channel_scanner,
+            transport.clone(),
+        )
+        .with_choice_state(choice_state),
+    );
 
     run_transport_loop(bridge, transport).await
 }
@@ -835,6 +1062,7 @@ mod tests {
             command_handler,
             context_store,
             channel_scanner,
+            Arc::new(ChoiceState::new()),
         )
         .await
         .expect_err("legacy zeroclaw_endpoint must be rejected");
