@@ -69,6 +69,9 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     // Validate cascades and dispatchers
     validate_synthetic_model_groups(config, &mut result);
 
+    // Validate agent alias collisions
+    validate_agent_alias_collisions(config, &mut result);
+
     // Validate proxy configuration if present
     if let Some(ref proxy) = config.proxy {
         validate_proxy_config(proxy, &mut result);
@@ -188,6 +191,37 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
             "codex-cli" | "dirac-cli" => {}
             other => {
                 result.add_error(format!("Agent '{}' has unknown kind '{}'", agent.id, other));
+            }
+        }
+    }
+}
+
+fn validate_agent_alias_collisions(config: &CalciforgeConfig, result: &mut ValidationResult) {
+    let mut name_to_agent: std::collections::HashMap<String, &str> =
+        std::collections::HashMap::new();
+
+    for agent in &config.agents {
+        let id_lower = agent.id.to_lowercase();
+        if let Some(prior) = name_to_agent.get(&id_lower) {
+            if *prior != agent.id {
+                result.add_error(format!(
+                    "Agent ID '{}' collides (case-insensitive) with agent '{}'",
+                    agent.id, prior
+                ));
+            }
+        } else {
+            name_to_agent.insert(id_lower, &agent.id);
+        }
+
+        for alias in &agent.aliases {
+            let alias_lower = alias.to_lowercase();
+            if let Some(prior) = name_to_agent.get(&alias_lower) {
+                result.add_warning(format!(
+                    "Agent '{}' alias '{}' collides (case-insensitive) with '{}' from agent '{}'",
+                    agent.id, alias, alias_lower, prior
+                ));
+            } else {
+                name_to_agent.insert(alias_lower, &agent.id);
             }
         }
     }
@@ -1284,6 +1318,119 @@ matrix_user_id = "@bot:example.com"
                 .iter()
                 .any(|w| w.contains("matrix") && w.contains("ui_mode")),
             "matrix with default auto ui_mode should warn; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn agent_alias_collision_with_another_agent_id_is_warning() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "librarian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8080"
+model = "test"
+aliases = ["custodian"]
+
+[[agents]]
+id = "custodian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8081"
+model = "test"
+
+[[identities]]
+id = "brian"
+
+[[routing]]
+identity = "brian"
+default_agent = "librarian"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        let all_messages: Vec<_> = result.errors.iter().chain(result.warnings.iter()).collect();
+        assert!(
+            all_messages
+                .iter()
+                .any(|m| m.contains("collides") && m.contains("custodian")),
+            "alias 'custodian' should collide with agent id 'custodian'; messages: {:?}",
+            all_messages
+        );
+    }
+
+    #[test]
+    fn agent_alias_collision_between_two_agents_is_warning() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "librarian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8080"
+model = "test"
+aliases = ["helper"]
+
+[[agents]]
+id = "custodian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8081"
+model = "test"
+aliases = ["helper"]
+
+[[identities]]
+id = "brian"
+
+[[routing]]
+identity = "brian"
+default_agent = "librarian"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("collides") && w.contains("helper")),
+            "both agents aliased as 'helper' should warn; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn no_alias_collision_when_aliases_are_unique() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "librarian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8080"
+model = "test"
+aliases = ["lib"]
+
+[[agents]]
+id = "custodian"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:8081"
+model = "test"
+aliases = ["keeper"]
+
+[[identities]]
+id = "brian"
+
+[[routing]]
+identity = "brian"
+default_agent = "librarian"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.warnings.iter().any(|w| w.contains("collides")),
+            "unique aliases should not produce collision warnings; warnings: {:?}",
             result.warnings
         );
     }
