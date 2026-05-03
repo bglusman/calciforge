@@ -98,16 +98,18 @@ impl OutboundMessage {
             }
             for (control_index, control) in self.controls.iter().enumerate() {
                 if control_index > 0 {
-                    rendered.push_str("\n\n");
+                    rendered.push('\n');
                 }
                 if !control.title.trim().is_empty() {
                     rendered.push_str(control.title.trim());
                     rendered.push('\n');
                 }
-                rendered.push_str("(reply with name or number)\n");
-                for (idx, option) in control.options.iter().enumerate() {
-                    rendered.push_str(&format!("{}. ", idx + 1));
+                for option in &control.options {
+                    rendered.push_str("- ");
                     rendered.push_str(option.label.trim());
+                    rendered.push_str(": `");
+                    rendered.push_str(option.command.trim());
+                    rendered.push('`');
                     rendered.push('\n');
                 }
                 if rendered.ends_with('\n') {
@@ -267,9 +269,12 @@ impl ChoiceControl {
             return Match::Ambiguous;
         }
 
-        // Substring match — only if the reply is at least 2 chars to
-        // avoid silly matches on single letters.
-        if normalised_reply.len() >= 2 {
+        // Substring match — only if the reply is at least 2 visible
+        // characters (counted by Unicode scalar) to avoid silly matches
+        // on single letters. `len()` is bytes, which would let a single
+        // multi-byte Unicode glyph through unintentionally; `chars().count()`
+        // is the right semantic here.
+        if normalised_reply.chars().count() >= 2 {
             let substr: Vec<usize> = normalised_options
                 .iter()
                 .enumerate()
@@ -345,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_renders_numbered_options_with_name_or_number_hint() {
+    fn fallback_renders_choice_commands_for_text_only_channels() {
         let msg = OutboundMessage::text("Choose an agent").with_control(ChoiceControl::new(
             "Options",
             vec![
@@ -358,48 +363,12 @@ mod tests {
         assert!(rendered.contains("Choose an agent"));
         assert!(rendered.contains("Options"));
         assert!(
-            rendered.contains("(reply with name or number)"),
-            "fallback must tell the user how to select an option: {rendered}"
+            rendered.contains("- Librarian: `!agent switch librarian`"),
+            "fallback must expose the command users can type: {rendered}"
         );
         assert!(
-            rendered.contains("1. Librarian"),
-            "options must be numbered for selection by index: {rendered}"
-        );
-        assert!(
-            rendered.contains("2. Critic"),
-            "every option must get its own number: {rendered}"
-        );
-        // The underlying command should NOT be exposed in the fallback —
-        // it's an implementation detail. The user picks by name or number;
-        // the channel-side matcher resolves to the command.
-        assert!(
-            !rendered.contains("!agent switch"),
-            "fallback should not leak internal command syntax: {rendered}"
-        );
-    }
-
-    #[test]
-    fn fallback_separates_multiple_choice_controls_with_blank_line() {
-        let msg = OutboundMessage::text("Configure")
-            .with_control(ChoiceControl::new(
-                "Agent",
-                vec![ChoiceOption::agent("Librarian", "librarian")],
-            ))
-            .with_control(ChoiceControl::new(
-                "Model",
-                vec![ChoiceOption::model("Sonnet", "anthropic/claude-sonnet-4.6")],
-            ));
-
-        let rendered = msg.render_text_fallback();
-        // Two separate "(reply with name or number)" hints, one per control,
-        // separated by blank lines so the user can disambiguate.
-        let hints: Vec<_> = rendered
-            .match_indices("(reply with name or number)")
-            .collect();
-        assert_eq!(
-            hints.len(),
-            2,
-            "each control must have its own selection hint: {rendered}"
+            rendered.contains("- Critic: `!agent switch critic`"),
+            "fallback must include every available choice: {rendered}"
         );
     }
 
