@@ -1097,6 +1097,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_agents_command_records_controls_then_numeric_selects() {
+        use crate::choice_state::ChoiceState;
+
+        let transport = Arc::new(MockChannel::new());
+        let choice_state = Arc::new(ChoiceState::new());
+        let bridge = dummy_bridge_with_choice(
+            make_two_agent_config(),
+            transport.clone(),
+            choice_state.clone(),
+        );
+
+        // Send !agents
+        bridge
+            .bridge
+            .clone()
+            .handle_message(ChannelMessage {
+                id: "1".into(),
+                sender: "+15555550100".into(),
+                reply_target: "+15555550100".into(),
+                content: "!agents".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+
+        transport.wait_for_sent_len(1).await;
+        let agents_reply = transport.drain();
+        assert!(
+            !agents_reply.is_empty(),
+            "!agents should produce a response"
+        );
+        assert!(
+            choice_state.pending_len() > 0,
+            "!agents must record choice controls for text-fallback selection"
+        );
+
+        // Reply with "2" to select second agent
+        bridge
+            .bridge
+            .handle_message(ChannelMessage {
+                id: "2".into(),
+                sender: "+15555550100".into(),
+                reply_target: "+15555550100".into(),
+                content: "2".into(),
+                channel: "linq".into(),
+                timestamp: 0,
+                thread_ts: None,
+                interruption_scope_id: None,
+                attachments: vec![],
+            })
+            .await;
+
+        transport.wait_for_sent_len(1).await;
+        let switch_reply = transport.drain();
+        assert_eq!(switch_reply.len(), 1);
+        assert!(
+            switch_reply[0].content.contains("critic"),
+            "selecting option 2 should switch to critic: {}",
+            switch_reply[0].content
+        );
+        assert_eq!(
+            choice_state.pending_len(),
+            0,
+            "pending state should clear after match"
+        );
+    }
+
+    #[tokio::test]
     async fn test_conversation_ids_do_not_share_context_between_agents() {
         let mut config = (*make_test_config()).clone();
         config.agents = vec![
