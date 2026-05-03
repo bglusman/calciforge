@@ -1009,6 +1009,45 @@ async fn check_agent_wiring(
                     check_openclaw_channel_route(agent, report).await;
                 }
             }
+        } else if is_subprocess_agent(agent) {
+            if let Some(command) = agent.command.as_deref() {
+                let binary = command.split_whitespace().next().unwrap_or(command);
+                if binary.contains('/') || binary.contains('\\') {
+                    let path = config::expand_tilde(binary);
+                    if path.exists() {
+                        report.ok(format!(
+                            "agent '{}' ({}) binary exists: {}",
+                            agent.id,
+                            agent.kind,
+                            path.display()
+                        ));
+                    } else {
+                        report.error(format!(
+                            "agent '{}' ({}) binary not found: {}",
+                            agent.id,
+                            agent.kind,
+                            path.display()
+                        ));
+                    }
+                } else {
+                    match which(binary) {
+                        Some(resolved) => {
+                            report.ok(format!(
+                                "agent '{}' ({}) binary found in PATH: {}",
+                                agent.id,
+                                agent.kind,
+                                resolved.display()
+                            ));
+                        }
+                        None => {
+                            report.error(format!(
+                                "agent '{}' ({}) binary '{}' not found in PATH",
+                                agent.id, agent.kind, binary
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1404,7 +1443,70 @@ async fn check_channel_health(
                      no external service to health-check at startup");
             }
             "telegram" => {
-                report.ok("telegram channel: health check not yet implemented");
+                let token_file = match ch.bot_token_file.as_deref() {
+                    Some(path) => path,
+                    None => {
+                        report.error("telegram channel: missing bot_token_file in config");
+                        continue;
+                    }
+                };
+                let token_path = config::expand_tilde(token_file);
+                let token = match std::fs::read_to_string(&token_path) {
+                    Ok(t) => t.trim().to_string(),
+                    Err(e) => {
+                        report.error(format!(
+                            "telegram channel: cannot read bot token from {}: {e}",
+                            token_path.display()
+                        ));
+                        continue;
+                    }
+                };
+                if token.is_empty() {
+                    report.error(format!(
+                        "telegram channel: bot token file is empty: {}",
+                        token_path.display()
+                    ));
+                    continue;
+                }
+                if no_network {
+                    report.ok(format!(
+                        "telegram channel: bot token readable from {}; \
+                         getMe check skipped by --no-network",
+                        token_path.display()
+                    ));
+                    continue;
+                }
+                let getme_url = format!("https://api.telegram.org/bot{}/getMe", token);
+                match timeout(
+                    Duration::from_secs(10),
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_secs(8))
+                        .build()
+                        .unwrap_or_default()
+                        .get(&getme_url)
+                        .send(),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) if resp.status().is_success() => {
+                        report.ok("telegram channel: bot token is valid (getMe succeeded)");
+                    }
+                    Ok(Ok(resp)) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                        report.error("telegram channel: bot token is invalid (getMe returned 401)");
+                    }
+                    Ok(Ok(resp)) => {
+                        report.warn(format!(
+                            "telegram channel: getMe returned unexpected status {}",
+                            resp.status()
+                        ));
+                    }
+                    Ok(Err(e)) => {
+                        report.error(format!("telegram channel: Telegram API unreachable: {e}"));
+                    }
+                    Err(_) => {
+                        report.error("telegram channel: getMe health check timed out");
+                    }
+                }
             }
             "mock" => {
                 report.ok("mock channel: no external dependencies to health-check");
@@ -2132,6 +2234,139 @@ mod tests {
         std::fs::set_permissions(&path, permissions).unwrap();
 
         assert!(is_executable_file(&path));
+    }
+
+    #[test]
+    fn subprocess_agent_reports_missing_binary() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "shell-agent".to_string(),
+            kind: "cli".to_string(),
+            command: Some("/nonexistent/calciforge-test-binary-xyz".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.severity == Severity::Error
+                    && finding.message.contains("shell-agent")
+                    && finding.message.contains("not found")
+            }),
+            "should report missing binary; findings: {:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn subprocess_agent_reports_binary_found_in_path() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "echo-agent".to_string(),
+            kind: "cli".to_string(),
+            command: Some("echo".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.severity == Severity::Ok
+                    && finding.message.contains("echo-agent")
+                    && finding.message.contains("binary found in PATH")
+            }),
+            "should find echo in PATH; findings: {:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn telegram_channel_health_check_reports_missing_token_file() {
+        use crate::config::ChannelConfig;
+        let mut config = base_config();
+        config.channels = vec![ChannelConfig {
+            kind: "telegram".to_string(),
+            enabled: true,
+            bot_token_file: Some("/tmp/nonexistent-calciforge-telegram-token".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_channel_health(&config, true, &mut report));
+
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.severity == Severity::Error
+                    && finding.message.contains("telegram")
+                    && finding.message.contains("cannot read bot token")
+            }),
+            "should report unreadable token file; findings: {:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn telegram_channel_health_check_ok_with_no_network() {
+        use crate::config::ChannelConfig;
+        let mut config = base_config();
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), "test-bot-token").unwrap();
+        config.channels = vec![ChannelConfig {
+            kind: "telegram".to_string(),
+            enabled: true,
+            bot_token_file: Some(tmp.path().to_string_lossy().to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_channel_health(&config, true, &mut report));
+
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.severity == Severity::Ok
+                    && finding.message.contains("telegram")
+                    && finding.message.contains("bot token readable")
+                    && finding.message.contains("--no-network")
+            }),
+            "should report token readable with no-network skip; findings: {:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
