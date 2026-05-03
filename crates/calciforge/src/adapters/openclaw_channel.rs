@@ -1783,4 +1783,68 @@ mod tests {
         let second_err = second_result.expect_err("same startup error should be reused");
         assert!(second_err.to_string().contains("failed to start"));
     }
+
+    #[tokio::test]
+    async fn reply_router_concurrent_take_same_key_only_one_wins() {
+        let router = ReplyRouter::new();
+        let (tx, _rx) = oneshot::channel::<ReplyResult>();
+        router
+            .insert("req-1".to_string(), "session-1".to_string(), tx)
+            .await;
+
+        let r = router.clone();
+        let results = tokio::join!(r.take("req-1"), router.take("req-1"));
+        let wins = [results.0.is_some(), results.1.is_some()]
+            .iter()
+            .filter(|&&w| w)
+            .count();
+        assert_eq!(wins, 1, "exactly one concurrent take should succeed");
+    }
+
+    #[tokio::test]
+    async fn reply_router_concurrent_insert_and_take_different_keys() {
+        let router = ReplyRouter::new();
+
+        let mut handles = Vec::new();
+        for i in 0..20 {
+            let r = router.clone();
+            handles.push(tokio::spawn(async move {
+                let (tx, rx) = oneshot::channel::<ReplyResult>();
+                let req_id = format!("req-{i}");
+                let session = format!("session-{i}");
+                r.insert(req_id.clone(), session, tx).await;
+                let taken = r.take(&req_id).await;
+                assert!(taken.is_some(), "take should succeed for req-{i}");
+                let msg = OutboundMessage::text(format!("reply-{i}"));
+                let _ = taken.unwrap().send(Ok(msg));
+                let result = rx.await.unwrap().unwrap();
+                assert_eq!(result.text.as_deref(), Some(&*format!("reply-{i}")));
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_router_overlapping_sessions_concurrent_takes() {
+        let router = ReplyRouter::new();
+        let (tx1, _rx1) = oneshot::channel::<ReplyResult>();
+        let (tx2, _rx2) = oneshot::channel::<ReplyResult>();
+        let session = "shared-session".to_string();
+
+        router
+            .insert("req-a".to_string(), session.clone(), tx1)
+            .await;
+        router
+            .insert("req-b".to_string(), session.clone(), tx2)
+            .await;
+
+        let r = router.clone();
+        let (a, b) = tokio::join!(r.take("req-a"), router.take("req-b"));
+
+        assert!(a.is_some(), "req-a take should succeed");
+        assert!(b.is_some(), "req-b take should succeed");
+    }
 }

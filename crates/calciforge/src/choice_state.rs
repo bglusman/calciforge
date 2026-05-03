@@ -529,6 +529,140 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_match_same_key_only_one_wins() {
+        use std::sync::{Arc, Barrier};
+        let state = Arc::new(ChoiceState::new());
+        state.record("signal", "alice", vec![ctrl_two()]);
+
+        let barrier = Arc::new(Barrier::new(10));
+        let results: Vec<_> = (0..10)
+            .map(|_| {
+                let s = state.clone();
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    s.match_reply("signal", "alice", "1")
+                })
+            })
+            .collect();
+
+        let outcomes: Vec<_> = results.into_iter().map(|h| h.join().unwrap()).collect();
+        let match_count = outcomes
+            .iter()
+            .filter(|r| matches!(r, ChoiceMatchResult::Match { .. }))
+            .count();
+        assert_eq!(match_count, 1, "exactly one thread should win the match");
+        assert_eq!(state.pending_len(), 0);
+    }
+
+    #[test]
+    fn concurrent_record_overwrites_are_serialized() {
+        use std::sync::{Arc, Barrier};
+        let state = Arc::new(ChoiceState::new());
+        let barrier = Arc::new(Barrier::new(20));
+
+        let handles: Vec<_> = (0..20)
+            .map(|i| {
+                let s = state.clone();
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    let ctrl = ChoiceControl::new(
+                        "Pick",
+                        vec![ChoiceOption::agent(&format!("Agent{i}"), &format!("a{i}"))],
+                    );
+                    s.record("signal", "alice", vec![ctrl]);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(state.pending_len(), 1, "should have exactly one pending");
+        let r = state.match_reply("signal", "alice", "1");
+        assert!(
+            matches!(r, ChoiceMatchResult::Match { .. }),
+            "match should succeed on the last-writer's control"
+        );
+    }
+
+    #[test]
+    fn concurrent_sentinel_and_match_same_key_only_one_wins() {
+        use std::sync::{Arc, Barrier};
+        let state = Arc::new(ChoiceState::new());
+        state.record("signal", "alice", vec![ctrl_two()]);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let s1 = state.clone();
+        let b1 = barrier.clone();
+        let sentinel_thread = std::thread::spawn(move || {
+            b1.wait();
+            s1.resolve_sentinel("signal", "alice", "cf:agent:librarian")
+                .is_some()
+        });
+
+        let s2 = state.clone();
+        let b2 = barrier.clone();
+        let match_thread = std::thread::spawn(move || {
+            b2.wait();
+            matches!(
+                s2.match_reply("signal", "alice", "1"),
+                ChoiceMatchResult::Match { .. }
+            )
+        });
+
+        let sentinel_won = sentinel_thread.join().unwrap();
+        let match_won = match_thread.join().unwrap();
+        assert!(
+            (sentinel_won || match_won) && !(sentinel_won && match_won),
+            "exactly one path should consume the pending state: sentinel={sentinel_won}, match={match_won}"
+        );
+        assert_eq!(state.pending_len(), 0);
+    }
+
+    #[test]
+    fn concurrent_evict_during_match() {
+        use std::sync::{Arc, Barrier};
+        let state = Arc::new(ChoiceState::with_ttl(Duration::from_secs(300)));
+        state.record("signal", "alice", vec![ctrl_two()]);
+        // Inject an expired entry for bob.
+        {
+            let mut map = state.inner.lock().unwrap();
+            map.insert(
+                ("signal".into(), "bob".into()),
+                Pending {
+                    controls: vec![ctrl_two()],
+                    expires_at: Instant::now() - Duration::from_secs(60),
+                },
+            );
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+        let s1 = state.clone();
+        let b1 = barrier.clone();
+        let evict_thread = std::thread::spawn(move || {
+            b1.wait();
+            s1.evict_expired();
+        });
+
+        let s2 = state.clone();
+        let b2 = barrier.clone();
+        let match_thread = std::thread::spawn(move || {
+            b2.wait();
+            s2.match_reply("signal", "alice", "1")
+        });
+
+        evict_thread.join().unwrap();
+        let r = match_thread.join().unwrap();
+        assert!(
+            matches!(r, ChoiceMatchResult::Match { .. }),
+            "alice's match should succeed despite concurrent eviction: {r:?}"
+        );
+        assert_eq!(state.pending_len(), 0, "bob evicted + alice matched");
+    }
+
+    #[test]
     fn resolve_sentinel_prefers_callback_data_over_label() {
         let state = ChoiceState::new();
         // Create a control where one option's label equals another's
