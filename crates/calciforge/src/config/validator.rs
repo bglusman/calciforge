@@ -1090,6 +1090,180 @@ enabled = true
     }
 
     #[test]
+    fn openclaw_native_agent_is_an_error() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "custodian"
+kind = "openclaw-native"
+endpoint = "http://127.0.0.1:18789"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "openclaw-native must fail validation");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("openclaw-native") && e.contains("openclaw-channel")),
+            "error should name the unsupported kind and migration target; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn cli_agent_requires_command() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "shell"
+kind = "cli"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "cli without command must fail");
+        assert!(
+            result.errors.iter().any(|e| e.contains("command")),
+            "error should name missing command; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn unknown_agent_kind_is_an_error() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "mystery"
+kind = "quantum-adapter"
+endpoint = "http://127.0.0.1:1234"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(!result.is_valid(), "unknown agent kind must fail");
+        assert!(
+            result.errors.iter().any(|e| e.contains("quantum-adapter")),
+            "error should name the unknown kind; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn duplicate_synthetic_model_id_across_types_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n\
+            [[alloys]]\nid = \"hybrid\"\nname = \"Hybrid\"\nstrategy = \"weighted\"\nconstituents = [{{ model = \"gpt-4\", weight = 100, context_window = 8192 }}]\n\n\
+            [[cascades]]\nid = \"hybrid\"\nmodels = [{{ model = \"gpt-4\", context_window = 8192 }}]\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "duplicate synthetic model ID across alloy and cascade must fail"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("hybrid")),
+            "error should name the duplicate id; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn enabled_signal_requires_cli_url_and_account() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "signal"
+enabled = true
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "enabled Signal without required fields should fail"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("signal_cli_url")),
+            "error should name signal_cli_url; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("signal_account")),
+            "error should name signal_account; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn disabled_channel_legacy_fields_are_warnings_not_errors() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "whatsapp"
+enabled = false
+webhook_listen = "0.0.0.0:18795"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "disabled channel with legacy fields should warn, not fail; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("WhatsApp") && w.contains("webhook_listen")),
+            "should produce a warning for the legacy field; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn alloy_zero_total_weight_is_an_error() {
+        let fixture = format!(
+            "{MIN_VALID}\n\
+            [[alloys]]\nid = \"bad\"\nname = \"Bad\"\nstrategy = \"weighted\"\n\
+            constituents = [{{ model = \"gpt-4\", weight = 0, context_window = 8192 }}]\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "zero total weight should fail; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn invalid_security_profile_is_an_error() {
+        let fixture = format!("{MIN_VALID}\n[security]\nprofile = \"paranoid\"\n");
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "invalid security profile should fail; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("paranoid")),
+            "error should name the invalid profile; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
     fn text_only_channel_warns_on_auto_ui_mode() {
         let fixture = r#"
 [calciforge]

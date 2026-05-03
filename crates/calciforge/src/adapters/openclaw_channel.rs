@@ -1577,6 +1577,191 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reply_payload_error_field_takes_precedence_over_message() {
+        let payload = ReplyPayload {
+            session_key: "k".to_string(),
+            request_id: None,
+            message: Some("this should be ignored".to_string()),
+            error: Some("plugin crashed".to_string()),
+            attachments: vec![],
+            channel: None,
+            to: None,
+        };
+        let err = payload
+            .into_outbound_message()
+            .expect_err("error field should override message");
+        assert_eq!(err, "plugin crashed");
+    }
+
+    #[tokio::test]
+    async fn reply_payload_whitespace_only_error_is_treated_as_absent() {
+        let payload = ReplyPayload {
+            session_key: "k".to_string(),
+            request_id: None,
+            message: Some("actual reply".to_string()),
+            error: Some("   ".to_string()),
+            attachments: vec![],
+            channel: None,
+            to: None,
+        };
+        let msg = payload
+            .into_outbound_message()
+            .expect("whitespace-only error should be treated as absent");
+        assert_eq!(msg.text.as_deref(), Some("actual reply"));
+    }
+
+    #[tokio::test]
+    async fn reply_payload_whitespace_only_message_becomes_none() {
+        let payload = ReplyPayload {
+            session_key: "k".to_string(),
+            request_id: None,
+            message: Some("  \n  ".to_string()),
+            error: None,
+            attachments: vec![],
+            channel: None,
+            to: None,
+        };
+        let msg = payload
+            .into_outbound_message()
+            .expect("whitespace-only message should succeed");
+        assert!(msg.text.is_none(), "whitespace-only message should be None");
+    }
+
+    #[tokio::test]
+    async fn reply_payload_too_many_attachments_is_rejected() {
+        let attachments: Vec<ReplyAttachmentPayload> = (0..=MAX_REPLY_ATTACHMENTS)
+            .map(|i| ReplyAttachmentPayload {
+                name: Some(format!("file{i}.png")),
+                mime_type: Some("image/png".to_string()),
+                caption: None,
+                data_base64: Some("iVBORw0KGgo=".to_string()),
+            })
+            .collect();
+        let payload = ReplyPayload {
+            session_key: "k".to_string(),
+            request_id: None,
+            message: Some("too many".to_string()),
+            error: None,
+            attachments,
+            channel: None,
+            to: None,
+        };
+        let err = payload
+            .into_outbound_message()
+            .expect_err("should reject excess attachments");
+        assert!(err.contains("limit is"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn reply_payload_no_message_no_attachments_is_valid() {
+        let payload = ReplyPayload {
+            session_key: "k".to_string(),
+            request_id: None,
+            message: None,
+            error: None,
+            attachments: vec![],
+            channel: None,
+            to: None,
+        };
+        let msg = payload
+            .into_outbound_message()
+            .expect("empty reply should be valid");
+        assert!(msg.text.is_none());
+        assert!(msg.attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reply_router_take_removes_both_request_id_and_session_key_entries() {
+        let router = ReplyRouter::new();
+        let (tx, _rx) = oneshot::channel::<ReplyResult>();
+        let session_key = "calciforge:agent:user".to_string();
+        let request_id = "req-1".to_string();
+
+        router
+            .insert(request_id.clone(), session_key.clone(), tx)
+            .await;
+
+        let _ = router
+            .take(&request_id)
+            .await
+            .expect("should find by request_id");
+        assert!(
+            router.take(&session_key).await.is_none(),
+            "session_key entry should also be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn reply_router_remove_cleans_up_all_entries() {
+        let router = ReplyRouter::new();
+        let (tx, _rx) = oneshot::channel::<ReplyResult>();
+        let session_key = "calciforge:agent:user".to_string();
+        let request_id = "req-2".to_string();
+
+        router
+            .insert(request_id.clone(), session_key.clone(), tx)
+            .await;
+        router.remove(&request_id).await;
+
+        assert!(router.take(&request_id).await.is_none());
+        assert!(router.take(&session_key).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn reply_router_session_key_restored_after_overlapping_request_completes() {
+        let router = ReplyRouter::new();
+        let (tx1, _rx1) = oneshot::channel::<ReplyResult>();
+        let (tx2, _rx2) = oneshot::channel::<ReplyResult>();
+        let (tx3, _rx3) = oneshot::channel::<ReplyResult>();
+        let session_key = "calciforge:agent:user".to_string();
+
+        router
+            .insert("req-a".to_string(), session_key.clone(), tx1)
+            .await;
+        router
+            .insert("req-b".to_string(), session_key.clone(), tx2)
+            .await;
+
+        // Session key removed because of overlap
+        assert!(router.take(&session_key).await.is_none());
+
+        // Complete both
+        let _ = router.take("req-a").await;
+        let _ = router.take("req-b").await;
+
+        // New single request should restore session key routing
+        router
+            .insert("req-c".to_string(), session_key.clone(), tx3)
+            .await;
+        assert!(
+            router.take(&session_key).await.is_some(),
+            "session key routing should work again for a single pending request"
+        );
+    }
+
+    #[tokio::test]
+    async fn reply_payload_deserializes_both_camel_and_snake_case_fields() {
+        let json = serde_json::json!({
+            "sessionKey": "k",
+            "requestId": "r",
+            "message": "hello",
+            "attachments": [{
+                "name": "file.png",
+                "mime_type": "image/png",
+                "data_base64": "iVBORw0KGgo="
+            }]
+        });
+        let payload: ReplyPayload =
+            serde_json::from_value(json).expect("snake_case aliases should deserialize");
+        assert_eq!(payload.session_key, "k");
+        assert_eq!(payload.request_id.as_deref(), Some("r"));
+        assert_eq!(
+            payload.attachments[0].mime_type.as_deref(),
+            Some("image/png")
+        );
+    }
+
+    #[tokio::test]
     async fn test_reply_server_startup_error_is_reused_without_hanging() {
         let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let reply_port = listener.local_addr().unwrap().port();
