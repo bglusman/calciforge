@@ -172,11 +172,11 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             return;
         }
         if CommandHandler::is_approve_command(command) || CommandHandler::is_deny_command(command) {
-            // Approve/deny go through the unified handler that the
-            // agent_choice flow uses today; mirror the existing branch
-            // shape rather than re-entering handle_message.
-            if let Some(reply) = self.command_handler.handle(command) {
-                self.send_reply(&target, &reply).await;
+            if let Some((ack, follow_up)) = self.command_handler.handle_async(command).await {
+                self.send_reply(&target, &ack).await;
+                if let Some(resp) = follow_up {
+                    self.send_reply(&target, &resp).await;
+                }
                 return;
             }
         }

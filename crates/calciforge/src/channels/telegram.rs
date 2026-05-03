@@ -186,16 +186,27 @@ fn handle_message_nonblocking(
             let iid = identity.id.clone();
             let bot2 = bot.clone();
             tokio::spawn(async move {
-                let reply = if CommandHandler::is_switch_command(&command) {
-                    cmd_handler.handle_switch(&command, &iid)
+                if CommandHandler::is_switch_command(&command) {
+                    let reply = cmd_handler.handle_switch(&command, &iid);
+                    send_plain_reply(bot2, chat_id, reply, "choice_match").await;
                 } else if CommandHandler::is_model_command(&command) {
-                    cmd_handler.handle_model(&command, &iid)
+                    let reply = cmd_handler.handle_model(&command, &iid);
+                    send_plain_reply(bot2, chat_id, reply, "choice_match").await;
+                } else if CommandHandler::is_approve_command(&command)
+                    || CommandHandler::is_deny_command(&command)
+                {
+                    if let Some((ack, follow_up)) = cmd_handler.handle_async(&command).await {
+                        send_plain_reply(bot2.clone(), chat_id, ack, "choice_approve").await;
+                        if let Some(resp) = follow_up {
+                            send_plain_reply(bot2, chat_id, resp, "approval_follow_up").await;
+                        }
+                    }
                 } else if let Some(r) = cmd_handler.handle(&command) {
-                    r
+                    send_plain_reply(bot2, chat_id, r, "choice_match").await;
                 } else {
-                    format!("Selected: {label}")
-                };
-                send_plain_reply(bot2, chat_id, reply, "choice_match").await;
+                    send_plain_reply(bot2, chat_id, format!("Selected: {label}"), "choice_match")
+                        .await;
+                }
             });
             return;
         }

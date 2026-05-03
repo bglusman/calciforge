@@ -809,23 +809,46 @@ async fn dispatch_resolved_command(
     identity_id: &str,
     command: &str,
 ) {
-    let reply = if CommandHandler::is_switch_command(command) {
-        Some(cmd_handler.handle_switch(command, identity_id))
-    } else if CommandHandler::is_model_command(command) {
-        Some(cmd_handler.handle_model(command, identity_id))
-    } else {
-        cmd_handler.handle(command)
-    };
-    if let Some(text) = reply {
+    if CommandHandler::is_switch_command(command) {
+        let reply = cmd_handler.handle_switch(command, identity_id);
+        if let Err(e) = send_matrix_message(homeserver, http, auth_header, room_id, &reply).await {
+            warn!(error = %e, "Matrix: failed to send resolved choice reply");
+        }
+        return;
+    }
+    if CommandHandler::is_model_command(command) {
+        let reply = cmd_handler.handle_model(command, identity_id);
+        if let Err(e) = send_matrix_message(homeserver, http, auth_header, room_id, &reply).await {
+            warn!(error = %e, "Matrix: failed to send resolved choice reply");
+        }
+        return;
+    }
+    if CommandHandler::is_approve_command(command) || CommandHandler::is_deny_command(command) {
+        if let Some((ack, follow_up)) = cmd_handler.handle_async(command).await {
+            if let Err(e) = send_matrix_message(homeserver, http, auth_header, room_id, &ack).await
+            {
+                warn!(error = %e, "Matrix: failed to send approval ack");
+            }
+            if let Some(resp) = follow_up {
+                if let Err(e) =
+                    send_matrix_message(homeserver, http, auth_header, room_id, &resp).await
+                {
+                    warn!(error = %e, "Matrix: failed to send approval follow-up");
+                }
+            }
+            return;
+        }
+    }
+    if let Some(text) = cmd_handler.handle(command) {
         if let Err(e) = send_matrix_message(homeserver, http, auth_header, room_id, &text).await {
             warn!(error = %e, "Matrix: failed to send resolved choice reply");
         }
-    } else {
-        warn!(
-            command = %command,
-            "Matrix: resolved choice command did not match any handler branch — dropped"
-        );
+        return;
     }
+    warn!(
+        command = %command,
+        "Matrix: resolved choice command did not match any handler branch — dropped"
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

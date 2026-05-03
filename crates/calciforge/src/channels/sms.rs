@@ -126,22 +126,34 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
         reply_target: &str,
         command: &str,
     ) {
-        let reply = if CommandHandler::is_switch_command(command) {
-            Some(self.command_handler.handle_switch(command, identity_id))
-        } else if CommandHandler::is_model_command(command) {
-            Some(self.command_handler.handle_model(command, identity_id))
-        } else {
-            self.command_handler.handle(command)
-        };
-        if let Some(text) = reply {
-            self.send_reply(reply_target, &text).await;
-        } else {
-            warn!(
-                identity = %identity_id,
-                command = %command,
-                "Text/iMessage: resolved choice command did not match any handler branch — dropped"
-            );
+        if CommandHandler::is_switch_command(command) {
+            let reply = self.command_handler.handle_switch(command, identity_id);
+            self.send_reply(reply_target, &reply).await;
+            return;
         }
+        if CommandHandler::is_model_command(command) {
+            let reply = self.command_handler.handle_model(command, identity_id);
+            self.send_reply(reply_target, &reply).await;
+            return;
+        }
+        if CommandHandler::is_approve_command(command) || CommandHandler::is_deny_command(command) {
+            if let Some((ack, follow_up)) = self.command_handler.handle_async(command).await {
+                self.send_reply(reply_target, &ack).await;
+                if let Some(resp) = follow_up {
+                    self.send_reply(reply_target, &resp).await;
+                }
+                return;
+            }
+        }
+        if let Some(reply) = self.command_handler.handle(command) {
+            self.send_reply(reply_target, &reply).await;
+            return;
+        }
+        warn!(
+            identity = %identity_id,
+            command = %command,
+            "Text/iMessage: resolved choice command did not match any handler branch — dropped"
+        );
     }
 
     pub async fn handle_message(self: Arc<Self>, msg: ChannelMessage) {

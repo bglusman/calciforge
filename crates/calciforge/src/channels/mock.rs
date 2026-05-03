@@ -273,6 +273,16 @@ async fn route_mock_message(
             if CommandHandler::is_model_command(&command) {
                 return Ok(state.command_handler.handle_model(&command, &identity_id));
             }
+            if CommandHandler::is_approve_command(&command)
+                || CommandHandler::is_deny_command(&command)
+            {
+                if let Some((ack, follow_up)) = state.command_handler.handle_async(&command).await {
+                    return Ok(match follow_up {
+                        Some(resp) => format!("{ack}\n\n{resp}"),
+                        None => ack,
+                    });
+                }
+            }
             if let Some(reply) = state.command_handler.handle(&command) {
                 return Ok(reply);
             }

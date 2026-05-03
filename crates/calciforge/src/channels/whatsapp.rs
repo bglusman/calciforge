@@ -187,8 +187,11 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             return;
         }
         if CommandHandler::is_approve_command(command) || CommandHandler::is_deny_command(command) {
-            if let Some(reply) = self.command_handler.handle(command) {
-                self.send_reply(&target, &reply).await;
+            if let Some((ack, follow_up)) = self.command_handler.handle_async(command).await {
+                self.send_reply(&target, &ack).await;
+                if let Some(resp) = follow_up {
+                    self.send_reply(&target, &resp).await;
+                }
                 return;
             }
         }
