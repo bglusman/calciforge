@@ -3639,4 +3639,61 @@ OUT"#,
             );
         }
     }
+
+    #[test]
+    fn session_name_rejects_path_traversal_variants() {
+        assert!(!valid_downstream_session_name("../etc/passwd"));
+        assert!(!valid_downstream_session_name("foo/bar"));
+        assert!(!valid_downstream_session_name("foo\\bar"));
+        assert!(!valid_downstream_session_name("a b"));
+        assert!(!valid_downstream_session_name("name\0null"));
+        assert!(!valid_downstream_session_name(""));
+        assert!(!valid_downstream_session_name(&"a".repeat(129)));
+        // ".." is technically valid — it's just dots, which are allowed chars.
+        // Session names are passed to downstream agents as opaque strings,
+        // not used as filesystem paths.
+        assert!(valid_downstream_session_name(".."));
+    }
+
+    #[test]
+    fn session_name_accepts_valid_names() {
+        assert!(valid_downstream_session_name("backend"));
+        assert!(valid_downstream_session_name("my-session"));
+        assert!(valid_downstream_session_name("my_session"));
+        assert!(valid_downstream_session_name("v1.2.3"));
+        assert!(valid_downstream_session_name("A"));
+        assert!(valid_downstream_session_name(&"a".repeat(128)));
+    }
+
+    mod session_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn valid_session_names_contain_no_path_separators(
+                name in "[A-Za-z0-9._-]{1,128}"
+            ) {
+                prop_assert!(valid_downstream_session_name(&name));
+                prop_assert!(!name.contains('/'));
+                prop_assert!(!name.contains('\\'));
+            }
+
+            #[test]
+            fn invalid_chars_always_rejected(
+                prefix in "[a-z]{0,5}",
+                bad_char in prop::sample::select(vec!['/', '\\', ' ', '\t', '\n', '\0', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '=', '+', '{', '}', '[', ']', '|', ';', ':', '\'', '"', '<', '>', ',', '?', '`', '~']),
+                suffix in "[a-z]{0,5}",
+            ) {
+                let name = format!("{prefix}{bad_char}{suffix}");
+                prop_assert!(!valid_downstream_session_name(&name),
+                    "session name with {:?} should be rejected", bad_char);
+            }
+
+            #[test]
+            fn overlong_names_rejected(name in "[a-z]{129,200}") {
+                prop_assert!(!valid_downstream_session_name(&name));
+            }
+        }
+    }
 }
