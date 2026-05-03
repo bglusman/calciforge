@@ -738,6 +738,60 @@ mod tests {
     }
 
     #[test]
+    fn match_reply_negative_number_is_none_not_crash() {
+        let ctrl = agent_options(&[("Librarian", "lib")]);
+        assert_eq!(ctrl.match_reply("-1"), Match::None);
+        assert_eq!(ctrl.match_reply("-999"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_huge_number_is_out_of_range_not_overflow() {
+        let ctrl = agent_options(&[("Librarian", "lib")]);
+        assert_eq!(ctrl.match_reply("99999999999999999999"), Match::None);
+        assert_eq!(ctrl.match_reply("18446744073709551616"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_tabs_and_newlines_only_is_none() {
+        let ctrl = agent_options(&[("Librarian", "lib")]);
+        assert_eq!(ctrl.match_reply("\t\n"), Match::None);
+        assert_eq!(ctrl.match_reply("\r\n  \t"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_unicode_label_matches() {
+        let ctrl = ChoiceControl::new(
+            "Pick",
+            vec![
+                ChoiceOption::new("Ünïcödé Agent", "!agent switch uni"),
+                ChoiceOption::new("日本語エージェント", "!agent switch jp"),
+            ],
+        );
+        assert_eq!(
+            ctrl.match_reply("ünïcödé agent"),
+            Match::One(&ctrl.options[0])
+        );
+        assert_eq!(
+            ctrl.match_reply("日本語エージェント"),
+            Match::One(&ctrl.options[1])
+        );
+    }
+
+    #[test]
+    fn match_reply_single_char_substring_does_not_match() {
+        let ctrl = agent_options(&[("Librarian", "lib"), ("Linguist", "ling")]);
+        assert_eq!(ctrl.match_reply("L"), Match::Ambiguous);
+        assert_eq!(ctrl.match_reply("x"), Match::None);
+    }
+
+    #[test]
+    fn match_reply_very_long_input_is_none() {
+        let ctrl = agent_options(&[("Librarian", "lib")]);
+        let long = "a".repeat(10_000);
+        assert_eq!(ctrl.match_reply(&long), Match::None);
+    }
+
+    #[test]
     fn text_fallback_round_trip_every_option_matchable_by_label() {
         let options = vec![
             ChoiceOption::agent("Librarian", "librarian"),
