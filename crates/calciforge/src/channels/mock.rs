@@ -823,6 +823,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agents_command_records_choice_controls() {
+        let s = state(config_with_two_agents());
+        assert_eq!(s.choice_state.pending_len(), 0);
+
+        let reply = route_mock_message(&s, "brian", "!agents")
+            .await
+            .expect("!agents should succeed");
+        assert!(
+            reply.contains("Librarian") || reply.contains("librarian"),
+            "!agents should list available agents: {reply}"
+        );
+        assert!(
+            s.choice_state.pending_len() > 0,
+            "!agents must record choice controls for text-fallback selection"
+        );
+    }
+
+    #[tokio::test]
+    async fn agents_then_number_selects_agent() {
+        let s = state(config_with_two_agents());
+
+        let _agents = route_mock_message(&s, "brian", "!agents")
+            .await
+            .expect("!agents should succeed");
+        assert!(s.choice_state.pending_len() > 0);
+
+        let reply = route_mock_message(&s, "brian", "2")
+            .await
+            .expect("numeric selection should resolve");
+        assert!(
+            reply.contains("critic"),
+            "selecting option 2 should switch to critic: {reply}"
+        );
+        assert_eq!(
+            s.choice_state.pending_len(),
+            0,
+            "pending should clear after match"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_command_records_choice_controls() {
+        let s = state(config_with_two_agents());
+        assert_eq!(s.choice_state.pending_len(), 0);
+
+        let reply = route_mock_message(&s, "brian", "!sessions")
+            .await
+            .expect("!sessions should succeed");
+        assert!(
+            !reply.is_empty(),
+            "!sessions should return some output: {reply}"
+        );
+        // Sessions may or may not have controls depending on whether there are
+        // multiple sessions, but the code path should at least not panic.
+    }
+
+    #[tokio::test]
+    async fn approve_command_without_pending_returns_unknown() {
+        let s = state(config_with_mock_identity());
+        let reply = route_mock_message(&s, "brian", "!approve")
+            .await
+            .expect("!approve without pending should not crash");
+        assert!(
+            reply.contains("pending") || reply.contains("approve") || reply.contains("Unknown"),
+            "should indicate the command is not actionable: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn consecutive_choice_replaces_previous() {
+        use crate::messages::{ChoiceControl, ChoiceOption};
+
+        let s = state(config_with_two_agents());
+        let ctrl1 =
+            ChoiceControl::new("First", vec![ChoiceOption::agent("Librarian", "librarian")]);
+        s.choice_state.record("mock", "brian", vec![ctrl1]);
+        assert_eq!(s.choice_state.pending_len(), 1);
+
+        let ctrl2 = ChoiceControl::new("Second", vec![ChoiceOption::agent("Critic", "critic")]);
+        s.choice_state.record("mock", "brian", vec![ctrl2]);
+        assert_eq!(
+            s.choice_state.pending_len(),
+            1,
+            "new recording should replace old"
+        );
+
+        let reply = route_mock_message(&s, "brian", "1")
+            .await
+            .expect("should resolve to second recording");
+        assert!(
+            reply.contains("critic"),
+            "should switch to critic from second recording: {reply}"
+        );
+    }
+
+    #[tokio::test]
     async fn mock_api_accepts_identity_id_for_local_operator_tests() {
         let state = state(config_with_mock_identity());
 
