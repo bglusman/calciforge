@@ -1217,6 +1217,7 @@ impl CommandHandler {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
         self.handle_sessions_message(text, identity_id)
             .await

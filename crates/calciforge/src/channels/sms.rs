@@ -249,6 +249,29 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             }
         }
 
+        if let Some(reply) = self
+            .command_handler
+            .agent_choice_message_for_identity(&text, &identity.id)
+        {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            let iid = identity.id.clone();
+            tokio::spawn(async move {
+                channel.send_outbound(&target, &iid, &reply).await;
+            });
+            return;
+        }
+
+        if let Some(reply) = self.command_handler.model_choice_message(&text) {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            let iid = identity.id.clone();
+            tokio::spawn(async move {
+                channel.send_outbound(&target, &iid, &reply).await;
+            });
+            return;
+        }
+
         if let Some(reply) = self.command_handler.handle(&text) {
             debug!(identity = %identity.id, cmd = %text.trim(), "Text/iMessage: handled pre-auth command");
             let channel = self.clone();
@@ -312,12 +335,13 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
         if CommandHandler::is_sessions_command(&text) {
             let reply = self
                 .command_handler
-                .handle_sessions(&text, &identity.id)
+                .handle_sessions_message(&text, &identity.id)
                 .await;
             let channel = self.clone();
             let target = reply_target.clone();
+            let iid = identity.id.clone();
             tokio::spawn(async move {
-                channel.send_reply(&target, &reply).await;
+                channel.send_outbound(&target, &iid, &reply).await;
             });
             return;
         }

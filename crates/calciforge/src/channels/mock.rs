@@ -293,10 +293,20 @@ async fn route_mock_message(
         .command_handler
         .agent_choice_message_for_identity(text, &identity_id)
     {
+        if !reply.controls.is_empty() {
+            state
+                .choice_state
+                .record("mock", &identity_id, reply.controls.clone());
+        }
         return Ok(reply.render_text_fallback());
     }
 
     if let Some(reply) = state.command_handler.model_choice_message(text) {
+        if !reply.controls.is_empty() {
+            state
+                .choice_state
+                .record("mock", &identity_id, reply.controls.clone());
+        }
         return Ok(reply.render_text_fallback());
     }
 
@@ -333,11 +343,16 @@ async fn route_mock_message(
     }
 
     if CommandHandler::is_sessions_command(text) {
-        return Ok(state
+        let reply = state
             .command_handler
             .handle_sessions_message(text, &identity_id)
-            .await
-            .render_text_fallback());
+            .await;
+        if !reply.controls.is_empty() {
+            state
+                .choice_state
+                .record("mock", &identity_id, reply.controls.clone());
+        }
+        return Ok(reply.render_text_fallback());
     }
 
     if CommandHandler::is_default_command(text) {
