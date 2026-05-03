@@ -1,10 +1,16 @@
-//! HTTPS MITM proxy mode built on hudsucker.
+//! HTTPS MITM proxy mode built on hudsucker — the *only* proxy mode in
+//! the security-proxy binary as of 2026-04.
 //!
-//! The existing Axum router remains the default explicit/plain HTTP proxy and
-//! control-plane path. This module is the HTTPS interception path: clients trust
-//! the configured Calciforge CA, send `HTTP_PROXY`/`HTTPS_PROXY` traffic here,
-//! and hudsucker gives Calciforge decrypted HTTP requests/responses to scan and
-//! rewrite before forwarding upstream.
+//! Clients trust the configured Calciforge CA, send `HTTP_PROXY` /
+//! `HTTPS_PROXY` traffic to this listener, and hudsucker hands Calciforge
+//! decrypted HTTP requests/responses to scan and rewrite before forwarding
+//! upstream. Plain-HTTP requests come through the same listener and use
+//! the same pipeline; the local `/health` and `/vault/:secret` control
+//! routes are also served from here so there's a single entry point.
+//!
+//! The legacy axum forward-proxy was deleted in this revision: it could
+//! not inspect HTTPS (returned 400 to CONNECT) so in 2026 it functioned
+//! as silent broken protection. One mode, one audit trail.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -25,7 +31,6 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 use crate::proxy::{self, BodyMode, SecurityProxy};
-use crate::router;
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
@@ -144,7 +149,9 @@ impl CalciforgeMitmHandler {
             Ok(req) => req,
             Err(err) => {
                 warn!("BLOCKED: failed to decode MITM request: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "Failed to decode incoming request: {err}"
+                )));
             }
         };
 
@@ -153,7 +160,10 @@ impl CalciforgeMitmHandler {
             Some(url) => url,
             None => {
                 warn!("BLOCKED: MITM request target is not reconstructable");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(
+                    "Request URL could not be reconstructed; the gateway refuses requests \
+                     it cannot identify a destination for.",
+                ));
             }
         };
         info!("MITM {} {}", method, target_url);
@@ -163,7 +173,10 @@ impl CalciforgeMitmHandler {
             .and_then(|u| u.host_str().map(str::to_owned));
         if url_dest_host.is_none() && target_url.contains("{{secret:") {
             warn!("BLOCKED: MITM URL contains secret ref but host is unparseable");
-            return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+            return RequestOrResponse::Response(mitm_blocked_response(
+                "URL contains a secret reference but the host portion could not be parsed; \
+                 the gateway refuses to substitute secrets without a known destination.",
+            ));
         }
 
         let target_url = match self
@@ -173,6 +186,7 @@ impl CalciforgeMitmHandler {
         {
             Ok(url) => url,
             Err(err) => {
+                // Bland message; the err text contains the secret name.
                 warn!("BLOCKED: MITM URL substitution failed: {err}");
                 return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
             }
@@ -194,13 +208,20 @@ impl CalciforgeMitmHandler {
             Ok(uri) => uri,
             Err(err) => {
                 warn!("BLOCKED: substituted MITM URL is invalid: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "Substituted URL is not a valid URI: {err}"
+                )));
             }
         };
 
         if let Err(err) =
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
         {
+            // Echoing `err` would leak the secret name in the block
+            // page (the resolver/allowlist error includes the literal
+            // ref name). Log details server-side, return a bland
+            // explanation to the caller — same pattern as the original
+            // axum blocked_response.
             warn!("BLOCKED: MITM header substitution failed: {err}");
             return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
         }
@@ -224,6 +245,8 @@ impl CalciforgeMitmHandler {
         {
             Ok(bytes) => bytes,
             Err(err) => {
+                // Bland message; the err text may contain the secret name
+                // (resolver / allowlist failures include the literal ref).
                 warn!("BLOCKED: MITM body substitution failed: {err}");
                 return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
             }
@@ -280,7 +303,9 @@ impl CalciforgeMitmHandler {
             Ok(res) => res,
             Err(err) => {
                 warn!("BLOCKED: failed to decode MITM response: {err}");
-                return mitm_blocked_response("Response rejected");
+                return mitm_blocked_response(&format!(
+                    "Failed to decode upstream response: {err}"
+                ));
             }
         };
 
@@ -330,7 +355,7 @@ impl CalciforgeMitmHandler {
         headers: &header::HeaderMap,
         secret_name: String,
     ) -> Response<MitmBody> {
-        let (status, value) = router::vault_json_response(headers, secret_name).await;
+        let (status, value) = vault_json_response(headers, secret_name).await;
         json_response(status, value)
     }
 }
@@ -468,15 +493,91 @@ fn mitm_body_from_bytes(bytes: Bytes) -> MitmBody {
     MitmBody::from(Full::new(bytes))
 }
 
+/// Build a block response that an LLM agent can read and reason about.
+///
+/// Returns HTTP 200 with an HTML body so that downstream agent tooling that
+/// only checks `response.ok` still surfaces the explanation to the model.
+/// The fetch *succeeded* in the protocol sense; the page content explains
+/// that the operator's security gateway intercepted and refused the request.
+/// Structured signals are also exposed via `X-Calciforge-*` headers so
+/// non-LLM tooling can branch on the block without parsing HTML.
 fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
+    let escaped = html_escape(reason);
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Page blocked by Calciforge security gateway</title></head>\
+         <body>\
+         <h1>Page blocked by Calciforge security gateway</h1>\
+         <p><strong>Reason:</strong> {escaped}</p>\
+         <h2>What this means</h2>\
+         <p>This URL or response was blocked by the operator's security policy. \
+         The original content has not been delivered to the agent. There is no \
+         payload to evaluate; treat this as if the page were unavailable.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>Look for the same information on a different source.</li>\
+         <li>If you specifically need this URL, ask the operator to allowlist it \
+         or to relax the scanner rule that triggered.</li>\
+         <li>Do not attempt to bypass the gateway via another proxy or tool — \
+         every attempt is recorded in the audit log.</li>\
+         </ul>\
+         </body></html>"
+    );
     Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(MitmBody::from(format!(
-            r#"{{"blocked":true,"reason":"{}"}}"#,
-            reason.replace('"', "\\\"")
-        )))
-        .unwrap_or_else(|_| Response::new(MitmBody::from(r#"{"blocked":true}"#)))
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Reason", sanitize_for_header(reason))
+        .body(MitmBody::from(html))
+        .unwrap_or_else(|_| {
+            // Last-resort fallback if the builder above somehow fails (e.g. an
+            // unexpected header value). Plain-text 200 keeps the agent-friendly
+            // shape: still a successful fetch, still a readable explanation.
+            Response::new(MitmBody::from(
+                "Page blocked by Calciforge security gateway.\n",
+            ))
+        })
+}
+
+/// Strip everything that's not safe to put in an HTTP header value.
+///
+/// Per RFC 7230 §3.2, a header value is `*( field-vchar / SP / HTAB )`,
+/// where `field-vchar = VCHAR (printable ASCII, %x21-%x7E)`. Anything
+/// outside that range — control characters (NUL, BEL, ESC, DEL, …),
+/// CR/LF, or any non-ASCII byte — either gets the response builder to
+/// reject the header (and we lose the structured signal entirely) or,
+/// worse, opens up header-injection if a CR/LF sneaks through.
+///
+/// This filter keeps printable ASCII (`0x20-0x7E`) and HTAB (`0x09`),
+/// replacing everything else with a space. That covers NUL/CR/LF, DEL,
+/// every C0/C1 control, and all UTF-8 bytes.
+fn sanitize_for_header(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if cp == 0x09 || (0x20..=0x7E).contains(&cp) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmBody> {
@@ -485,4 +586,103 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
         .header(header::CONTENT_TYPE, "application/json")
         .body(MitmBody::from(value.to_string()))
         .unwrap_or_else(|_| mitm_blocked_response("Failed to build response"))
+}
+
+/// Env var holding the bearer token required to call `/vault/:secret`.
+/// Unset → the vault route returns 503 (refuses to act as an oracle).
+/// This is intentionally separate from any cred-injection token; it
+/// guards the resolve-and-return path that has no other authn.
+pub(crate) const VAULT_TOKEN_ENV: &str = "SECURITY_PROXY_VAULT_TOKEN";
+
+/// Constant-time byte comparison to keep the bearer-token check from
+/// leaking length/prefix information via timing. Std doesn't provide
+/// one; we keep it tiny rather than pull a crate.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Resolve a secret for the `GET /vault/:secret` control-plane route
+/// (now served only by the MITM handler — the plain-HTTP forward proxy
+/// was removed in 2026-04).
+///
+/// Returns the (status, json) tuple for the caller to wrap in the
+/// hudsucker `Response<MitmBody>` envelope. Neither the response body
+/// nor ops logs contain the resolver's raw error text: a verbose error
+/// would name the env vars probed and the vault URL queried, either of
+/// which reveals shape of the secret store to anyone reading logs.
+/// We log the secret *name* at `debug!` so you can correlate requests
+/// to attempts during incident investigation, but the underlying error
+/// stays redacted.
+pub(crate) async fn vault_json_response(
+    headers: &header::HeaderMap,
+    secret_name: String,
+) -> (StatusCode, serde_json::Value) {
+    use tracing::debug;
+
+    // Defense in depth: the binary defaults to binding 127.0.0.1 (see
+    // main.rs), but if an operator opens it up to 0.0.0.0 the vault
+    // route would otherwise be an unauthenticated secret oracle for
+    // anyone on the network. Require a bearer token; if the env var is
+    // unset, refuse to serve the route at all rather than silently
+    // accepting "no token".
+    match std::env::var(VAULT_TOKEN_ENV) {
+        Ok(expected) if !expected.is_empty() => {
+            let provided = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .unwrap_or("");
+            if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+                debug!(secret = %secret_name, "vault auth failed");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    serde_json::json!({"status": "error", "message": "unauthorized"}),
+                );
+            }
+        }
+        _ => {
+            debug!(
+                "vault route called but {} unset; refusing as oracle",
+                VAULT_TOKEN_ENV
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({"status": "error", "message": "vault route disabled"}),
+            );
+        }
+    }
+
+    match secrets_client::vault::get_secret(&secret_name).await {
+        Ok(token) => {
+            debug!(secret = %secret_name, "vault route resolved secret");
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "ok",
+                    "secret": secret_name,
+                    "token": token,
+                }),
+            )
+        }
+        Err(_) => {
+            // Name only; no error text. If you need to debug, enable
+            // `RUST_LOG=secrets_client=debug` to see the underlying
+            // resolver's own debug output.
+            debug!(secret = %secret_name, "vault lookup failed");
+            (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({
+                    "status": "error",
+                    "message": "Secret not found",
+                }),
+            )
+        }
+    }
 }

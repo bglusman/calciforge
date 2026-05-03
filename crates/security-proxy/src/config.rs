@@ -35,8 +35,6 @@ pub struct InjectionReport {
 pub struct GatewayConfig {
     /// Port to listen on (default: 8888; override with SECURITY_PROXY_PORT)
     pub port: u16,
-    /// Whether to perform MITM for HTTPS (requires CA cert trusted by clients)
-    pub mitm_enabled: bool,
     /// Path to CA certificate PEM (for MITM)
     pub ca_cert_path: Option<String>,
     /// Path to CA private key PEM
@@ -82,16 +80,13 @@ pub struct GatewayConfig {
 
 impl Default for GatewayConfig {
     fn default() -> Self {
-        // MITM defaults to DISABLED because the default CA paths are
-        // None; flipping mitm_enabled=true without a CA would fail at
-        // startup (MITM needs a CA to issue leaf certs). The prior
-        // `true` default was the source of a latent bug the test
-        // `default_config_is_self_consistent_for_mitm` now guards
-        // against. Operators who want MITM set mitm=true AND provide
-        // `ca_cert_path` + `ca_key_path`.
+        // CA paths default to None — when unset and the binary is run
+        // standalone, main.rs auto-generates a persistent CA at
+        // /var/lib/calciforge/ca.{pem,key} on first start (rcgen, mode
+        // 0600 on the key). Operators who provision the CA out-of-band
+        // override via SECURITY_PROXY_CA_CERT/_KEY.
         Self {
             port: 8888,
-            mitm_enabled: false,
             ca_cert_path: None,
             ca_key_path: None,
             scan_outbound: true,
@@ -136,15 +131,16 @@ mod tests {
         );
     }
 
-    /// If MITM is enabled but no CA cert/key path is configured, the
-    /// config is non-operational (MITM needs a CA to issue leaf certs).
-    /// The default config must be self-consistent: either mitm=false,
-    /// or both paths are Some. This catches a class of regressions
-    /// where one field is flipped without the other.
+    /// MITM is now the only proxy mode; the binary always needs a CA to
+    /// issue leaf certs at runtime. The default config must keep CA
+    /// paths self-consistent — either both Some or both None — because
+    /// the binary's auto-generation fallback only kicks in when both
+    /// are unset. A half-set config (one path provided, the other
+    /// missing) would race on startup. This test catches that
+    /// regression class.
     #[test]
-    fn default_config_is_self_consistent_for_mitm() {
+    fn default_config_ca_paths_are_self_consistent() {
         let config = GatewayConfig::default();
-        let has_ca = config.ca_cert_path.is_some() && config.ca_key_path.is_some();
         let half_set = config.ca_cert_path.is_some() ^ config.ca_key_path.is_some();
         assert!(
             !half_set,
@@ -152,13 +148,6 @@ mod tests {
              cert={:?} key={:?}",
             config.ca_cert_path, config.ca_key_path
         );
-        if config.mitm_enabled {
-            assert!(
-                has_ca,
-                "mitm_enabled=true requires both ca_cert_path and \
-                 ca_key_path; current default would fail to start"
-            );
-        }
     }
 
     /// Structural JSON roundtrip preserves every field. The previous
@@ -169,7 +158,6 @@ mod tests {
     fn config_roundtrips_through_json_preserving_every_field() {
         let config = GatewayConfig {
             port: 54321,
-            mitm_enabled: false,
             ca_cert_path: Some("/tmp/ca.pem".into()),
             ca_key_path: Some("/tmp/ca.key".into()),
             scan_outbound: false,
