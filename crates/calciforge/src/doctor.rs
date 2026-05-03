@@ -133,6 +133,7 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_install_node_metadata(no_network, &mut report).await;
     check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
     check_agent_wiring(&config, no_network, &mut report).await;
+    check_channel_health(&config, no_network, &mut report).await;
     check_persisted_state(&config, &mut report);
 
     Ok(report)
@@ -1198,6 +1199,229 @@ fn is_equivalent_local_host(endpoint_host: &str, bind_host: &str) -> bool {
         || matches!(bind_host, "0.0.0.0" | "::")
         || matches!(endpoint_host, "localhost" | "127.0.0.1" | "::1")
             && matches!(bind_host, "localhost" | "127.0.0.1" | "::1")
+}
+
+async fn check_channel_health(
+    config: &CalciforgeConfig,
+    no_network: bool,
+    report: &mut DoctorReport,
+) {
+    let enabled_channels: Vec<_> = config
+        .channels
+        .iter()
+        .filter(|c| c.enabled)
+        .collect();
+
+    if enabled_channels.is_empty() {
+        report.warn("no enabled channels configured");
+        return;
+    }
+
+    for ch in &enabled_channels {
+        match ch.kind.as_str() {
+            "signal" => {
+                let url = ch
+                    .signal_cli_url
+                    .as_deref()
+                    .unwrap_or("http://127.0.0.1:8080");
+                if no_network {
+                    report.ok(format!(
+                        "signal channel: signal-cli-rest-api health check skipped by --no-network ({})",
+                        url
+                    ));
+                    continue;
+                }
+                let check_url = format!("{}/api/v1/check", url.trim_end_matches('/'));
+                match timeout(
+                    Duration::from_secs(10),
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_secs(8))
+                        .build()
+                        .unwrap_or_default()
+                        .get(&check_url)
+                        .send(),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) if resp.status().is_success() => {
+                        report.ok(format!(
+                            "signal channel: signal-cli-rest-api is healthy ({})",
+                            check_url
+                        ));
+                    }
+                    Ok(Ok(resp)) => {
+                        report.error(format!(
+                            "signal channel: signal-cli-rest-api returned {} ({})",
+                            resp.status(),
+                            check_url
+                        ));
+                    }
+                    Ok(Err(e)) => {
+                        report.error(format!(
+                            "signal channel: signal-cli-rest-api unreachable at {}: {}",
+                            check_url, e
+                        ));
+                    }
+                    Err(_) => {
+                        report.error(format!(
+                            "signal channel: signal-cli-rest-api health check timed out ({})",
+                            check_url
+                        ));
+                    }
+                }
+            }
+            "sms" => {
+                if no_network {
+                    report.ok("sms channel: Linq API health check skipped by --no-network");
+                    continue;
+                }
+                let api_token = ch
+                    .sms_linq_api_token
+                    .as_deref()
+                    .or(ch.sms_linq_api_token_file.as_deref())
+                    .map(|path| {
+                        if ch.sms_linq_api_token.is_some() {
+                            path.to_string()
+                        } else {
+                            std::fs::read_to_string(config::expand_tilde(path))
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string()
+                        }
+                    })
+                    .unwrap_or_default();
+                if api_token.is_empty() {
+                    report.error("sms channel: no Linq API token configured; cannot health check");
+                    continue;
+                }
+                let check_url = "https://api.linq.chat/v1/phonenumbers";
+                match timeout(
+                    Duration::from_secs(10),
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_secs(8))
+                        .build()
+                        .unwrap_or_default()
+                        .get(check_url)
+                        .bearer_auth(&api_token)
+                        .send(),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) if resp.status().is_success() => {
+                        report.ok("sms channel: Linq API is reachable and authenticated");
+                    }
+                    Ok(Ok(resp)) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                        report.error(
+                            "sms channel: Linq API returned 401 Unauthorized; check sms_linq_api_token",
+                        );
+                    }
+                    Ok(Ok(resp)) => {
+                        report.warn(format!(
+                            "sms channel: Linq API returned unexpected status {}",
+                            resp.status()
+                        ));
+                    }
+                    Ok(Err(e)) => {
+                        report.error(format!(
+                            "sms channel: Linq API unreachable: {e}"
+                        ));
+                    }
+                    Err(_) => {
+                        report.error("sms channel: Linq API health check timed out");
+                    }
+                }
+            }
+            "matrix" => {
+                let homeserver = match ch.homeserver.as_deref() {
+                    Some(hs) => hs.trim_end_matches('/'),
+                    None => {
+                        report.error("matrix channel: missing homeserver in config");
+                        continue;
+                    }
+                };
+                if no_network {
+                    report.ok(format!(
+                        "matrix channel: homeserver health check skipped by --no-network ({})",
+                        homeserver
+                    ));
+                    continue;
+                }
+                let token_file = ch.access_token_file.as_deref().unwrap_or("");
+                let access_token = if token_file.is_empty() {
+                    String::new()
+                } else {
+                    std::fs::read_to_string(config::expand_tilde(token_file))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string()
+                };
+                if access_token.is_empty() {
+                    report.error("matrix channel: no access token available; cannot health check");
+                    continue;
+                }
+                let whoami_url = format!("{}/_matrix/client/v3/account/whoami", homeserver);
+                match timeout(
+                    Duration::from_secs(10),
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_secs(8))
+                        .build()
+                        .unwrap_or_default()
+                        .get(&whoami_url)
+                        .header("Authorization", format!("Bearer {}", access_token))
+                        .send(),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) if resp.status().is_success() => {
+                        report.ok(format!(
+                            "matrix channel: homeserver is reachable and token is valid ({})",
+                            homeserver
+                        ));
+                    }
+                    Ok(Ok(resp)) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                        report.error(format!(
+                            "matrix channel: homeserver returned 401; access token may be expired ({})",
+                            homeserver
+                        ));
+                    }
+                    Ok(Ok(resp)) => {
+                        report.warn(format!(
+                            "matrix channel: homeserver returned {} ({})",
+                            resp.status(),
+                            homeserver
+                        ));
+                    }
+                    Ok(Err(e)) => {
+                        report.error(format!(
+                            "matrix channel: homeserver unreachable at {}: {}",
+                            homeserver, e
+                        ));
+                    }
+                    Err(_) => {
+                        report.error(format!(
+                            "matrix channel: homeserver health check timed out ({})",
+                            homeserver
+                        ));
+                    }
+                }
+            }
+            "whatsapp" => {
+                report.ok(
+                    "whatsapp channel: session-based (WhatsApp Web); \
+                     no external service to health-check at startup"
+                );
+            }
+            "telegram" => {
+                report.ok("telegram channel: health check not yet implemented");
+            }
+            "mock" => {
+                report.ok("mock channel: no external dependencies to health-check");
+            }
+            other => {
+                report.warn(format!("channel kind '{}': unknown, no health check available", other));
+            }
+        }
+    }
 }
 
 fn check_persisted_state(config: &CalciforgeConfig, report: &mut DoctorReport) {
