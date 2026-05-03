@@ -528,19 +528,7 @@ fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header("X-Calciforge-Blocked", "true")
-        .header(
-            "X-Calciforge-Reason",
-            reason
-                .chars()
-                .map(|c| {
-                    if c.is_ascii() && c != '\r' && c != '\n' {
-                        c
-                    } else {
-                        ' '
-                    }
-                })
-                .collect::<String>(),
-        )
+        .header("X-Calciforge-Reason", sanitize_for_header(reason))
         .body(MitmBody::from(html))
         .unwrap_or_else(|_| {
             // Last-resort fallback if the builder above somehow fails (e.g. an
@@ -550,6 +538,31 @@ fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
                 "Page blocked by Calciforge security gateway.\n",
             ))
         })
+}
+
+/// Strip everything that's not safe to put in an HTTP header value.
+///
+/// Per RFC 7230 §3.2, a header value is `*( field-vchar / SP / HTAB )`,
+/// where `field-vchar = VCHAR (printable ASCII, %x21-%x7E)`. Anything
+/// outside that range — control characters (NUL, BEL, ESC, DEL, …),
+/// CR/LF, or any non-ASCII byte — either gets the response builder to
+/// reject the header (and we lose the structured signal entirely) or,
+/// worse, opens up header-injection if a CR/LF sneaks through.
+///
+/// This filter keeps printable ASCII (`0x20-0x7E`) and HTAB (`0x09`),
+/// replacing everything else with a space. That covers NUL/CR/LF, DEL,
+/// every C0/C1 control, and all UTF-8 bytes.
+fn sanitize_for_header(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if cp == 0x09 || (0x20..=0x7E).contains(&cp) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 fn html_escape(s: &str) -> String {

@@ -240,18 +240,37 @@ fn generate_persistent_ca(cert_path: &Path, key_path: &Path) -> anyhow::Result<(
 
     std::fs::write(cert_path, cert.pem())
         .map_err(|e| anyhow::anyhow!("write CA cert {}: {e}", cert_path.display()))?;
-    std::fs::write(key_path, key_pair.serialize_pem())
+
+    // Open the key file with mode 0o600 ATOMICALLY at create time so
+    // there is no window where the file is readable by group/world.
+    // (Previously we wrote then chmod'd; depending on process umask,
+    // another local process could have read the key in between.)
+    write_key_with_restricted_perms(key_path, &key_pair.serialize_pem())
         .map_err(|e| anyhow::anyhow!("write CA key {}: {e}", key_path.display()))?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(key_path)
-            .map_err(|e| anyhow::anyhow!("stat CA key: {e}"))?
-            .permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(key_path, perms)
-            .map_err(|e| anyhow::anyhow!("chmod 600 CA key: {e}"))?;
-    }
     Ok(())
+}
+
+#[cfg(unix)]
+fn write_key_with_restricted_perms(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_key_with_restricted_perms(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    // Non-Unix platforms: best-effort write. Windows ACL handling for
+    // private keys is a separate matter; if/when this ships there, do
+    // the equivalent of CreateFile with restrictive DACLs.
+    std::fs::write(path, contents)
 }
