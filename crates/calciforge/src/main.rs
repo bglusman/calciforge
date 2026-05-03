@@ -409,6 +409,7 @@ async fn main() -> Result<()> {
                 router.clone(),
                 command_handler.clone(),
                 context_store.clone(),
+                choice_state.clone(),
             )
             .await
             .context("Telegram channel error")

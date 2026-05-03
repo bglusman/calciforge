@@ -14,6 +14,7 @@ use crate::sync::Arc;
 
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
+    choice_state::{ChoiceMatchResult, ChoiceState},
     commands::CommandHandler,
     config::{channel_allows_rich_ui, expand_tilde, CalciforgeConfig},
     context::ContextStore,
@@ -29,6 +30,7 @@ pub async fn run(
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    choice_state: Arc<ChoiceState>,
 ) -> Result<()> {
     // Find the Telegram channel config
     let tg_channel = config
@@ -57,6 +59,7 @@ pub async fn run(
     let router_clone = router.clone();
     let cmd_handler_clone = command_handler.clone();
     let ctx_store_clone = context_store.clone();
+    let cs_clone = choice_state.clone();
 
     let callback_config = config.clone();
     let callback_cmd_handler = command_handler.clone();
@@ -67,11 +70,9 @@ pub async fn run(
             let rtr = router_clone.clone();
             let cmd = cmd_handler_clone.clone();
             let ctx = ctx_store_clone.clone();
+            let cs = cs_clone.clone();
             async move {
-                // Dispatch synchronously for commands, spawn for agent calls.
-                // This ensures !commands respond immediately even if a prior
-                // agent dispatch is still running (Teloxide serialises per chat_id).
-                handle_message_nonblocking(bot, msg, cfg, rtr, cmd, ctx);
+                handle_message_nonblocking(bot, msg, cfg, rtr, cmd, ctx, cs);
                 respond(())
             }
         }));
@@ -126,6 +127,7 @@ fn handle_message_nonblocking(
     router: Arc<Router>,
     command_handler: Arc<CommandHandler>,
     context_store: ContextStore,
+    choice_state: Arc<ChoiceState>,
 ) {
     let received_at = std::time::Instant::now();
     let chat_id = msg.chat.id;
@@ -172,6 +174,61 @@ fn handle_message_nonblocking(
     // conversation history even within the same Telegram chat.
     let chat_key = format!("{}-{}", chat_id.0, identity.id);
 
+    // ── Pending-choice resolution (free-text) ────────────────────────────
+    match choice_state.match_reply("telegram", &identity.id, &text) {
+        ChoiceMatchResult::Match { command, label, .. } => {
+            info!(
+                identity = %identity.id,
+                label = %label,
+                "Telegram: text reply matched pending choice"
+            );
+            let cmd_handler = command_handler.clone();
+            let iid = identity.id.clone();
+            let bot2 = bot.clone();
+            tokio::spawn(async move {
+                let reply = if CommandHandler::is_switch_command(&command) {
+                    cmd_handler.handle_switch(&command, &iid)
+                } else if CommandHandler::is_model_command(&command) {
+                    cmd_handler.handle_model(&command, &iid)
+                } else if let Some(r) = cmd_handler.handle(&command) {
+                    r
+                } else {
+                    format!("Selected: {label}")
+                };
+                send_plain_reply(bot2, chat_id, reply, "choice_match").await;
+            });
+            return;
+        }
+        ChoiceMatchResult::Ambiguous => {
+            let bot2 = bot.clone();
+            tokio::spawn(async move {
+                send_plain_reply(
+                    bot2,
+                    chat_id,
+                    "Multiple options match. Reply with the number, or be more specific."
+                        .to_string(),
+                    "choice_ambiguous",
+                )
+                .await;
+            });
+            return;
+        }
+        ChoiceMatchResult::OutOfRange => {
+            let bot2 = bot.clone();
+            tokio::spawn(async move {
+                send_plain_reply(
+                    bot2,
+                    chat_id,
+                    "That number isn't one of the options. Reply with a number from the list, or the option name.".to_string(),
+                    "choice_out_of_range",
+                )
+                .await;
+            });
+            return;
+        }
+        _ => {}
+    }
+
     // -----------------------------------------------------------------------
     // Command fast-path — all handled synchronously, reply spawned immediately.
     // These return before the handler, keeping the Teloxide dispatcher free.
@@ -183,6 +240,9 @@ fn handle_message_nonblocking(
         let reply = command_handler
             .agent_choice_message_for_identity(&text, &identity.id)
             .unwrap_or_else(|| OutboundMessage::text("Configured agents unavailable."));
+        if !reply.controls.is_empty() {
+            choice_state.record("telegram", &identity.id, reply.controls.clone());
+        }
         telemetry::command_reply_ready(
             "telegram",
             &identity.id,
@@ -206,6 +266,9 @@ fn handle_message_nonblocking(
             .unwrap_or_else(|| {
                 OutboundMessage::text("No activatable model choices are configured.")
             });
+        if !reply.controls.is_empty() {
+            choice_state.record("telegram", &identity.id, reply.controls.clone());
+        }
         telemetry::command_reply_ready(
             "telegram",
             &identity.id,
@@ -337,11 +400,15 @@ fn handle_message_nonblocking(
         let bot2 = bot.clone();
         let identity_id = identity.id.clone();
         let command_handler2 = command_handler.clone();
+        let cs = choice_state.clone();
         tokio::spawn(async move {
             let command_start = std::time::Instant::now();
             let reply = command_handler2
                 .handle_sessions_message(&text, &identity_id)
                 .await;
+            if !reply.controls.is_empty() {
+                cs.record("telegram", &identity_id, reply.controls.clone());
+            }
             telemetry::command_reply_ready(
                 "telegram",
                 &identity_id,
@@ -581,6 +648,13 @@ fn handle_message_nonblocking(
             .await
         {
             Ok(response_message) => {
+                if !response_message.controls.is_empty() {
+                    choice_state.record(
+                        "telegram",
+                        &identity.id,
+                        response_message.controls.clone(),
+                    );
+                }
                 let response = response_message.render_text_fallback();
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
                 command_handler.record_dispatch(latency_ms);
@@ -644,6 +718,13 @@ fn handle_message_nonblocking(
                         &req.reason,
                         &req.request_id,
                     );
+                    if !notification.controls.is_empty() {
+                        choice_state.record(
+                            "telegram",
+                            &identity.id,
+                            notification.controls.clone(),
+                        );
+                    }
                     send_choice_reply(
                         bot,
                         chat_id,
