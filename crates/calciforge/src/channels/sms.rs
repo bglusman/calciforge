@@ -526,9 +526,39 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                         .await;
                 }
                 Err(e) => {
-                    warn!(identity = %identity_id, error = %e, "Text/iMessage: agent dispatch failed");
-                    self.send_reply(&reply_target, &format!("Agent error: {e}"))
-                        .await;
+                    if let Some(crate::adapters::AdapterError::ApprovalPending(req)) =
+                        e.downcast_ref::<crate::adapters::AdapterError>()
+                    {
+                        self.command_handler
+                            .register_pending_approval(
+                                crate::adapters::openclaw::PendingApprovalMeta {
+                                    request_id: req.request_id.clone(),
+                                    zeroclaw_endpoint: agent.endpoint.clone(),
+                                    zeroclaw_auth_token: agent
+                                        .auth_token
+                                        .clone()
+                                        .unwrap_or_default(),
+                                    _summary: CommandHandler::approval_request_message(
+                                        &req.command,
+                                        &req.reason,
+                                        &req.request_id,
+                                    )
+                                    .render_text_fallback(),
+                                },
+                            )
+                            .await;
+                        let approval_msg = CommandHandler::approval_request_message(
+                            &req.command,
+                            &req.reason,
+                            &req.request_id,
+                        );
+                        self.send_outbound(&reply_target, &identity_id, &approval_msg)
+                            .await;
+                    } else {
+                        warn!(identity = %identity_id, error = %e, "Text/iMessage: agent dispatch failed");
+                        self.send_reply(&reply_target, &format!("Agent error: {e}"))
+                            .await;
+                    }
                 }
             }
         });
