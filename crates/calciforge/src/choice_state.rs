@@ -27,11 +27,6 @@
 //! replaces any prior pending state; sending a message WITHOUT
 //! controls clears it.
 
-// Wired into per-channel inbound dispatch in the follow-up commit
-// `feat(channels): wire ChoiceState ...`. The `allow(dead_code)`
-// here keeps this commit self-contained — module + tests compile
-// against `-D warnings` even though no production caller exists yet.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -163,6 +158,7 @@ impl ChoiceState {
 
     /// Drop expired entries. Cheap; safe to call from a periodic
     /// maintenance task.
+    #[allow(dead_code)]
     pub fn evict_expired(&self) {
         let now = Instant::now();
         self.inner.lock().unwrap().retain(|_, p| p.expires_at > now);
@@ -170,6 +166,7 @@ impl ChoiceState {
 
     /// Strictly for tests / observability.
     #[doc(hidden)]
+    #[allow(dead_code)]
     pub fn pending_len(&self) -> usize {
         self.inner.lock().unwrap().len()
     }
