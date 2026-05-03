@@ -1116,9 +1116,21 @@ fn run_linux_hardening_pass(
     info!("{}", SHARED_HOST_BANNER);
 
     // 2) Service discovery via `systemctl list-units` + per-unit cat.
-    //    We use `--no-pager --no-legend --plain` so output is stable for parsing.
-    let list_cmd = "systemctl list-units --type=service --state=running --no-legend --no-pager --plain || true";
-    let list_out = deps.ssh.run(&claw.host, key, list_cmd)?;
+    //    Use the same scope (system vs user) we'll restart with later;
+    //    discovering against system-scope when the OpenClaw service is
+    //    user-scope would silently miss the real units. The `--no-pager
+    //    --no-legend --plain` flags keep output stable for parsing.
+    //    Note: NO `|| true` here — if listing fails outright, we want
+    //    to bail loudly, not silently proceed with an empty/partial set.
+    let systemctl_prefix = match service_mode {
+        "user" => "systemctl --user",
+        _ => "systemctl",
+    };
+    let list_cmd = format!(
+        "{} list-units --type=service --state=running --no-legend --no-pager --plain",
+        systemctl_prefix
+    );
+    let list_out = deps.ssh.run(&claw.host, key, &list_cmd)?;
     if !list_out.success {
         bail!(
             "failed to list running services on {}: {}",
@@ -1136,9 +1148,14 @@ fn run_linux_hardening_pass(
             continue;
         }
 
-        // Pull description + ExecStart from `systemctl cat`. May fail for
-        // generated/transient units; we treat that as "skip silently".
-        let cat_cmd = format!("systemctl cat {} 2>/dev/null || true", shell_quote(unit));
+        // Pull description + ExecStart from `systemctl cat` in the same
+        // scope (system vs user) as discovery. May fail for generated/
+        // transient units; we treat that as "skip silently".
+        let cat_cmd = format!(
+            "{} cat {} 2>/dev/null || true",
+            systemctl_prefix,
+            shell_quote(unit)
+        );
         let cat_out = deps.ssh.run(&claw.host, key, &cat_cmd)?;
         let body = cat_out.stdout;
         let description = body
@@ -1167,7 +1184,10 @@ fn run_linux_hardening_pass(
                     configured.push((unit.to_string(), shape));
                     continue;
                 }
-                let dir = format!("/etc/systemd/system/{unit}.d");
+                let dir = match service_mode {
+                    "user" => format!("$HOME/.config/systemd/user/{unit}.d"),
+                    _ => format!("/etc/systemd/system/{unit}.d"),
+                };
                 let path = format!("{dir}/10-calciforge-proxy.conf");
                 let content = render_env_only_dropin(proxy_endpoint, no_proxy)?;
                 deps.ssh
@@ -1191,7 +1211,10 @@ fn run_linux_hardening_pass(
                         unit, claw.host
                     );
                 }
-                let dir = format!("/etc/systemd/system/{unit}.d");
+                let dir = match service_mode {
+                    "user" => format!("$HOME/.config/systemd/user/{unit}.d"),
+                    _ => format!("/etc/systemd/system/{unit}.d"),
+                };
                 let path = format!("{dir}/10-calciforge-proxy.conf");
                 let content = render_exec_start_override(&exec_start, proxy_endpoint, no_proxy);
                 deps.ssh
@@ -1232,11 +1255,18 @@ fn run_linux_hardening_pass(
         .run(&claw.host, key, PackageManager::PROBE_COMMAND)?;
     let pm = PackageManager::parse(&pm_probe.stdout)?;
 
-    // System CA bundle: copy + refresh.
+    // System CA bundle: copy + refresh, using per-distro anchor dir.
+    // Hardcoding /usr/local/share/ca-certificates/ broke RHEL/Fedora/Arch
+    // where the trust-anchor directory is elsewhere and the cert was
+    // never picked up by the refresh tool.
     let install_system_ca = format!(
-        "sudo -n cp {} /usr/local/share/ca-certificates/calciforge-ca.crt && sudo -n {}",
-        ca_remote,
-        pm.update_ca_certificates(),
+        "sudo -n mkdir -p {anchor} && \
+         sudo -n cp {ca} {anchor}/{file} && \
+         sudo -n {refresh}",
+        anchor = pm.system_ca_anchor_dir(),
+        file = pm.ca_anchor_filename(),
+        ca = ca_remote,
+        refresh = pm.update_ca_certificates(),
     );
     let sys_ca_out = deps.ssh.run(&claw.host, key, &install_system_ca)?;
     if !sys_ca_out.success {
@@ -1285,10 +1315,8 @@ fn run_linux_hardening_pass(
         }
     }
 
-    let systemctl_prefix = match service_mode {
-        "user" => "systemctl --user",
-        _ => "systemctl",
-    };
+    // (systemctl_prefix already chosen at top of function for discovery
+    //  consistency — same scope all the way through)
     let _ = deps.ssh.run(
         &claw.host,
         key,
@@ -1344,9 +1372,12 @@ fn run_linux_hardening_pass(
         .linux_hardening_verify_url
         .as_deref()
         .unwrap_or(DEFAULT_VERIFY_URL);
+    // Per-distro CA bundle path so verification doesn't fail on RHEL/
+    // Fedora hosts where the bundle isn't at the Debian-default path.
     let verify_cmd = format!(
-        "curl --max-time 10 -sS -i -x {} --cacert /etc/ssl/certs/ca-certificates.crt {} 2>&1 || true",
+        "curl --max-time 10 -sS -i -x {} --cacert {} {} 2>&1 || true",
         shell_quote(proxy_endpoint),
+        shell_quote(pm.system_ca_bundle_path()),
         shell_quote(verify_url),
     );
     let verify_out = deps.ssh.run(&claw.host, key, &verify_cmd)?;

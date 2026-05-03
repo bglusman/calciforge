@@ -143,9 +143,17 @@ pub fn classify_service(
         ));
     }
 
-    // *claw* in description (case-insensitive).
-    if desc_lc.contains("claw") || name_lc.contains("claw") {
-        return Some((DropInShape::EnvOnly, "claw description match".into()));
+    // `*claw*` substring in the unit name OR description (case-
+    // insensitive). The intent is to catch claw-family agent services
+    // even when their Description= line is empty or doesn't follow a
+    // convention (which is common — most users pick a unit name and
+    // skip the description). Reason string mirrors which side hit so
+    // it's debuggable in logs.
+    if name_lc.contains("claw") {
+        return Some((DropInShape::EnvOnly, "claw in unit name".into()));
+    }
+    if desc_lc.contains("claw") {
+        return Some((DropInShape::EnvOnly, "claw in description".into()));
     }
 
     // node ExecStart with OPENCLAW_* env hint.
@@ -304,6 +312,8 @@ pub fn render_exec_start_override(
     no_proxy: &str,
 ) -> String {
     let rewritten = inject_proxy_server(exec_start, proxy_endpoint);
+    let proxy_q = systemd_environment_value(proxy_endpoint);
+    let no_proxy_q = systemd_environment_value(no_proxy);
     format!(
         "# Managed by calciforge install. Forces this service to route all\n\
          # traffic through the local Calciforge MITM proxy. Chrome on Linux in\n\
@@ -318,10 +328,30 @@ pub fn render_exec_start_override(
          Environment=\"NODE_USE_SYSTEM_CA=1\"\n\
          ExecStart=\n\
          ExecStart={rewritten}\n",
-        proxy = proxy_endpoint,
-        no_proxy = no_proxy,
+        proxy = proxy_q,
+        no_proxy = no_proxy_q,
         rewritten = rewritten,
     )
+}
+
+/// Escape a value for use inside a quoted systemd `Environment="..."`
+/// line. Per systemd.exec(5) and systemd-escape(1), the quoted form
+/// must escape `\` and `"`. Other characters survive verbatim.
+///
+/// Without this, an `endpoint` (or `no_proxy` list) carrying a quote
+/// or backslash would terminate the quoted string early and produce a
+/// malformed drop-in — at best the unit fails to start, at worst the
+/// rest of the value is interpreted as systemd directive syntax.
+fn systemd_environment_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -423,20 +453,56 @@ impl PackageManager {
     }
 
     /// Refresh-system-CA-bundle command after dropping a cert into
-    /// `/usr/local/share/ca-certificates/`.
+    /// the per-distro CA anchor directory (see `system_ca_anchor_dir`).
     pub fn update_ca_certificates(&self) -> &'static str {
         match self {
-            // Debian/Ubuntu: update-ca-certificates picks up
-            // /usr/local/share/ca-certificates/*.crt
             Self::Apt => "update-ca-certificates",
-            // RHEL/Fedora/Arch: update-ca-trust(8) and update-ca-certificates(8)
-            // both exist in different distros; we try the common ones in order.
-            Self::Dnf | Self::Yum => {
-                "if command -v update-ca-trust >/dev/null 2>&1; then update-ca-trust extract; \
-                 else update-ca-certificates; fi"
-            }
+            Self::Dnf | Self::Yum => "update-ca-trust extract",
             Self::Pacman => "trust extract-compat || update-ca-trust extract",
         }
+    }
+
+    /// Per-distro directory where operator-supplied CA certs live BEFORE
+    /// the refresh command above is run. Each distro/package-manager has
+    /// its own canonical "anchors" location; dropping certs into the
+    /// wrong dir means the trust store never picks them up.
+    pub fn system_ca_anchor_dir(&self) -> &'static str {
+        match self {
+            // Debian/Ubuntu: update-ca-certificates picks up `*.crt`
+            // from /usr/local/share/ca-certificates/.
+            Self::Apt => "/usr/local/share/ca-certificates",
+            // RHEL/Fedora: update-ca-trust(8) reads from
+            // /etc/pki/ca-trust/source/anchors/.
+            Self::Dnf | Self::Yum => "/etc/pki/ca-trust/source/anchors",
+            // Arch: ca-certificates-utils provides update-ca-trust which
+            // reads from /etc/ca-certificates/trust-source/anchors/.
+            Self::Pacman => "/etc/ca-certificates/trust-source/anchors",
+        }
+    }
+
+    /// Per-distro path of the merged trust-store bundle that tools like
+    /// `curl --cacert` accept. Used by the post-install verification step
+    /// so we don't hardcode the Debian path on Fedora hosts (where the
+    /// merged bundle lives at `/etc/pki/tls/certs/ca-bundle.crt`).
+    pub fn system_ca_bundle_path(&self) -> &'static str {
+        match self {
+            Self::Apt => "/etc/ssl/certs/ca-certificates.crt",
+            // RHEL/Fedora ship a symlinked bundle at this path; the
+            // /etc/ssl/certs/ca-bundle.crt symlink exists too on most
+            // installs, but `/etc/pki/tls/certs/ca-bundle.crt` is the
+            // canonical one.
+            Self::Dnf | Self::Yum => "/etc/pki/tls/certs/ca-bundle.crt",
+            // Arch: ca-certificates package places the merged bundle here.
+            Self::Pacman => "/etc/ssl/certs/ca-certificates.crt",
+        }
+    }
+
+    /// Per-distro filename (not path) for the dropped cert. Most distros
+    /// expect `*.crt`; Pacman/RHEL take `*.pem` too. We standardise on
+    /// `.crt` since update-ca-certificates(Debian) requires it; the
+    /// other distros accept either.
+    pub fn ca_anchor_filename(&self) -> &'static str {
+        "calciforge-ca.crt"
     }
 }
 

@@ -749,6 +749,69 @@ mod tests {
         let _ = result; // success or failure both acceptable at parse layer
     }
 
+    // ── Linux hardening fields ──────────────────────────────────────────────
+
+    #[test]
+    fn spec_linux_hardening_truthy_values() {
+        for truthy in &["true", "1", "yes"] {
+            let spec =
+                format!("name=x,adapter=openai-compat,endpoint=http://h/,linux_hardening={truthy}");
+            let claw = parse_claw_spec(&spec).unwrap();
+            assert!(
+                claw.linux_hardening,
+                "expected linux_hardening=true for value {truthy:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_linux_hardening_defaults_to_false_when_absent() {
+        let spec = "name=x,adapter=openai-compat,endpoint=http://h/";
+        let claw = parse_claw_spec(spec).unwrap();
+        assert!(!claw.linux_hardening);
+        assert!(claw.linux_hardening_extras.is_empty());
+        assert!(claw.linux_hardening_verify_url.is_none());
+    }
+
+    #[test]
+    fn spec_linux_hardening_falsy_values_stay_false() {
+        // Anything not in the truthy set ("true"|"1"|"yes") parses to false.
+        for falsy in &["false", "0", "no", "off", "FALSE", ""] {
+            let spec =
+                format!("name=x,adapter=openai-compat,endpoint=http://h/,linux_hardening={falsy}");
+            let claw = parse_claw_spec(&spec).unwrap();
+            assert!(
+                !claw.linux_hardening,
+                "expected linux_hardening=false for value {falsy:?}; \
+                 only true/1/yes turn it on"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_linux_hardening_extras_split_and_trim() {
+        let spec = "name=x,adapter=openai-compat,endpoint=http://h/,\
+                    linux_hardening_extras= chrome-cdp ; cdp-guard ;; gnomish ";
+        let claw = parse_claw_spec(spec).unwrap();
+        // Empty entries (the `;;`) get filtered; surrounding whitespace
+        // gets trimmed.
+        assert_eq!(
+            claw.linux_hardening_extras,
+            vec!["chrome-cdp", "cdp-guard", "gnomish"],
+        );
+    }
+
+    #[test]
+    fn spec_linux_hardening_verify_url_passthrough() {
+        let spec = "name=x,adapter=openai-compat,endpoint=http://h/,\
+                    linux_hardening_verify_url=https://canary.internal/blocked";
+        let claw = parse_claw_spec(spec).unwrap();
+        assert_eq!(
+            claw.linux_hardening_verify_url.as_deref(),
+            Some("https://canary.internal/blocked"),
+        );
+    }
+
     /// The `=` inside a URL query string should not split the key.
     #[test]
     fn spec_endpoint_with_embedded_equals() {
