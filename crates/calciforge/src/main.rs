@@ -6,6 +6,7 @@
 #![recursion_limit = "512"]
 
 mod adapters;
+mod agent_kinds;
 mod artifacts;
 mod auth;
 mod channels;

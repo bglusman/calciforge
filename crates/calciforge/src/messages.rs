@@ -104,8 +104,9 @@ impl OutboundMessage {
                     rendered.push_str(control.title.trim());
                     rendered.push('\n');
                 }
-                for option in &control.options {
-                    rendered.push_str("- ");
+                for (option_index, option) in control.options.iter().enumerate() {
+                    rendered.push_str(&(option_index + 1).to_string());
+                    rendered.push_str(". ");
                     rendered.push_str(option.label.trim());
                     rendered.push_str(": `");
                     rendered.push_str(option.command.trim());
@@ -199,7 +200,6 @@ impl ChoiceOption {
     }
 }
 
-#[allow(dead_code)] // wired into per-channel inbound matchers in a follow-up PR
 impl ChoiceControl {
     /// Try to resolve a free-text user reply to one of this control's options.
     ///
@@ -310,7 +310,6 @@ pub enum Match<'a> {
     None,
 }
 
-#[allow(dead_code)] // used by ChoiceControl::match_reply, public-pending
 fn normalize_for_match(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric() || c.is_whitespace())
@@ -363,11 +362,11 @@ mod tests {
         assert!(rendered.contains("Choose an agent"));
         assert!(rendered.contains("Options"));
         assert!(
-            rendered.contains("- Librarian: `!agent switch librarian`"),
-            "fallback must expose the command users can type: {rendered}"
+            rendered.contains("1. Librarian: `!agent switch librarian`"),
+            "fallback must expose a numbered command users can type or choose: {rendered}"
         );
         assert!(
-            rendered.contains("- Critic: `!agent switch critic`"),
+            rendered.contains("2. Critic: `!agent switch critic`"),
             "fallback must include every available choice: {rendered}"
         );
     }

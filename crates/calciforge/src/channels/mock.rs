@@ -258,71 +258,88 @@ async fn route_mock_message(
     })?;
     let identity_id = identity.id;
     let chat_key = format!("mock-{}-{}", sender, identity_id);
+    let text = match state
+        .command_handler
+        .resolve_pending_choice_reply(&identity_id, text)
+    {
+        Some(crate::commands::PendingChoiceReply::Command(command)) => command,
+        Some(crate::commands::PendingChoiceReply::Reply(reply)) => return Ok(reply),
+        None => text.to_string(),
+    };
 
     if let Some(reply) = state
         .command_handler
-        .agent_choice_message_for_identity(text, &identity_id)
+        .agent_choice_message_for_identity(&text, &identity_id)
     {
+        state
+            .command_handler
+            .record_pending_choices(&identity_id, &reply);
         return Ok(reply.render_text_fallback());
     }
 
-    if let Some(reply) = state.command_handler.model_choice_message(text) {
+    if let Some(reply) = state.command_handler.model_choice_message(&text) {
+        state
+            .command_handler
+            .record_pending_choices(&identity_id, &reply);
         return Ok(reply.render_text_fallback());
     }
 
-    if let Some(reply) = state.command_handler.handle(text) {
+    if let Some(reply) = state.command_handler.handle(&text) {
         return Ok(reply);
     }
 
-    if CommandHandler::is_command(text)
-        && !CommandHandler::is_status_command(text)
-        && !CommandHandler::is_switch_command(text)
-        && !CommandHandler::is_default_command(text)
-        && !CommandHandler::is_sessions_command(text)
-        && !CommandHandler::is_model_command(text)
-        && !CommandHandler::is_secure_command(text)
-        && !CommandHandler::is_approve_command(text)
-        && !CommandHandler::is_deny_command(text)
+    if CommandHandler::is_command(&text)
+        && !CommandHandler::is_status_command(&text)
+        && !CommandHandler::is_switch_command(&text)
+        && !CommandHandler::is_default_command(&text)
+        && !CommandHandler::is_sessions_command(&text)
+        && !CommandHandler::is_model_command(&text)
+        && !CommandHandler::is_secure_command(&text)
+        && !CommandHandler::is_approve_command(&text)
+        && !CommandHandler::is_deny_command(&text)
     {
-        return Ok(state.command_handler.unknown_command(text));
+        return Ok(state.command_handler.unknown_command(&text));
     }
 
-    if CommandHandler::is_status_command(text) {
+    if CommandHandler::is_status_command(&text) {
         return Ok(state
             .command_handler
             .cmd_status_for_identity(&identity_id)
             .await);
     }
 
-    if CommandHandler::is_switch_command(text) {
-        return Ok(state.command_handler.handle_switch(text, &identity_id));
+    if CommandHandler::is_switch_command(&text) {
+        return Ok(state.command_handler.handle_switch(&text, &identity_id));
     }
 
-    if CommandHandler::is_model_command(text) {
-        return Ok(state.command_handler.handle_model(text, &identity_id));
+    if CommandHandler::is_model_command(&text) {
+        return Ok(state.command_handler.handle_model(&text, &identity_id));
     }
 
-    if CommandHandler::is_sessions_command(text) {
-        return Ok(state
+    if CommandHandler::is_sessions_command(&text) {
+        let reply = state
             .command_handler
-            .handle_sessions_message(text, &identity_id)
-            .await
-            .render_text_fallback());
+            .handle_sessions_message(&text, &identity_id)
+            .await;
+        state
+            .command_handler
+            .record_pending_choices(&identity_id, &reply);
+        return Ok(reply.render_text_fallback());
     }
 
-    if CommandHandler::is_default_command(text) {
+    if CommandHandler::is_default_command(&text) {
         return Ok(state.command_handler.handle_default(&identity_id));
     }
 
-    if CommandHandler::is_secure_command(text) {
-        if CommandHandler::is_secure_set_command(text)
+    if CommandHandler::is_secure_command(&text) {
+        if CommandHandler::is_secure_set_command(&text)
             && !crate::config::channel_allows_chat_secret_set(&state.config, "mock")
         {
             return Ok(CommandHandler::secure_set_disabled_reply("Mock"));
         }
         return Ok(state
             .command_handler
-            .handle_secure(text, &identity_id)
+            .handle_secure(&text, &identity_id)
             .await);
     }
 
@@ -331,14 +348,14 @@ async fn route_mock_message(
         return Ok("Conversation context cleared.".to_string());
     }
 
-    if CommandHandler::is_approve_command(text) || CommandHandler::is_deny_command(text) {
-        if let Some((ack, follow_up)) = state.command_handler.handle_async(text).await {
+    if CommandHandler::is_approve_command(&text) || CommandHandler::is_deny_command(&text) {
+        if let Some((ack, follow_up)) = state.command_handler.handle_async(&text).await {
             return Ok(match follow_up {
                 Some(follow_up) => format!("{ack}\n\n{follow_up}"),
                 None => ack,
             });
         }
-        return Ok(state.command_handler.unknown_command(text));
+        return Ok(state.command_handler.unknown_command(&text));
     }
 
     let agent_id = state
@@ -360,7 +377,7 @@ async fn route_mock_message(
     let augmented = state.context_store.augment_message_with_options(
         &chat_key,
         &agent_id,
-        text,
+        &text,
         preserve_native_commands,
     );
     let model_override = state
@@ -394,7 +411,7 @@ async fn route_mock_message(
             state.context_store.push_with_options(
                 &chat_key,
                 &sender_label,
-                text,
+                &text,
                 &agent_id,
                 &response,
                 preserve_native_commands,
@@ -505,11 +522,11 @@ mod tests {
                 }],
                 role: Some("owner".to_string()),
             }],
-            agents: vec![agent("echo")],
+            agents: vec![agent("echo"), agent("other")],
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
                 default_agent: "echo".to_string(),
-                allowed_agents: vec!["echo".to_string()],
+                allowed_agents: vec!["echo".to_string(), "other".to_string()],
             }],
             alloys: vec![],
             cascades: vec![],
@@ -584,5 +601,50 @@ mod tests {
             response.contains("active agent: echo"),
             "status should be evaluated with brian's routing context: {response}"
         );
+    }
+
+    #[tokio::test]
+    async fn mock_api_resolves_numbered_choice_then_clears_state() {
+        let state = state(config_with_mock_identity());
+
+        let choices = route_mock_message(&state, "mock-brian", "!agents")
+            .await
+            .expect("agent list should render choices");
+        assert!(choices.contains("1. echo"), "{choices}");
+        assert!(choices.contains("2. other"), "{choices}");
+
+        let switched = route_mock_message(&state, "mock-brian", "2")
+            .await
+            .expect("numeric choice should resolve");
+        assert!(
+            switched.contains("Switched to other"),
+            "numeric reply should execute the matching command: {switched}"
+        );
+
+        let later_number = route_mock_message(&state, "mock-brian", "1")
+            .await
+            .expect("stale numeric reply should route normally");
+        assert_eq!(
+            later_number, "1",
+            "choice state should clear after the first match"
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_api_nonmatching_choice_reply_clears_and_routes_normally() {
+        let state = state(config_with_mock_identity());
+
+        route_mock_message(&state, "mock-brian", "!agents")
+            .await
+            .expect("agent list should render choices");
+        let freeform = route_mock_message(&state, "mock-brian", "hello instead")
+            .await
+            .expect("nonmatching reply should fall through");
+        assert_eq!(freeform, "hello instead");
+
+        let later_number = route_mock_message(&state, "mock-brian", "1")
+            .await
+            .expect("stale numeric reply should route normally");
+        assert_eq!(later_number, "1");
     }
 }

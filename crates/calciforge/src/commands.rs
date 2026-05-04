@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -25,8 +25,10 @@ use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
 use crate::config::{calciforge_config_home, CalciforgeConfig};
-use crate::messages::{ChoiceControl, ChoiceOption, OutboundMessage};
+use crate::messages::{ChoiceControl, ChoiceOption, Match, OutboundMessage};
 use crate::providers::alloy::AlloyManager;
+
+const PENDING_CHOICE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// Default state directory: `~/.config/calciforge/state/`.
 fn default_state_dir() -> PathBuf {
@@ -69,6 +71,12 @@ pub enum AgentChoiceError {
         identity_id: String,
         unknown_agents: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingChoiceReply {
+    Command(String),
+    Reply(String),
 }
 
 impl fmt::Display for AgentChoiceError {
@@ -232,6 +240,12 @@ pub struct CommandHandler {
     /// Per-identity, per-agent active downstream session selection.
     /// Persisted to `state_dir/active-agent-sessions.json`.
     active_sessions: Mutex<HashMap<String, HashMap<String, String>>>,
+    /// Per-identity pending text fallback choice.
+    ///
+    /// This lets text-only channels accept "1", "2", or a label after a
+    /// numbered choice list. It is intentionally short-lived and clears on any
+    /// nonmatching reply so a later stray number cannot activate stale UI.
+    pending_choices: Mutex<HashMap<String, PendingChoice>>,
     /// Directory for persisted state files.
     /// Defaults to `~/.config/calciforge/state/`; overridable for tests via
     /// [`CommandHandler::with_state_dir`].
@@ -247,6 +261,12 @@ pub struct CommandHandler {
     /// Local model lifecycle manager. When set, `!model <local-id>` triggers a
     /// local model switch (unload current, load new mlx_lm.server process).
     local_manager: Option<crate::sync::Arc<crate::local_model::LocalModelManager>>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingChoice {
+    controls: Vec<ChoiceControl>,
+    expires_at: Instant,
 }
 
 impl CommandHandler {
@@ -296,6 +316,7 @@ impl CommandHandler {
             active_agents: Mutex::new(active_agents),
             active_models: Mutex::new(active_models),
             active_sessions: Mutex::new(active_sessions),
+            pending_choices: Mutex::new(HashMap::new()),
             state_dir,
             pending_approvals: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             http_client,
@@ -587,6 +608,70 @@ impl CommandHandler {
         map.get(identity_id)
             .and_then(|sessions| sessions.get(agent_id))
             .cloned()
+    }
+
+    /// Remember the latest discrete choice sent to an identity.
+    ///
+    /// Channels call this immediately before/after sending an outbound message
+    /// with controls. The next matching text reply can be converted back into
+    /// the underlying command even on channels without native buttons.
+    pub fn record_pending_choices(&self, identity_id: &str, message: &OutboundMessage) {
+        if message.controls.is_empty() {
+            return;
+        }
+
+        let pending = PendingChoice {
+            controls: message.controls.clone(),
+            expires_at: Instant::now() + PENDING_CHOICE_TTL,
+        };
+        self.pending_choices
+            .lock()
+            .unwrap()
+            .insert(identity_id.to_string(), pending);
+    }
+
+    /// Resolve a text fallback choice reply into the command it represents.
+    ///
+    /// A successful match clears the pending choice and returns the command.
+    /// A nonmatching reply also clears the pending choice and returns `None`,
+    /// allowing normal message routing to continue. That fail-open-to-chat
+    /// behavior avoids a stale pending list causing a future stray number to
+    /// activate an old choice.
+    pub fn resolve_pending_choice_reply(
+        &self,
+        identity_id: &str,
+        text: &str,
+    ) -> Option<PendingChoiceReply> {
+        let pending = {
+            let mut pending = self.pending_choices.lock().unwrap();
+            let choice = pending.get(identity_id).cloned()?;
+            if Instant::now() >= choice.expires_at {
+                pending.remove(identity_id);
+                return None;
+            }
+            choice
+        };
+
+        let mut saw_numeric_attempt = false;
+        for control in &pending.controls {
+            match control.match_reply(text) {
+                Match::One(option) => {
+                    self.pending_choices.lock().unwrap().remove(identity_id);
+                    return Some(PendingChoiceReply::Command(option.command.clone()));
+                }
+                Match::OutOfRange => {
+                    saw_numeric_attempt = true;
+                }
+                Match::Ambiguous | Match::None => {}
+            }
+        }
+
+        self.pending_choices.lock().unwrap().remove(identity_id);
+        if saw_numeric_attempt {
+            Some(PendingChoiceReply::Reply("⚠️ That number is not one of the current choices. Ask for the choices again if you still need them.".to_string()))
+        } else {
+            None
+        }
     }
 
     /// Handle a pre-auth command (commands that do not require identity context).
@@ -1217,6 +1302,10 @@ impl CommandHandler {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "kept as a text-only wrapper for callers/tests")
+    )]
     pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
         self.handle_sessions_message(text, identity_id)
             .await
@@ -2555,6 +2644,51 @@ mod tests {
                     && option.callback_data.as_deref() == Some("cf:deny:req-1")),
             "approval choice must expose deny callback: {approval:?}"
         );
+    }
+
+    #[test]
+    fn pending_choice_numeric_reply_resolves_and_clears() {
+        let h = make_handler();
+        let choices = h
+            .agent_choice_message_for_identity("!agents", "brian")
+            .expect("agent choice message");
+        h.record_pending_choices("brian", &choices);
+
+        assert_eq!(
+            h.resolve_pending_choice_reply("brian", "2"),
+            Some(PendingChoiceReply::Command(
+                "!agent switch custodian".to_string()
+            ))
+        );
+        assert_eq!(h.resolve_pending_choice_reply("brian", "1"), None);
+    }
+
+    #[test]
+    fn pending_choice_nonmatching_reply_clears_and_falls_through() {
+        let h = make_handler();
+        let choices = h
+            .agent_choice_message_for_identity("!agents", "brian")
+            .expect("agent choice message");
+        h.record_pending_choices("brian", &choices);
+
+        assert_eq!(h.resolve_pending_choice_reply("brian", "hello later"), None);
+        assert_eq!(h.resolve_pending_choice_reply("brian", "1"), None);
+    }
+
+    #[test]
+    fn pending_choice_out_of_range_number_clears_with_reply() {
+        let h = make_handler();
+        let choices = h
+            .agent_choice_message_for_identity("!agents", "brian")
+            .expect("agent choice message");
+        h.record_pending_choices("brian", &choices);
+
+        let reply = h.resolve_pending_choice_reply("brian", "99");
+        assert!(
+            matches!(reply, Some(PendingChoiceReply::Reply(ref message)) if message.contains("not one of the current choices")),
+            "out-of-range numeric choice should produce a bounded local reply, got: {reply:?}"
+        );
+        assert_eq!(h.resolve_pending_choice_reply("brian", "1"), None);
     }
 
     #[tokio::test]

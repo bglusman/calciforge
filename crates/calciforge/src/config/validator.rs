@@ -11,6 +11,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 
+use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::CalciforgeConfig;
 
 /// Validation result with detailed error messages.
@@ -85,8 +86,8 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
 /// Validate agent adapter kinds and required fields.
 fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
     for agent in &config.agents {
-        match agent.kind.as_str() {
-            "openclaw-channel" => {
+        match parse_agent_kind(&agent.kind) {
+            Some(AgentKind::OpenClawChannel) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' uses openclaw-channel but has no endpoint",
@@ -109,7 +110,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "openai-compat" => {
+            Some(AgentKind::OpenAiCompat) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' uses openai-compat but has no endpoint",
@@ -139,19 +140,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "openclaw-http" => {
-                result.add_error(format!(
-                    "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
-                    agent.id
-                ));
-            }
-            "openclaw-native" => {
-                result.add_error(format!(
-                    "Agent '{}' uses unsupported kind 'openclaw-native'; /hooks/agent is async automation, not a synchronous chat adapter. Use kind='openclaw-channel'",
-                    agent.id
-                ));
-            }
-            "zeroclaw" => {
+            Some(AgentKind::ZeroClaw) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' kind '{}' requires endpoint",
@@ -165,7 +154,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "ironclaw" => {
+            Some(AgentKind::IronClaw | AgentKind::Hermes) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' kind '{}' requires endpoint",
@@ -173,7 +162,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "zeroclaw-http" | "zeroclaw-native" => {
+            Some(AgentKind::ZeroClawHttp | AgentKind::ZeroClawNative) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' kind '{}' requires endpoint",
@@ -181,7 +170,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "cli" | "acp" | "acpx" => {
+            Some(AgentKind::Cli | AgentKind::ArtifactCli | AgentKind::Acp | AgentKind::Acpx) => {
                 if agent
                     .command
                     .as_deref()
@@ -193,9 +182,24 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "codex-cli" | "dirac-cli" => {}
-            other => {
-                result.add_error(format!("Agent '{}' has unknown kind '{}'", agent.id, other));
+            Some(AgentKind::CodexCli | AgentKind::DiracCli) => {}
+            None if agent.kind == "openclaw-http" => {
+                result.add_error(format!(
+                    "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
+                    agent.id
+                ));
+            }
+            None if agent.kind == "openclaw-native" => {
+                result.add_error(format!(
+                    "Agent '{}' uses unsupported kind 'openclaw-native'; /hooks/agent is async automation, not a synchronous chat adapter. Use kind='openclaw-channel'",
+                    agent.id
+                ));
+            }
+            None => {
+                result.add_error(format!(
+                    "Agent '{}' has unknown kind '{}'",
+                    agent.id, agent.kind
+                ));
             }
         }
     }

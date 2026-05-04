@@ -172,6 +172,18 @@ fn handle_message_nonblocking(
     // conversation history even within the same Telegram chat.
     let chat_key = format!("{}-{}", chat_id.0, identity.id);
 
+    let text = match command_handler.resolve_pending_choice_reply(&identity.id, &text) {
+        Some(crate::commands::PendingChoiceReply::Command(command)) => command,
+        Some(crate::commands::PendingChoiceReply::Reply(reply)) => {
+            let bot2 = bot.clone();
+            tokio::spawn(async move {
+                send_plain_reply(bot2, chat_id, reply, "choice_reply").await;
+            });
+            return;
+        }
+        None => text,
+    };
+
     // -----------------------------------------------------------------------
     // Command fast-path — all handled synchronously, reply spawned immediately.
     // These return before the handler, keeping the Teloxide dispatcher free.
@@ -191,6 +203,7 @@ fn handle_message_nonblocking(
             0,
             reply.response_len(),
         );
+        command_handler.record_pending_choices(&identity.id, &reply);
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_choice_reply(bot2, chat_id, reply, rich_ui, "agent_choices").await;
@@ -214,6 +227,7 @@ fn handle_message_nonblocking(
             0,
             reply.response_len(),
         );
+        command_handler.record_pending_choices(&identity.id, &reply);
         let bot2 = bot.clone();
         tokio::spawn(async move {
             send_choice_reply(bot2, chat_id, reply, rich_ui, "model_choices").await;
@@ -350,6 +364,7 @@ fn handle_message_nonblocking(
                 command_start.elapsed().as_millis() as u64,
                 reply.response_len(),
             );
+            command_handler2.record_pending_choices(&identity_id, &reply);
             send_choice_reply(
                 bot2,
                 chat_id,
@@ -644,6 +659,7 @@ fn handle_message_nonblocking(
                         &req.reason,
                         &req.request_id,
                     );
+                    command_handler.record_pending_choices(&identity.id, &notification);
                     send_choice_reply(
                         bot,
                         chat_id,

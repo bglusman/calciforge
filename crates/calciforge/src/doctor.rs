@@ -16,6 +16,7 @@ use tokio::net::TcpStream;
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
+use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1021,33 +1022,15 @@ async fn check_agent_wiring(
 }
 
 fn is_known_agent_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "openclaw-channel"
-            | "openai-compat"
-            | "zeroclaw-http"
-            | "zeroclaw-native"
-            | "zeroclaw"
-            | "cli"
-            | "codex-cli"
-            | "dirac-cli"
-            | "acp"
-            | "acpx"
-    )
+    parse_agent_kind(kind).is_some()
 }
 
 fn is_http_agent(agent: &AgentConfig) -> bool {
-    matches!(
-        agent.kind.as_str(),
-        "openclaw-channel" | "openai-compat" | "zeroclaw-http" | "zeroclaw-native" | "zeroclaw"
-    )
+    parse_agent_kind(&agent.kind).is_some_and(AgentKind::is_http_agent)
 }
 
 fn is_subprocess_agent(agent: &AgentConfig) -> bool {
-    matches!(
-        agent.kind.as_str(),
-        "cli" | "codex-cli" | "dirac-cli" | "acp" | "acpx"
-    )
+    parse_agent_kind(&agent.kind).is_some_and(AgentKind::is_subprocess_agent)
 }
 
 fn clears_agent_proxy_env(agent: &AgentConfig) -> bool {

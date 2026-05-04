@@ -867,15 +867,30 @@ async fn handle_message(
         }
     };
 
+    let body_owned;
+    let body = match cmd_handler.resolve_pending_choice_reply(identity_id, body) {
+        Some(crate::commands::PendingChoiceReply::Command(command)) => {
+            body_owned = command;
+            body_owned.as_str()
+        }
+        Some(crate::commands::PendingChoiceReply::Reply(reply)) => {
+            send(reply, "choice_reply").await;
+            return;
+        }
+        None => body,
+    };
+
     // --- Command fast-path ---
     if let Some(reply) = cmd_handler.agent_choice_message_for_identity(body, identity_id) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled agent choice command");
+        cmd_handler.record_pending_choices(identity_id, &reply);
         send_outbound(reply, "agent_choices").await;
         return;
     }
 
     if let Some(reply) = cmd_handler.model_choice_message(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled model choice command");
+        cmd_handler.record_pending_choices(identity_id, &reply);
         send_outbound(reply, "model_choices").await;
         return;
     }
@@ -919,6 +934,7 @@ async fn handle_message(
 
     if CommandHandler::is_sessions_command(body) {
         let reply = cmd_handler.handle_sessions_message(body, identity_id).await;
+        cmd_handler.record_pending_choices(identity_id, &reply);
         send_outbound(reply, "sessions").await;
         return;
     }
@@ -1076,6 +1092,7 @@ async fn handle_message(
                     &req.reason,
                     &req.request_id,
                 );
+                cmd_handler.record_pending_choices(identity_id, &notification);
                 send_outbound(notification, "approval_request").await;
                 return;
             }
