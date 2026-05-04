@@ -31,7 +31,7 @@ mod voice;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 use crate::sync::Arc;
@@ -379,16 +379,18 @@ async fn main() -> Result<()> {
         .iter()
         .any(|c| c.kind == "mock" && c.enabled);
 
-    if !args.proxy_only
-        && !has_telegram
-        && !has_matrix
-        && !has_whatsapp
-        && !has_signal
-        && !has_sms
-        && !has_mock
-    {
-        error!("no enabled channels found in config — nothing to do");
-        std::process::exit(1);
+    let no_channels =
+        !has_telegram && !has_matrix && !has_whatsapp && !has_signal && !has_sms && !has_mock;
+
+    let proxy_enabled = config.proxy.as_ref().map_or(false, |p| p.enabled);
+
+    if !args.proxy_only && no_channels {
+        if proxy_enabled {
+            warn!("no enabled channels found — running in proxy-only mode");
+        } else {
+            error!("no enabled channels found in config — nothing to do");
+            std::process::exit(1);
+        }
     }
 
     // Run enabled channels concurrently and fail fast if any enabled channel

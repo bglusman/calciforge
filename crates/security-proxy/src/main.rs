@@ -115,9 +115,27 @@ async fn main() -> anyhow::Result<()> {
         ..ScannerConfig::default()
     };
 
+    // Load credentials config (host→secret mappings with injection methods).
+    // Falls back to built-in provider table if file doesn't exist.
+    let credentials_config_path = std::env::var("CALCIFORGE_CREDENTIALS_CONFIG")
+        .ok()
+        .or_else(|| {
+            std::env::var("CALCIFORGE_CONFIG_HOME")
+                .ok()
+                .map(|home| format!("{home}/credentials.toml"))
+        })
+        .unwrap_or_else(|| "/etc/calciforge/credentials.toml".into());
+    let credentials_config =
+        security_proxy::credentials::CredentialInjector::load_config(&credentials_config_path);
+
     // Build unified security proxy
-    let mut proxy =
-        SecurityProxy::new(config.clone(), scanner_config, RateLimitConfig::default()).await;
+    let mut proxy = SecurityProxy::with_credentials_config(
+        config.clone(),
+        scanner_config,
+        RateLimitConfig::default(),
+        credentials_config,
+    )
+    .await;
 
     // Load credentials from ZEROGATE_KEY_* env vars (legacy)
     proxy.credentials.load_from_env();

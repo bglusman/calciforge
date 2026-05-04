@@ -39,6 +39,8 @@ use crate::agent_web::{
 };
 use crate::config::GatewayConfig;
 use crate::credentials::CredentialInjector;
+#[cfg(feature = "ironclaw-safety")]
+use crate::ironclaw::IronclawSafety;
 
 // ── SecurityProxy ────────────────────────────────────────────────────────────
 
@@ -58,6 +60,9 @@ pub struct SecurityProxy {
     pub audit: AuditLogger,
     /// HTTP client for forwarding requests upstream.
     http_client: reqwest::Client,
+    /// IronClaw safety layer (leak detection + credential-injection detection).
+    #[cfg(feature = "ironclaw-safety")]
+    pub(crate) ironclaw: IronclawSafety,
 }
 
 impl SecurityProxy {
@@ -67,10 +72,19 @@ impl SecurityProxy {
         scanner_config: ScannerConfig,
         rate_limit: RateLimitConfig,
     ) -> Self {
+        Self::with_credentials_config(config, scanner_config, rate_limit, None).await
+    }
+
+    /// Build with explicit credentials configuration.
+    pub async fn with_credentials_config(
+        config: GatewayConfig,
+        scanner_config: ScannerConfig,
+        rate_limit: RateLimitConfig,
+        credentials_config: Option<crate::credentials::CredentialsConfig>,
+    ) -> Self {
         let audit = AuditLogger::new("security-gateway");
         let scanner = AdversaryScanner::new(scanner_config.clone());
 
-        // Create a separate logger for the fetch proxy to avoid cloning
         let fetch_audit = AuditLogger::new("security-gateway-fetch");
         let fetch_proxy =
             AdversaryDetector::from_config(scanner_config, fetch_audit, rate_limit).await;
@@ -79,12 +93,14 @@ impl SecurityProxy {
             config,
             fetch_proxy,
             scanner,
-            credentials: CredentialInjector::new(),
+            credentials: CredentialInjector::with_config(credentials_config),
             audit,
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("security proxy reqwest client"),
+            #[cfg(feature = "ironclaw-safety")]
+            ironclaw: IronclawSafety::new(),
         }
     }
 
@@ -404,7 +420,7 @@ impl SecurityProxy {
                     // bool — inject handles the still-absent case.
                     let _ = self.credentials.ensure_cached(&provider).await;
                 }
-                self.credentials.inject(&mut injected_headers, &host);
+                self.credentials.inject(&mut injected_headers, &host).await;
             }
         }
 

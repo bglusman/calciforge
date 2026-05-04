@@ -15,7 +15,7 @@ dependencies = [
 [[package]]
 name = "aardvark-sys"
 version = "0.1.0"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "libloading 0.8.9",
  "thiserror 2.0.18",
@@ -5440,6 +5440,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironclaw_safety"
+version = "0.1.0"
+source = "git+https://github.com/nearai/ironclaw?rev=1e00b1f#1e00b1fed50ac88f78d128e4bd4e9243cecdae3e"
+dependencies = [
+ "aho-corasick",
+ "regex",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9166,6 +9179,7 @@ dependencies = [
  "adversary-detector",
  "anyhow",
  "axum 0.7.9",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "dashmap",
@@ -9175,6 +9189,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-rustls 0.27.7",
  "hyper-util",
+ "ironclaw_safety",
  "once_cell",
  "rcgen 0.13.2",
  "regex",
@@ -12773,7 +12788,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-api"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -12789,7 +12804,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-channels"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-imap",
@@ -12850,7 +12865,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-config"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -12889,7 +12904,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-gateway"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -12935,7 +12950,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-hardware"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "aardvark-sys",
  "anyhow",
@@ -12960,7 +12975,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-infra"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -12977,7 +12992,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-macros"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12987,7 +13002,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-memory"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13009,7 +13024,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-providers"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13041,7 +13056,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-runtime"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "aardvark-sys",
  "anyhow",
@@ -13110,7 +13125,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-tool-call-parser"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "regex",
  "serde",
@@ -13121,7 +13136,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-tools"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13159,7 +13174,7 @@ dependencies = [
 [[package]]
 name = "zeroclaw-tui"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13175,7 +13190,7 @@ dependencies = [
 [[package]]
 name = "zeroclawlabs"
 version = "0.7.4"
-source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#a0ee1be0a88ed7d27b646bc8b8bd3c37e4f7fe12"
+source = "git+https://github.com/bglusman/zeroclaw?branch=calciforge-interactive#914169b8eeacd446c1b0adf02426418536be69b9"
 dependencies = [
  "aardvark-sys",
  "anyhow",

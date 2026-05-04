@@ -8,6 +8,7 @@
 //!
 //! - [`OpenClawChannelAdapter`] — POST `/calciforge/inbound` with reply callback
 //! - [`ZeroClawAdapter`] — POST `/webhook` with `{"message": text}` (custom protocol)
+//! - [`IronClawAdapter`] — POST `/api/chat/send` + SSE `/api/chat/events`
 //! - [`CliAdapter`] — spawn binary, pass `-m "text"`, read stdout
 //!
 //! # Usage
@@ -31,6 +32,7 @@ pub mod openclaw;
 pub mod openclaw_channel;
 #[cfg(test)]
 pub mod openclaw_native;
+pub mod ironclaw;
 pub mod zeroclaw;
 pub mod zeroclaw_native;
 
@@ -40,6 +42,7 @@ pub use artifact_cli::ArtifactCliAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
 pub use dirac_cli::DiracCliAdapter;
+pub use ironclaw::IronClawAdapter;
 pub use openai_compat::OpenAiCompatAdapter;
 pub use openclaw::ZeroClawHttpAdapter;
 pub use openclaw_channel::OpenClawChannelAdapter;
@@ -216,7 +219,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 
     matches!(
         agent.kind.as_str(),
-        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "artifact-cli" | "codex-cli"
+        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "ironclaw" | "cli" | "artifact-cli" | "codex-cli"
     )
 }
 
@@ -242,6 +245,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 /// | `artifact-cli`     | subprocess stdin + artifact dir | ❌ one-shot | n/a |
 /// | `codex-cli`        | `codex exec`        | ❌ one-shot         | n/a |
 /// | `dirac-cli`        | `dirac --yolo --json` | ❌ one-shot       | n/a |
+/// | `ironclaw`         | HTTP + SSE events   | ✅ server-side      | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
 /// | `acpx`             | acpx CLI            | ✅ acpx sessions    | n/a |
 pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, String> {
@@ -316,6 +320,21 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             Ok(Box::new(ZeroClawNativeAdapter::new(
                 agent.endpoint.clone(),
                 token,
+                agent.timeout_ms,
+            )))
+        }
+        "ironclaw" => {
+            if agent.endpoint.trim().is_empty() {
+                return Err(format!(
+                    "agent '{}': kind='ironclaw' requires endpoint",
+                    agent.id
+                ));
+            }
+            let token = agent_token_no_env()?;
+            Ok(Box::new(IronClawAdapter::new(
+                agent.endpoint.clone(),
+                token,
+                agent.model.clone(),
                 agent.timeout_ms,
             )))
         }

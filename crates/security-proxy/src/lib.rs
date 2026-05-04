@@ -3,6 +3,8 @@ pub mod agent_web;
 pub mod audit;
 pub mod config;
 pub mod credentials;
+#[cfg(feature = "ironclaw-safety")]
+pub mod ironclaw;
 pub mod mitm;
 pub mod proxy;
 pub mod scanner;

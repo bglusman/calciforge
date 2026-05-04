@@ -243,14 +243,27 @@ impl CalciforgeMitmHandler {
             }
         };
 
+        // IronClaw credential-injection detection: check BEFORE substitution
+        // and CredentialInjector. Headers at this point contain either:
+        // - LLM-injected credentials (bad — block these)
+        // - {{secret:...}} placeholders (good — these are proxy-managed)
+        // The detection skips values containing {{secret:}} patterns since
+        // those are explicitly requesting proxy-managed injection.
+        #[cfg(feature = "ironclaw-safety")]
+        {
+            let request_params = build_credential_check_params(
+                &target_url,
+                &parts.headers,
+            );
+            if let Err(reason) = self.state.ironclaw.check_request_credentials(&request_params) {
+                warn!("BLOCKED MITM request to {}: {}", target_url, reason);
+                return RequestOrResponse::Response(mitm_blocked_response(&reason));
+            }
+        }
+
         if let Err(err) =
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
         {
-            // Echoing `err` would leak the secret name in the block
-            // page (the resolver/allowlist error includes the literal
-            // ref name). Log details server-side, return a bland
-            // explanation to the caller — same pattern as the original
-            // axum blocked_response.
             warn!("BLOCKED: MITM header substitution failed: {err}");
             return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
         }
@@ -363,10 +376,7 @@ impl CalciforgeMitmHandler {
         if self.state.config.inject_credentials {
             if let Some(host) = dest_host.as_deref() {
                 let mut injected_headers = Vec::new();
-                if let Some(provider) = self.state.credentials.detect_provider_pub(host) {
-                    let _ = self.state.credentials.ensure_cached(&provider).await;
-                }
-                self.state.credentials.inject(&mut injected_headers, host);
+                self.state.credentials.inject(&mut injected_headers, host).await;
                 for (name, value) in injected_headers {
                     if let (Ok(name), Ok(value)) = (
                         header::HeaderName::try_from(name.as_str()),
@@ -476,6 +486,15 @@ impl CalciforgeMitmHandler {
 
         if self.state.config.scan_inbound && content_type.starts_with("text/") {
             if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+                // IronClaw leak detection (runs before adversary-detector scan)
+                #[cfg(feature = "ironclaw-safety")]
+                {
+                    if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                        warn!("BLOCKED MITM response from {}: {}", target_url, reason);
+                        return mitm_blocked_response(&reason);
+                    }
+                }
+
                 let verdict = self
                     .state
                     .scanner
@@ -751,6 +770,37 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
         .header(header::CONTENT_TYPE, "application/json")
         .body(MitmBody::from(value.to_string()))
         .unwrap_or_else(|_| mitm_blocked_response("Failed to build response"))
+}
+
+/// Build a JSON representation of request parameters suitable for
+/// `ironclaw_safety::params_contain_manual_credentials`. Extracts the URL
+/// and headers from the in-flight request parts.
+#[cfg(feature = "ironclaw-safety")]
+fn build_credential_check_params(
+    url: &str,
+    headers: &header::HeaderMap,
+) -> serde_json::Value {
+    let mut header_map = serde_json::Map::new();
+    for (name, value) in headers.iter() {
+        // proxy-authorization is a standard hop-by-hop header used to
+        // authenticate with this proxy itself — always stripped before
+        // forwarding, never LLM-injected.
+        if name == header::PROXY_AUTHORIZATION {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            // Skip headers whose values contain {{secret:...}} substitution
+            // placeholders — these are proxy-managed credentials, not LLM-injected.
+            if v.contains("{{secret:") {
+                continue;
+            }
+            header_map.insert(name.as_str().to_owned(), serde_json::Value::String(v.to_owned()));
+        }
+    }
+    serde_json::json!({
+        "url": url,
+        "headers": header_map,
+    })
 }
 
 /// Env var holding the bearer token required to call `/vault/:secret`.

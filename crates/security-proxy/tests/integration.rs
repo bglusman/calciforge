@@ -62,21 +62,21 @@ async fn test_credential_injection_logic() {
 
     // Test OpenAI header injection
     let mut headers = vec![];
-    injector.inject(&mut headers, "api.openai.com");
+    injector.inject(&mut headers, "api.openai.com").await;
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0, "Authorization");
     assert_eq!(headers[0].1, "Bearer sk-test-key-123");
 
     // Test Anthropic header injection
     let mut headers = vec![];
-    injector.inject(&mut headers, "api.anthropic.com");
+    injector.inject(&mut headers, "api.anthropic.com").await;
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0, "x-api-key");
     assert_eq!(headers[0].1, "sk-ant-test-456");
 
     // Test unknown domain (no injection)
     let mut headers = vec![];
-    injector.inject(&mut headers, "example.com");
+    injector.inject(&mut headers, "example.com").await;
     assert!(headers.is_empty());
 }
 
