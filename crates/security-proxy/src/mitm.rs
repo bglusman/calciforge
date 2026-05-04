@@ -251,11 +251,12 @@ impl CalciforgeMitmHandler {
         // those are explicitly requesting proxy-managed injection.
         #[cfg(feature = "ironclaw-safety")]
         {
-            let request_params = build_credential_check_params(
-                &target_url,
-                &parts.headers,
-            );
-            if let Err(reason) = self.state.ironclaw.check_request_credentials(&request_params) {
+            let request_params = build_credential_check_params(&target_url, &parts.headers);
+            if let Err(reason) = self
+                .state
+                .ironclaw
+                .check_request_credentials(&request_params)
+            {
                 warn!("BLOCKED MITM request to {}: {}", target_url, reason);
                 return RequestOrResponse::Response(mitm_blocked_response(&reason));
             }
@@ -376,7 +377,10 @@ impl CalciforgeMitmHandler {
         if self.state.config.inject_credentials {
             if let Some(host) = dest_host.as_deref() {
                 let mut injected_headers = Vec::new();
-                self.state.credentials.inject(&mut injected_headers, host).await;
+                self.state
+                    .credentials
+                    .inject(&mut injected_headers, host)
+                    .await;
                 for (name, value) in injected_headers {
                     if let (Ok(name), Ok(value)) = (
                         header::HeaderName::try_from(name.as_str()),
@@ -776,10 +780,7 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
 /// `ironclaw_safety::params_contain_manual_credentials`. Extracts the URL
 /// and headers from the in-flight request parts.
 #[cfg(feature = "ironclaw-safety")]
-fn build_credential_check_params(
-    url: &str,
-    headers: &header::HeaderMap,
-) -> serde_json::Value {
+fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serde_json::Value {
     let mut header_map = serde_json::Map::new();
     for (name, value) in headers.iter() {
         // proxy-authorization is a standard hop-by-hop header used to
@@ -794,7 +795,10 @@ fn build_credential_check_params(
             if v.contains("{{secret:") {
                 continue;
             }
-            header_map.insert(name.as_str().to_owned(), serde_json::Value::String(v.to_owned()));
+            header_map.insert(
+                name.as_str().to_owned(),
+                serde_json::Value::String(v.to_owned()),
+            );
         }
     }
     serde_json::json!({

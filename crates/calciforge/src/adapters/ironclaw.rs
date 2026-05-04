@@ -57,8 +57,7 @@ impl IronClawAdapter {
     }
 
     fn sign_body(&self, body: &[u8]) -> String {
-        let mut mac =
-            HmacSha256::new_from_slice(self.webhook_secret.as_bytes()).expect("HMAC key");
+        let mut mac = HmacSha256::new_from_slice(self.webhook_secret.as_bytes()).expect("HMAC key");
         mac.update(body);
         let result = mac.finalize().into_bytes();
         format!("sha256={}", hex::encode(result))
@@ -78,9 +77,8 @@ impl IronClawAdapter {
             attachments: vec![],
         };
 
-        let body_bytes = serde_json::to_vec(&body).map_err(|e| {
-            AdapterError::Protocol(format!("Failed to serialize request: {e}"))
-        })?;
+        let body_bytes = serde_json::to_vec(&body)
+            .map_err(|e| AdapterError::Protocol(format!("Failed to serialize request: {e}")))?;
 
         let signature = self.sign_body(&body_bytes);
 
@@ -110,12 +108,11 @@ impl IronClawAdapter {
             )));
         }
 
-        let webhook_resp: WebhookResponse =
-            serde_json::from_str(&resp_body).map_err(|e| {
-                AdapterError::Protocol(format!(
-                    "IronClaw response parse error: {e} — body: {resp_body}"
-                ))
-            })?;
+        let webhook_resp: WebhookResponse = serde_json::from_str(&resp_body).map_err(|e| {
+            AdapterError::Protocol(format!(
+                "IronClaw response parse error: {e} — body: {resp_body}"
+            ))
+        })?;
 
         if webhook_resp.status == "error" {
             let msg = webhook_resp
@@ -135,9 +132,7 @@ impl AgentAdapter for IronClawAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
         let resp = self.send_message(msg, None, None).await?;
         resp.response.ok_or_else(|| {
-            AdapterError::Protocol(
-                "IronClaw returned success but no response text".to_string(),
-            )
+            AdapterError::Protocol("IronClaw returned success but no response text".to_string())
         })
     }
 
@@ -149,9 +144,7 @@ impl AgentAdapter for IronClawAdapter {
             .send_message(ctx.message, ctx.sender, ctx.session)
             .await?;
         resp.response.ok_or_else(|| {
-            AdapterError::Protocol(
-                "IronClaw returned success but no response text".to_string(),
-            )
+            AdapterError::Protocol("IronClaw returned success but no response text".to_string())
         })
     }
 

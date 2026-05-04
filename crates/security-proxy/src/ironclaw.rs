@@ -26,15 +26,15 @@ impl IronclawSafety {
 
     /// Check if outgoing request headers/URL contain manually-injected credentials
     /// that weren't placed by the proxy's credential injector.
-    pub fn check_request_credentials(
-        &self,
-        params: &serde_json::Value,
-    ) -> Result<(), String> {
+    pub fn check_request_credentials(&self, params: &serde_json::Value) -> Result<(), String> {
         if ironclaw_safety::params_contain_manual_credentials(params) {
             return Err("LLM-injected credential detected in outgoing request".to_string());
         }
 
-        debug!("credential check passed for {}", params["url"].as_str().unwrap_or("?"));
+        debug!(
+            "credential check passed for {}",
+            params["url"].as_str().unwrap_or("?")
+        );
         Ok(())
     }
 

@@ -27,12 +27,12 @@ pub mod artifact_cli;
 pub mod cli;
 pub mod codex_cli;
 pub mod dirac_cli;
+pub mod ironclaw;
 pub mod openai_compat;
 pub mod openclaw;
 pub mod openclaw_channel;
 #[cfg(test)]
 pub mod openclaw_native;
-pub mod ironclaw;
 pub mod zeroclaw;
 pub mod zeroclaw_native;
 
@@ -219,7 +219,13 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 
     matches!(
         agent.kind.as_str(),
-        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "ironclaw" | "cli" | "artifact-cli" | "codex-cli"
+        "zeroclaw-http"
+            | "zeroclaw-native"
+            | "zeroclaw"
+            | "ironclaw"
+            | "cli"
+            | "artifact-cli"
+            | "codex-cli"
     )
 }
 

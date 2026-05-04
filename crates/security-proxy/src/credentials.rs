@@ -149,9 +149,11 @@ impl CredentialInjector {
     /// Find which mapping matches this host (first match wins).
     pub fn find_mapping(&self, host: &str) -> Option<&CredentialMapping> {
         let host_lower = host.to_lowercase();
-        self.mappings
-            .iter()
-            .find(|m| m.hosts.iter().any(|pattern| dns_boundary_match(&host_lower, pattern)))
+        self.mappings.iter().find(|m| {
+            m.hosts
+                .iter()
+                .any(|pattern| dns_boundary_match(&host_lower, pattern))
+        })
     }
 
     /// Public accessor: which secret name would be injected for this host?
@@ -328,18 +330,30 @@ mod tests {
 
     #[test]
     fn dns_match_glob_matches_subdomain() {
-        assert!(dns_boundary_match("api.corp.example.com", "*.corp.example.com"));
+        assert!(dns_boundary_match(
+            "api.corp.example.com",
+            "*.corp.example.com"
+        ));
     }
 
     #[test]
     fn dns_match_glob_rejects_bare() {
-        assert!(!dns_boundary_match("corp.example.com", "*.corp.example.com"));
+        assert!(!dns_boundary_match(
+            "corp.example.com",
+            "*.corp.example.com"
+        ));
     }
 
     #[test]
     fn dns_match_rejects_lookalike_suffix() {
-        assert!(!dns_boundary_match("api.openai.com.evil.example", "openai.com"));
-        assert!(!dns_boundary_match("openai.com.attacker.test", "openai.com"));
+        assert!(!dns_boundary_match(
+            "api.openai.com.evil.example",
+            "openai.com"
+        ));
+        assert!(!dns_boundary_match(
+            "openai.com.attacker.test",
+            "openai.com"
+        ));
         assert!(!dns_boundary_match(
             "api.anthropic.com.evil.xyz",
             "anthropic.com"
@@ -367,12 +381,10 @@ mod tests {
         ];
         for (host, expected) in cases {
             let mapping = injector.find_mapping(host);
-            assert!(
-                mapping.is_some(),
-                "host {host:?} should match a mapping"
-            );
+            assert!(mapping.is_some(), "host {host:?} should match a mapping");
             assert_eq!(
-                mapping.unwrap().secret_name, expected,
+                mapping.unwrap().secret_name,
+                expected,
                 "host {host:?} should map to {expected:?}"
             );
         }
@@ -449,10 +461,13 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
         assert_eq!(config.cache_ttl_secs, 60);
         assert_eq!(config.mappings.len(), 2);
         assert_eq!(config.mappings[0].secret_name, "custom_api");
-        assert_eq!(config.mappings[1].injection, InjectionMethod::Header {
-            name: "X-Corp-Key".into(),
-            prefix: String::new(),
-        });
+        assert_eq!(
+            config.mappings[1].injection,
+            InjectionMethod::Header {
+                name: "X-Corp-Key".into(),
+                prefix: String::new(),
+            }
+        );
     }
 
     #[test]
@@ -478,11 +493,17 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
         let injector = CredentialInjector::with_config(Some(config));
 
         assert_eq!(
-            injector.find_mapping("foo.internal.corp").unwrap().secret_name,
+            injector
+                .find_mapping("foo.internal.corp")
+                .unwrap()
+                .secret_name,
             "corp"
         );
         assert_eq!(
-            injector.find_mapping("special.api.com").unwrap().secret_name,
+            injector
+                .find_mapping("special.api.com")
+                .unwrap()
+                .secret_name,
             "special"
         );
         assert!(injector.find_mapping("other.com").is_none());
