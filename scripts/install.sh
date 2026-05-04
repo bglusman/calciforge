@@ -1782,7 +1782,12 @@ if agent_enabled ironclaw; then
     if [[ "$CONFIGURE_ONLY" != true ]]; then
         # Prefer building from source (ensures adapter ↔ binary version sync).
         # Falls back to GitHub release if source not available.
-        ironclaw_src="${CALCIFORGE_IRONCLAW_SOURCE:-/opt/ironclaw}"
+        ironclaw_src="${CALCIFORGE_IRONCLAW_SOURCE:-$IRONCLAW_DIR/src}"
+        # Clone source if not already present
+        if [[ ! -f "$ironclaw_src/Cargo.toml" ]] && command -v git &>/dev/null; then
+            echo "  Cloning ironclaw source..."
+            git clone --depth 1 https://github.com/nearai/ironclaw "$ironclaw_src" 2>&1 | tail -2 || true
+        fi
         if [[ -f "$ironclaw_src/Cargo.toml" ]] && grep -q 'name.*=.*"ironclaw"' "$ironclaw_src/Cargo.toml" 2>/dev/null; then
             echo "  Building ironclaw from source ($ironclaw_src)..."
             cargo="${CARGO:-$HOME/.cargo/bin/cargo}"
