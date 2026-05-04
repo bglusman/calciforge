@@ -165,7 +165,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "ironclaw" => {
+            "ironclaw" | "hermes" => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' kind '{}' requires endpoint",

@@ -1976,7 +1976,7 @@ if agent_enabled hermes; then
             fi
 
             # Create wrapper script for service invocation
-            local hermes_bin="$HERMES_DIR/.venv/bin/hermes"
+            hermes_bin="$HERMES_DIR/.venv/bin/hermes"
             if [[ ! -f "$hermes_bin" ]]; then
                 hermes_bin="$(command -v hermes 2>/dev/null || echo "")"
             fi
@@ -1994,12 +1994,11 @@ if agent_enabled hermes; then
         [[ -x "$hermes_bin" ]] || hermes_bin="$(command -v hermes)"
 
         # Generate API server key for Calciforge to authenticate with Hermes
-        local hermes_api_key_file="$HERMES_DIR/.api-server-key"
+        hermes_api_key_file="$HERMES_DIR/.api-server-key"
         if [[ ! -f "$hermes_api_key_file" ]]; then
             python3 -c "import secrets; print(secrets.token_hex(32))" > "$hermes_api_key_file"
             chmod 600 "$hermes_api_key_file"
         fi
-        local hermes_api_key
         hermes_api_key="$(cat "$hermes_api_key_file")"
 
         # Extract gateway URL and API key from Calciforge config
@@ -2021,12 +2020,19 @@ else:
         fi
 
         # Write Hermes config.yaml pointing at Calciforge gateway
-        mkdir -p "$HERMES_DIR"
-        cat > "$HERMES_DIR/config.yaml" <<CFGEOF
+        hermes_config_dir="$HOME/.hermes"
+        mkdir -p "$hermes_config_dir"
+        cat > "$hermes_config_dir/config.yaml" <<CFGEOF
 # Managed by Calciforge installer — edits may be overwritten
-model: custom:${gateway_model}
-custom_api_base: ${gateway_url}
-${gateway_api_key:+custom_api_key: ${gateway_api_key}}
+model:
+  default: ${gateway_model}
+  provider: calciforge
+custom_providers:
+- name: calciforge
+  base_url: ${gateway_url}
+  api_key: ${gateway_api_key:-dummy}
+  model: ${gateway_model}
+  api_mode: chat_completions
 
 platforms:
   api_server:
@@ -2036,24 +2042,21 @@ platforms:
       port: ${CALCIFORGE_HERMES_PORT}
       api_key: "${hermes_api_key}"
 CFGEOF
-        chmod 600 "$HERMES_DIR/config.yaml"
+        chmod 600 "$hermes_config_dir/config.yaml"
 
         # Write .env for the service
+        # Note: no HTTP_PROXY — Hermes talks only to the local gateway which
+        # handles outbound routing itself. Proxy vars cause localhost 401s.
         ensure_agent_env "$HERMES_DIR/.env" <<ENVEOF
-HERMES_CONFIG=${HERMES_DIR}/config.yaml
 API_SERVER_KEY=${hermes_api_key}
 HERMES_QUIET=1
-# Route outbound HTTP through Calciforge security proxy
-HTTP_PROXY=${SECURITY_PROXY_URL}
-HTTPS_PROXY=${SECURITY_PROXY_URL}
+GATEWAY_ALLOW_ALL_USERS=true
 NO_PROXY=localhost,127.0.0.1,::1
-SSL_CERT_FILE=${CALCIFORGE_CONFIG_HOME}/secrets/mitm-ca.pem
-REQUESTS_CA_BUNDLE=${CALCIFORGE_CONFIG_HOME}/secrets/mitm-ca.pem
 ENVEOF
 
-        # Start Hermes gateway service (which includes the api_server platform)
+        # Start Hermes gateway in foreground mode (our service manages the process)
         ensure_agent_service "hermes" "$hermes_bin" "$HERMES_DIR" \
-            "$HERMES_DIR/.env" "Hermes Agent (NousResearch)" "gateway start"
+            "$HERMES_DIR/.env" "Hermes Agent (NousResearch)" "gateway run --accept-hooks"
 
         # Verify it's running
         sleep 3

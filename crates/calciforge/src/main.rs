@@ -382,7 +382,7 @@ async fn main() -> Result<()> {
     let no_channels =
         !has_telegram && !has_matrix && !has_whatsapp && !has_signal && !has_sms && !has_mock;
 
-    let proxy_enabled = config.proxy.as_ref().map_or(false, |p| p.enabled);
+    let proxy_enabled = config.proxy.as_ref().is_some_and(|p| p.enabled);
 
     if !args.proxy_only && no_channels {
         if proxy_enabled {

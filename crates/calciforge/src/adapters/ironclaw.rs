@@ -84,7 +84,7 @@ impl IronClawAdapter {
 
         let resp = self
             .client
-            .post(&self.webhook_url())
+            .post(self.webhook_url())
             .header("Content-Type", "application/json")
             .header("X-IronClaw-Signature", &signature)
             .header("x-hub-signature-256", &signature)
