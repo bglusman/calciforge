@@ -1860,6 +1860,7 @@ DATABASE_BACKEND=libsql
 ONBOARD_COMPLETED=true
 CLI_MODE=repl
 CLI_ENABLED=false
+GATEWAY_PORT=${CALCIFORGE_IRONCLAW_GATEWAY_PORT:-3001}
 # Route IronClaw's outbound HTTP through Calciforge security proxy for
 # credential injection, leak scanning, and policy enforcement.
 HTTP_PROXY=${SECURITY_PROXY_URL}
@@ -1874,10 +1875,13 @@ ENVEOF
             echo "HTTP_WEBHOOK_SECRET=${webhook_secret}" >> "$IRONCLAW_DIR/.env"
         fi
 
-        # Ensure HTTP channel is enabled in IronClaw's config database
+        # Ensure HTTP channel is enabled and gateway uses separate port
         ironclaw config set channels.http_enabled true >/dev/null 2>&1 || true
         ironclaw config set channels.http_port "${CALCIFORGE_IRONCLAW_PORT}" >/dev/null 2>&1 || true
         ironclaw config set channels.http_host "0.0.0.0" >/dev/null 2>&1 || true
+        ironclaw config set channels.cli_enabled false >/dev/null 2>&1 || true
+        ironclaw config set channels.cli_mode repl >/dev/null 2>&1 || true
+        ironclaw config set channels.gateway_port "${CALCIFORGE_IRONCLAW_GATEWAY_PORT:-3001}" >/dev/null 2>&1 || true
 
         # LLM backend is configured via env vars in .env above (LLM_BASE_URL,
         # LLM_BACKEND, LLM_MODEL). Also write to settings DB for CLI usage.

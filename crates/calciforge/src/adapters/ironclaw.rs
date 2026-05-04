@@ -5,8 +5,8 @@
 //! - `POST /webhook` — submit a message (synchronous when `wait_for_response: true`)
 //! - `GET /health` — health check
 //!
-//! Authentication is via HMAC-SHA256 signature in the `X-IronClaw-Signature` header.
-//! The shared secret is the `auth_token` field in the adapter config.
+//! Authentication is via HMAC-SHA256 signature. Both `X-IronClaw-Signature` (source builds)
+//! and `x-hub-signature-256` (release binaries) headers are sent for compatibility.
 
 use std::time::Duration;
 
@@ -89,6 +89,7 @@ impl IronClawAdapter {
             .post(&self.webhook_url())
             .header("Content-Type", "application/json")
             .header("X-IronClaw-Signature", &signature)
+            .header("x-hub-signature-256", &signature)
             .body(body_bytes)
             .send()
             .await
