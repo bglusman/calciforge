@@ -532,22 +532,27 @@ impl CommandHandler {
             return None;
         }
 
-        let base_reply = self
-            .handle(text)
-            .unwrap_or_else(|| "Configured agents unavailable.".to_string());
         match self.agent_choices_for_identity(identity_id) {
             Ok(choices) => Some(
-                OutboundMessage::text(base_reply).with_control(ChoiceControl::new(
-                    "Choose an agent",
+                OutboundMessage::text(
+                    "Reply with a number, tap a button, or use `!agent details [agent]` for endpoints and adapter types.",
+                )
+                .with_control(ChoiceControl::new(
+                    "Agents",
                     choices
                         .into_iter()
                         .map(|(id, label)| ChoiceOption::agent(label, id))
                         .collect(),
                 )),
             ),
-            Err(err) => Some(OutboundMessage::text(format!(
-                "{base_reply}\n\nButton choices unavailable: {err}."
-            ))),
+            Err(err) => {
+                let base_reply = self
+                    .handle(text)
+                    .unwrap_or_else(|| "Configured agents unavailable.".to_string());
+                Some(OutboundMessage::text(format!(
+                    "{base_reply}\n\nButton choices unavailable: {err}."
+                )))
+            }
         }
     }
 
@@ -2584,6 +2589,19 @@ mod tests {
                 .any(|option| option.command == "!agent switch librarian"
                     && option.callback_data.as_deref() == Some("cf:agent:librarian")),
             "agent choices must provide matching text and callback actions: {agents:?}"
+        );
+        let agent_fallback = agents.render_text_fallback();
+        assert!(
+            agent_fallback.contains("\n1. Librarian: `!agent switch librarian`"),
+            "agent choice fallback must present numbered commands near the visible choice list: {agent_fallback}"
+        );
+        assert!(
+            !agent_fallback.contains("\n  librarian —"),
+            "agent choice fallback should not start with the older unnumbered summary list: {agent_fallback}"
+        );
+        assert!(
+            agent_fallback.contains("!agent details [agent]"),
+            "agent choice fallback should keep detail-command guidance: {agent_fallback}"
         );
 
         let models = h.model_choice_message("!model").expect("model choices");
