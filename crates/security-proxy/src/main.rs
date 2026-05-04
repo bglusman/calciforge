@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use adversary_detector::{RateLimitConfig, ScannerCheckConfig, ScannerConfig};
 use security_proxy::agent_config::AgentsConfig;
-use security_proxy::config::GatewayConfig;
+use security_proxy::config::{parse_gateway_config_toml, GatewayConfig};
 use security_proxy::mitm::{install_default_crypto_provider, load_rcgen_authority, serve_mitm};
 use security_proxy::proxy::SecurityProxy;
 
@@ -37,11 +37,13 @@ async fn main() -> anyhow::Result<()> {
     // SECURITY_PROXY_CONFIG → explicit path (preferred when set)
     // /etc/calciforge/security-proxy.toml → default
     // missing file → fall back to GatewayConfig::default()
-    let config_path = std::env::var("SECURITY_PROXY_CONFIG")
-        .unwrap_or_else(|_| "/etc/calciforge/security-proxy.toml".to_string());
+    let explicit_config_path = std::env::var("SECURITY_PROXY_CONFIG").ok();
+    let config_path = explicit_config_path
+        .clone()
+        .unwrap_or_else(|| "/etc/calciforge/security-proxy.toml".to_string());
 
     let mut config: GatewayConfig = match std::fs::read_to_string(&config_path) {
-        Ok(toml_str) => match toml::from_str::<GatewayConfig>(&toml_str) {
+        Ok(toml_str) => match parse_gateway_config_toml(&toml_str) {
             Ok(cfg) => {
                 info!(
                     "loaded security-proxy config from {} ({} bytes)",
@@ -51,16 +53,17 @@ async fn main() -> anyhow::Result<()> {
                 cfg
             }
             Err(e) => {
-                error!(
-                    "failed to parse security-proxy config at {}: {}; using defaults",
-                    config_path, e
-                );
-                GatewayConfig::default()
+                anyhow::bail!("failed to parse security-proxy config at {config_path}: {e}");
             }
         },
-        Err(_) => {
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound && explicit_config_path.is_none() =>
+        {
             // File missing is the common case for fresh installs; not an error.
             GatewayConfig::default()
+        }
+        Err(err) => {
+            anyhow::bail!("failed to read security-proxy config at {config_path}: {err}");
         }
     };
 
@@ -117,16 +120,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Load credentials config (host→secret mappings with injection methods).
     // Falls back to built-in provider table if file doesn't exist.
-    let credentials_config_path = std::env::var("CALCIFORGE_CREDENTIALS_CONFIG")
-        .ok()
+    let explicit_credentials_config_path = std::env::var("CALCIFORGE_CREDENTIALS_CONFIG").ok();
+    let credentials_config_path = explicit_credentials_config_path
+        .clone()
         .or_else(|| {
             std::env::var("CALCIFORGE_CONFIG_HOME")
                 .ok()
                 .map(|home| format!("{home}/credentials.toml"))
         })
         .unwrap_or_else(|| "/etc/calciforge/credentials.toml".into());
-    let credentials_config =
-        security_proxy::credentials::CredentialInjector::load_config(&credentials_config_path);
+    let credentials_config = security_proxy::credentials::CredentialInjector::load_config(
+        &credentials_config_path,
+        explicit_credentials_config_path.is_none(),
+    )
+    .map_err(anyhow::Error::msg)?;
 
     // Build unified security proxy
     let mut proxy = SecurityProxy::with_credentials_config(

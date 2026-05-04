@@ -22,6 +22,13 @@ pub enum InjectionMethod {
     QueryParam { name: String },
 }
 
+/// Concrete credential placement for an outbound request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialInjection {
+    Header { name: String, value: String },
+    QueryParam { name: String, value: String },
+}
+
 /// A host→credential mapping entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialMapping {
@@ -95,20 +102,23 @@ impl CredentialInjector {
         }
     }
 
-    /// Load from a TOML file. Returns `None` if file doesn't exist.
-    pub fn load_config(path: &str) -> Option<CredentialsConfig> {
+    /// Load from a TOML file. Returns `Ok(None)` only when a missing file is allowed.
+    pub fn load_config(
+        path: &str,
+        allow_missing: bool,
+    ) -> Result<Option<CredentialsConfig>, String> {
         match std::fs::read_to_string(path) {
             Ok(content) => match toml::from_str(&content) {
                 Ok(cfg) => {
                     info!(path = %path, "loaded credentials config");
-                    Some(cfg)
+                    Ok(Some(cfg))
                 }
-                Err(e) => {
-                    warn!(path = %path, error = %e, "failed to parse credentials config");
-                    None
-                }
+                Err(e) => Err(format!("failed to parse credentials config at {path}: {e}")),
             },
-            Err(_) => None,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && allow_missing => Ok(None),
+            Err(err) => Err(format!(
+                "failed to read credentials config at {path}: {err}"
+            )),
         }
     }
 
@@ -132,21 +142,36 @@ impl CredentialInjector {
     ///
     /// Resolves secrets on-demand from the vault with TTL-based caching.
     pub async fn inject(&self, headers: &mut Vec<(String, String)>, target_host: &str) {
+        for injection in self.injections_for_host(target_host).await {
+            match injection {
+                CredentialInjection::Header { name, value } => headers.push((name, value)),
+                CredentialInjection::QueryParam { name, .. } => {
+                    warn!(
+                        param = %name,
+                        "query_param credential injection requested through legacy header-only API; skipping"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Return all concrete credential injections for a host. Callers that own
+    /// the full request URL should prefer this over the legacy header-only
+    /// `inject` method so query-parameter mappings are applied correctly.
+    pub async fn injections_for_host(&self, target_host: &str) -> Vec<CredentialInjection> {
         let mapping = self.find_mapping(target_host);
         if let Some(m) = mapping {
             if let Some(secret) = self.resolve_secret(&m.secret_name).await {
-                let (header_name, header_value) = format_injection(&m.injection, &secret);
-                if header_name.is_empty() {
-                    return;
-                }
-                headers.push((header_name, header_value));
+                let injection = format_injection(&m.injection, &secret);
                 info!(
                     secret_name = %m.secret_name,
                     host = %target_host,
                     "injected credential"
                 );
+                return vec![injection];
             }
         }
+        Vec::new()
     }
 
     /// Find which mapping matches this host (first match wins).
@@ -297,23 +322,29 @@ fn dns_boundary_match(host: &str, pattern: &str) -> bool {
 }
 
 /// Format the injection based on method and secret value.
-fn format_injection(method: &InjectionMethod, secret: &str) -> (String, String) {
+fn format_injection(method: &InjectionMethod, secret: &str) -> CredentialInjection {
     match method {
-        InjectionMethod::Bearer => ("Authorization".into(), format!("Bearer {secret}")),
+        InjectionMethod::Bearer => CredentialInjection::Header {
+            name: "Authorization".into(),
+            value: format!("Bearer {secret}"),
+        },
         InjectionMethod::Basic { username } => {
             use base64::Engine;
             let encoded =
                 base64::engine::general_purpose::STANDARD.encode(format!("{username}:{secret}"));
-            ("Authorization".into(), format!("Basic {encoded}"))
+            CredentialInjection::Header {
+                name: "Authorization".into(),
+                value: format!("Basic {encoded}"),
+            }
         }
-        InjectionMethod::Header { name, prefix } => (name.clone(), format!("{prefix}{secret}")),
-        InjectionMethod::QueryParam { ref name } => {
-            tracing::warn!(
-                param = %name,
-                "query_param injection not yet implemented in header-only path; skipping"
-            );
-            return (String::new(), String::new());
-        }
+        InjectionMethod::Header { name, prefix } => CredentialInjection::Header {
+            name: name.clone(),
+            value: format!("{prefix}{secret}"),
+        },
+        InjectionMethod::QueryParam { name } => CredentialInjection::QueryParam {
+            name: name.clone(),
+            value: secret.to_string(),
+        },
     }
 }
 
@@ -404,9 +435,13 @@ mod tests {
 
     #[test]
     fn format_bearer() {
-        let (name, value) = format_injection(&InjectionMethod::Bearer, "sk-test");
-        assert_eq!(name, "Authorization");
-        assert_eq!(value, "Bearer sk-test");
+        assert_eq!(
+            format_injection(&InjectionMethod::Bearer, "sk-test"),
+            CredentialInjection::Header {
+                name: "Authorization".into(),
+                value: "Bearer sk-test".into(),
+            }
+        );
     }
 
     #[test]
@@ -415,9 +450,13 @@ mod tests {
             name: "x-api-key".into(),
             prefix: String::new(),
         };
-        let (name, value) = format_injection(&method, "sk-ant-123");
-        assert_eq!(name, "x-api-key");
-        assert_eq!(value, "sk-ant-123");
+        assert_eq!(
+            format_injection(&method, "sk-ant-123"),
+            CredentialInjection::Header {
+                name: "x-api-key".into(),
+                value: "sk-ant-123".into(),
+            }
+        );
     }
 
     #[test]
@@ -426,9 +465,27 @@ mod tests {
             name: "X-Custom-Auth".into(),
             prefix: "Token ".into(),
         };
-        let (name, value) = format_injection(&method, "abc123");
-        assert_eq!(name, "X-Custom-Auth");
-        assert_eq!(value, "Token abc123");
+        assert_eq!(
+            format_injection(&method, "abc123"),
+            CredentialInjection::Header {
+                name: "X-Custom-Auth".into(),
+                value: "Token abc123".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn format_query_param() {
+        let method = InjectionMethod::QueryParam {
+            name: "api_key".into(),
+        };
+        assert_eq!(
+            format_injection(&method, "secret-value"),
+            CredentialInjection::QueryParam {
+                name: "api_key".into(),
+                value: "secret-value".into(),
+            }
+        );
     }
 
     #[test]
@@ -473,6 +530,28 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
                 prefix: String::new(),
             }
         );
+    }
+
+    #[test]
+    fn load_config_allows_missing_default_only() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.toml");
+        let missing = missing.to_str().unwrap();
+
+        assert!(CredentialInjector::load_config(missing, true)
+            .unwrap()
+            .is_none());
+        let err = CredentialInjector::load_config(missing, false).unwrap_err();
+        assert!(err.contains("failed to read credentials config"));
+    }
+
+    #[test]
+    fn load_config_rejects_malformed_toml() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "[[mappings]]\nhosts = 42\n").unwrap();
+
+        let err = CredentialInjector::load_config(file.path().to_str().unwrap(), true).unwrap_err();
+        assert!(err.contains("failed to parse credentials config"));
     }
 
     #[test]
@@ -565,6 +644,30 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
         let mut headers = vec![];
         injector.inject(&mut headers, "api.openai.com").await;
         assert!(headers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn injections_for_host_returns_query_param() {
+        let injector = CredentialInjector::with_config(Some(CredentialsConfig {
+            mappings: vec![CredentialMapping {
+                hosts: vec!["api.example.com".into()],
+                secret_name: "example".into(),
+                injection: InjectionMethod::QueryParam {
+                    name: "api_key".into(),
+                },
+            }],
+            cache_ttl_secs: 60,
+        }));
+        injector.add("example", "secret-value");
+
+        let injections = injector.injections_for_host("api.example.com").await;
+        assert_eq!(
+            injections,
+            vec![CredentialInjection::QueryParam {
+                name: "api_key".into(),
+                value: "secret-value".into(),
+            }]
+        );
     }
 
     #[test]

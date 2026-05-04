@@ -12,6 +12,12 @@ pub struct IronclawSafety {
     leak_detector: LeakDetector,
 }
 
+impl Default for IronclawSafety {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IronclawSafety {
     pub fn new() -> Self {
         let config = SafetyConfig {

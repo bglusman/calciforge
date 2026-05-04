@@ -329,11 +329,47 @@ PYEOF
 
 # ── Environment file management ──────────────────────────────────────────────
 
-# Write an agent .env file (always overwrites to ensure config is current).
+# Write or merge an agent .env file. Managed keys from stdin are updated on each
+# installer run; operator-added keys that are not managed by Calciforge are
+# preserved so reruns do not erase provider credentials.
 # Args: <path> <key=value pairs as heredoc on stdin>
 ensure_agent_env() {
     local env_path="$1"
     mkdir -p "$(dirname "$env_path")"
-    cat > "$env_path"
+    local tmp
+    tmp="$(mktemp)"
+    cat > "$tmp"
+    if [[ -f "$env_path" ]]; then
+        python3 - "$env_path" "$tmp" <<'PY'
+import pathlib, re, sys
+
+dest = pathlib.Path(sys.argv[1])
+managed = pathlib.Path(sys.argv[2])
+managed_text = managed.read_text()
+managed_keys = set()
+for line in managed_text.splitlines():
+    m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=', line)
+    if m:
+        managed_keys.add(m.group(1))
+
+preserved = []
+for line in dest.read_text().splitlines():
+    if line == "# Preserved operator-managed entries":
+        continue
+    m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=', line)
+    if m and m.group(1) in managed_keys:
+        continue
+    if line:
+        preserved.append(line)
+
+out = managed_text.rstrip() + "\n"
+if preserved:
+    out += "\n# Preserved operator-managed entries\n" + "\n".join(preserved) + "\n"
+dest.write_text(out)
+PY
+    else
+        cp "$tmp" "$env_path"
+    fi
+    rm -f "$tmp"
     chmod 600 "$env_path"
 }

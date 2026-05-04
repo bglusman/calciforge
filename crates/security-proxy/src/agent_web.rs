@@ -92,7 +92,7 @@ pub fn denied_url_in_text(text: &str, denylist: &[String]) -> Option<String> {
 /// crate currently does).
 pub fn extract_urls(text: &str) -> Vec<String> {
     static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+").unwrap());
+        Lazy::new(|| Regex::new(r"(?i)https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+").unwrap());
     let canonical: String = if text.contains("\\/") {
         text.replace("\\/", "/")
     } else {
@@ -222,10 +222,10 @@ pub fn inspect_browsing_body(
     }
 }
 
-/// (D) Walk a JSON LLM-request body and collect every URL that appears
-/// in `messages[].content` (string OR Anthropic content-array form),
-/// and optionally in `tools[].description`. Returns the offending host
-/// if any URL is on the denylist.
+/// (D) Walk a JSON LLM-request body and collect URLs from user/model text
+/// surfaces. Handles Chat Completions `messages[].content`, Anthropic content
+/// arrays, and OpenAI Responses-style top-level `input`; optionally scans tool
+/// descriptions too. Returns the offending host if any URL is on the denylist.
 pub fn preflight_message_urls(body: &[u8], policy: &AgentWebPolicy) -> Option<String> {
     if !policy.preflight_message_urls {
         return None;
@@ -239,50 +239,63 @@ pub fn preflight_message_urls(body: &[u8], policy: &AgentWebPolicy) -> Option<St
         return None;
     }
 
-    if let Some(messages) = json.get("messages").and_then(Value::as_array) {
-        for msg in messages {
-            let Some(content) = msg.get("content") else {
-                continue;
-            };
-            if let Some(text) = content.as_str() {
-                if let Some(host) = denied_url_in_text(text, denylist) {
-                    return Some(host);
-                }
-            } else if let Some(parts) = content.as_array() {
-                // Anthropic / tool-call content-array shape.
-                for part in parts {
-                    if let Some(text) = part.get("text").and_then(Value::as_str) {
-                        if let Some(host) = denied_url_in_text(text, denylist) {
-                            return Some(host);
-                        }
-                    }
-                }
-            }
+    if let Some(messages) = json.get("messages") {
+        if let Some(host) = denied_url_in_json_text(messages, denylist) {
+            return Some(host);
+        }
+    }
+
+    if let Some(input) = json.get("input") {
+        if let Some(host) = denied_url_in_json_text(input, denylist) {
+            return Some(host);
         }
     }
 
     if policy.preflight_tool_descriptions {
-        if let Some(tools) = json.get("tools").and_then(Value::as_array) {
-            for tool in tools {
-                if let Some(desc) = tool.get("description").and_then(Value::as_str) {
-                    if let Some(host) = denied_url_in_text(desc, denylist) {
-                        return Some(host);
-                    }
-                }
-                // OpenAI shape: function.description nested
-                if let Some(desc) = tool
-                    .get("function")
-                    .and_then(|f| f.get("description"))
-                    .and_then(Value::as_str)
-                {
-                    if let Some(host) = denied_url_in_text(desc, denylist) {
-                        return Some(host);
-                    }
-                }
+        if let Some(tools) = json.get("tools") {
+            if let Some(host) = denied_tool_description_url(tools, denylist) {
+                return Some(host);
             }
         }
     }
 
+    None
+}
+
+fn denied_url_in_json_text(value: &Value, denylist: &[String]) -> Option<String> {
+    match value {
+        Value::String(text) => denied_url_in_text(text, denylist),
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| denied_url_in_json_text(item, denylist)),
+        Value::Object(map) => map
+            .values()
+            .find_map(|item| denied_url_in_json_text(item, denylist)),
+        _ => None,
+    }
+}
+
+fn denied_tool_description_url(tools: &Value, denylist: &[String]) -> Option<String> {
+    let Value::Array(items) = tools else {
+        return None;
+    };
+
+    for tool in items {
+        if let Some(desc) = tool.get("description").and_then(Value::as_str) {
+            if let Some(host) = denied_url_in_text(desc, denylist) {
+                return Some(host);
+            }
+        }
+        if let Some(desc) = tool
+            .get("function")
+            .and_then(|f| f.get("description"))
+            .and_then(Value::as_str)
+        {
+            if let Some(host) = denied_url_in_text(desc, denylist) {
+                return Some(host);
+            }
+        }
+    }
     None
 }
 
@@ -442,6 +455,13 @@ mod tests {
     }
 
     #[test]
+    fn extract_urls_finds_case_insensitive_schemes() {
+        let urls = extract_urls("see HTTPS://BLOCKED.example/x and HtTp://b.com");
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].starts_with("HTTPS://"));
+    }
+
+    #[test]
     fn denied_url_in_text_returns_offender() {
         let r = denied_url_in_text(
             "summarize https://blocked.example.com/path",
@@ -471,6 +491,36 @@ mod tests {
             "messages": [
                 {"role": "user", "content": [
                     {"type": "text", "text": "summarize https://blocked.example.com/x"}
+                ]}
+            ]
+        })
+        .to_string();
+        let policy = policy_with_denylist(&["blocked.example.com"]);
+        assert_eq!(
+            preflight_message_urls(body.as_bytes(), &policy).as_deref(),
+            Some("blocked.example.com")
+        );
+    }
+
+    #[test]
+    fn preflight_finds_url_in_openai_responses_input_string() {
+        let body = serde_json::json!({
+            "input": "summarize https://blocked.example.com/x"
+        })
+        .to_string();
+        let policy = policy_with_denylist(&["blocked.example.com"]);
+        assert_eq!(
+            preflight_message_urls(body.as_bytes(), &policy).as_deref(),
+            Some("blocked.example.com")
+        );
+    }
+
+    #[test]
+    fn preflight_finds_url_in_openai_responses_input_array() {
+        let body = serde_json::json!({
+            "input": [
+                {"role": "user", "content": [
+                    {"type": "input_text", "text": "summarize https://blocked.example.com/x"}
                 ]}
             ]
         })

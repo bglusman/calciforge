@@ -17,8 +17,8 @@ fn default_provider_browsing_strategy() -> String {
 
 /// Curated list of hostnames Calciforge treats as search APIs by default.
 /// Used by both `forbid_search_engines` (egress block) and
-/// `scan_search_responses` (response-body scan). Match is suffix
-/// (`dest_host.ends_with(pattern)`) so subdomains are covered.
+/// `scan_search_responses` (response-body scan). Matching is DNS-boundary
+/// aware: a bare domain matches itself and subdomains, not lookalike suffixes.
 pub fn default_search_engine_patterns() -> Vec<String> {
     vec![
         "api.search.brave.com".into(),
@@ -72,10 +72,20 @@ pub fn default_forbidden_browsing_models() -> Vec<String> {
 pub fn default_known_llm_apis() -> Vec<String> {
     vec![
         "api.openai.com".into(),
+        "openai.azure.com".into(),
         "api.anthropic.com".into(),
         "generativelanguage.googleapis.com".into(),
         "openrouter.ai".into(),
         "api.groq.com".into(),
+        "api.moonshot.cn".into(),
+        "api.kimi.com".into(),
+        "api.deepseek.com".into(),
+        "api.mistral.ai".into(),
+        "api.x.ai".into(),
+        "api.cohere.ai".into(),
+        "api.together.xyz".into(),
+        "api.fireworks.ai".into(),
+        "api.perplexity.ai".into(),
     ]
 }
 
@@ -268,6 +278,7 @@ pub struct InjectionReport {
 
 /// Configuration for the security gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct GatewayConfig {
     /// Port to listen on (default: 8888; override with SECURITY_PROXY_PORT)
     pub port: u16,
@@ -319,6 +330,32 @@ pub struct GatewayConfig {
     /// `docs/security-gateway.md` for the threat model.
     #[serde(default)]
     pub agent_web: AgentWebPolicy,
+}
+
+/// Parse `security-proxy.toml` with backward-compatible support for the
+/// documented `[security.agent_web]` table.
+///
+/// `GatewayConfig` stores the effective policy at `agent_web`, but early docs
+/// and operator examples used `[security.agent_web]`. Normalize that shape
+/// before deserializing so pasted config actually takes effect instead of
+/// silently falling back to defaults.
+pub fn parse_gateway_config_toml(input: &str) -> Result<GatewayConfig, toml::de::Error> {
+    let mut value: toml::Value = toml::from_str(input)?;
+    let has_top_level_agent_web = value
+        .as_table()
+        .is_some_and(|table| table.contains_key("agent_web"));
+
+    if !has_top_level_agent_web {
+        let nested = value
+            .get("security")
+            .and_then(|security| security.get("agent_web"))
+            .cloned();
+        if let (Some(agent_web), Some(table)) = (nested, value.as_table_mut()) {
+            table.insert("agent_web".to_string(), agent_web);
+        }
+    }
+
+    value.try_into()
 }
 
 impl Default for GatewayConfig {
@@ -429,6 +466,64 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: GatewayConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, deserialized, "roundtrip must preserve all fields");
+    }
+
+    #[test]
+    fn toml_parser_accepts_documented_security_agent_web_table() {
+        let parsed = parse_gateway_config_toml(
+            r#"
+            port = 9999
+
+            [security.agent_web]
+            forbid_provider_browsing = true
+            url_destination_denylist = ["blocked.example.com"]
+            "#,
+        )
+        .expect("parse documented nested agent-web table");
+
+        assert_eq!(parsed.port, 9999);
+        assert!(
+            parsed.agent_web.forbid_provider_browsing,
+            "documented [security.agent_web] table must configure the effective policy"
+        );
+        assert_eq!(
+            parsed.agent_web.url_destination_denylist,
+            vec!["blocked.example.com"]
+        );
+        assert!(
+            parsed.scan_inbound,
+            "partial TOML files should inherit GatewayConfig defaults"
+        );
+    }
+
+    #[test]
+    fn top_level_agent_web_wins_over_nested_compat_table() {
+        let parsed = parse_gateway_config_toml(
+            r#"
+            [agent_web]
+            forbid_provider_browsing = true
+
+            [security.agent_web]
+            forbid_provider_browsing = false
+            "#,
+        )
+        .expect("parse config containing both shapes");
+
+        assert!(
+            parsed.agent_web.forbid_provider_browsing,
+            "explicit top-level agent_web should not be overwritten by compat normalization"
+        );
+    }
+
+    #[test]
+    fn default_known_llm_apis_cover_configured_remote_providers() {
+        let hosts = default_known_llm_apis();
+        for host in ["api.moonshot.cn", "api.deepseek.com", "openrouter.ai"] {
+            assert!(
+                hosts.iter().any(|h| h == host),
+                "{host} must be in known_llm_apis so provider-side browsing and URL preflight apply to Calciforge-supported remote providers"
+            );
+        }
     }
 
     /// Verdict variants survive JSON roundtrip with structural equality.

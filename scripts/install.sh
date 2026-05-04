@@ -1404,6 +1404,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>SECURITY_PROXY_CA_KEY</key><string>${SECURITY_PROXY_CA_KEY}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
+        <key>CALCIFORGE_CONFIG_HOME</key><string>${CALCIFORGE_CONFIG_HOME}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
@@ -1431,6 +1432,7 @@ Environment=SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}
 Environment=SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
+Environment=CALCIFORGE_CONFIG_HOME=${CALCIFORGE_CONFIG_HOME}
 Environment=AGENT_CONFIG=${AGENTS_JSON}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
@@ -1522,6 +1524,7 @@ fi
 # across reboots. Expects config at $CALCIFORGE_CONFIG_HOME/config.toml by
 # default; users must populate it before the service starts (or the service
 # will fail health and launchd/systemd will keep retrying).
+if [[ "$AGENTS_ONLY" != true ]]; then
 hdr "calciforge"
 
 mkdir -p "$ZC_LOG_DIR"
@@ -1547,6 +1550,28 @@ timeout_seconds = 300"
     fi
 }
 
+_ensure_proxy_enabled() {
+    local config_path="$1"
+    python3 - "$config_path" <<'PY'
+import pathlib, re, sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+match = re.search(r'(?ms)^\[proxy\]\n.*?(?=^\[|\Z)', text)
+if not match:
+    raise SystemExit(1)
+
+section = match.group(0)
+if re.search(r'(?m)^enabled\s*=', section):
+    new_section = re.sub(r'(?m)^enabled\s*=.*$', 'enabled = true', section, count=1)
+else:
+    new_section = section.replace('[proxy]\n', '[proxy]\nenabled = true\n', 1)
+
+if new_section != section:
+    path.write_text(text[:match.start()] + new_section + text[match.end():])
+PY
+}
+
 if [[ ! -f "$ZC_CONFIG" ]]; then
     warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
     mkdir -p "$(dirname "$ZC_CONFIG")"
@@ -1564,12 +1589,7 @@ text = pathlib.Path('$ZC_CONFIG').read_text()
 m = re.search(r'(?m)^\[proxy\].*?(?=^\[|\Z)', text, re.S)
 sys.exit(0 if m and 'enabled = true' in m.group() else 1)
 " 2>/dev/null; then
-    if [[ "$PLATFORM" == "Darwin" ]]; then
-        sed -i '' 's/^\(\[proxy\]\)/\1\
-enabled = true/' "$ZC_CONFIG" 2>/dev/null || true
-    else
-        sed -i 's/^\(\[proxy\]\)/\1\nenabled = true/' "$ZC_CONFIG" 2>/dev/null || true
-    fi
+    _ensure_proxy_enabled "$ZC_CONFIG" || warn "Could not set [proxy].enabled = true in $ZC_CONFIG"
 fi
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
@@ -1642,6 +1662,7 @@ if pgrep -f "${BIN_DIR}/calciforge" > /dev/null; then
 else
     warn "calciforge did not start — check $ZC_LOG_DIR/calciforge.err"
 fi
+fi # !AGENTS_ONLY — calciforge service/config
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. Claude Code hook
@@ -2476,7 +2497,7 @@ REMOTE_MITM_CA
             local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
-                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
             exec_args=""
@@ -2521,6 +2542,7 @@ REMOTE_MITM_CA
                     "SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}"
                     "SECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}"
                     "SECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}"
+                    "CALCIFORGE_CONFIG_HOME=${config_dir}"
                     "AGENT_CONFIG=${config_dir}/agents.json"
                 )
             fi

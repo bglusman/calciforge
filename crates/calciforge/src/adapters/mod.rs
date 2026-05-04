@@ -331,6 +331,12 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 ));
             }
             let token = agent_token_no_env()?;
+            if token.is_empty() {
+                return Err(format!(
+                    "agent '{}': kind='ironclaw' requires api_key, api_key_file, or auth_token",
+                    agent.id
+                ));
+            }
             Ok(Box::new(IronClawAdapter::new(
                 agent.endpoint.clone(),
                 token,
@@ -640,6 +646,42 @@ mod tests {
         };
         let adapter = build_adapter(&agent).expect("should build dirac-cli adapter");
         assert_eq!(adapter.kind(), "dirac-cli");
+    }
+
+    #[test]
+    fn test_build_ironclaw_requires_auth_token() {
+        let agent = AgentConfig {
+            id: "ironclaw".to_string(),
+            kind: "ironclaw".to_string(),
+            endpoint: "http://127.0.0.1:3000".to_string(),
+            timeout_ms: Some(300_000),
+            model: None,
+            auth_token: None,
+            api_key: None,
+            api_key_file: None,
+            openclaw_agent_id: None,
+            allow_model_override: None,
+            reply_port: None,
+            reply_auth_token: None,
+            reply_auth_token_file: None,
+            command: None,
+            args: None,
+            env: None,
+            registry: None,
+            aliases: vec![],
+        };
+
+        let err = match build_adapter(&agent) {
+            Ok(adapter) => panic!(
+                "ironclaw without shared secret built unexpectedly as {}",
+                adapter.kind()
+            ),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("requires api_key"),
+            "error should point operator at auth configuration, got: {err}"
+        );
     }
 
     #[test]
