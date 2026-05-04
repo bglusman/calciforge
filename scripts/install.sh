@@ -1833,6 +1833,21 @@ if agent_enabled ironclaw; then
         ca_cert="${SECURITY_PROXY_CA_CERT}"
         gateway_url="${CALCIFORGE_IRONCLAW_MODEL_GATEWAY:-http://127.0.0.1:18083/v1}"
         gateway_model="${CALCIFORGE_IRONCLAW_DEFAULT_MODEL:-kimi-k2.5}"
+        # Read the gateway's inbound API key so IronClaw can authenticate
+        gateway_api_key=""
+        if [[ -f "$ZC_CONFIG" ]]; then
+            gateway_api_key="$(python3 -c "
+import pathlib, re, sys
+text = pathlib.Path('$ZC_CONFIG').read_text()
+m = re.search(r'^\[proxy\].*?^api_key_file\s*=\s*\"([^\"]+)\"', text, re.M|re.S)
+if m:
+    p = pathlib.Path(m.group(1)).expanduser()
+    if p.exists(): print(p.read_text().strip())
+else:
+    m2 = re.search(r'^\[proxy\].*?^api_key\s*=\s*\"([^\"]+)\"', text, re.M|re.S)
+    if m2: print(m2.group(1))
+" 2>/dev/null || true)"
+        fi
         ensure_agent_env "$IRONCLAW_DIR/.env" <<ENVEOF
 IRONCLAW_PROFILE=server
 HTTP_PORT=${CALCIFORGE_IRONCLAW_PORT}
@@ -1840,6 +1855,7 @@ HTTP_WEBHOOK_SECRET=${webhook_secret}
 LLM_BACKEND=${CALCIFORGE_IRONCLAW_LLM_BACKEND}
 LLM_BASE_URL=${gateway_url}
 LLM_MODEL=${gateway_model}
+${gateway_api_key:+LLM_API_KEY=${gateway_api_key}}
 DATABASE_BACKEND=libsql
 ONBOARD_COMPLETED=true
 # Route IronClaw's outbound HTTP through Calciforge security proxy for
