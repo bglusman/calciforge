@@ -1,10 +1,72 @@
-use dashmap::DashMap;
-use tracing::info;
+use std::time::{Duration, Instant};
 
-/// Credential provider — injects API keys and secrets into outgoing requests.
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
+
+/// How a credential is injected into the outgoing request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InjectionMethod {
+    /// Authorization: Bearer <secret>
+    Bearer,
+    /// Authorization: Basic base64(<username>:<secret>)
+    Basic { username: String },
+    /// Custom header: <name>: <prefix><secret>
+    Header {
+        name: String,
+        #[serde(default)]
+        prefix: String,
+    },
+    /// Query parameter: ?<name>=<secret>
+    QueryParam { name: String },
+}
+
+/// Concrete credential placement for an outbound request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialInjection {
+    Header { name: String, value: String },
+    QueryParam { name: String, value: String },
+}
+
+/// A host→credential mapping entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialMapping {
+    /// DNS-boundary-safe host patterns.
+    /// - "openai.com" matches openai.com and *.openai.com
+    /// - "*.corp.example.com" matches any subdomain of corp.example.com
+    pub hosts: Vec<String>,
+    /// Secret name passed to `secrets_client::vault::get_secret`
+    pub secret_name: String,
+    /// How to inject the resolved secret
+    pub injection: InjectionMethod,
+}
+
+/// Top-level credentials config (loaded from TOML).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CredentialsConfig {
+    #[serde(default)]
+    pub mappings: Vec<CredentialMapping>,
+    /// Cache TTL in seconds. 0 = no expiry. Default: 300 (5 min).
+    #[serde(default = "default_ttl")]
+    pub cache_ttl_secs: u64,
+}
+
+fn default_ttl() -> u64 {
+    300
+}
+
+struct CachedSecret {
+    value: String,
+    resolved_at: Instant,
+}
+
+/// Credential provider — injects API keys and secrets into outgoing requests
+/// based on configurable host→credential mappings.
 pub struct CredentialInjector {
-    /// Map of provider name → API key (loaded from env or vault)
-    credentials: DashMap<String, String>,
+    cache: DashMap<String, CachedSecret>,
+    mappings: Vec<CredentialMapping>,
+    cache_ttl: Duration,
 }
 
 impl Default for CredentialInjector {
@@ -14,283 +76,600 @@ impl Default for CredentialInjector {
 }
 
 impl CredentialInjector {
+    /// Create with built-in provider mappings (backward-compatible default).
     pub fn new() -> Self {
+        Self::with_config(None)
+    }
+
+    /// Create with explicit configuration. If `None`, uses the built-in table.
+    pub fn with_config(config: Option<CredentialsConfig>) -> Self {
+        let (mappings, ttl) = match config {
+            Some(cfg) => {
+                let ttl = Duration::from_secs(cfg.cache_ttl_secs);
+                (cfg.mappings, ttl)
+            }
+            None => (Self::builtin_mappings(), Duration::ZERO),
+        };
+        info!(
+            mappings = mappings.len(),
+            ttl_secs = ttl.as_secs(),
+            "credential injector initialized"
+        );
         Self {
-            credentials: DashMap::new(),
+            cache: DashMap::new(),
+            mappings,
+            cache_ttl: ttl,
         }
     }
 
-    /// Load credentials from environment variables.
-    ///
-    /// Legacy convention: `ZEROGATE_KEY_<PROVIDER>` — populated into the
-    /// cache at startup. Kept for back-compat; new code should rely on
-    /// the on-demand resolver (`ensure_cached`) which looks up
-    /// `<NAME>_API_KEY` (the convention used by most SDKs and by
-    /// `secrets-client::vault::get_secret`). See
-    /// research/planning/consolidation-findings.md finding #1.
-    ///
-    /// Deprecation path: this method emits a per-key warning when a
-    /// `ZEROGATE_KEY_*` var is found, so operators notice and can
-    /// migrate to the standard form. A future PR removes this method
-    /// outright once all deployments have migrated.
+    /// Load from a TOML file. Returns `Ok(None)` only when a missing file is allowed.
+    pub fn load_config(
+        path: &str,
+        allow_missing: bool,
+    ) -> Result<Option<CredentialsConfig>, String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => match toml::from_str(&content) {
+                Ok(cfg) => {
+                    info!(path = %path, "loaded credentials config");
+                    Ok(Some(cfg))
+                }
+                Err(e) => Err(format!("failed to parse credentials config at {path}: {e}")),
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && allow_missing => Ok(None),
+            Err(err) => Err(format!(
+                "failed to read credentials config at {path}: {err}"
+            )),
+        }
+    }
+
+    /// Load credentials from legacy `ZEROGATE_KEY_*` environment variables.
     pub fn load_from_env(&mut self) {
         for (key, value) in std::env::vars() {
             if let Some(provider) = key.strip_prefix("ZEROGATE_KEY_") {
                 let provider_lower = provider.to_lowercase();
-                tracing::warn!(
+                warn!(
                     env_var = %key,
                     provider = %provider_lower,
-                    "ZEROGATE_KEY_* is deprecated — set {}_API_KEY instead \
-                     so the shared resolver (env/fnox/vault) finds it",
+                    "ZEROGATE_KEY_* is deprecated — set {}_API_KEY instead",
                     provider
                 );
-                self.credentials.insert(provider_lower, value);
+                self.add(&provider_lower, &value);
             }
         }
     }
 
     /// Inject credentials into request headers based on target host.
-    pub fn inject(&self, headers: &mut Vec<(String, String)>, target_host: &str) {
-        let provider = self.detect_provider(target_host);
-        if let Some(provider_name) = provider {
-            if let Some(api_key) = self.credentials.get(&provider_name) {
-                let (header_name, header_value) = self.format_auth_header(&provider_name, &api_key);
-                headers.push((header_name, header_value));
-                info!("Injected {} auth header for {}", provider_name, target_host);
+    ///
+    /// Resolves secrets on-demand from the vault with TTL-based caching.
+    pub async fn inject(&self, headers: &mut Vec<(String, String)>, target_host: &str) {
+        for injection in self.injections_for_host(target_host).await {
+            match injection {
+                CredentialInjection::Header { name, value } => headers.push((name, value)),
+                CredentialInjection::QueryParam { name, .. } => {
+                    warn!(
+                        param = %name,
+                        "query_param credential injection requested through legacy header-only API; skipping"
+                    );
+                }
             }
         }
     }
 
-    /// Public wrapper so callers outside this module can use the same
-    /// host→provider mapping without duplicating the pattern list.
-    pub fn detect_provider_pub(&self, host: &str) -> Option<String> {
-        self.detect_provider(host)
+    /// Return all concrete credential injections for a host. Callers that own
+    /// the full request URL should prefer this over the legacy header-only
+    /// `inject` method so query-parameter mappings are applied correctly.
+    pub async fn injections_for_host(&self, target_host: &str) -> Vec<CredentialInjection> {
+        let mapping = self.find_mapping(target_host);
+        if let Some(m) = mapping {
+            if let Some(secret) = self.resolve_secret(&m.secret_name).await {
+                let injection = format_injection(&m.injection, &secret);
+                info!(
+                    secret_name = %m.secret_name,
+                    host = %target_host,
+                    "injected credential"
+                );
+                return vec![injection];
+            }
+        }
+        Vec::new()
     }
 
-    /// Detect which provider a host belongs to.
-    ///
-    /// Matching is suffix-bounded on a DNS label boundary, not a plain
-    /// substring: `host == domain || host.ends_with(".domain")`. This
-    /// prevents an attacker-registered domain like
-    /// `api.openai.com.evil.example` from being identified as
-    /// `openai` (which would trigger credential injection to the
-    /// wrong party). A prior substring implementation had this bug;
-    /// see the `detect_provider_rejects_lookalike_suffix_hosts` test.
-    fn detect_provider(&self, host: &str) -> Option<String> {
+    /// Find which mapping matches this host (first match wins).
+    pub fn find_mapping(&self, host: &str) -> Option<&CredentialMapping> {
         let host_lower = host.to_lowercase();
-        // Table of (domain, provider-name). Order is first-match-wins;
-        // put more-specific before more-general (api.github.com would
-        // match before github.com if both were listed separately — but
-        // we only list one per provider so it doesn't matter today).
-        const PROVIDERS: &[(&str, &str)] = &[
-            ("openai.com", "openai"),
-            ("anthropic.com", "anthropic"),
-            ("generativelanguage.googleapis.com", "google"),
-            ("openrouter.ai", "openrouter"),
-            ("moonshot.cn", "kimi"),
-            ("github.com", "github"),
-            ("cloudflare.com", "cloudflare"),
-        ];
-        for (domain, provider) in PROVIDERS {
-            if host_lower == *domain || host_lower.ends_with(&format!(".{domain}")) {
-                return Some((*provider).into());
+        self.mappings.iter().find(|m| {
+            m.hosts
+                .iter()
+                .any(|pattern| dns_boundary_match(&host_lower, pattern))
+        })
+    }
+
+    /// Public accessor: which secret name would be injected for this host?
+    pub fn detect_provider_pub(&self, host: &str) -> Option<String> {
+        self.find_mapping(host).map(|m| m.secret_name.clone())
+    }
+
+    /// Get a credential by secret name (for direct use).
+    pub fn get(&self, secret_name: &str) -> Option<String> {
+        let key = secret_name.to_lowercase();
+        self.cache.get(&key).map(|v| v.value.clone())
+    }
+
+    /// Add a credential manually (bypasses vault resolution).
+    pub fn add(&self, secret_name: &str, value: &str) {
+        self.cache.insert(
+            secret_name.to_lowercase(),
+            CachedSecret {
+                value: value.to_string(),
+                resolved_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Ensure a secret is cached (resolve from vault if missing or expired).
+    pub async fn ensure_cached(&self, secret_name: &str) -> bool {
+        self.resolve_secret(secret_name).await.is_some()
+    }
+
+    async fn resolve_secret(&self, secret_name: &str) -> Option<String> {
+        let key = secret_name.to_lowercase();
+
+        // Check cache (with TTL)
+        if let Some(entry) = self.cache.get(&key) {
+            if self.cache_ttl.is_zero() || entry.resolved_at.elapsed() < self.cache_ttl {
+                return Some(entry.value.clone());
             }
+            // Expired — fall through to re-resolve
         }
-        None
-    }
 
-    /// Format the auth header based on provider conventions.
-    fn format_auth_header(&self, provider: &str, api_key: &str) -> (String, String) {
-        match provider {
-            "openai" | "openrouter" | "kimi" | "github" => {
-                ("Authorization".into(), format!("Bearer {}", api_key))
-            }
-            "anthropic" => ("x-api-key".into(), api_key.to_string()),
-            "google" | "cloudflare" => ("Authorization".into(), format!("Bearer {}", api_key)),
-            _ => ("Authorization".into(), format!("Bearer {}", api_key)),
-        }
-    }
-
-    /// Get a credential by provider name (for direct use).
-    pub fn get(&self, provider: &str) -> Option<String> {
-        self.credentials.get(provider).map(|v| v.clone())
-    }
-
-    /// Add a credential manually.
-    pub fn add(&self, provider: &str, api_key: &str) {
-        self.credentials
-            .insert(provider.to_lowercase(), api_key.to_string());
-    }
-
-    /// Populate the cache for `provider` from the shared
-    /// `secrets_client::vault::get_secret` resolver if not already
-    /// present. Returns `true` when the cache has a value for the
-    /// provider after the call (either it was already there or the
-    /// resolver just supplied one).
-    ///
-    /// **Cache policy — important limitations:**
-    ///
-    /// - First resolve wins. Once a provider's value is cached,
-    ///   `ensure_cached` returns early on every subsequent call and
-    ///   does NOT re-resolve. A rotation in env/fnox/vault will not be
-    ///   picked up by any call path through `ensure_cached` until the
-    ///   cache is invalidated (no mechanism today) or the process
-    ///   restarts.
-    /// - `add(provider, value)` overwrites unconditionally. Callers
-    ///   who want to rotate a credential at runtime must call `add`
-    ///   directly; the resolver path alone won't refresh.
-    /// - Concurrent callers on the same provider can both pass the
-    ///   `contains_key` check, both call the resolver, and both insert.
-    ///   Because the resolver is deterministic for a given environment,
-    ///   last-write-wins on the DashMap is functionally equivalent —
-    ///   wasted round-trips, but no correctness issue.
-    ///
-    /// **Rotation story (unchanged by this method):** runtime
-    /// rotation requires adding a TTL or explicit invalidation path.
-    /// Neither exists yet; rotations take effect on the next restart.
-    /// This addresses finding #5 in
-    /// `research/planning/consolidation-findings.md` partially — the resolver
-    /// is at least consulted for uncached providers per-request, which
-    /// is better than the previous startup-only env scan; true
-    /// rotation is follow-up work.
-    pub async fn ensure_cached(&self, provider: &str) -> bool {
-        let key = provider.to_lowercase();
-        if self.credentials.contains_key(&key) {
-            return true;
-        }
+        // Resolve from vault
         match secrets_client::vault::get_secret(&key).await {
             Ok(secret) => {
-                tracing::debug!(
-                    provider = %provider,
-                    "credential resolved for provider injection"
+                debug!(secret_name = %secret_name, "credential resolved from vault");
+                self.cache.insert(
+                    key,
+                    CachedSecret {
+                        value: secret.clone(),
+                        resolved_at: Instant::now(),
+                    },
                 );
-                self.credentials.insert(key, secret);
-                true
+                Some(secret)
             }
             Err(e) => {
-                tracing::debug!(
-                    provider = %provider,
+                // On refresh failure, use stale value if available
+                if let Some(entry) = self.cache.get(&key) {
+                    warn!(
+                        secret_name = %secret_name,
+                        error = %e,
+                        "vault refresh failed, using stale cached value"
+                    );
+                    return Some(entry.value.clone());
+                }
+                debug!(
+                    secret_name = %secret_name,
                     error = %e,
-                    "ensure_cached: resolver returned no secret"
+                    "no secret resolved"
                 );
-                false
+                None
             }
         }
     }
+
+    fn builtin_mappings() -> Vec<CredentialMapping> {
+        vec![
+            CredentialMapping {
+                hosts: vec!["openai.com".into()],
+                secret_name: "openai".into(),
+                injection: InjectionMethod::Bearer,
+            },
+            CredentialMapping {
+                hosts: vec!["anthropic.com".into()],
+                secret_name: "anthropic".into(),
+                injection: InjectionMethod::Header {
+                    name: "x-api-key".into(),
+                    prefix: String::new(),
+                },
+            },
+            CredentialMapping {
+                hosts: vec!["generativelanguage.googleapis.com".into()],
+                secret_name: "google".into(),
+                injection: InjectionMethod::Bearer,
+            },
+            CredentialMapping {
+                hosts: vec!["openrouter.ai".into()],
+                secret_name: "openrouter".into(),
+                injection: InjectionMethod::Bearer,
+            },
+            CredentialMapping {
+                hosts: vec!["moonshot.cn".into()],
+                secret_name: "kimi".into(),
+                injection: InjectionMethod::Bearer,
+            },
+            CredentialMapping {
+                hosts: vec!["github.com".into()],
+                secret_name: "github".into(),
+                injection: InjectionMethod::Bearer,
+            },
+            CredentialMapping {
+                hosts: vec!["cloudflare.com".into()],
+                secret_name: "cloudflare".into(),
+                injection: InjectionMethod::Bearer,
+            },
+        ]
+    }
 }
+
+/// DNS-boundary-safe host matching.
+///
+/// Pattern forms:
+/// - `*.example.com` — matches any subdomain but NOT example.com itself
+/// - `example.com` — matches example.com AND any subdomain (*.example.com)
+/// - Exact match for fully qualified hosts
+///
+/// Prevents credential injection to lookalike domains (e.g.,
+/// `api.openai.com.evil.example` will NOT match `openai.com`).
+fn dns_boundary_match(host: &str, pattern: &str) -> bool {
+    let host_lower = host.to_lowercase();
+    let pattern_lower = pattern.to_lowercase();
+
+    if let Some(suffix) = pattern_lower.strip_prefix("*.") {
+        // Glob pattern: match any subdomain of suffix, but not suffix itself
+        host_lower.ends_with(&format!(".{suffix}")) && host_lower.len() > suffix.len() + 1
+    } else {
+        // Bare domain: match exact OR any subdomain
+        host_lower == pattern_lower || host_lower.ends_with(&format!(".{pattern_lower}"))
+    }
+}
+
+/// Format the injection based on method and secret value.
+fn format_injection(method: &InjectionMethod, secret: &str) -> CredentialInjection {
+    match method {
+        InjectionMethod::Bearer => CredentialInjection::Header {
+            name: "Authorization".into(),
+            value: format!("Bearer {secret}"),
+        },
+        InjectionMethod::Basic { username } => {
+            use base64::Engine;
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{secret}"));
+            CredentialInjection::Header {
+                name: "Authorization".into(),
+                value: format!("Basic {encoded}"),
+            }
+        }
+        InjectionMethod::Header { name, prefix } => CredentialInjection::Header {
+            name: name.clone(),
+            value: format!("{prefix}{secret}"),
+        },
+        InjectionMethod::QueryParam { name } => CredentialInjection::QueryParam {
+            name: name.clone(),
+            value: secret.to_string(),
+        },
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_provider() {
-        let injector = CredentialInjector::new();
-        assert_eq!(
-            injector.detect_provider("api.openai.com"),
-            Some("openai".into())
-        );
-        assert_eq!(
-            injector.detect_provider("api.anthropic.com"),
-            Some("anthropic".into())
-        );
-        assert_eq!(
-            injector.detect_provider("generativelanguage.googleapis.com"),
-            Some("google".into())
-        );
-        assert_eq!(
-            injector.detect_provider("openrouter.ai"),
-            Some("openrouter".into())
-        );
-        assert_eq!(injector.detect_provider("example.com"), None);
+    fn dns_match_bare_domain_matches_exact() {
+        assert!(dns_boundary_match("openai.com", "openai.com"));
     }
 
     #[test]
-    fn test_format_auth_header() {
-        let injector = CredentialInjector::new();
-
-        let (name, value) = injector.format_auth_header("openai", "sk-test123");
-        assert_eq!(name, "Authorization");
-        assert_eq!(value, "Bearer sk-test123");
-
-        let (name, value) = injector.format_auth_header("anthropic", "sk-ant-test");
-        assert_eq!(name, "x-api-key");
-        assert_eq!(value, "sk-ant-test");
+    fn dns_match_bare_domain_matches_subdomain() {
+        assert!(dns_boundary_match("api.openai.com", "openai.com"));
     }
 
     #[test]
-    fn test_inject_no_credential() {
-        let injector = CredentialInjector::new();
-        let mut headers = vec![];
-        injector.inject(&mut headers, "api.openai.com");
-        assert!(headers.is_empty());
+    fn dns_match_glob_matches_subdomain() {
+        assert!(dns_boundary_match(
+            "api.corp.example.com",
+            "*.corp.example.com"
+        ));
     }
 
     #[test]
-    fn test_inject_with_credential() {
+    fn dns_match_glob_rejects_bare() {
+        assert!(!dns_boundary_match(
+            "corp.example.com",
+            "*.corp.example.com"
+        ));
+    }
+
+    #[test]
+    fn dns_match_rejects_lookalike_suffix() {
+        assert!(!dns_boundary_match(
+            "api.openai.com.evil.example",
+            "openai.com"
+        ));
+        assert!(!dns_boundary_match(
+            "openai.com.attacker.test",
+            "openai.com"
+        ));
+        assert!(!dns_boundary_match(
+            "api.anthropic.com.evil.xyz",
+            "anthropic.com"
+        ));
+    }
+
+    #[test]
+    fn dns_match_case_insensitive() {
+        assert!(dns_boundary_match("API.OpenAI.COM", "openai.com"));
+    }
+
+    #[test]
+    fn builtin_mappings_cover_known_providers() {
+        let injector = CredentialInjector::new();
+        let cases = [
+            ("api.openai.com", "openai"),
+            ("openai.com", "openai"),
+            ("api.anthropic.com", "anthropic"),
+            ("generativelanguage.googleapis.com", "google"),
+            ("openrouter.ai", "openrouter"),
+            ("api.moonshot.cn", "kimi"),
+            ("github.com", "github"),
+            ("api.github.com", "github"),
+            ("cloudflare.com", "cloudflare"),
+        ];
+        for (host, expected) in cases {
+            let mapping = injector.find_mapping(host);
+            assert!(mapping.is_some(), "host {host:?} should match a mapping");
+            assert_eq!(
+                mapping.unwrap().secret_name,
+                expected,
+                "host {host:?} should map to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_rejects_unknown_hosts() {
+        let injector = CredentialInjector::new();
+        assert!(injector.find_mapping("example.com").is_none());
+        assert!(injector.find_mapping("random.test").is_none());
+    }
+
+    #[test]
+    fn format_bearer() {
+        assert_eq!(
+            format_injection(&InjectionMethod::Bearer, "sk-test"),
+            CredentialInjection::Header {
+                name: "Authorization".into(),
+                value: "Bearer sk-test".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn format_header_with_prefix() {
+        let method = InjectionMethod::Header {
+            name: "x-api-key".into(),
+            prefix: String::new(),
+        };
+        assert_eq!(
+            format_injection(&method, "sk-ant-123"),
+            CredentialInjection::Header {
+                name: "x-api-key".into(),
+                value: "sk-ant-123".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn format_header_with_custom_prefix() {
+        let method = InjectionMethod::Header {
+            name: "X-Custom-Auth".into(),
+            prefix: "Token ".into(),
+        };
+        assert_eq!(
+            format_injection(&method, "abc123"),
+            CredentialInjection::Header {
+                name: "X-Custom-Auth".into(),
+                value: "Token abc123".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn format_query_param() {
+        let method = InjectionMethod::QueryParam {
+            name: "api_key".into(),
+        };
+        assert_eq!(
+            format_injection(&method, "secret-value"),
+            CredentialInjection::QueryParam {
+                name: "api_key".into(),
+                value: "secret-value".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn add_and_get() {
+        let injector = CredentialInjector::new();
+        injector.add("openai", "sk-test");
+        assert_eq!(injector.get("openai"), Some("sk-test".into()));
+        assert_eq!(injector.get("missing"), None);
+    }
+
+    #[test]
+    fn add_overwrites() {
+        let injector = CredentialInjector::new();
+        injector.add("openai", "sk-old");
+        injector.add("openai", "sk-new");
+        assert_eq!(injector.get("openai"), Some("sk-new".into()));
+    }
+
+    #[test]
+    fn config_from_toml() {
+        let toml_str = r#"
+cache_ttl_secs = 60
+
+[[mappings]]
+hosts = ["api.custom.com", "*.custom.com"]
+secret_name = "custom_api"
+injection = { type = "bearer" }
+
+[[mappings]]
+hosts = ["internal.corp.example.com"]
+secret_name = "corp_key"
+injection = { type = "header", name = "X-Corp-Key", prefix = "" }
+"#;
+        let config: CredentialsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.cache_ttl_secs, 60);
+        assert_eq!(config.mappings.len(), 2);
+        assert_eq!(config.mappings[0].secret_name, "custom_api");
+        assert_eq!(
+            config.mappings[1].injection,
+            InjectionMethod::Header {
+                name: "X-Corp-Key".into(),
+                prefix: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn load_config_allows_missing_default_only() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.toml");
+        let missing = missing.to_str().unwrap();
+
+        assert!(CredentialInjector::load_config(missing, true)
+            .unwrap()
+            .is_none());
+        let err = CredentialInjector::load_config(missing, false).unwrap_err();
+        assert!(err.contains("failed to read credentials config"));
+    }
+
+    #[test]
+    fn load_config_rejects_malformed_toml() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "[[mappings]]\nhosts = 42\n").unwrap();
+
+        let err = CredentialInjector::load_config(file.path().to_str().unwrap(), true).unwrap_err();
+        assert!(err.contains("failed to parse credentials config"));
+    }
+
+    #[test]
+    fn custom_config_matching() {
+        let config = CredentialsConfig {
+            mappings: vec![
+                CredentialMapping {
+                    hosts: vec!["*.internal.corp".into()],
+                    secret_name: "corp".into(),
+                    injection: InjectionMethod::Bearer,
+                },
+                CredentialMapping {
+                    hosts: vec!["special.api.com".into()],
+                    secret_name: "special".into(),
+                    injection: InjectionMethod::Header {
+                        name: "X-Key".into(),
+                        prefix: "Key ".into(),
+                    },
+                },
+            ],
+            cache_ttl_secs: 60,
+        };
+        let injector = CredentialInjector::with_config(Some(config));
+
+        assert_eq!(
+            injector
+                .find_mapping("foo.internal.corp")
+                .unwrap()
+                .secret_name,
+            "corp"
+        );
+        assert_eq!(
+            injector
+                .find_mapping("special.api.com")
+                .unwrap()
+                .secret_name,
+            "special"
+        );
+        assert!(injector.find_mapping("other.com").is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_cached_with_manual_add() {
+        let injector = CredentialInjector::new();
+        injector.add("openai", "sk-manual");
+        assert!(injector.ensure_cached("openai").await);
+        assert_eq!(injector.get("openai"), Some("sk-manual".into()));
+    }
+
+    #[tokio::test]
+    async fn ensure_cached_returns_false_when_nothing_resolves() {
+        unsafe {
+            std::env::remove_var("SECRETS_VAULT_TOKEN");
+            std::env::remove_var("SECRETS_VAULT_URL");
+        }
+        let provider_name = format!("nosuchprovider_pid_{}", std::process::id());
+        let injector = CredentialInjector::new();
+        let resolved = injector.ensure_cached(&provider_name).await;
+        assert!(!resolved);
+        assert_eq!(injector.get(&provider_name), None);
+    }
+
+    #[tokio::test]
+    async fn inject_with_cached_credential() {
         let injector = CredentialInjector::new();
         injector.add("openai", "sk-test123");
 
         let mut headers = vec![];
-        injector.inject(&mut headers, "api.openai.com");
+        injector.inject(&mut headers, "api.openai.com").await;
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].0, "Authorization");
         assert_eq!(headers[0].1, "Bearer sk-test123");
     }
 
-    #[test]
-    fn test_get_credential() {
-        let injector = CredentialInjector::new();
-        injector.add("github", "ghp_test");
-
-        assert_eq!(injector.get("github"), Some("ghp_test".into()));
-        assert_eq!(injector.get("missing"), None);
-    }
-
-    #[test]
-    fn test_add_overwrites() {
-        let injector = CredentialInjector::new();
-        injector.add("openai", "sk-old");
-        injector.add("openai", "sk-new");
-
-        assert_eq!(injector.get("openai"), Some("sk-new".into()));
-    }
-
-    /// Given a cache that already contains a credential for a provider,
-    /// when ensure_cached is called,
-    /// then it returns true without touching the resolver.
-    ///
-    /// This confirms first-write-wins and protects against a subtle
-    /// regression where ensure_cached re-resolves unconditionally —
-    /// which would (a) mask rotation via direct `add()`, (b) pay a
-    /// resolver-round-trip on every request.
     #[tokio::test]
-    async fn ensure_cached_skips_resolver_when_already_cached() {
+    async fn inject_anthropic_uses_xapikey() {
         let injector = CredentialInjector::new();
-        injector.add("openai", "sk-from-add");
+        injector.add("anthropic", "sk-ant-test");
 
-        let resolved = injector.ensure_cached("openai").await;
+        let mut headers = vec![];
+        injector.inject(&mut headers, "api.anthropic.com").await;
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, "x-api-key");
+        assert_eq!(headers[0].1, "sk-ant-test");
+    }
 
-        assert!(resolved, "should report success when value is cached");
+    #[tokio::test]
+    async fn inject_no_credential_no_header() {
+        let injector = CredentialInjector::new();
+        let mut headers = vec![];
+        injector.inject(&mut headers, "api.openai.com").await;
+        assert!(headers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn injections_for_host_returns_query_param() {
+        let injector = CredentialInjector::with_config(Some(CredentialsConfig {
+            mappings: vec![CredentialMapping {
+                hosts: vec!["api.example.com".into()],
+                secret_name: "example".into(),
+                injection: InjectionMethod::QueryParam {
+                    name: "api_key".into(),
+                },
+            }],
+            cache_ttl_secs: 60,
+        }));
+        injector.add("example", "secret-value");
+
+        let injections = injector.injections_for_host("api.example.com").await;
         assert_eq!(
-            injector.get("openai"),
-            Some("sk-from-add".into()),
-            "cached value must not be overwritten by a successful resolver call"
+            injections,
+            vec![CredentialInjection::QueryParam {
+                name: "api_key".into(),
+                value: "secret-value".into(),
+            }]
         );
     }
 
-    /// Given a URL host that contains a provider name as a substring
-    /// but is NOT a legitimate subdomain of that provider,
-    /// when detect_provider is called,
-    /// then it returns None.
-    ///
-    /// This is a security-critical assertion. A naive substring match
-    /// against `host.contains("openai.com")` would happily match
-    /// `api.openai.com.evil.example` and inject the user's OpenAI
-    /// credential into a request to the attacker's server. The match
-    /// must be suffix-bounded on a dot boundary (host is exactly the
-    /// domain, or ends with `.<domain>`). Discovered by the
-    /// test-quality audit subagent on 2026-04-24.
     #[test]
     fn detect_provider_rejects_lookalike_suffix_hosts() {
         let injector = CredentialInjector::new();
@@ -303,71 +682,10 @@ mod tests {
             "generativelanguage.googleapis.com.attacker.test",
         ];
         for host in lookalikes {
-            assert_eq!(
-                injector.detect_provider(host),
-                None,
-                "lookalike host {host:?} must NOT be identified as a known provider — \
-                 a non-None here means an attacker who registers a .evil.example \
-                 subdomain can trigger credential injection for the named provider"
+            assert!(
+                injector.find_mapping(host).is_none(),
+                "lookalike host {host:?} must NOT match any mapping"
             );
         }
-    }
-
-    /// Positive companion to the above: legitimate subdomains must still
-    /// be detected. `api.openai.com` is openai; the bare `openai.com`
-    /// is openai too (some legitimate callers may hit the apex).
-    #[test]
-    fn detect_provider_accepts_real_subdomains() {
-        let injector = CredentialInjector::new();
-        let cases = [
-            ("api.openai.com", "openai"),
-            ("openai.com", "openai"),
-            ("api.anthropic.com", "anthropic"),
-            ("api.github.com", "github"),
-            ("github.com", "github"),
-        ];
-        for (host, expected) in cases {
-            assert_eq!(
-                injector.detect_provider(host),
-                Some(expected.into()),
-                "legitimate host {host:?} must be detected as {expected:?}"
-            );
-        }
-    }
-
-    /// Given a cache that has no entry for the provider,
-    /// and the resolver has no secret either (nothing in env/fnox/vault),
-    /// when ensure_cached is called,
-    /// then it returns false and the cache stays empty.
-    ///
-    /// Catches a regression where a resolver failure leaks an empty or
-    /// error-stringified value into the cache and a subsequent inject()
-    /// sends `Authorization: Bearer ` (empty) to the upstream.
-    ///
-    /// Hermetic setup: we derive a per-run provider name from the
-    /// process ID so this test doesn't collide with anything real in
-    /// the dev/CI environment, and we explicitly clear the vault env
-    /// so `get_secret` short-circuits to "not found" rather than
-    /// attempting a real network call.
-    #[tokio::test]
-    async fn ensure_cached_returns_false_when_nothing_resolves() {
-        // Safety: env mutation in tests is inherently process-global;
-        // using unsafe to satisfy Rust 2024's edition semantics. The
-        // specific variables we touch aren't read by concurrent tests
-        // in this module.
-        unsafe {
-            std::env::remove_var("SECRETS_VAULT_TOKEN");
-            std::env::remove_var("SECRETS_VAULT_URL");
-        }
-        let provider_name = format!("nosuchprovider_pid_{}", std::process::id());
-        let injector = CredentialInjector::new();
-        let resolved = injector.ensure_cached(&provider_name).await;
-
-        assert!(!resolved, "should return false when nothing resolved");
-        assert_eq!(
-            injector.get(&provider_name),
-            None,
-            "failed lookup must not leave a stub entry in the cache"
-        );
     }
 }

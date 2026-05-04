@@ -59,6 +59,9 @@ async-trait = "0.1"
 # Regex
 regex = "1"
 
+# IronClaw safety (leak detection, credential injection detection)
+ironclaw_safety = { git = "https://github.com/nearai/ironclaw", rev = "1e00b1f" }
+
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 

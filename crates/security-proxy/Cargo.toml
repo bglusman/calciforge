@@ -5,7 +5,12 @@ edition = "2021"
 description = "Calciforge — Mandatory security proxy for agent traffic"
 license = "MIT"
 
+[features]
+default = ["ironclaw-safety"]
+ironclaw-safety = ["dep:ironclaw_safety"]
+
 [dependencies]
+ironclaw_safety = { workspace = true, optional = true }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["tokio", "http1", "http2"] }
 hyper = { version = "1", features = ["full"] }
@@ -31,6 +36,7 @@ http = "1"
 thiserror = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+base64 = { workspace = true }
 dashmap = "6"
 regex = "1"
 once_cell = "1"

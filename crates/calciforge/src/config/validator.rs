@@ -165,6 +165,14 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
+            "ironclaw" => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires endpoint",
+                        agent.id, agent.kind
+                    ));
+                }
+            }
             "zeroclaw-http" | "zeroclaw-native" => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(

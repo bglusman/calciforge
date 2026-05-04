@@ -34,7 +34,8 @@ use crate::agent_web::{
     self, host_is_known_llm_api, host_matches_search_engine, BrowsingDecision,
     SearchResponseDecision,
 };
-use crate::proxy::{self, BodyMode, SecurityProxy};
+use crate::credentials::CredentialInjection;
+use crate::proxy::{self, redact_url_for_log, BodyMode, SecurityProxy};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
@@ -175,7 +176,7 @@ impl CalciforgeMitmHandler {
                 ));
             }
         };
-        info!("MITM {} {}", method, target_url);
+        info!("MITM {} {}", method, redact_url_for_log(&target_url));
 
         let url_dest_host = reqwest::Url::parse(&target_url)
             .ok()
@@ -243,14 +244,32 @@ impl CalciforgeMitmHandler {
             }
         };
 
+        // IronClaw credential-injection detection: check BEFORE substitution
+        // and CredentialInjector. Headers at this point contain either:
+        // - LLM-injected credentials (bad — block these)
+        // - {{secret:...}} placeholders (good — these are proxy-managed)
+        // The detection skips values containing {{secret:}} patterns since
+        // those are explicitly requesting proxy-managed injection.
+        #[cfg(feature = "ironclaw-safety")]
+        {
+            let request_params = build_credential_check_params(&target_url, &parts.headers);
+            if let Err(reason) = self
+                .state
+                .ironclaw
+                .check_request_credentials(&request_params)
+            {
+                warn!(
+                    "BLOCKED MITM request to {}: {}",
+                    redact_url_for_log(&target_url),
+                    reason
+                );
+                return RequestOrResponse::Response(mitm_blocked_response(&reason));
+            }
+        }
+
         if let Err(err) =
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
         {
-            // Echoing `err` would leak the secret name in the block
-            // page (the resolver/allowlist error includes the literal
-            // ref name). Log details server-side, return a bland
-            // explanation to the caller — same pattern as the original
-            // axum blocked_response.
             warn!("BLOCKED: MITM header substitution failed: {err}");
             return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
         }
@@ -344,17 +363,29 @@ impl CalciforgeMitmHandler {
             let verdict = self
                 .state
                 .scanner
-                .scan(&target_url, &body_text, ScanContext::Api)
+                .scan(
+                    &redact_url_for_log(&target_url),
+                    &body_text,
+                    ScanContext::Api,
+                )
                 .await;
             match verdict {
                 adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                    warn!("BLOCKED MITM outbound to {}: {}", target_url, reason);
+                    warn!(
+                        "BLOCKED MITM outbound to {}: {}",
+                        redact_url_for_log(&target_url),
+                        reason
+                    );
                     return RequestOrResponse::Response(mitm_blocked_response(&format!(
                         "Outbound request blocked: {reason}"
                     )));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                    info!("REVIEW MITM outbound to {}: {}", target_url, reason);
+                    info!(
+                        "REVIEW MITM outbound to {}: {}",
+                        redact_url_for_log(&target_url),
+                        reason
+                    );
                 }
                 adversary_detector::verdict::ScanVerdict::Clean => {}
             }
@@ -362,17 +393,29 @@ impl CalciforgeMitmHandler {
 
         if self.state.config.inject_credentials {
             if let Some(host) = dest_host.as_deref() {
-                let mut injected_headers = Vec::new();
-                if let Some(provider) = self.state.credentials.detect_provider_pub(host) {
-                    let _ = self.state.credentials.ensure_cached(&provider).await;
-                }
-                self.state.credentials.inject(&mut injected_headers, host);
-                for (name, value) in injected_headers {
-                    if let (Ok(name), Ok(value)) = (
-                        header::HeaderName::try_from(name.as_str()),
-                        header::HeaderValue::try_from(value.as_str()),
-                    ) {
-                        parts.headers.insert(name, value);
+                let injections = self.state.credentials.injections_for_host(host).await;
+                for injection in injections {
+                    match injection {
+                        CredentialInjection::Header { name, value } => {
+                            if let (Ok(name), Ok(value)) = (
+                                header::HeaderName::try_from(name.as_str()),
+                                header::HeaderValue::try_from(value.as_str()),
+                            ) {
+                                parts.headers.insert(name, value);
+                            }
+                        }
+                        CredentialInjection::QueryParam { name, value } => {
+                            if let Err(err) =
+                                append_query_param_to_uri(&mut parts.uri, &name, &value)
+                            {
+                                warn!(
+                                    "BLOCKED: MITM credential query-param injection failed: {err}"
+                                );
+                                return RequestOrResponse::Response(mitm_blocked_response(
+                                    "Request rejected",
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -435,7 +478,11 @@ impl CalciforgeMitmHandler {
                     let verdict = self
                         .state
                         .scanner
-                        .scan(target_url, body_str, ScanContext::WebFetch)
+                        .scan(
+                            &redact_url_for_log(target_url),
+                            body_str,
+                            ScanContext::WebFetch,
+                        )
                         .await;
                     match verdict {
                         adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
@@ -474,20 +521,45 @@ impl CalciforgeMitmHandler {
             body_bytes
         };
 
-        if self.state.config.scan_inbound && content_type.starts_with("text/") {
+        if self.state.config.scan_inbound && looks_like_scannable_content_type(&content_type) {
             if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+                // IronClaw leak detection (runs before adversary-detector scan)
+                #[cfg(feature = "ironclaw-safety")]
+                {
+                    if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                        warn!(
+                            "BLOCKED MITM response from {}: {}",
+                            redact_url_for_log(target_url),
+                            reason
+                        );
+                        return mitm_blocked_response(&reason);
+                    }
+                }
+
                 let verdict = self
                     .state
                     .scanner
-                    .scan(target_url, body_str, ScanContext::WebFetch)
+                    .scan(
+                        &redact_url_for_log(target_url),
+                        body_str,
+                        ScanContext::WebFetch,
+                    )
                     .await;
                 match verdict {
                     adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                        warn!("BLOCKED MITM response from {}: {}", target_url, reason);
+                        warn!(
+                            "BLOCKED MITM response from {}: {}",
+                            redact_url_for_log(target_url),
+                            reason
+                        );
                         return mitm_blocked_response(&format!("Response blocked: {reason}"));
                     }
                     adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                        info!("REVIEW MITM response from {}: {}", target_url, reason);
+                        info!(
+                            "REVIEW MITM response from {}: {}",
+                            redact_url_for_log(target_url),
+                            reason
+                        );
                     }
                     adversary_detector::verdict::ScanVerdict::Clean => {}
                 }
@@ -608,6 +680,20 @@ fn looks_like_json_content_type(ct: &str) -> bool {
     looks_like_json_content_type_pub(ct)
 }
 
+fn looks_like_scannable_content_type(ct: &str) -> bool {
+    looks_like_scannable_content_type_pub(ct)
+}
+
+fn append_query_param_to_uri(uri: &mut http::Uri, name: &str, value: &str) -> Result<(), String> {
+    let mut url = reqwest::Url::parse(&uri.to_string()).map_err(|err| err.to_string())?;
+    url.query_pairs_mut().append_pair(name, value);
+    *uri = url
+        .as_str()
+        .parse()
+        .map_err(|err| format!("query-param URI parse failed: {err}"))?;
+    Ok(())
+}
+
 /// Public wrapper for `looks_like_json_content_type` so the
 /// `proxy::intercept` axum handler can reuse the exact same content-type
 /// classification as the MITM path.
@@ -619,6 +705,32 @@ pub fn looks_like_json_content_type_pub(ct: &str) -> bool {
         .trim()
         .to_ascii_lowercase();
     head == "application/json" || head.ends_with("+json")
+}
+
+/// Public wrapper for response-body types that are safe and useful to scan as
+/// UTF-8. This intentionally includes JSON and common structured text formats
+/// because provider/search/tool APIs often return prompt-bearing content as
+/// `application/json`, not `text/*`.
+pub fn looks_like_scannable_content_type_pub(ct: &str) -> bool {
+    let head = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    head.starts_with("text/")
+        || head == "application/json"
+        || head.ends_with("+json")
+        || head == "application/javascript"
+        || head == "application/x-javascript"
+        || head == "application/xml"
+        || head.ends_with("+xml")
+        || head == "application/xhtml+xml"
+        || head == "image/svg+xml"
+        || head == "application/x-www-form-urlencoded"
+        || head == "application/graphql"
+        || head == "application/yaml"
+        || head == "application/x-yaml"
 }
 
 fn is_hop_by_hop_or_recomputed(name: &header::HeaderName) -> bool {
@@ -751,6 +863,37 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
         .header(header::CONTENT_TYPE, "application/json")
         .body(MitmBody::from(value.to_string()))
         .unwrap_or_else(|_| mitm_blocked_response("Failed to build response"))
+}
+
+/// Build a JSON representation of request parameters suitable for
+/// `ironclaw_safety::params_contain_manual_credentials`. Extracts the URL
+/// and headers from the in-flight request parts.
+#[cfg(feature = "ironclaw-safety")]
+fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serde_json::Value {
+    let mut header_map = serde_json::Map::new();
+    for (name, value) in headers.iter() {
+        // proxy-authorization is a standard hop-by-hop header used to
+        // authenticate with this proxy itself — always stripped before
+        // forwarding, never LLM-injected.
+        if name == header::PROXY_AUTHORIZATION {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            // Skip headers whose values contain {{secret:...}} substitution
+            // placeholders — these are proxy-managed credentials, not LLM-injected.
+            if v.contains("{{secret:") {
+                continue;
+            }
+            header_map.insert(
+                name.as_str().to_owned(),
+                serde_json::Value::String(v.to_owned()),
+            );
+        }
+    }
+    serde_json::json!({
+        "url": url,
+        "headers": header_map,
+    })
 }
 
 /// Env var holding the bearer token required to call `/vault/:secret`.

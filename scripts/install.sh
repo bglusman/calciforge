@@ -8,7 +8,8 @@
 # Flags:
 #   --yes                Non-interactive: install all missing tools automatically
 #   --configure-only     Skip builds; only configure (assumes everything present)
-#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw,dirac
+#   --agents-only        Skip core binary builds and service setup; only install agent runtimes
+#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw,ironclaw,dirac
 #   --nodes-file <path>  JSON file listing SSH nodes to deploy to after local install
 #                        (see deploy/nodes.example.json)
 #   --nodes-only         Skip local install; only deploy to remote nodes
@@ -52,6 +53,18 @@ CALCIFORGE_OPENCLAW_MODEL_GATEWAY_CONTEXT="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_C
 CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MAX_TOKENS:-8192}"
 CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY:-}"
 CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE="${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY_FILE:-}"
+CALCIFORGE_IRONCLAW_PORT="${CALCIFORGE_IRONCLAW_PORT:-3000}"
+CALCIFORGE_IRONCLAW_ENDPOINT="${CALCIFORGE_IRONCLAW_ENDPOINT:-http://127.0.0.1:${CALCIFORGE_IRONCLAW_PORT}}"
+if [[ "$(uname -s)" == "Darwin" ]] || [[ $EUID -ne 0 ]]; then
+    _IRONCLAW_DEFAULT_DIR="$HOME/.local/share/ironclaw"
+else
+    _IRONCLAW_DEFAULT_DIR="/opt/ironclaw"
+fi
+CALCIFORGE_IRONCLAW_INSTALL_DIR="${CALCIFORGE_IRONCLAW_INSTALL_DIR:-$_IRONCLAW_DEFAULT_DIR}"
+CALCIFORGE_IRONCLAW_LLM_BACKEND="${CALCIFORGE_IRONCLAW_LLM_BACKEND:-openai_compatible}"
+CALCIFORGE_GATEWAY_PORT="${CALCIFORGE_GATEWAY_PORT:-18083}"
+CALCIFORGE_GATEWAY_BACKEND_URL="${CALCIFORGE_GATEWAY_BACKEND_URL:-http://127.0.0.1:18801/v1}"
+CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/gateway-backend-key}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
@@ -373,13 +386,15 @@ EOF
 YES=false
 CONFIGURE_ONLY=false
 NODES_ONLY=false
+AGENTS_ONLY=false
 NODES_FILE=""
-AGENTS="claude,opencode,openclaw,zeroclaw,dirac"
+AGENTS="claude,opencode,openclaw,zeroclaw,ironclaw,dirac"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --yes)             YES=true ;;
         --configure-only)  CONFIGURE_ONLY=true ;;
+        --agents-only)     AGENTS_ONLY=true ;;
         --nodes-file)      NODES_FILE="$2"; shift ;;
         --nodes-only)      NODES_ONLY=true ;;
         --agents)          AGENTS="$2"; shift ;;
@@ -399,6 +414,10 @@ die()  { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
 hdr()  { echo -e "\n${CYAN}━━ $* ━━${NC}"; }
 
 agent_enabled() { [[ ",$AGENTS," == *",$1,"* ]]; }
+
+# Source shared agent runtime helpers (binary install, service management, config registration)
+# shellcheck source=lib/agent-runtime.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/agent-runtime.sh"
 
 validate_security_proxy_bind() {
     local value="$1" label="$2"
@@ -1149,7 +1168,7 @@ configure_managed_openclaw() {
         --claw "$claw_spec" \
         --yes || die "managed OpenClaw configuration failed; inspect installer output above"
     ensure_managed_openclaw_calciforge_agent
-    configure_openclaw_model_gateway || die "managed OpenClaw model gateway configuration failed"
+    configure_openclaw_model_gateway || warn "managed OpenClaw model gateway configuration skipped (API key not configured)"
 }
 
 # ── banner ────────────────────────────────────────────────────────────────────
@@ -1158,11 +1177,13 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Calciforge — Unified Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Agents:  $AGENTS"
-echo "  Mode:    $([ "$CONFIGURE_ONLY" = true ] && echo configure-only || echo install+configure)"
+echo "  Mode:    $(if [ "$AGENTS_ONLY" = true ]; then echo agents-only; elif [ "$CONFIGURE_ONLY" = true ]; then echo configure-only; else echo install+configure; fi)"
 echo "  Yes:     $YES"
 echo ""
 
 if [[ "$NODES_ONLY" != true ]]; then
+
+if [[ "$AGENTS_ONLY" != true ]]; then
 install_log_rotation
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1383,6 +1404,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>SECURITY_PROXY_CA_KEY</key><string>${SECURITY_PROXY_CA_KEY}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
+        <key>CALCIFORGE_CONFIG_HOME</key><string>${CALCIFORGE_CONFIG_HOME}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
@@ -1410,6 +1432,7 @@ Environment=SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}
 Environment=SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
+Environment=CALCIFORGE_CONFIG_HOME=${CALCIFORGE_CONFIG_HOME}
 Environment=AGENT_CONFIG=${AGENTS_JSON}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
@@ -1464,6 +1487,8 @@ run_calciforge_doctor() {
 hdr "fnox (secret resolver)"
 ensure_fnox || true
 
+fi # !AGENTS_ONLY — core services above, agent runtimes below
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. openclaw — package bootstrap + managed channel/plugin configuration
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1472,13 +1497,19 @@ if agent_enabled openclaw; then
     ensure_npm openclaw || true
 
     if command -v openclaw &>/dev/null; then
-        python3 - <<'PYEOF' | openclaw approvals set --stdin 2>&1 | head -2
-import json
-print(json.dumps({"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},
-    "agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd",
-        "wc","head","tail","curl","wget","python","python3","node","npm","cargo",
-        "make","cmake","rustc"]}}}))
-PYEOF
+        _oc_approvals_json='{"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},"agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd","wc","head","tail","curl","wget","python","python3","node","npm","cargo","make","cmake","rustc"]}}}'
+        local _timeout_cmd="timeout -k 3 15"
+        if [[ "$PLATFORM" == "Darwin" ]]; then
+            _timeout_cmd="$(command -v gtimeout 2>/dev/null || echo "")"
+            [[ -n "$_timeout_cmd" ]] && _timeout_cmd="$_timeout_cmd -k 3 15" || _timeout_cmd=""
+        fi
+        if [[ -n "$_timeout_cmd" ]]; then
+            echo "$_oc_approvals_json" | $_timeout_cmd openclaw approvals set --stdin >/dev/null 2>&1 || \
+                warn "openclaw approvals set timed out or failed — skipping"
+        else
+            echo "$_oc_approvals_json" | openclaw approvals set --stdin >/dev/null 2>&1 || \
+                warn "openclaw approvals set failed — skipping"
+        fi
         ok "openclaw exec-approvals configured (restricted+ask, common tools allowlisted)"
         configure_managed_openclaw
     else
@@ -1493,14 +1524,72 @@ fi
 # across reboots. Expects config at $CALCIFORGE_CONFIG_HOME/config.toml by
 # default; users must populate it before the service starts (or the service
 # will fail health and launchd/systemd will keep retrying).
+if [[ "$AGENTS_ONLY" != true ]]; then
 hdr "calciforge"
 
 mkdir -p "$ZC_LOG_DIR"
 disable_legacy_local_service "calciforge" "${LEGACY_SERVICE_PREFIX}"
 
+_write_proxy_section() {
+    local dest="$1" mode="${2:-overwrite}"
+    local content
+    content="[proxy]
+enabled = true
+bind = \"127.0.0.1:${CALCIFORGE_GATEWAY_PORT}\"
+backend_type = \"http\"
+timeout_seconds = 300"
+    [[ -n "$CALCIFORGE_GATEWAY_BACKEND_URL" ]] && \
+        content+=$'\n'"backend_url = \"${CALCIFORGE_GATEWAY_BACKEND_URL}\""
+    [[ -n "$CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE" && -f "$CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE" ]] && \
+        content+=$'\n'"backend_api_key_file = \"${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE}\""
+
+    if [[ "$mode" == "overwrite" ]]; then
+        printf '[calciforge]\nversion = 2\n\n%s\n' "$content" > "$dest"
+    else
+        printf '\n%s\n' "$content" >> "$dest"
+    fi
+}
+
+_ensure_proxy_enabled() {
+    local config_path="$1"
+    python3 - "$config_path" <<'PY'
+import pathlib, re, sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+match = re.search(r'(?ms)^\[proxy\]\n.*?(?=^\[|\Z)', text)
+if not match:
+    raise SystemExit(1)
+
+section = match.group(0)
+if re.search(r'(?m)^enabled\s*=', section):
+    new_section = re.sub(r'(?m)^enabled\s*=.*$', 'enabled = true', section, count=1)
+else:
+    new_section = section.replace('[proxy]\n', '[proxy]\nenabled = true\n', 1)
+
+if new_section != section:
+    path.write_text(text[:match.start()] + new_section + text[match.end():])
+PY
+}
+
 if [[ ! -f "$ZC_CONFIG" ]]; then
-    warn "Config not found at $ZC_CONFIG — calciforge will fail to start until you create it"
-    warn "See README for a minimal config.toml"
+    warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
+    mkdir -p "$(dirname "$ZC_CONFIG")"
+    _write_proxy_section "$ZC_CONFIG" overwrite
+    ok "Created config at $ZC_CONFIG with model gateway on :${CALCIFORGE_GATEWAY_PORT}"
+fi
+
+# Ensure [proxy] section has enabled = true (idempotent)
+if ! grep -q '^\[proxy\]' "$ZC_CONFIG" 2>/dev/null; then
+    _write_proxy_section "$ZC_CONFIG" append
+    ok "Added [proxy] section to config (model gateway on :${CALCIFORGE_GATEWAY_PORT})"
+elif ! python3 -c "
+import pathlib, re, sys
+text = pathlib.Path('$ZC_CONFIG').read_text()
+m = re.search(r'(?m)^\[proxy\].*?(?=^\[|\Z)', text, re.S)
+sys.exit(0 if m and 'enabled = true' in m.group() else 1)
+" 2>/dev/null; then
+    _ensure_proxy_enabled "$ZC_CONFIG" || warn "Could not set [proxy].enabled = true in $ZC_CONFIG"
 fi
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
@@ -1573,6 +1662,7 @@ if pgrep -f "${BIN_DIR}/calciforge" > /dev/null; then
 else
     warn "calciforge did not start — check $ZC_LOG_DIR/calciforge.err"
 fi
+fi # !AGENTS_ONLY — calciforge service/config
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. Claude Code hook
@@ -1723,10 +1813,147 @@ if agent_enabled zeroclaw; then
     fi
 fi
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 12. ironclaw
+# ══════════════════════════════════════════════════════════════════════════════
+if agent_enabled ironclaw; then
+    hdr "IronClaw Agent OS"
+    IRONCLAW_DIR="$CALCIFORGE_IRONCLAW_INSTALL_DIR"
+
+    if [[ "$CONFIGURE_ONLY" != true ]]; then
+        # Prefer building from source (ensures adapter ↔ binary version sync).
+        # Falls back to GitHub release if source not available.
+        ironclaw_src="${CALCIFORGE_IRONCLAW_SOURCE:-$IRONCLAW_DIR/src}"
+        # Clone source if not already present
+        if [[ ! -f "$ironclaw_src/Cargo.toml" ]] && command -v git &>/dev/null; then
+            echo "  Cloning ironclaw source..."
+            git clone --depth 1 https://github.com/nearai/ironclaw "$ironclaw_src" 2>&1 | tail -2 || true
+        fi
+        if [[ -f "$ironclaw_src/Cargo.toml" ]] && grep -q 'name.*=.*"ironclaw"' "$ironclaw_src/Cargo.toml" 2>/dev/null; then
+            echo "  Building ironclaw from source ($ironclaw_src)..."
+            cargo="${CARGO:-$HOME/.cargo/bin/cargo}"
+            if "$cargo" build --release --manifest-path "$ironclaw_src/Cargo.toml" -p ironclaw 2>&1 | tail -3; then
+                built="$ironclaw_src/target/release/ironclaw"
+                if [[ -f "$built" ]]; then
+                    mkdir -p "$IRONCLAW_DIR/bin"
+                    install -m 755 "$built" "$IRONCLAW_DIR/bin/ironclaw" 2>/dev/null || {
+                        rm -f "$IRONCLAW_DIR/bin/ironclaw"
+                        cp "$built" "$IRONCLAW_DIR/bin/ironclaw"
+                        chmod +x "$IRONCLAW_DIR/bin/ironclaw"
+                    }
+                    [[ -w "$BIN_DIR" ]] && ln -sf "$IRONCLAW_DIR/bin/ironclaw" "$BIN_DIR/ironclaw"
+                    ok "ironclaw built from source ($("$IRONCLAW_DIR/bin/ironclaw" --version 2>&1 | head -1 || true))"
+                else
+                    warn "ironclaw build produced no binary — falling back to GitHub release"
+                    ensure_agent_binary "ironclaw" "ironclaw" "nearai/ironclaw" "$IRONCLAW_DIR"
+                fi
+            else
+                warn "ironclaw source build failed — falling back to GitHub release"
+                ensure_agent_binary "ironclaw" "ironclaw" "nearai/ironclaw" "$IRONCLAW_DIR"
+            fi
+        else
+            ensure_agent_binary "ironclaw" "ironclaw" "nearai/ironclaw" "$IRONCLAW_DIR"
+        fi
+    else
+        command -v ironclaw &>/dev/null || warn "ironclaw not found (run without --configure-only to install)"
+    fi
+
+    if command -v ironclaw &>/dev/null; then
+        # Generate a shared webhook secret for IronClaw ↔ Calciforge auth.
+        # Stored in IronClaw's .env (HTTP_WEBHOOK_SECRET) and a separate file
+        # that Calciforge reads via api_key_file.
+        secret_file="$IRONCLAW_DIR/webhook-secret"
+        if [[ ! -f "$secret_file" ]]; then
+            mkdir -p "$IRONCLAW_DIR"
+            python3 -c "import secrets; print(secrets.token_hex(32))" > "$secret_file"
+            chmod 600 "$secret_file"
+            ok "Generated IronClaw webhook secret"
+        fi
+        webhook_secret="$(cat "$secret_file")"
+
+        ca_cert="${SECURITY_PROXY_CA_CERT}"
+        gateway_url="${CALCIFORGE_IRONCLAW_MODEL_GATEWAY:-http://127.0.0.1:18083/v1}"
+        gateway_model="${CALCIFORGE_IRONCLAW_DEFAULT_MODEL:-kimi-k2.5}"
+        # Read the gateway's inbound API key so IronClaw can authenticate
+        gateway_api_key=""
+        if [[ -f "$ZC_CONFIG" ]]; then
+            gateway_api_key="$(python3 -c "
+import pathlib, re, sys
+text = pathlib.Path('$ZC_CONFIG').read_text()
+m = re.search(r'^\[proxy\].*?^api_key_file\s*=\s*\"([^\"]+)\"', text, re.M|re.S)
+if m:
+    p = pathlib.Path(m.group(1)).expanduser()
+    if p.exists(): print(p.read_text().strip())
+else:
+    m2 = re.search(r'^\[proxy\].*?^api_key\s*=\s*\"([^\"]+)\"', text, re.M|re.S)
+    if m2: print(m2.group(1))
+" 2>/dev/null || true)"
+        fi
+        ensure_agent_env "$IRONCLAW_DIR/.env" <<ENVEOF
+IRONCLAW_PROFILE=server
+HTTP_PORT=${CALCIFORGE_IRONCLAW_PORT}
+HTTP_WEBHOOK_SECRET=${webhook_secret}
+LLM_BACKEND=${CALCIFORGE_IRONCLAW_LLM_BACKEND}
+LLM_BASE_URL=${gateway_url}
+LLM_MODEL=${gateway_model}
+${gateway_api_key:+LLM_API_KEY=${gateway_api_key}}
+DATABASE_BACKEND=libsql
+ONBOARD_COMPLETED=true
+CLI_MODE=repl
+CLI_ENABLED=false
+GATEWAY_PORT=${CALCIFORGE_IRONCLAW_GATEWAY_PORT:-3001}
+# Route IronClaw's outbound HTTP through Calciforge security proxy for
+# credential injection, leak scanning, and policy enforcement.
+HTTP_PROXY=${SECURITY_PROXY_URL}
+HTTPS_PROXY=${SECURITY_PROXY_URL}
+NO_PROXY=localhost,127.0.0.1,::1
+# Trust Calciforge MITM CA for HTTPS inspection
+SSL_CERT_FILE=${ca_cert}
+REQUESTS_CA_BUNDLE=${ca_cert}
+ENVEOF
+        # Ensure webhook secret is present in existing .env files (idempotent)
+        if ! grep -q "^HTTP_WEBHOOK_SECRET=" "$IRONCLAW_DIR/.env" 2>/dev/null; then
+            echo "HTTP_WEBHOOK_SECRET=${webhook_secret}" >> "$IRONCLAW_DIR/.env"
+        fi
+
+        # Ensure HTTP channel is enabled and gateway uses separate port
+        ironclaw config set channels.http_enabled true >/dev/null 2>&1 || true
+        ironclaw config set channels.http_port "${CALCIFORGE_IRONCLAW_PORT}" >/dev/null 2>&1 || true
+        ironclaw config set channels.http_host "0.0.0.0" >/dev/null 2>&1 || true
+        ironclaw config set channels.cli_enabled false >/dev/null 2>&1 || true
+        ironclaw config set channels.cli_mode repl >/dev/null 2>&1 || true
+        ironclaw config set channels.gateway_port "${CALCIFORGE_IRONCLAW_GATEWAY_PORT:-3001}" >/dev/null 2>&1 || true
+
+        # LLM backend is configured via env vars in .env above (LLM_BASE_URL,
+        # LLM_BACKEND, LLM_MODEL). Also write to settings DB for CLI usage.
+        ironclaw config set openai_compatible_base_url "$gateway_url" >/dev/null 2>&1 || true
+        ironclaw config set llm_backend openai_compatible >/dev/null 2>&1 || true
+        ironclaw config set selected_model "$gateway_model" >/dev/null 2>&1 || true
+
+        if [[ ! -s "$IRONCLAW_DIR/.env" ]]; then
+            warn "Edit $IRONCLAW_DIR/.env to set API keys (ANTHROPIC_API_KEY, etc.)"
+        fi
+
+        ensure_agent_service "ironclaw" "$(command -v ironclaw)" "$IRONCLAW_DIR" \
+            "$IRONCLAW_DIR/.env" "IronClaw Agent OS" "--no-onboard"
+
+        sleep 1
+        if curl -sf "http://localhost:${CALCIFORGE_IRONCLAW_PORT}/health" > /dev/null 2>&1 || \
+           pgrep -f ironclaw > /dev/null 2>&1; then
+            ok "IronClaw running on :${CALCIFORGE_IRONCLAW_PORT}"
+        else
+            warn "IronClaw not yet responding — check logs or set API keys in $IRONCLAW_DIR/.env"
+        fi
+
+        ensure_calciforge_agent_config "ironclaw" "ironclaw" \
+            "$CALCIFORGE_IRONCLAW_ENDPOINT" 300000 "iron" "$secret_file"
+    fi
+fi
+
 fi # !NODES_ONLY
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 11. Multi-node SSH deployment
+# 13. Multi-node SSH deployment
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ -n "$NODES_FILE" ]]; then
@@ -2270,7 +2497,7 @@ REMOTE_MITM_CA
             local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
-                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
             exec_args=""
@@ -2315,6 +2542,7 @@ REMOTE_MITM_CA
                     "SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}"
                     "SECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}"
                     "SECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}"
+                    "CALCIFORGE_CONFIG_HOME=${config_dir}"
                     "AGENT_CONFIG=${config_dir}/agents.json"
                 )
             fi
