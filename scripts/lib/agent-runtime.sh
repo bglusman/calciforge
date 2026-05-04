@@ -76,6 +76,11 @@ install_from_github_release() {
     }
     rm -rf "$tmp"
 
+    # macOS: remove quarantine attribute to prevent Gatekeeper popup
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        xattr -d com.apple.quarantine "$install_dir/bin/$bin_name" 2>/dev/null || true
+    fi
+
     # Symlink into PATH
     if [[ -w "$BIN_DIR" ]]; then
         ln -sf "$install_dir/bin/$bin_name" "$BIN_DIR/$bin_name"
@@ -319,13 +324,11 @@ PYEOF
 
 # ── Environment file management ──────────────────────────────────────────────
 
-# Create a default .env file for an agent if it doesn't exist.
+# Write an agent .env file (always overwrites to ensure config is current).
 # Args: <path> <key=value pairs as heredoc on stdin>
 ensure_agent_env() {
     local env_path="$1"
     mkdir -p "$(dirname "$env_path")"
-    if [[ -f "$env_path" ]]; then
-        return 0
-    fi
     cat > "$env_path"
+    chmod 600 "$env_path"
 }
