@@ -184,6 +184,11 @@ EOF
                 local env_dict="<key>EnvironmentVariables</key><dict>"
                 while IFS='=' read -r k v; do
                     [[ -z "$k" || "$k" == \#* ]] && continue
+                    # XML-escape special characters in values
+                    v="${v//&/&amp;}"
+                    v="${v//</&lt;}"
+                    v="${v//>/&gt;}"
+                    v="${v//\"/&quot;}"
                     env_dict+="<key>${k}</key><string>${v}</string>"
                 done < "$env_file"
                 env_dict+="</dict>"

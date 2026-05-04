@@ -1496,8 +1496,18 @@ if agent_enabled openclaw; then
 
     if command -v openclaw &>/dev/null; then
         _oc_approvals_json='{"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},"agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd","wc","head","tail","curl","wget","python","python3","node","npm","cargo","make","cmake","rustc"]}}}'
-        echo "$_oc_approvals_json" | timeout -k 3 15 openclaw approvals set --stdin >/dev/null 2>&1 || \
-            warn "openclaw approvals set timed out or failed — skipping"
+        local _timeout_cmd="timeout -k 3 15"
+        if [[ "$PLATFORM" == "Darwin" ]]; then
+            _timeout_cmd="$(command -v gtimeout 2>/dev/null || echo "")"
+            [[ -n "$_timeout_cmd" ]] && _timeout_cmd="$_timeout_cmd -k 3 15" || _timeout_cmd=""
+        fi
+        if [[ -n "$_timeout_cmd" ]]; then
+            echo "$_oc_approvals_json" | $_timeout_cmd openclaw approvals set --stdin >/dev/null 2>&1 || \
+                warn "openclaw approvals set timed out or failed — skipping"
+        else
+            echo "$_oc_approvals_json" | openclaw approvals set --stdin >/dev/null 2>&1 || \
+                warn "openclaw approvals set failed — skipping"
+        fi
         ok "openclaw exec-approvals configured (restricted+ask, common tools allowlisted)"
         configure_managed_openclaw
     else
@@ -1548,8 +1558,18 @@ fi
 if ! grep -q '^\[proxy\]' "$ZC_CONFIG" 2>/dev/null; then
     _write_proxy_section "$ZC_CONFIG" append
     ok "Added [proxy] section to config (model gateway on :${CALCIFORGE_GATEWAY_PORT})"
-elif ! grep -q 'enabled.*=.*true' "$ZC_CONFIG" 2>/dev/null; then
-    sed -i 's/^\(\[proxy\]\)/\1\nenabled = true/' "$ZC_CONFIG" 2>/dev/null || true
+elif ! python3 -c "
+import pathlib, re, sys
+text = pathlib.Path('$ZC_CONFIG').read_text()
+m = re.search(r'(?m)^\[proxy\].*?(?=^\[|\Z)', text, re.S)
+sys.exit(0 if m and 'enabled = true' in m.group() else 1)
+" 2>/dev/null; then
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        sed -i '' 's/^\(\[proxy\]\)/\1\
+enabled = true/' "$ZC_CONFIG" 2>/dev/null || true
+    else
+        sed -i 's/^\(\[proxy\]\)/\1\nenabled = true/' "$ZC_CONFIG" 2>/dev/null || true
+    fi
 fi
 
 if [[ "$PLATFORM" == "Darwin" ]]; then

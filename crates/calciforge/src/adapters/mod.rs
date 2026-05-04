@@ -8,7 +8,7 @@
 //!
 //! - [`OpenClawChannelAdapter`] — POST `/calciforge/inbound` with reply callback
 //! - [`ZeroClawAdapter`] — POST `/webhook` with `{"message": text}` (custom protocol)
-//! - [`IronClawAdapter`] — POST `/api/chat/send` + SSE `/api/chat/events`
+//! - [`IronClawAdapter`] — POST `/webhook` with HMAC-SHA256 signature
 //! - [`CliAdapter`] — spawn binary, pass `-m "text"`, read stdout
 //!
 //! # Usage
@@ -219,13 +219,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 
     matches!(
         agent.kind.as_str(),
-        "zeroclaw-http"
-            | "zeroclaw-native"
-            | "zeroclaw"
-            | "ironclaw"
-            | "cli"
-            | "artifact-cli"
-            | "codex-cli"
+        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "artifact-cli" | "codex-cli"
     )
 }
 

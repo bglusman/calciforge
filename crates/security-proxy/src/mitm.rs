@@ -257,7 +257,11 @@ impl CalciforgeMitmHandler {
                 .ironclaw
                 .check_request_credentials(&request_params)
             {
-                warn!("BLOCKED MITM request to {}: {}", target_url, reason);
+                warn!(
+                    "BLOCKED MITM request to {}: {}",
+                    target_url.split('?').next().unwrap_or(&target_url),
+                    reason
+                );
                 return RequestOrResponse::Response(mitm_blocked_response(&reason));
             }
         }

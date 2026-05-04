@@ -136,6 +136,9 @@ impl CredentialInjector {
         if let Some(m) = mapping {
             if let Some(secret) = self.resolve_secret(&m.secret_name).await {
                 let (header_name, header_value) = format_injection(&m.injection, &secret);
+                if header_name.is_empty() {
+                    return;
+                }
                 headers.push((header_name, header_value));
                 info!(
                     secret_name = %m.secret_name,
@@ -304,10 +307,12 @@ fn format_injection(method: &InjectionMethod, secret: &str) -> (String, String) 
             ("Authorization".into(), format!("Basic {encoded}"))
         }
         InjectionMethod::Header { name, prefix } => (name.clone(), format!("{prefix}{secret}")),
-        InjectionMethod::QueryParam { .. } => {
-            // Query params are handled separately by the caller since they
-            // modify the URL, not headers. Return empty — caller checks.
-            (String::new(), String::new())
+        InjectionMethod::QueryParam { ref name } => {
+            tracing::warn!(
+                param = %name,
+                "query_param injection not yet implemented in header-only path; skipping"
+            );
+            return (String::new(), String::new());
         }
     }
 }
