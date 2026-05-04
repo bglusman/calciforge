@@ -1858,6 +1858,8 @@ LLM_MODEL=${gateway_model}
 ${gateway_api_key:+LLM_API_KEY=${gateway_api_key}}
 DATABASE_BACKEND=libsql
 ONBOARD_COMPLETED=true
+CLI_MODE=repl
+CLI_ENABLED=false
 # Route IronClaw's outbound HTTP through Calciforge security proxy for
 # credential injection, leak scanning, and policy enforcement.
 HTTP_PROXY=${SECURITY_PROXY_URL}
