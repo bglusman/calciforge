@@ -27,6 +27,9 @@ jobs:
       - name: Check docs site links
         run: ruby scripts/check-docs-site.rb
 
+      - name: Check packaging templates
+        run: bash scripts/check-packaging.sh
+
   # ─────────────────────────────────────────────────────────────────────────────
   # Check formatting and linting
   # ─────────────────────────────────────────────────────────────────────────────

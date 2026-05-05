@@ -1,0 +1,18 @@
+[calciforge]
+version = 2
+
+[proxy]
+enabled = true
+bind = "0.0.0.0:18792"
+backend_type = "http"
+backend_url = "http://host.docker.internal:11434/v1"
+backend_api_key = "ollama"
+timeout_seconds = 120
+
+[proxy.token_estimator]
+strategy = "char_ratio"
+chars_per_token = 4.0
+safety_margin = 1.15
+
+[security]
+profile = "balanced"

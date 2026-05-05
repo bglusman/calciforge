@@ -18,6 +18,7 @@ that should be reasonably stable:
   work systems.
 - `model-gateway.md` — model gateway reference
 - `security-gateway.md` — outbound proxy and scanning reference
+- `packaging.md` — source, Homebrew, Docker, and release archive install paths
 - `staging-test-matrix.md` — local, CI, staging, and release-candidate test tiers
 - `MANUAL_INSTALL.md`, `OPS-HARDENING.md`, setup guides — operator docs
 - `rfcs/` — durable design proposals

@@ -1,0 +1,48 @@
+class Calciforge < Formula
+  desc "Agent and model gateway with routing, secrets, and security policy sidecars"
+  homepage "https://github.com/bglusman/calciforge"
+  version "__VERSION__"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "__MAC_ARM64_URL__"
+      sha256 "__MAC_ARM64_SHA256__"
+    else
+      url "__MAC_INTEL_URL__"
+      sha256 "__MAC_INTEL_SHA256__"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.intel?
+      url "__LINUX_AMD64_URL__"
+      sha256 "__LINUX_AMD64_SHA256__"
+    else
+      odie "Calciforge does not publish a Linux ARM Homebrew binary yet"
+    end
+  end
+
+  def install
+    bin.install Dir["bin/*"]
+    prefix.install "LICENSE"
+    prefix.install "README.txt"
+  end
+
+  def caveats
+    <<~EOS
+      This formula installs Calciforge binaries only. The managed service and
+      agent wiring flow still lives in the source-tree installer:
+        bash scripts/install.sh
+
+      Use these binaries directly for manual service-manager setups, Docker
+      image assembly, and smoke testing. Homebrew-managed launchd service wiring
+      is tracked as follow-up packaging work.
+    EOS
+  end
+
+  test do
+    system "#{bin}/calciforge", "--version"
+    system "#{bin}/calciforge-secrets", "help"
+  end
+end

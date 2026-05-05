@@ -1,0 +1,53 @@
+services:
+  calciforge:
+    image: ${CALCIFORGE_IMAGE:-calciforge:local}
+    build:
+      context: ../..
+      dockerfile: crates/calciforge/Dockerfile
+    command: ["--config", "/config/config.toml", "--proxy-only"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-calciforge=info}
+    ports:
+      - "${CALCIFORGE_PROXY_PORT:-18792}:18792"
+    volumes:
+      - "${CALCIFORGE_CONFIG:-./config.example.toml}:/config/config.toml:ro"
+      - "${CALCIFORGE_DATA:-./data}:/var/lib/calciforge"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  security-proxy:
+    image: ${CALCIFORGE_IMAGE:-calciforge:local}
+    entrypoint: ["/usr/local/bin/security-proxy"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-security_proxy=info}
+      SECURITY_PROXY_BIND: 0.0.0.0
+      SECURITY_PROXY_PORT: 8888
+      AGENT_CONFIG: /config/agents.json
+    ports:
+      - "${CALCIFORGE_SECURITY_PROXY_PORT:-8888}:8888"
+    volumes:
+      - "${CALCIFORGE_CONFIG:-./config.example.toml}:/config/config.toml:ro"
+      - "${CALCIFORGE_AGENTS_CONFIG:-./agents.example.json}:/config/agents.json:ro"
+      - "${CALCIFORGE_DATA:-./data}:/var/lib/calciforge"
+    depends_on:
+      - calciforge
+    restart: unless-stopped
+
+  clashd:
+    image: ${CALCIFORGE_IMAGE:-calciforge:local}
+    entrypoint: ["/usr/local/bin/clashd"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-clashd=info}
+      CLASHD_PORT: 9001
+      CLASHD_POLICY: /config/policy.star
+      CLASHD_AGENTS: /config/agents.json
+    ports:
+      - "${CALCIFORGE_CLASHD_PORT:-9001}:9001"
+    volumes:
+      - "${CALCIFORGE_CLASHD_POLICY:-./policy.example.star}:/config/policy.star:ro"
+      - "${CALCIFORGE_AGENTS_CONFIG:-./agents.example.json}:/config/agents.json:ro"
+      - "${CALCIFORGE_DATA:-./data}:/var/lib/calciforge"
+    depends_on:
+      - calciforge
+    restart: unless-stopped

@@ -729,11 +729,16 @@ rotation.
 
 ## Quick install (Mac)
 
+For current development builds:
+
 ```bash
 git clone https://github.com/bglusman/calciforge
 cd calciforge
 bash scripts/install.sh
 ```
+
+For release packaging and Docker trial paths, see
+[Packaging and Install Options](packaging.html).
 
 Three services land as launchd agents:
 - `clashd` on `:9001` — a `clash`-backed policy sidecar
