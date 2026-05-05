@@ -1507,7 +1507,7 @@ if agent_enabled openclaw; then
 
     if command -v openclaw &>/dev/null; then
         _oc_approvals_json='{"version":1,"defaults":{"tools.exec":{"security":"restricted","ask":"on"}},"agents":{"main":{"allowlist":["git","ls","cat","grep","find","echo","pwd","wc","head","tail","curl","wget","python","python3","node","npm","cargo","make","cmake","rustc"]}}}'
-        local _timeout_cmd="timeout -k 3 15"
+        _timeout_cmd="timeout -k 3 15"
         if [[ "$PLATFORM" == "Darwin" ]]; then
             _timeout_cmd="$(command -v gtimeout 2>/dev/null || echo "")"
             [[ -n "$_timeout_cmd" ]] && _timeout_cmd="$_timeout_cmd -k 3 15" || _timeout_cmd=""
