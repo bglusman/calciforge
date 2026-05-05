@@ -1998,9 +1998,14 @@ if agent_enabled hermes; then
             # Install dependencies
             if [[ -f "$HERMES_DIR/pyproject.toml" ]]; then
                 echo "  Installing Hermes dependencies..."
-                (cd "$HERMES_DIR" && uv sync --quiet 2>&1 | tail -3) || \
+                if command -v uv &>/dev/null; then
+                    (cd "$HERMES_DIR" && uv sync --quiet 2>&1 | tail -3) || \
+                        (cd "$HERMES_DIR" && python3 -m venv .venv && .venv/bin/pip install -e . --quiet 2>&1 | tail -3) || \
+                        warn "Hermes dependency install failed"
+                else
                     (cd "$HERMES_DIR" && python3 -m venv .venv && .venv/bin/pip install -e . --quiet 2>&1 | tail -3) || \
-                    warn "Hermes dependency install failed"
+                        warn "Hermes dependency install failed"
+                fi
             fi
 
             # Create wrapper script for service invocation
