@@ -37,6 +37,7 @@ COPY --from=builder /app/target/release/clashd /usr/local/bin/clashd
 COPY --from=builder /app/target/release/mcp-server /usr/local/bin/mcp-server
 COPY --from=builder /app/target/release/paste-server /usr/local/bin/paste-server
 COPY --from=builder /app/target/release/calciforge-secrets /usr/local/bin/calciforge-secrets
+COPY LICENSE /usr/local/share/calciforge/LICENSE
 COPY THIRD_PARTY_NOTICES.txt /usr/local/share/calciforge/THIRD_PARTY_NOTICES.txt
 
 # Create config directory

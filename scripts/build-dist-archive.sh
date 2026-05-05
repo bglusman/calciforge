@@ -60,12 +60,12 @@ install_fnox_companion() {
         return 1
     }
     tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"; trap - RETURN' RETURN
     curl -fsSL "https://github.com/jdx/fnox/releases/download/${FNOX_VERSION}/${asset}" \
         -o "$tmp/fnox.tar.gz"
     verify_sha256 "$sha" "$tmp/fnox.tar.gz"
     tar -xzf "$tmp/fnox.tar.gz" -C "$tmp"
     install -m 755 "$tmp/fnox" "$STAGE/bin/fnox"
-    rm -rf "$tmp"
 }
 
 cd "$ROOT"
@@ -94,9 +94,9 @@ install -m 644 "$ROOT/THIRD_PARTY_NOTICES.txt" "$STAGE/THIRD_PARTY_NOTICES.txt"
 printf '%s\n' \
     "Calciforge $VERSION ($TARGET)" \
     "" \
-    "Binaries are under ./bin, including the fnox companion binary used by" \
-    "Calciforge secret helpers. Add that directory to PATH, or install them" \
-    "through the Homebrew formula generated from packaging/homebrew/calciforge.rb.in." \
+    "Binaries are under ./bin. Manual archives include the fnox companion binary" \
+    "used by Calciforge secret helpers. The Homebrew formula generated from" \
+    "packaging/homebrew/calciforge.rb.in uses Homebrew's fnox dependency instead." \
     > "$STAGE/README.txt"
 
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"

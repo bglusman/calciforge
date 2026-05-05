@@ -14,7 +14,6 @@ tests
 .DS_Store
 .github
 deny.toml
-LICENSE
 .env
 .tmp_*
 # Keep build essentials
