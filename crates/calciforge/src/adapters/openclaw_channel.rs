@@ -713,11 +713,17 @@ mod tests {
     }
 
     fn free_port() -> u16 {
-        std::net::TcpListener::bind("0.0.0.0:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+        static NEXT_TEST_REPLY_PORT: std::sync::atomic::AtomicU16 =
+            std::sync::atomic::AtomicU16::new(30_000);
+
+        for _ in 0..20_000 {
+            let port = NEXT_TEST_REPLY_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() {
+                return port;
+            }
+        }
+
+        panic!("unable to allocate a unique openclaw-channel test reply port");
     }
 
     fn make_adapter(

@@ -11,12 +11,17 @@ set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8888}"
 if [[ -z "${CA_BUNDLE:-}" ]]; then
-    service_ca="$(
-        systemctl show calciforge-security-proxy -p Environment --value --no-pager 2>/dev/null \
-            | tr ' ' '\n' \
-            | sed -n 's/^SECURITY_PROXY_CA_CERT=//p' \
-            | head -1
-    )"
+    service_ca=""
+    if command -v systemctl >/dev/null 2>&1; then
+        service_env="$(systemctl show calciforge-security-proxy -p Environment --value --no-pager 2>/dev/null || true)"
+        if [[ -n "$service_env" ]]; then
+            service_ca="$(
+                printf '%s\n' "$service_env" \
+                    | tr ' ' '\n' \
+                    | awk -F= '$1 == "SECURITY_PROXY_CA_CERT" { print substr($0, index($0, "=") + 1); exit }'
+            )"
+        fi
+    fi
     CA_BUNDLE="${service_ca:-${HOME}/.config/calciforge/secrets/mitm-ca.pem}"
 fi
 CANARY_URL="${CANARY_URL:-https://ref.jock.pl/modern-web}"
@@ -46,14 +51,15 @@ status="$(
         "$CANARY_URL"
 )"
 
-if [[ "$status" != "200" ]]; then
-    echo "expected HTTP 200 block page, got $status" >&2
+if [[ "$status" != "200" && "$status" != "403" ]]; then
+    echo "expected HTTP 200 block page or HTTP 403 JSON block, got $status" >&2
     sed -n '1,40p' "$tmp" >&2 || true
     exit 1
 fi
 
-if ! grep -q "Page blocked by Calciforge security gateway" "$tmp"; then
-    echo "canary was not replaced by Calciforge block page" >&2
+if ! grep -q "Page blocked by Calciforge security gateway" "$tmp" \
+    && ! grep -q '"blocked"[[:space:]]*:[[:space:]]*true' "$tmp"; then
+    echo "canary was not replaced by a Calciforge block response" >&2
     sed -n '1,80p' "$tmp" >&2 || true
     exit 1
 fi
