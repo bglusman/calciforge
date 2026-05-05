@@ -314,6 +314,7 @@ pub fn render_exec_start_override(
     let rewritten = inject_proxy_server(exec_start, proxy_endpoint);
     let proxy_q = systemd_environment_value(proxy_endpoint);
     let no_proxy_q = systemd_environment_value(no_proxy);
+    let ca_q = systemd_environment_value("%h/.config/calciforge/secrets/mitm-ca.pem");
     format!(
         "# Managed by calciforge install. Forces this service to route all\n\
          # traffic through the local Calciforge MITM proxy. Chrome on Linux in\n\
@@ -326,10 +327,16 @@ pub fn render_exec_start_override(
          Environment=\"ALL_PROXY={proxy}\"\n\
          Environment=\"NO_PROXY={no_proxy}\"\n\
          Environment=\"NODE_USE_SYSTEM_CA=1\"\n\
+         Environment=\"NODE_EXTRA_CA_CERTS={ca}\"\n\
+         Environment=\"SSL_CERT_FILE={ca}\"\n\
+         Environment=\"REQUESTS_CA_BUNDLE={ca}\"\n\
+         Environment=\"CURL_CA_BUNDLE={ca}\"\n\
+         Environment=\"GIT_SSL_CAINFO={ca}\"\n\
          ExecStart=\n\
          ExecStart={rewritten}\n",
         proxy = proxy_q,
         no_proxy = no_proxy_q,
+        ca = ca_q,
         rewritten = rewritten,
     )
 }
@@ -670,6 +677,14 @@ mod tests {
         assert!(body.contains("--proxy-server=http://127.0.0.1:18888"));
         assert!(body.contains("Environment=\"HTTPS_PROXY=http://127.0.0.1:18888\""));
         assert!(body.contains("Environment=\"NO_PROXY=localhost,127.0.0.1,::1\""));
+        assert!(body.contains(
+            "Environment=\"NODE_EXTRA_CA_CERTS=%h/.config/calciforge/secrets/mitm-ca.pem\""
+        ));
+        assert!(body
+            .contains("Environment=\"SSL_CERT_FILE=%h/.config/calciforge/secrets/mitm-ca.pem\""));
+        assert!(body.contains(
+            "Environment=\"REQUESTS_CA_BUNDLE=%h/.config/calciforge/secrets/mitm-ca.pem\""
+        ));
     }
 
     #[test]
