@@ -8,7 +8,8 @@ From this directory:
 ```bash
 cp calciforge.env.example .env
 mkdir -p data data-security-proxy data-clashd
-docker compose --env-file .env up --build
+docker compose --env-file .env build calciforge
+docker compose --env-file .env up -d
 ```
 
 The example starts:
@@ -18,7 +19,9 @@ The example starts:
 - `clashd` on `${CALCIFORGE_CLASHD_PORT:-9001}`
 
 The Compose file builds the shared `calciforge:local` image through the
-`calciforge` service and reuses that image for the sidecars. This avoids
+`calciforge` service and reuses that image for the sidecars. Build the
+`calciforge` service before the first `up`; otherwise Compose may try to pull
+the sidecar image before the local image exists. The split build also avoids
 building the same Rust image three times with older `docker-compose` versions.
 
 The default Calciforge config points the model gateway at an OpenAI-compatible

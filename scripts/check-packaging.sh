@@ -25,6 +25,13 @@ if "$ROOT/scripts/render-homebrew-formula.sh" --version 2>"$TMP/missing-arg.err"
 fi
 grep -q "missing value for --version" "$TMP/missing-arg.err"
 
+if grep -qx 'dist' "$ROOT/.dockerignore"; then
+    echo ".dockerignore must not use bare 'dist'; it excludes nested plugin dist assets required by clean Docker builds" >&2
+    exit 1
+fi
+grep -qx '/dist' "$ROOT/.dockerignore"
+test -s "$ROOT/crates/calciforge-policy-plugin/dist/index.js"
+
 if command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$ROOT/packaging/docker/docker-compose.yml" config >/dev/null
