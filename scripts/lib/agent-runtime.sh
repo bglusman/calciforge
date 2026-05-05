@@ -263,7 +263,8 @@ agent_service_is_running() {
 # ── Config registration ───────────────────────────────────────────────────────
 
 # Add an agent entry to calciforge config.toml if one with the same kind doesn't
-# already exist. Idempotent.
+# already exist. Idempotent. Existing owner routing allow-lists are extended so
+# a newly installed first-class agent is visible to owners using `!agents`.
 #
 # Args: <id> <kind> <endpoint> [timeout_ms] [aliases_csv] [api_key_file]
 # Example: ensure_calciforge_agent_config "ironclaw" "ironclaw" "http://127.0.0.1:3000" 300000 "iron" "/opt/ironclaw/webhook-secret"
@@ -292,13 +293,14 @@ if not path.exists() or not path.read_text().strip():
 
 text = path.read_text()
 
-# Check if an agent with this kind already exists
+# Check if an agent with this kind already exists.
 agent_blocks = re.split(r"(?m)^\[\[agents\]\]\s*$", text)[1:]
+agent_exists = False
 for block in agent_blocks:
     next_table = re.split(r"(?m)^\[", block, maxsplit=1)[0]
     if re.search(rf'(?m)^\s*kind\s*=\s*["\']' + re.escape(kind) + r'["\']', next_table):
-        print(f"{kind} agent already present in {path}")
-        raise SystemExit(0)
+        agent_exists = True
+        break
 
 def q(value):
     return json.dumps(value)
@@ -321,9 +323,46 @@ endpoint = {q(endpoint)}
 timeout_ms = {timeout_ms}{aliases_line}{api_key_file_line}
 """
 
-with path.open("a", encoding="utf-8") as fh:
-    fh.write(block)
-print(f"added {kind} agent ({agent_id!r}) to {path}")
+if agent_exists:
+    print(f"{kind} agent already present in {path}")
+else:
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(block)
+    text = path.read_text()
+    print(f"added {kind} agent ({agent_id!r}) to {path}")
+
+owner_ids = set()
+for identity_block in re.split(r"(?m)^\[\[identities\]\]\s*$", text)[1:]:
+    table = re.split(r"(?m)^\[", identity_block, maxsplit=1)[0]
+    id_match = re.search(r'(?m)^\s*id\s*=\s*["\']([^"\']+)["\']', table)
+    role_match = re.search(r'(?m)^\s*role\s*=\s*["\']([^"\']+)["\']', table)
+    if id_match and role_match and role_match.group(1).strip().lower() == "owner":
+        owner_ids.add(id_match.group(1))
+
+if owner_ids:
+    def update_routing(match):
+        block_text = match.group(0)
+        identity_match = re.search(r'(?m)^\s*identity\s*=\s*["\']([^"\']+)["\']', block_text)
+        if not identity_match or identity_match.group(1) not in owner_ids:
+            return block_text
+        allowed_match = re.search(r'(?m)^allowed_agents\s*=\s*\[([^\]]*)\][^\n]*', block_text)
+        if not allowed_match:
+            return block_text
+        values = re.findall(r'["\']([^"\']+)["\']', allowed_match.group(1))
+        if agent_id in values:
+            return block_text
+        values.append(agent_id)
+        replacement = "allowed_agents = " + json.dumps(values)
+        return block_text[:allowed_match.start()] + replacement + block_text[allowed_match.end():]
+
+    updated = re.sub(
+        r"(?ms)^\[\[routing\]\].*?(?=^\[\[|\Z)",
+        update_routing,
+        text,
+    )
+    if updated != text:
+        path.write_text(updated, encoding="utf-8")
+        print(f"granted {agent_id!r} to owner routing allow-lists in {path}")
 PYEOF
 }
 

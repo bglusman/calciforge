@@ -1038,13 +1038,14 @@ fn configure_remote_openclaw_proxy_env(
     let content = format!(
         "# Managed by calciforge install. Do not put secrets in this file.\n\
          # HTTPS inspection requires Calciforge MITM mode plus target runtime CA trust.\n\
-         [Service]\n{}{}{}{}{}{}{}{}\n",
+         [Service]\n{}{}{}{}{}{}{}{}{}\n",
         systemd_environment_line("HTTP_PROXY", proxy_endpoint)?,
         systemd_environment_line("HTTPS_PROXY", proxy_endpoint)?,
         systemd_environment_line("ALL_PROXY", proxy_endpoint)?,
         systemd_environment_line("OPENCLAW_PROXY_URL", proxy_endpoint)?,
         systemd_environment_line("NO_PROXY", &no_proxy)?,
         systemd_environment_line("NODE_USE_SYSTEM_CA", "1")?,
+        agent_ca_bundle_environment_lines()?,
         systemd_environment_line("CI", "true")?,
         systemd_environment_line("PNPM_CONFIG_CONFIRM_MODULES_PURGE", "false")?,
     );
@@ -1438,13 +1439,26 @@ fn render_env_only_dropin(proxy_endpoint: &str, no_proxy: &str) -> Result<String
     Ok(format!(
         "# Managed by calciforge install. Do not put secrets in this file.\n\
          # HTTPS inspection requires Calciforge MITM mode plus target runtime CA trust.\n\
-         [Service]\n{}{}{}{}{}{}\n",
+         [Service]\n{}{}{}{}{}{}{}\n",
         systemd_environment_line("HTTP_PROXY", proxy_endpoint)?,
         systemd_environment_line("HTTPS_PROXY", proxy_endpoint)?,
         systemd_environment_line("ALL_PROXY", proxy_endpoint)?,
         systemd_environment_line("NO_PROXY", no_proxy)?,
         systemd_environment_line("NODE_USE_SYSTEM_CA", "1")?,
+        agent_ca_bundle_environment_lines()?,
         systemd_environment_line("CI", "true")?,
+    ))
+}
+
+fn agent_ca_bundle_environment_lines() -> Result<String> {
+    const CA_PATH: &str = "%h/.config/calciforge/secrets/mitm-ca.pem";
+    Ok(format!(
+        "{}{}{}{}{}",
+        systemd_environment_line("NODE_EXTRA_CA_CERTS", CA_PATH)?,
+        systemd_environment_line("SSL_CERT_FILE", CA_PATH)?,
+        systemd_environment_line("REQUESTS_CA_BUNDLE", CA_PATH)?,
+        systemd_environment_line("CURL_CA_BUNDLE", CA_PATH)?,
+        systemd_environment_line("GIT_SSL_CAINFO", CA_PATH)?,
     ))
 }
 
@@ -2834,6 +2848,14 @@ mod tests {
         assert!(decoded.contains("Environment=\"HTTPS_PROXY=http://127.0.0.1:8888\""));
         assert!(decoded.contains("Environment=\"ALL_PROXY=http://127.0.0.1:8888\""));
         assert!(decoded.contains("Environment=\"OPENCLAW_PROXY_URL=http://127.0.0.1:8888\""));
+        assert!(decoded.contains(
+            "Environment=\"NODE_EXTRA_CA_CERTS=%h/.config/calciforge/secrets/mitm-ca.pem\""
+        ));
+        assert!(decoded
+            .contains("Environment=\"SSL_CERT_FILE=%h/.config/calciforge/secrets/mitm-ca.pem\""));
+        assert!(decoded.contains(
+            "Environment=\"REQUESTS_CA_BUNDLE=%h/.config/calciforge/secrets/mitm-ca.pem\""
+        ));
         assert!(decoded.contains("Environment=\"CI=true\""));
         assert!(decoded.contains("Environment=\"PNPM_CONFIG_CONFIRM_MODULES_PURGE=false\""));
         assert!(

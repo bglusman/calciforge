@@ -169,6 +169,47 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             }
         }
 
+        let text = match self
+            .command_handler
+            .resolve_pending_choice_reply(&identity.id, &text)
+        {
+            Some(crate::commands::PendingChoiceReply::Command(command)) => command,
+            Some(crate::commands::PendingChoiceReply::Reply(reply)) => {
+                let channel = self.clone();
+                let target = reply_target.clone();
+                tokio::spawn(async move {
+                    channel.send_reply(&target, &reply).await;
+                });
+                return;
+            }
+            None => text,
+        };
+
+        if let Some(reply) = self
+            .command_handler
+            .agent_choice_message_for_identity(&text, &identity.id)
+        {
+            self.command_handler
+                .record_pending_choices(&identity.id, &reply);
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_outbound(&target, &reply).await;
+            });
+            return;
+        }
+
+        if let Some(reply) = self.command_handler.model_choice_message(&text) {
+            self.command_handler
+                .record_pending_choices(&identity.id, &reply);
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_outbound(&target, &reply).await;
+            });
+            return;
+        }
+
         if let Some(reply) = self.command_handler.handle(&text) {
             debug!(identity = %identity.id, cmd = %text.trim(), "Text/iMessage: handled pre-auth command");
             let channel = self.clone();
@@ -186,6 +227,8 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             && !CommandHandler::is_sessions_command(&text)
             && !CommandHandler::is_model_command(&text)
             && !CommandHandler::is_secure_command(&text)
+            && !CommandHandler::is_approve_command(&text)
+            && !CommandHandler::is_deny_command(&text)
         {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
@@ -232,12 +275,14 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
         if CommandHandler::is_sessions_command(&text) {
             let reply = self
                 .command_handler
-                .handle_sessions(&text, &identity.id)
+                .handle_sessions_message(&text, &identity.id)
                 .await;
+            self.command_handler
+                .record_pending_choices(&identity.id, &reply);
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
-                channel.send_reply(&target, &reply).await;
+                channel.send_outbound(&target, &reply).await;
             });
             return;
         }
@@ -275,6 +320,20 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
             tokio::spawn(async move {
                 channel.send_reply(&target, &reply).await;
             });
+            return;
+        }
+
+        if CommandHandler::is_approve_command(&text) || CommandHandler::is_deny_command(&text) {
+            if let Some((ack, follow_up)) = self.command_handler.handle_async(&text).await {
+                let channel = self.clone();
+                let target = reply_target.clone();
+                tokio::spawn(async move {
+                    channel.send_reply(&target, &ack).await;
+                    if let Some(follow_up) = follow_up {
+                        channel.send_reply(&target, &follow_up).await;
+                    }
+                });
+            }
             return;
         }
 
@@ -386,6 +445,43 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                     self.send_outbound(&reply_target, &response).await;
                 }
                 Err(e) => {
+                    if let Some(crate::adapters::AdapterError::ApprovalPending(req)) =
+                        e.downcast_ref::<crate::adapters::AdapterError>()
+                    {
+                        let req = req.clone();
+                        debug!(
+                            request_id = %req.request_id,
+                            command = %req.command,
+                            "Text/iMessage: clash approval request - forwarding to user"
+                        );
+                        self.command_handler
+                            .register_pending_approval(
+                                crate::adapters::openclaw::PendingApprovalMeta {
+                                    request_id: req.request_id.clone(),
+                                    zeroclaw_endpoint: agent.endpoint.clone(),
+                                    zeroclaw_auth_token: agent
+                                        .auth_token
+                                        .clone()
+                                        .unwrap_or_default(),
+                                    _summary: CommandHandler::approval_request_message(
+                                        &req.command,
+                                        &req.reason,
+                                        &req.request_id,
+                                    )
+                                    .render_text_fallback(),
+                                },
+                            )
+                            .await;
+                        let notification = CommandHandler::approval_request_message(
+                            &req.command,
+                            &req.reason,
+                            &req.request_id,
+                        );
+                        self.command_handler
+                            .record_pending_choices(&identity_id, &notification);
+                        self.send_outbound(&reply_target, &notification).await;
+                        return;
+                    }
                     warn!(identity = %identity_id, error = %e, "Text/iMessage: agent dispatch failed");
                     self.send_reply(&reply_target, &format!("Agent error: {e}"))
                         .await;

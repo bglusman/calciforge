@@ -189,6 +189,22 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         }
 
         let command_start = std::time::Instant::now();
+        let text = match self
+            .command_handler
+            .resolve_pending_choice_reply(&identity.id, &text)
+        {
+            Some(crate::commands::PendingChoiceReply::Command(command)) => command,
+            Some(crate::commands::PendingChoiceReply::Reply(reply)) => {
+                let channel = self.clone();
+                let target = reply_target.clone();
+                tokio::spawn(async move {
+                    channel.send_reply(&target, &reply).await;
+                });
+                return;
+            }
+            None => text,
+        };
+
         if let Some(reply) = self
             .command_handler
             .agent_choice_message_for_identity(&text, &identity.id)
@@ -200,6 +216,8 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                 command_start.elapsed().as_millis() as u64,
                 reply.response_len(),
             );
+            self.command_handler
+                .record_pending_choices(&identity.id, &reply);
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
@@ -216,6 +234,8 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                 command_start.elapsed().as_millis() as u64,
                 reply.response_len(),
             );
+            self.command_handler
+                .record_pending_choices(&identity.id, &reply);
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
@@ -338,6 +358,8 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                 command_start.elapsed().as_millis() as u64,
                 reply.response_len(),
             );
+            self.command_handler
+                .record_pending_choices(&identity.id, &reply);
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
@@ -576,6 +598,8 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
                             &req.reason,
                             &req.request_id,
                         );
+                        self.command_handler
+                            .record_pending_choices(&identity_id, &notification);
                         self.send_outbound(&reply_target, &notification).await;
                         return;
                     }

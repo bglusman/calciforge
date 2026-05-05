@@ -9,7 +9,7 @@
 #   --yes                Non-interactive: install all missing tools automatically
 #   --configure-only     Skip builds; only configure (assumes everything present)
 #   --agents-only        Skip core binary builds and service setup; only install agent runtimes
-#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw,ironclaw,dirac
+#   --agents <list>      Comma-separated subset: claude,opencode,openclaw,zeroclaw,ironclaw,hermes,dirac
 #   --nodes-file <path>  JSON file listing SSH nodes to deploy to after local install
 #                        (see deploy/nodes.example.json)
 #   --nodes-only         Skip local install; only deploy to remote nodes
@@ -62,6 +62,15 @@ else
 fi
 CALCIFORGE_IRONCLAW_INSTALL_DIR="${CALCIFORGE_IRONCLAW_INSTALL_DIR:-$_IRONCLAW_DEFAULT_DIR}"
 CALCIFORGE_IRONCLAW_LLM_BACKEND="${CALCIFORGE_IRONCLAW_LLM_BACKEND:-openai_compatible}"
+CALCIFORGE_HERMES_PORT="${CALCIFORGE_HERMES_PORT:-8642}"
+CALCIFORGE_HERMES_ENDPOINT="${CALCIFORGE_HERMES_ENDPOINT:-http://127.0.0.1:${CALCIFORGE_HERMES_PORT}}"
+if [[ "$(uname -s)" == "Darwin" ]] || [[ $EUID -ne 0 ]]; then
+    _HERMES_DEFAULT_DIR="$HOME/.local/share/hermes"
+else
+    _HERMES_DEFAULT_DIR="/opt/hermes"
+fi
+CALCIFORGE_HERMES_INSTALL_DIR="${CALCIFORGE_HERMES_INSTALL_DIR:-$_HERMES_DEFAULT_DIR}"
+CALCIFORGE_HERMES_DEFAULT_MODEL="${CALCIFORGE_HERMES_DEFAULT_MODEL:-${CALCIFORGE_IRONCLAW_DEFAULT_MODEL:-kimi-k2.5}}"
 CALCIFORGE_GATEWAY_PORT="${CALCIFORGE_GATEWAY_PORT:-18083}"
 CALCIFORGE_GATEWAY_BACKEND_URL="${CALCIFORGE_GATEWAY_BACKEND_URL:-http://127.0.0.1:18801/v1}"
 CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/gateway-backend-key}"
@@ -388,7 +397,7 @@ CONFIGURE_ONLY=false
 NODES_ONLY=false
 AGENTS_ONLY=false
 NODES_FILE=""
-AGENTS="claude,opencode,openclaw,zeroclaw,ironclaw,dirac"
+AGENTS="claude,opencode,openclaw,zeroclaw,ironclaw,hermes,dirac"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1947,6 +1956,179 @@ ENVEOF
 
         ensure_calciforge_agent_config "ironclaw" "ironclaw" \
             "$CALCIFORGE_IRONCLAW_ENDPOINT" 300000 "iron" "$secret_file"
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 12b. hermes-agent (NousResearch)
+# ══════════════════════════════════════════════════════════════════════════════
+if agent_enabled hermes; then
+    hdr "Hermes Agent (NousResearch)"
+    HERMES_DIR="$CALCIFORGE_HERMES_INSTALL_DIR"
+
+    if [[ "$CONFIGURE_ONLY" != true ]]; then
+        # Hermes is a Python package — requires python3 + uv (or pip)
+        if ! command -v python3 &>/dev/null; then
+            warn "python3 not found — skipping Hermes installation"
+        else
+            mkdir -p "$HERMES_DIR"
+
+            # Install uv if not present (Hermes's preferred package manager)
+            if ! command -v uv &>/dev/null; then
+                if command -v brew &>/dev/null; then
+                    echo "  Installing uv with Homebrew..."
+                    brew install uv 2>&1 | tail -5 || warn "Homebrew uv install failed; falling back to pip for Hermes"
+                elif command -v apt-get &>/dev/null; then
+                    echo "  Installing Python venv support for Hermes fallback..."
+                    apt-get update -qq && apt-get install -y -qq python3-venv 2>&1 | tail -5 || warn "python3-venv install failed; Hermes pip fallback may fail"
+                else
+                    warn "uv not found and no supported package manager detected; falling back to venv pip for Hermes"
+                fi
+            fi
+
+            # Clone or update hermes-agent source
+            if [[ ! -f "$HERMES_DIR/pyproject.toml" ]]; then
+                echo "  Cloning hermes-agent..."
+                git clone --depth 1 https://github.com/NousResearch/hermes-agent "$HERMES_DIR" 2>&1 | tail -2 || true
+            else
+                echo "  Updating hermes-agent..."
+                git -C "$HERMES_DIR" pull --ff-only 2>&1 | tail -2 || true
+            fi
+
+            # Install dependencies
+            if [[ -f "$HERMES_DIR/pyproject.toml" ]]; then
+                echo "  Installing Hermes dependencies..."
+                if command -v uv &>/dev/null; then
+                    (cd "$HERMES_DIR" && uv sync --quiet 2>&1 | tail -3) || \
+                        (cd "$HERMES_DIR" && python3 -m venv .venv && .venv/bin/pip install -e . --quiet 2>&1 | tail -3) || \
+                        warn "Hermes dependency install failed"
+                else
+                    (cd "$HERMES_DIR" && python3 -m venv .venv && .venv/bin/pip install -e . --quiet 2>&1 | tail -3) || \
+                        warn "Hermes dependency install failed"
+                fi
+            fi
+
+            # Create wrapper script for service invocation
+            hermes_bin="$HERMES_DIR/.venv/bin/hermes"
+            if [[ ! -f "$hermes_bin" ]]; then
+                hermes_bin="$(command -v hermes 2>/dev/null || echo "")"
+            fi
+
+            if [[ -n "$hermes_bin" && -x "$hermes_bin" ]]; then
+                ok "hermes installed at $hermes_bin"
+            else
+                warn "hermes binary not found after install"
+            fi
+        fi
+    fi
+
+    if command -v hermes &>/dev/null || [[ -x "$HERMES_DIR/.venv/bin/hermes" ]]; then
+        hermes_bin="${HERMES_DIR}/.venv/bin/hermes"
+        [[ -x "$hermes_bin" ]] || hermes_bin="$(command -v hermes)"
+
+        # Generate API server key for Calciforge to authenticate with Hermes
+        hermes_api_key_file="$HERMES_DIR/.api-server-key"
+        if [[ ! -f "$hermes_api_key_file" ]]; then
+            python3 -c "import secrets; print(secrets.token_hex(32))" > "$hermes_api_key_file"
+            chmod 600 "$hermes_api_key_file"
+        fi
+        hermes_api_key="$(cat "$hermes_api_key_file")"
+
+        # Extract gateway URL and API key from Calciforge config
+        gateway_url="http://127.0.0.1:${CALCIFORGE_GATEWAY_PORT}/v1"
+        gateway_model="${CALCIFORGE_HERMES_DEFAULT_MODEL}"
+        gateway_api_key=""
+        if [[ -f "$ZC_CONFIG" ]]; then
+            gateway_api_key="$(python3 - "$ZC_CONFIG" <<'PYEOF'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).expanduser().read_text()
+m = re.search(r'^\[proxy\].*?^api_key_file\s*=\s*\"([^\"]+)\"', text, re.M|re.S)
+if m:
+    p = pathlib.Path(m.group(1)).expanduser()
+    if p.exists(): print(p.read_text().strip())
+else:
+    m2 = re.search(r'^\[proxy\].*?^api_key\s*=\s*\"([^\"]+)\"', text, re.M|re.S)
+    if m2: print(m2.group(1))
+PYEOF
+            )"
+        fi
+
+        # Write Hermes config.yaml pointing at Calciforge gateway
+        hermes_config_dir="$HOME/.hermes"
+        mkdir -p "$hermes_config_dir"
+        if [[ -z "$gateway_api_key" ]]; then
+            warn "Calciforge gateway API key not found; writing Hermes provider without api_key"
+        fi
+        python3 - "$hermes_config_dir/config.yaml" "$gateway_model" "$gateway_url" "$gateway_api_key" "$CALCIFORGE_HERMES_PORT" "$hermes_api_key" <<'PYEOF'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1]).expanduser()
+gateway_model, gateway_url, gateway_api_key, hermes_port, hermes_api_key = sys.argv[2:7]
+
+def q(value: str) -> str:
+    return json.dumps(value)
+
+provider = [
+    "- name: calciforge",
+    f"  base_url: {q(gateway_url)}",
+]
+if gateway_api_key:
+    provider.append(f"  api_key: {q(gateway_api_key)}")
+provider.extend([
+    f"  model: {q(gateway_model)}",
+    "  api_mode: chat_completions",
+])
+
+path.write_text(
+    "\n".join([
+        "# Managed by Calciforge installer - edits may be overwritten",
+        "model:",
+        f"  default: {q(gateway_model)}",
+        "  provider: calciforge",
+        "custom_providers:",
+        *provider,
+        "",
+        "platforms:",
+        "  api_server:",
+        "    enabled: true",
+        "    extra:",
+        "      host: \"127.0.0.1\"",
+        f"      port: {int(hermes_port)}",
+        f"      api_key: {q(hermes_api_key)}",
+        "",
+    ]),
+    encoding="utf-8",
+)
+PYEOF
+        chmod 600 "$hermes_config_dir/config.yaml"
+
+        # Write .env for the service
+        # Note: no HTTP_PROXY — Hermes talks only to the local gateway which
+        # handles outbound routing itself. Proxy vars cause localhost 401s.
+        ensure_agent_env "$HERMES_DIR/.env" <<ENVEOF
+API_SERVER_KEY=${hermes_api_key}
+HERMES_QUIET=1
+GATEWAY_ALLOW_ALL_USERS=true
+NO_PROXY=localhost,127.0.0.1,::1
+ENVEOF
+
+        # Start Hermes gateway in foreground mode (our service manages the process)
+        ensure_agent_service "hermes" "$hermes_bin" "$HERMES_DIR" \
+            "$HERMES_DIR/.env" "Hermes Agent (NousResearch)" "gateway run --accept-hooks"
+
+        # Verify it's running
+        sleep 3
+        if curl -sf "http://127.0.0.1:${CALCIFORGE_HERMES_PORT}/health" > /dev/null 2>&1; then
+            ok "Hermes running on :${CALCIFORGE_HERMES_PORT}"
+        else
+            warn "Hermes not responding on :${CALCIFORGE_HERMES_PORT} (may need a moment to start)"
+        fi
+
+        # Register in Calciforge config
+        ensure_calciforge_agent_config "hermes" "hermes" \
+            "$CALCIFORGE_HERMES_ENDPOINT" 600000 "h,nous" "$hermes_api_key_file"
     fi
 fi
 

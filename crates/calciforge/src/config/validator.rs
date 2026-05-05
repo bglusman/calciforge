@@ -11,6 +11,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 
+use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::CalciforgeConfig;
 
 /// Validation result with detailed error messages.
@@ -85,8 +86,8 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
 /// Validate agent adapter kinds and required fields.
 fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
     for agent in &config.agents {
-        match agent.kind.as_str() {
-            "openclaw-channel" => {
+        match parse_agent_kind(&agent.kind) {
+            Some(AgentKind::OpenClawChannel) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' uses openclaw-channel but has no endpoint",
@@ -109,7 +110,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "openai-compat" => {
+            Some(AgentKind::OpenAiCompat) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' uses openai-compat but has no endpoint",
@@ -139,19 +140,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "openclaw-http" => {
-                result.add_error(format!(
-                    "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
-                    agent.id
-                ));
-            }
-            "openclaw-native" => {
-                result.add_error(format!(
-                    "Agent '{}' uses unsupported kind 'openclaw-native'; /hooks/agent is async automation, not a synchronous chat adapter. Use kind='openclaw-channel'",
-                    agent.id
-                ));
-            }
-            "zeroclaw" => {
+            Some(AgentKind::ZeroClaw) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' kind '{}' requires endpoint",
@@ -165,7 +154,24 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "ironclaw" => {
+            Some(AgentKind::IronClaw | AgentKind::Hermes) => {
+                if agent.endpoint.trim().is_empty() {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires endpoint",
+                        agent.id, agent.kind
+                    ));
+                }
+                if agent.api_key.is_none()
+                    && agent.api_key_file.is_none()
+                    && agent.auth_token.is_none()
+                {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires api_key, api_key_file, or auth_token",
+                        agent.id, agent.kind
+                    ));
+                }
+            }
+            Some(AgentKind::ZeroClawHttp | AgentKind::ZeroClawNative) => {
                 if agent.endpoint.trim().is_empty() {
                     result.add_error(format!(
                         "Agent '{}' kind '{}' requires endpoint",
@@ -173,15 +179,7 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "zeroclaw-http" | "zeroclaw-native" => {
-                if agent.endpoint.trim().is_empty() {
-                    result.add_error(format!(
-                        "Agent '{}' kind '{}' requires endpoint",
-                        agent.id, agent.kind
-                    ));
-                }
-            }
-            "cli" | "acp" | "acpx" => {
+            Some(AgentKind::Cli | AgentKind::ArtifactCli | AgentKind::Acp | AgentKind::Acpx) => {
                 if agent
                     .command
                     .as_deref()
@@ -193,9 +191,24 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            "codex-cli" | "dirac-cli" => {}
-            other => {
-                result.add_error(format!("Agent '{}' has unknown kind '{}'", agent.id, other));
+            Some(AgentKind::CodexCli | AgentKind::DiracCli) => {}
+            None if agent.kind == "openclaw-http" => {
+                result.add_error(format!(
+                    "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
+                    agent.id
+                ));
+            }
+            None if agent.kind == "openclaw-native" => {
+                result.add_error(format!(
+                    "Agent '{}' uses unsupported kind 'openclaw-native'; /hooks/agent is async automation, not a synchronous chat adapter. Use kind='openclaw-channel'",
+                    agent.id
+                ));
+            }
+            None => {
+                result.add_error(format!(
+                    "Agent '{}' has unknown kind '{}'",
+                    agent.id, agent.kind
+                ));
             }
         }
     }
@@ -865,6 +878,34 @@ endpoint = "http://127.0.0.1:18799"
         assert!(
             result.errors.iter().any(|e| e.contains("api_key")),
             "error should mention missing api_key/api_key_file; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn hermes_without_auth_fails_before_runtime() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "hermes"
+kind = "hermes"
+endpoint = "http://127.0.0.1:8642"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "Hermes config without auth should fail before adapter construction; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("hermes") && error.contains("api_key")),
+            "error should mention missing auth for Hermes; errors: {:?}",
             result.errors
         );
     }
