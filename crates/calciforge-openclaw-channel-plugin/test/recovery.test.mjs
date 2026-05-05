@@ -1,8 +1,28 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import test from "node:test";
 
 import { testInternals } from "../index.js";
+
+test("status payload reports callback URL and reply-token hash without exposing token", () => {
+  const fixtureReplyToken = ["reply", "fixture"].join("-");
+  const payload = testInternals.buildStatusPayload({
+    replyWebhook: "http://198.51.100.10:18797/hooks/reply",
+    replyAuthToken: fixtureReplyToken,
+  });
+
+  assert.deepEqual(payload, {
+    ok: true,
+    plugin: "calciforge-channel",
+    replyWebhook: "http://198.51.100.10:18797/hooks/reply",
+    replyAuthTokenSha256: createHash("sha256")
+      .update(fixtureReplyToken, "utf8")
+      .digest("hex")
+      .slice(0, 16),
+  });
+  assert.equal(JSON.stringify(payload).includes(fixtureReplyToken), false);
+});
 
 test("dispatches through OpenClaw channel runtime with calciforge command context", async () => {
   const delivered = [];

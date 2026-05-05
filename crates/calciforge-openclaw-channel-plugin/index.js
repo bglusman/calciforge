@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Calciforge OpenClaw channel plugin.
  *
@@ -134,6 +136,15 @@ async function handleInboundRequest({
   errorRecoveryMs,
   log,
 }) {
+  if (req.method === "GET") {
+    if (!isAuthorized(req, authToken)) {
+      json(res, 401, { error: "Unauthorized" });
+      return true;
+    }
+    json(res, 200, buildStatusPayload({ replyWebhook, replyAuthToken }));
+    return true;
+  }
+
   if (req.method !== "POST") {
     json(res, 405, { error: "Method not allowed" });
     return true;
@@ -570,6 +581,19 @@ function isAuthorized(req, expectedToken) {
   return token === expectedToken;
 }
 
+function buildStatusPayload({ replyWebhook, replyAuthToken }) {
+  return {
+    ok: true,
+    plugin: "calciforge-channel",
+    replyWebhook,
+    replyAuthTokenSha256: sha256Hex(replyAuthToken).slice(0, 16),
+  };
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(String(value ?? ""), "utf8").digest("hex");
+}
+
 async function readJsonBody(req) {
   const chunks = [];
   await new Promise((resolve, reject) => {
@@ -860,6 +884,7 @@ export const testInternals = {
   withOptionalTimeout,
   recoverReplyAfterRunError,
   buildCalciforgeChannelContext,
+  buildStatusPayload,
   createSingleReplyDispatcher,
   dispatchViaSubagentRuntime,
   dispatchViaChannelRuntime,

@@ -4,6 +4,7 @@
 //! problems without printing tokens, secret values, or channel identifiers.
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::time::Duration;
@@ -12,7 +13,9 @@ use adversary_detector::{
     AdversaryScanner, ScanContext, ScanVerdict, ScannerCheckConfig, ScannerConfig,
 };
 use anyhow::{bail, Result};
-use tokio::net::TcpStream;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
@@ -1108,14 +1111,53 @@ async fn check_openclaw_channel_route(agent: &AgentConfig, report: &mut DoctorRe
         }
     };
 
-    match client.get(&route).send().await {
+    let inbound_token = resolve_agent_inbound_token(agent, true);
+    let supplied_inbound_token = inbound_token.is_some();
+    let mut request = client.get(&route);
+    if let Some(token) = inbound_token.as_deref() {
+        request = request.bearer_auth(token);
+    }
+
+    match request.send().await {
         Ok(response) => {
             let status = response.status();
-            if openclaw_channel_route_status_is_present(status) {
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                let message = if supplied_inbound_token {
+                    format!(
+                        "agent '{}' /calciforge/inbound rejected the configured inbound token ({status}); verify api_key_file/api_key/auth_token/CALCIFORGE_AGENT_TOKEN matches the OpenClaw channel plugin token",
+                        agent.id
+                    )
+                } else {
+                    format!(
+                        "agent '{}' /calciforge/inbound requires auth ({status}), but doctor could not resolve an inbound token; configure api_key_file/api_key/auth_token or CALCIFORGE_AGENT_TOKEN",
+                        agent.id
+                    )
+                };
+                if supplied_inbound_token {
+                    report.error(message);
+                } else {
+                    report.warn(message);
+                }
+            } else if openclaw_channel_route_status_is_present(status) {
                 report.ok(format!(
                     "agent '{}' exposes openclaw-channel route at /calciforge/inbound ({status})",
                     agent.id
                 ));
+                if status == reqwest::StatusCode::OK {
+                    match response.json::<OpenClawChannelStatus>().await {
+                        Ok(status) => {
+                            let source_ip =
+                                local_source_ip_for_endpoint_with_timeout(&agent.endpoint).await;
+                            check_openclaw_channel_status(agent, &status, source_ip, report);
+                        }
+                        Err(err) => report.warn(format!(
+                            "agent '{}' openclaw-channel status response was not recognized: {err}",
+                            agent.id
+                        )),
+                    }
+                }
             } else if status == reqwest::StatusCode::NOT_FOUND {
                 report.error(format!(
                     "agent '{}' endpoint is reachable but /calciforge/inbound returns 404; install or enable the Calciforge OpenClaw channel plugin",
@@ -1148,10 +1190,170 @@ fn openclaw_channel_route_status_is_present(status: reqwest::StatusCode) -> bool
         reqwest::StatusCode::OK
             | reqwest::StatusCode::ACCEPTED
             | reqwest::StatusCode::BAD_REQUEST
-            | reqwest::StatusCode::UNAUTHORIZED
-            | reqwest::StatusCode::FORBIDDEN
             | reqwest::StatusCode::METHOD_NOT_ALLOWED
     )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawChannelStatus {
+    plugin: Option<String>,
+    reply_webhook: Option<String>,
+    reply_auth_token_sha256: Option<String>,
+}
+
+fn check_openclaw_channel_status(
+    agent: &AgentConfig,
+    status: &OpenClawChannelStatus,
+    source_ip: Option<IpAddr>,
+    report: &mut DoctorReport,
+) {
+    if status.plugin.as_deref() != Some("calciforge-channel") {
+        report.warn(format!(
+            "agent '{}' /calciforge/inbound status did not identify the Calciforge channel plugin",
+            agent.id
+        ));
+    }
+
+    if let Some(actual_hash) = status.reply_auth_token_sha256.as_deref() {
+        match resolve_agent_reply_token(agent) {
+            Ok(Some(expected_token)) => {
+                let expected_hash = sha256_prefix(&expected_token);
+                if actual_hash == expected_hash {
+                    report.ok(format!(
+                        "agent '{}' openclaw-channel reply token hash matches Calciforge config",
+                        agent.id
+                    ));
+                } else {
+                    report.error(format!(
+                        "agent '{}' openclaw-channel reply token hash does not match Calciforge reply_auth_token/reply_auth_token_file; callbacks will be rejected",
+                        agent.id
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(err) => report.error(err),
+        }
+    }
+
+    let Some(reply_webhook) = status.reply_webhook.as_deref() else {
+        return;
+    };
+    let Ok(reply_url) = reqwest::Url::parse(reply_webhook) else {
+        report.warn(format!(
+            "agent '{}' openclaw-channel reported invalid replyWebhook URL",
+            agent.id
+        ));
+        return;
+    };
+
+    let expected_port = agent.reply_port.unwrap_or(18797);
+    if reply_url.port_or_known_default() != Some(expected_port) {
+        report.error(format!(
+            "agent '{}' openclaw-channel replyWebhook uses port {}, but Calciforge expects callback port {}; callbacks will miss the reply listener",
+            agent.id,
+            reply_url
+                .port_or_known_default()
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            expected_port
+        ));
+    }
+
+    let Some(source_ip) = source_ip else {
+        return;
+    };
+    let Some(reply_host) = reply_url.host_str() else {
+        return;
+    };
+    let Ok(reply_ip) = reply_host.parse::<IpAddr>() else {
+        return;
+    };
+    if !is_loopback_ip(reply_ip) && reply_ip != source_ip {
+        report.warn(format!(
+            "agent '{}' openclaw-channel replyWebhook host {} does not match this host's source address {} for the agent endpoint; this often means a stale callback URL from another Calciforge install",
+            agent.id, reply_ip, source_ip
+        ));
+    }
+}
+
+async fn local_source_ip_for_endpoint(endpoint: &str) -> Option<IpAddr> {
+    let url = reqwest::Url::parse(endpoint).ok()?;
+    let host = url.host_str()?;
+    let port = url.port_or_known_default()?;
+    let socket = UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    socket.connect(format!("{host}:{port}")).await.ok()?;
+    Some(socket.local_addr().ok()?.ip())
+}
+
+async fn local_source_ip_for_endpoint_with_timeout(endpoint: &str) -> Option<IpAddr> {
+    timeout(
+        Duration::from_millis(250),
+        local_source_ip_for_endpoint(endpoint),
+    )
+    .await
+    .ok()
+    .flatten()
+}
+
+fn resolve_agent_inbound_token(agent: &AgentConfig, allow_env: bool) -> Option<String> {
+    if let Some(path) = &agent.api_key_file {
+        let path = config::expand_tilde(&path.to_string_lossy());
+        let token = std::fs::read_to_string(path).ok()?.trim().to_string();
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+    if let Some(token) = &agent.api_key {
+        return Some(token.clone());
+    }
+    if let Some(token) = &agent.auth_token {
+        return Some(token.clone());
+    }
+    if allow_env {
+        return std::env::var("CALCIFORGE_AGENT_TOKEN")
+            .ok()
+            .filter(|token| !token.trim().is_empty());
+    }
+    None
+}
+
+fn resolve_agent_reply_token(agent: &AgentConfig) -> std::result::Result<Option<String>, String> {
+    if let Some(path) = &agent.reply_auth_token_file {
+        let path = config::expand_tilde(&path.to_string_lossy());
+        let token = std::fs::read_to_string(path).map_err(|err| {
+            format!(
+                "agent '{}': failed to read reply_auth_token_file for doctor route check: {err}",
+                agent.id
+            )
+        })?;
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err(format!(
+                "agent '{}': reply_auth_token_file is empty",
+                agent.id
+            ));
+        }
+        return Ok(Some(token));
+    }
+    Ok(agent
+        .reply_auth_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned))
+}
+
+fn sha256_prefix(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    hex::encode(digest)[..16].to_string()
+}
+
+fn is_loopback_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_loopback(),
+        IpAddr::V6(ip) => ip.is_loopback(),
+    }
 }
 
 fn endpoint_matches_bind(endpoint: &str, bind: &str) -> bool {
@@ -1254,6 +1456,8 @@ fn synthetic_model_ids(config: &CalciforgeConfig) -> HashSet<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
     use crate::config::{
         CalciforgeHeader, ProxyConfig, RoutingRule, SecuritySectionConfig, SyntheticModelConfig,
     };
@@ -1309,6 +1513,67 @@ mod tests {
             security: None,
             local_models: None,
         }
+    }
+
+    #[test]
+    fn openclaw_channel_status_detects_reply_token_mismatch() {
+        let expected_reply = ["expected", "reply"].join("-");
+        let agent = AgentConfig {
+            id: "custodian".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://198.51.100.20:18790".to_string(),
+            reply_auth_token: Some(expected_reply),
+            reply_port: Some(18797),
+            ..Default::default()
+        };
+        let status = OpenClawChannelStatus {
+            plugin: Some("calciforge-channel".to_string()),
+            reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
+            reply_auth_token_sha256: Some(sha256_prefix(&["stale", "reply"].join("-"))),
+        };
+        let mut report = DoctorReport::default();
+
+        check_openclaw_channel_status(
+            &agent,
+            &status,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("reply token hash does not match")
+        }));
+    }
+
+    #[test]
+    fn openclaw_channel_status_warns_on_stale_callback_host() {
+        let expected_reply = ["expected", "reply"].join("-");
+        let agent = AgentConfig {
+            id: "custodian".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://198.51.100.20:18790".to_string(),
+            reply_auth_token: Some(expected_reply.clone()),
+            reply_port: Some(18797),
+            ..Default::default()
+        };
+        let status = OpenClawChannelStatus {
+            plugin: Some("calciforge-channel".to_string()),
+            reply_webhook: Some("http://198.51.100.30:18797/hooks/reply".to_string()),
+            reply_auth_token_sha256: Some(sha256_prefix(&expected_reply)),
+        };
+        let mut report = DoctorReport::default();
+
+        check_openclaw_channel_status(
+            &agent,
+            &status,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn && finding.message.contains("stale callback URL")
+        }));
     }
 
     #[test]
@@ -1461,8 +1726,11 @@ mod tests {
         assert!(openclaw_channel_route_status_is_present(
             reqwest::StatusCode::METHOD_NOT_ALLOWED
         ));
-        assert!(openclaw_channel_route_status_is_present(
+        assert!(!openclaw_channel_route_status_is_present(
             reqwest::StatusCode::UNAUTHORIZED
+        ));
+        assert!(!openclaw_channel_route_status_is_present(
+            reqwest::StatusCode::FORBIDDEN
         ));
         assert!(openclaw_channel_route_status_is_present(
             reqwest::StatusCode::BAD_REQUEST
@@ -1473,6 +1741,54 @@ mod tests {
         assert!(!openclaw_channel_route_status_is_present(
             reqwest::StatusCode::INTERNAL_SERVER_ERROR
         ));
+    }
+
+    #[test]
+    fn openclaw_channel_route_reports_rejected_configured_token() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let endpoint = serve_once("401 Unauthorized").await;
+                let agent = AgentConfig {
+                    id: "custodian".to_string(),
+                    kind: "openclaw-channel".to_string(),
+                    endpoint,
+                    api_key: Some("wrong-token".to_string()),
+                    ..Default::default()
+                };
+                let mut report = DoctorReport::default();
+
+                check_openclaw_channel_route(&agent, &mut report).await;
+
+                assert!(report.findings.iter().any(|finding| {
+                    finding.severity == Severity::Error
+                        && finding
+                            .message
+                            .contains("rejected the configured inbound token")
+                }));
+                assert!(!report.findings.iter().any(|finding| {
+                    finding.severity == Severity::Ok
+                        && finding.message.contains("exposes openclaw-channel route")
+                }));
+            });
+    }
+
+    async fn serve_once(status_line: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer).await;
+            let response =
+                format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        format!("http://{addr}")
     }
 
     #[test]
