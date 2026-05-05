@@ -16,6 +16,8 @@ trap 'rm -rf "$TMP"' EXIT
     --output "$TMP/calciforge.rb" >/dev/null
 
 ruby -c "$TMP/calciforge.rb" >/dev/null
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
+    "$ROOT/.github/workflows/release-packaging.yml"
 
 if command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then

@@ -68,3 +68,8 @@ scripts/build-dist-archive.sh
 
 The archive layout is the same one consumed by the Homebrew formula template:
 core binaries under `bin/`, plus license/readme metadata.
+
+Tag releases (`v*`) also run the release packaging workflow. That workflow
+builds Linux and macOS archives, uploads them to the GitHub release, and pushes
+the Docker image to GHCR. Manual workflow runs can build the same artifacts
+without pushing an image unless `push_image` is enabled.

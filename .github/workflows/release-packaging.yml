@@ -1,0 +1,161 @@
+name: Release Packaging
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without leading v, for example 0.1.0
+        required: true
+        type: string
+      push_image:
+        description: Push GHCR image during this manual run
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  archives:
+    name: Archive ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            crate_version="$(
+              cargo metadata --no-deps --format-version 1 \
+                | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"] == "calciforge"))'
+            )"
+            if [[ "$version" != "$crate_version" ]]; then
+              echo "tag version $version does not match calciforge crate version $crate_version" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: scripts/build-dist-archive.sh "$VERSION" "$TARGET"
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: calciforge-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist/calciforge-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
+            dist/calciforge-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Publish archive to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --notes "Automated Calciforge release artifacts." \
+              || gh release view "$tag" >/dev/null
+          fi
+          gh release upload "$tag" \
+            "dist/calciforge-$VERSION-$TARGET.tar.gz" \
+            "dist/calciforge-$VERSION-$TARGET.tar.gz.sha256" \
+            --clobber
+
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    needs: archives
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_image == true)
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve version and push policy
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUSH_IMAGE: ${{ inputs.push_image }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+            push_image="$INPUT_PUSH_IMAGE"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            push_image=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "push_image=$push_image" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/$owner/calciforge"
+          docker build \
+            -f crates/calciforge/Dockerfile \
+            -t "$image:$VERSION" \
+            -t "$image:sha-${GITHUB_SHA::12}" \
+            .
+
+      - name: Push Docker image
+        if: steps.meta.outputs.push_image == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/$owner/calciforge"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$image:$VERSION"
+          docker push "$image:sha-${GITHUB_SHA::12}"
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            docker tag "$image:$VERSION" "$image:latest"
+            docker push "$image:latest"
+          fi

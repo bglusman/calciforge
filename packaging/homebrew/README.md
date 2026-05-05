@@ -15,6 +15,9 @@ The release flow is:
 3. Render the formula with `scripts/render-homebrew-formula.sh`.
 4. Copy the rendered `calciforge.rb` into the Homebrew tap.
 
+The `Release Packaging` workflow automates steps 1 and 2 for `v*` tags and
+also exposes a manual run for release-candidate artifact checks.
+
 Example:
 
 ```bash
