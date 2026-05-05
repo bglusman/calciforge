@@ -29,15 +29,35 @@ class Calciforge < Formula
     prefix.install "README.txt"
   end
 
+  def post_install
+    (etc/"calciforge").mkpath
+    (var/"lib/calciforge").mkpath
+    (var/"log/calciforge").mkpath
+  end
+
+  service do
+    run [opt_bin/"calciforge", "--config", etc/"calciforge/config.toml"]
+    keep_alive true
+    working_dir var/"lib/calciforge"
+    log_path var/"log/calciforge/calciforge.log"
+    error_log_path var/"log/calciforge/calciforge.log"
+  end
+
   def caveats
     <<~EOS
-      This formula installs Calciforge binaries only. The managed service and
-      agent wiring flow still lives in the source-tree installer:
+      Homebrew can supervise Calciforge after you provide a config at:
+        #{etc}/calciforge/config.toml
+
+      Start it with:
+        brew services start calciforge
+
+      The managed config, secrets, certificate, and agent wiring flow still
+      lives in the source-tree installer:
         bash scripts/install.sh
 
-      Use these binaries directly for manual service-manager setups, Docker
-      image assembly, and smoke testing. Homebrew-managed launchd service wiring
-      is tracked as follow-up packaging work.
+      Use the formula when you already have config or want a native supervisor
+      for released binaries. Use the installer when Calciforge should discover
+      and wire local or remote agents for you.
     EOS
   end
 

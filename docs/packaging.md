@@ -32,10 +32,16 @@ Packaging maintainers render the formula from:
 scripts/render-homebrew-formula.sh --help
 ```
 
-This is currently a binary packaging path, not the full managed service
-installer. Use it for manual service-manager setups, Docker image assembly, and
-smoke testing. Homebrew-managed launchd service wiring is a follow-up item; the
-source installer remains the managed path for local services and agent wiring.
+This is a binary packaging path with Homebrew service supervision. It expects
+you to provide config at `$(brew --prefix)/etc/calciforge/config.toml`; it does
+not discover agents, install certificates, or populate secrets by itself.
+
+```bash
+brew services start calciforge
+```
+
+Use the source installer when Calciforge should manage local service setup and
+wire supported agents for you.
 
 ## Docker Compose
 
