@@ -1,7 +1,7 @@
 .git
 .githooks
 target
-dist
+/dist/
 packaging/docker/data
 packaging/docker/data-*
 docs
