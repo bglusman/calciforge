@@ -13,12 +13,14 @@ PROXY_URL="${PROXY_URL:-http://127.0.0.1:8888}"
 if [[ -z "${CA_BUNDLE:-}" ]]; then
     service_ca=""
     if command -v systemctl >/dev/null 2>&1; then
-        service_ca="$(
-            systemctl show calciforge-security-proxy -p Environment --value --no-pager 2>/dev/null \
-                | tr ' ' '\n' \
-                | sed -n 's/^SECURITY_PROXY_CA_CERT=//p' \
-                | head -1
-        )"
+        service_env="$(systemctl show calciforge-security-proxy -p Environment --value --no-pager 2>/dev/null || true)"
+        if [[ -n "$service_env" ]]; then
+            service_ca="$(
+                printf '%s\n' "$service_env" \
+                    | tr ' ' '\n' \
+                    | awk -F= '$1 == "SECURITY_PROXY_CA_CERT" { print substr($0, index($0, "=") + 1); exit }'
+            )"
+        fi
     fi
     CA_BUNDLE="${service_ca:-${HOME}/.config/calciforge/secrets/mitm-ca.pem}"
 fi
