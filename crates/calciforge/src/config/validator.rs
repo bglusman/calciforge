@@ -161,6 +161,15 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                         agent.id, agent.kind
                     ));
                 }
+                if agent.api_key.is_none()
+                    && agent.api_key_file.is_none()
+                    && agent.auth_token.is_none()
+                {
+                    result.add_error(format!(
+                        "Agent '{}' kind '{}' requires api_key, api_key_file, or auth_token",
+                        agent.id, agent.kind
+                    ));
+                }
             }
             Some(AgentKind::ZeroClawHttp | AgentKind::ZeroClawNative) => {
                 if agent.endpoint.trim().is_empty() {
@@ -869,6 +878,34 @@ endpoint = "http://127.0.0.1:18799"
         assert!(
             result.errors.iter().any(|e| e.contains("api_key")),
             "error should mention missing api_key/api_key_file; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn hermes_without_auth_fails_before_runtime() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[agents]]
+id = "hermes"
+kind = "hermes"
+endpoint = "http://127.0.0.1:8642"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "Hermes config without auth should fail before adapter construction; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("hermes") && error.contains("api_key")),
+            "error should mention missing auth for Hermes; errors: {:?}",
             result.errors
         );
     }

@@ -153,10 +153,10 @@ impl AgentAdapter for HermesAdapter {
 }
 
 fn session_header_value(sender: Option<&str>, session: Option<&str>) -> Option<String> {
-    let raw = session.or(sender)?.trim();
-    if raw.is_empty() {
-        return None;
-    }
+    let raw = session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| sender.map(str::trim).filter(|value| !value.is_empty()))?;
 
     let mut safe = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -291,6 +291,14 @@ mod tests {
     fn session_header_falls_back_to_sender() {
         assert_eq!(
             session_header_value(Some("sender-one"), None),
+            Some("calciforge-sender-one".to_string())
+        );
+    }
+
+    #[test]
+    fn session_header_falls_back_to_sender_for_blank_session() {
+        assert_eq!(
+            session_header_value(Some("sender-one"), Some("   ")),
             Some("calciforge-sender-one".to_string())
         );
     }

@@ -641,37 +641,46 @@ impl CommandHandler {
     /// A nonmatching reply also clears the pending choice and returns `None`,
     /// allowing normal message routing to continue. That fail-open-to-chat
     /// behavior avoids a stale pending list causing a future stray number to
-    /// activate an old choice.
+    /// activate an old choice. Ambiguous label replies stay local and keep the
+    /// choice active so the user can disambiguate with a number.
     pub fn resolve_pending_choice_reply(
         &self,
         identity_id: &str,
         text: &str,
     ) -> Option<PendingChoiceReply> {
-        let pending = {
-            let mut pending = self.pending_choices.lock().unwrap();
-            let choice = pending.get(identity_id).cloned()?;
-            if Instant::now() >= choice.expires_at {
-                pending.remove(identity_id);
-                return None;
-            }
-            choice
-        };
+        let mut pending_choices = self.pending_choices.lock().unwrap();
+        let pending = pending_choices.get(identity_id)?;
+        if Instant::now() >= pending.expires_at {
+            pending_choices.remove(identity_id);
+            return None;
+        }
 
         let mut saw_numeric_attempt = false;
+        let mut saw_ambiguous_attempt = false;
         for control in &pending.controls {
             match control.match_reply(text) {
                 Match::One(option) => {
-                    self.pending_choices.lock().unwrap().remove(identity_id);
-                    return Some(PendingChoiceReply::Command(option.command.clone()));
+                    let command = option.command.clone();
+                    pending_choices.remove(identity_id);
+                    return Some(PendingChoiceReply::Command(command));
                 }
                 Match::OutOfRange => {
                     saw_numeric_attempt = true;
                 }
-                Match::Ambiguous | Match::None => {}
+                Match::Ambiguous => {
+                    saw_ambiguous_attempt = true;
+                }
+                Match::None => {}
             }
         }
 
-        self.pending_choices.lock().unwrap().remove(identity_id);
+        if saw_ambiguous_attempt {
+            return Some(PendingChoiceReply::Reply(
+                "That matches more than one current choice. Reply with the number shown next to the option.".to_string(),
+            ));
+        }
+
+        pending_choices.remove(identity_id);
         if saw_numeric_attempt {
             Some(PendingChoiceReply::Reply("⚠️ That number is not one of the current choices. Ask for the choices again if you still need them.".to_string()))
         } else {
@@ -2707,6 +2716,31 @@ mod tests {
             "out-of-range numeric choice should produce a bounded local reply, got: {reply:?}"
         );
         assert_eq!(h.resolve_pending_choice_reply("brian", "1"), None);
+    }
+
+    #[test]
+    fn pending_choice_ambiguous_label_reprompts_and_keeps_choice() {
+        let h = make_handler();
+        let choices = OutboundMessage::default().with_control(ChoiceControl::new(
+            "Pick one",
+            vec![
+                ChoiceOption::new("Critic", "!agent switch critic"),
+                ChoiceOption::new("Critique", "!agent switch critique"),
+            ],
+        ));
+        h.record_pending_choices("brian", &choices);
+
+        let reply = h.resolve_pending_choice_reply("brian", "cri");
+        assert!(
+            matches!(reply, Some(PendingChoiceReply::Reply(ref message)) if message.contains("more than one")),
+            "ambiguous label should stay local and ask for a number, got: {reply:?}"
+        );
+        assert_eq!(
+            h.resolve_pending_choice_reply("brian", "2"),
+            Some(PendingChoiceReply::Command(
+                "!agent switch critique".to_string()
+            ))
+        );
     }
 
     #[tokio::test]
