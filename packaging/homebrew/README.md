@@ -3,10 +3,11 @@
 Calciforge's Homebrew path is a binary formula, not a source build. Operators
 should not need Rust just to install Calciforge.
 
-The formula also defines a `brew services` entry for supervising Calciforge with
-the config file at `$(brew --prefix)/etc/calciforge/config.toml`. It does not
-replace the source-tree installer for managed agent wiring, certificate setup,
-or secrets bootstrap.
+The formula also depends on Homebrew's `fnox` package and defines a
+`brew services` entry for supervising Calciforge with the config file at
+`$(brew --prefix)/etc/calciforge/config.toml`. It does not replace the
+source-tree installer for managed agent wiring, certificate setup, or full
+secrets bootstrap.
 
 The release flow is:
 

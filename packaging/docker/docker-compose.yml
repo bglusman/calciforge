@@ -23,13 +23,14 @@ services:
       RUST_LOG: ${RUST_LOG:-security_proxy=info}
       SECURITY_PROXY_BIND: 0.0.0.0
       SECURITY_PROXY_PORT: 8888
+      SECURITY_PROXY_CONFIG: /config/security-proxy.toml
       AGENT_CONFIG: /config/agents.json
     ports:
       - "${CALCIFORGE_SECURITY_PROXY_PORT:-8888}:8888"
     volumes:
-      - "${CALCIFORGE_CONFIG:-./config.example.toml}:/config/config.toml:ro"
+      - "${CALCIFORGE_SECURITY_PROXY_CONFIG:-./security-proxy.example.toml}:/config/security-proxy.toml:ro"
       - "${CALCIFORGE_AGENTS_CONFIG:-./agents.example.json}:/config/agents.json:ro"
-      - "${CALCIFORGE_DATA:-./data}:/var/lib/calciforge"
+      - "${CALCIFORGE_SECURITY_PROXY_DATA:-./data-security-proxy}:/var/lib/calciforge"
     depends_on:
       - calciforge
     restart: unless-stopped
@@ -47,7 +48,7 @@ services:
     volumes:
       - "${CALCIFORGE_CLASHD_POLICY:-./policy.example.star}:/config/policy.star:ro"
       - "${CALCIFORGE_AGENTS_CONFIG:-./agents.example.json}:/config/agents.json:ro"
-      - "${CALCIFORGE_DATA:-./data}:/var/lib/calciforge"
+      - "${CALCIFORGE_CLASHD_DATA:-./data-clashd}:/var/lib/calciforge-clashd"
     depends_on:
       - calciforge
     restart: unless-stopped

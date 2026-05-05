@@ -32,9 +32,10 @@ Packaging maintainers render the formula from:
 scripts/render-homebrew-formula.sh --help
 ```
 
-This is a binary packaging path with Homebrew service supervision. It expects
-you to provide config at `$(brew --prefix)/etc/calciforge/config.toml`; it does
-not discover agents, install certificates, or populate secrets by itself.
+This is a binary packaging path with Homebrew service supervision and a
+Homebrew `fnox` dependency for secret helpers. It expects you to provide config at
+`$(brew --prefix)/etc/calciforge/config.toml`; it does not discover agents,
+install certificates, or populate secrets by itself.
 
 ```bash
 brew services start calciforge

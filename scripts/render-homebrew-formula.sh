@@ -30,14 +30,23 @@ MAC_ARM64_SHA256=""
 MAC_INTEL_SHA256=""
 LINUX_AMD64_SHA256=""
 
+require_value() {
+    local flag="$1" value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        echo "missing value for $flag" >&2
+        usage
+        exit 2
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version) VERSION="${2:-}"; shift 2 ;;
-        --base-url) BASE_URL="${2:-}"; shift 2 ;;
-        --mac-arm64-sha256) MAC_ARM64_SHA256="${2:-}"; shift 2 ;;
-        --mac-intel-sha256) MAC_INTEL_SHA256="${2:-}"; shift 2 ;;
-        --linux-amd64-sha256) LINUX_AMD64_SHA256="${2:-}"; shift 2 ;;
-        --output) OUTPUT="${2:-}"; shift 2 ;;
+        --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2 ;;
+        --base-url) require_value "$1" "${2:-}"; BASE_URL="$2"; shift 2 ;;
+        --mac-arm64-sha256) require_value "$1" "${2:-}"; MAC_ARM64_SHA256="$2"; shift 2 ;;
+        --mac-intel-sha256) require_value "$1" "${2:-}"; MAC_INTEL_SHA256="$2"; shift 2 ;;
+        --linux-amd64-sha256) require_value "$1" "${2:-}"; LINUX_AMD64_SHA256="$2"; shift 2 ;;
+        --output) require_value "$1" "${2:-}"; OUTPUT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
     esac

@@ -1,0 +1,12 @@
+Calciforge third-party notices
+
+The Calciforge source tree and binaries are distributed under the MIT license
+shown in LICENSE.
+
+Some packaged install paths include or install companion tools maintained by
+other projects:
+
+- fnox
+  - Project: https://github.com/jdx/fnox
+  - License: MIT
+  - Copyright: Copyright (c) 2025 jdx

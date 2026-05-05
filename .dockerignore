@@ -1,6 +1,9 @@
 .git
 .githooks
 target
+dist
+packaging/docker/data
+packaging/docker/data-*
 docs
 examples
 tests
@@ -11,7 +14,6 @@ tests
 .DS_Store
 .github
 deny.toml
-LICENSE
 .env
 .tmp_*
 # Keep build essentials
