@@ -1664,17 +1664,23 @@ mod tests {
         .unwrap();
         let url = handle.url.clone();
 
-        // Spawn the submit in another task; await the signal in the
-        // main test body so the handle's wait_submitted is the
-        // observable assertion.
-        tokio::spawn(async move {
+        let submit = tokio::spawn(async move {
             let http = reqwest::Client::new();
-            let _ = http.post(&url).form(&[("value", "v")]).send().await;
+            http.post(&url).form(&[("value", "v")]).send().await
         });
 
-        // 2-second cap so the test can never hang the suite.
+        let response = submit.await.unwrap().unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "successful POST is the precondition for wait_submitted"
+        );
+
+        // The test still caps runtime, but the pre-push hook runs the
+        // whole workspace under load and fake fnox is a subprocess, so
+        // keep this generous enough to avoid timing-based false failures.
         let result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait_submitted()).await;
+            tokio::time::timeout(std::time::Duration::from_secs(10), handle.wait_submitted()).await;
         assert!(
             matches!(result, Ok(Ok(()))),
             "wait_submitted should resolve Ok(()) on submit; got {result:?}"

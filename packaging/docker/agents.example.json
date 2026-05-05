@@ -1,0 +1,17 @@
+{
+  "agents": [
+    {
+      "agent_id": "gateway",
+      "allowed_domains": [],
+      "denied_domains": [],
+      "domain_list_sources": [],
+      "providers": [],
+      "proxy": {
+        "enforcement": "env_var",
+        "scan_outbound": true,
+        "scan_inbound": true,
+        "inject_credentials": false
+      }
+    }
+  ]
+}
