@@ -19,6 +19,12 @@ ruby -c "$TMP/calciforge.rb" >/dev/null
 ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
     "$ROOT/.github/workflows/release-packaging.yml"
 
+if "$ROOT/scripts/render-homebrew-formula.sh" --version 2>"$TMP/missing-arg.err"; then
+    echo "render-homebrew-formula accepted missing flag value" >&2
+    exit 1
+fi
+grep -q "missing value for --version" "$TMP/missing-arg.err"
+
 if command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$ROOT/packaging/docker/docker-compose.yml" config >/dev/null

@@ -1,6 +1,9 @@
 .git
 .githooks
 target
+dist
+packaging/docker/data
+packaging/docker/data-*
 docs
 examples
 tests

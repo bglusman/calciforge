@@ -23,9 +23,12 @@ class Calciforge < Formula
     end
   end
 
+  depends_on "fnox"
+
   def install
-    bin.install Dir["bin/*"]
+    bin.install Dir["bin/*"].reject { |path| File.basename(path) == "fnox" }
     prefix.install "LICENSE"
+    prefix.install "THIRD_PARTY_NOTICES.txt"
     prefix.install "README.txt"
   end
 
@@ -51,8 +54,13 @@ class Calciforge < Formula
       Start it with:
         brew services start calciforge
 
-      The managed config, secrets, certificate, and agent wiring flow still
-      lives in the source-tree installer:
+      This formula also depends on Homebrew's fnox package for Calciforge
+      secret helpers.
+
+      The managed config, certificate, and agent wiring flow still lives in
+      the source-tree installer. For that path, clone the repository and run:
+        git clone https://github.com/bglusman/calciforge
+        cd calciforge
         bash scripts/install.sh
 
       Use the formula when you already have config or want a native supervisor

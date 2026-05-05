@@ -7,7 +7,7 @@ From this directory:
 
 ```bash
 cp calciforge.env.example .env
-mkdir -p data
+mkdir -p data data-security-proxy data-clashd
 docker compose --env-file .env up --build
 ```
 
@@ -26,14 +26,21 @@ service on the host machine at `http://host.docker.internal:11434/v1`, which
 matches common Ollama-compatible local testing. Edit `config.example.toml` or set
 `CALCIFORGE_CONFIG` before using it for real traffic.
 
-The security proxy also mounts `agents.example.json`, because its legacy
-credential-injection config is JSON rather than Calciforge's TOML config. Edit
-that file or set `CALCIFORGE_AGENTS_CONFIG` when testing provider credential
-injection.
+The security proxy mounts both `security-proxy.example.toml` and
+`agents.example.json`. The TOML file controls proxy behavior and MITM CA paths;
+the JSON file is the legacy credential-injection provider map. Edit those files
+or set `CALCIFORGE_SECURITY_PROXY_CONFIG` / `CALCIFORGE_AGENTS_CONFIG` when
+testing provider credential injection.
 
 `clashd` mounts the same agent JSON plus `policy.example.star`. Edit
 `policy.example.star` or set `CALCIFORGE_CLASHD_POLICY` when testing stricter
 tool-call policy behavior.
+
+Each service has a separate writable data mount. In particular, do not share the
+security proxy data directory with other containers: it is mounted at
+`/var/lib/calciforge` inside the proxy container because that is the proxy's
+default CA path, and it contains the generated MITM CA private key when you do
+not provide one explicitly.
 
 This is not yet the hardened production isolation story. It is a repeatable
 packaged runtime for smoke tests and local/LAN experiments. For production-like
