@@ -422,18 +422,25 @@ impl HttpBackend {
     }
 }
 
+fn is_kimi_backend(base_url: &str) -> bool {
+    let base_url = base_url.to_ascii_lowercase();
+    base_url.contains("api.kimi.com") || base_url.contains("moonshot")
+}
+
 fn is_kimi_model(model: &str) -> bool {
     let model = model.trim_start_matches("kimi/");
     model.starts_with("kimi-")
 }
 
-fn apply_kimi_compat(model: &str, request_body: &mut serde_json::Value) {
-    if is_kimi_model(model) && request_body.get("thinking").is_none() {
+fn apply_kimi_compat(base_url: &str, model: &str, request_body: &mut serde_json::Value) {
+    if (is_kimi_backend(base_url) || is_kimi_model(model)) && request_body.get("thinking").is_none()
+    {
         // Kimi K2.5/K2.6 enable thinking by default. In tool-call conversations
         // the API then requires every prior assistant tool-call message to carry
         // reasoning_content. Many OpenAI-compatible clients do not preserve that
-        // provider-specific field, so disable thinking unless a future config
-        // path explicitly opts back in.
+        // provider-specific field. Apply this by backend URL as well as by
+        // model name so configured aliases/dispatchers that terminate at Kimi
+        // get the same compatibility behavior.
         request_body["thinking"] = serde_json::json!({ "type": "disabled" });
     }
 }
@@ -459,7 +466,7 @@ impl SecretsBackend for HttpBackend {
             "messages": messages,
             "stream": false,
         });
-        apply_kimi_compat(&model, &mut request_body);
+        apply_kimi_compat(&self.base_url, &model, &mut request_body);
 
         // Add tools if present
         if let Some(tools) = tools {
@@ -625,7 +632,7 @@ mod tests {
             "stream": false
         });
 
-        apply_kimi_compat("kimi-k2.6", &mut body);
+        apply_kimi_compat("https://api.example.com/v1", "kimi-k2.6", &mut body);
 
         assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
     }
@@ -638,7 +645,28 @@ mod tests {
             "stream": false
         });
 
-        apply_kimi_compat("kimi/kimi-for-coding", &mut body);
+        apply_kimi_compat(
+            "https://api.example.com/v1",
+            "kimi/kimi-for-coding",
+            &mut body,
+        );
+
+        assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
+    }
+
+    #[test]
+    fn kimi_compat_disables_thinking_for_kimi_backend_aliases() {
+        let mut body = serde_json::json!({
+            "model": "local-dispatcher",
+            "messages": [],
+            "stream": false
+        });
+
+        apply_kimi_compat(
+            "https://api.kimi.com/coding/v1",
+            "local-dispatcher",
+            &mut body,
+        );
 
         assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
     }
@@ -651,7 +679,7 @@ mod tests {
             "stream": false
         });
 
-        apply_kimi_compat("codex/gpt-5.5", &mut body);
+        apply_kimi_compat("https://api.example.com/v1", "codex/gpt-5.5", &mut body);
 
         assert!(body.get("thinking").is_none());
     }
