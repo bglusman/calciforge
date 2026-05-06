@@ -10,6 +10,7 @@ through the gateway adapter rather than only unit-testing the router in-process.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import queue
@@ -174,8 +175,37 @@ timeout_seconds = 10
     return path
 
 
-def wait_for_health(base_url: str, deadline: float) -> None:
+def drain_output(proc: subprocess.Popen, tail: "collections.deque[str]") -> threading.Thread:
+    def reader() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            tail.append(line.rstrip())
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    return thread
+
+
+def format_log_tail(tail: "collections.deque[str]") -> str:
+    if not tail:
+        return "no calciforge output captured"
+    return "\n".join(tail)
+
+
+def wait_for_health(
+    base_url: str,
+    deadline: float,
+    proc: subprocess.Popen,
+    log_tail: "collections.deque[str]",
+) -> None:
     while time.monotonic() < deadline:
+        exit_code = proc.poll()
+        if exit_code is not None:
+            raise RuntimeError(
+                "Calciforge gateway exited before becoming healthy "
+                f"(code {exit_code}). Recent output:\n{format_log_tail(log_tail)}"
+            )
         try:
             status, _ = http_json("GET", f"{base_url}/health", timeout=1)
             if status == 200:
@@ -183,7 +213,10 @@ def wait_for_health(base_url: str, deadline: float) -> None:
         except Exception:
             pass
         time.sleep(0.2)
-    raise RuntimeError("Calciforge gateway did not become healthy")
+    raise RuntimeError(
+        "Calciforge gateway did not become healthy. Recent output:\n"
+        f"{format_log_tail(log_tail)}"
+    )
 
 
 def main() -> int:
@@ -204,12 +237,20 @@ def main() -> int:
         config_path = write_config(tmp, gateway_port, upstream_port)
         proc = subprocess.Popen(
             calciforge_command(config_path),
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True,
             preexec_fn=os.setsid if hasattr(os, "setsid") else None,
         )
+        log_tail: "collections.deque[str]" = collections.deque(maxlen=80)
+        drain_output(proc, log_tail)
         try:
-            wait_for_health(base_url, time.monotonic() + args.startup_timeout)
+            wait_for_health(
+                base_url,
+                time.monotonic() + args.startup_timeout,
+                proc,
+                log_tail,
+            )
 
             status, info = http_json("GET", f"{base_url}/gateway")
             if status != 200 or info.get("id") != "helicone":
