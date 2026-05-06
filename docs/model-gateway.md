@@ -50,10 +50,18 @@ provider forwarding. External engines can add operator-facing dashboards or
 provider management without changing how channels and agents talk to
 Calciforge.
 
-Helicone is the first external gateway adapter. Configure it by setting
-`backend_type = "helicone"` and pointing `backend_url` at the Helicone AI
-Gateway OpenAI-compatible base URL. `backend_url` must be a plain `http` or
-`https` base URL without query parameters or fragments.
+Helicone is the first external gateway adapter. Calciforge's installer can
+provision a local Helicone deployment when `CALCIFORGE_HELICONE_ENABLED=true`.
+The tested local setup uses Helicone's all-in-one Docker image for the
+dashboard, local storage, and Jawn API, plus the standalone
+`@helicone/ai-gateway` package for request routing. The standalone gateway is
+intentional: current all-in-one images may start a bundled gateway supervisor
+that exits before routing traffic.
+
+Configure Calciforge manually by setting `backend_type = "helicone"` and
+pointing `backend_url` at the Helicone AI Gateway OpenAI-compatible base URL.
+`backend_url` must be a plain `http` or `https` base URL without query
+parameters or fragments.
 If it has no path, Calciforge posts to `/v1/chat/completions`; if it already
 includes a path such as `/v1`, `/ai`, or `/router/<name>`, Calciforge appends
 `/chat/completions` to that configured base path instead of injecting another
@@ -69,6 +77,25 @@ backend_url = "http://127.0.0.1:8585/v1"
 backend_api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
 gateway_ui_url = "http://127.0.0.1:8585/dashboard"
 ```
+
+For a LAN-visible local dashboard during install:
+
+```bash
+CALCIFORGE_HELICONE_ENABLED=true \
+CALCIFORGE_HELICONE_DASHBOARD_ENABLED=true \
+CALCIFORGE_HELICONE_DASHBOARD_BIND=0.0.0.0 \
+bash scripts/install.sh --yes
+```
+
+The default dashboard bind is `127.0.0.1`. Use `0.0.0.0` only on a trusted LAN
+or behind WireGuard. When a dashboard URL is configured, `!gateway` and
+`/gateway` expose it so the operator can jump from Calciforge into Helicone's
+observability UI.
+
+The Helicone gateway is currently strongest for providers that Helicone knows
+how to route directly, such as Ollama via `/ollama/v1`. Arbitrary
+OpenAI-compatible providers may still be configured as direct Calciforge
+providers until their Helicone provider/converter support is validated.
 
 `!gateway` is handled only after a channel resolves the sender identity. It can
 include internal bind addresses or dashboard URLs, so room-based channels and

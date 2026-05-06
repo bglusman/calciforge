@@ -72,8 +72,23 @@ fi
 CALCIFORGE_HERMES_INSTALL_DIR="${CALCIFORGE_HERMES_INSTALL_DIR:-$_HERMES_DEFAULT_DIR}"
 CALCIFORGE_HERMES_DEFAULT_MODEL="${CALCIFORGE_HERMES_DEFAULT_MODEL:-${CALCIFORGE_IRONCLAW_DEFAULT_MODEL:-kimi-k2.5}}"
 CALCIFORGE_GATEWAY_PORT="${CALCIFORGE_GATEWAY_PORT:-18083}"
+CALCIFORGE_GATEWAY_BACKEND_TYPE="${CALCIFORGE_GATEWAY_BACKEND_TYPE:-http}"
 CALCIFORGE_GATEWAY_BACKEND_URL="${CALCIFORGE_GATEWAY_BACKEND_URL:-http://127.0.0.1:18801/v1}"
 CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/gateway-backend-key}"
+CALCIFORGE_GATEWAY_UI_URL="${CALCIFORGE_GATEWAY_UI_URL:-}"
+CALCIFORGE_HELICONE_ENABLED="${CALCIFORGE_HELICONE_ENABLED:-false}"
+CALCIFORGE_HELICONE_DASHBOARD_ENABLED="${CALCIFORGE_HELICONE_DASHBOARD_ENABLED:-$CALCIFORGE_HELICONE_ENABLED}"
+CALCIFORGE_HELICONE_DASHBOARD_BIND="${CALCIFORGE_HELICONE_DASHBOARD_BIND:-127.0.0.1}"
+CALCIFORGE_HELICONE_DASHBOARD_PORT="${CALCIFORGE_HELICONE_DASHBOARD_PORT:-3300}"
+CALCIFORGE_HELICONE_JAWN_PORT="${CALCIFORGE_HELICONE_JAWN_PORT:-8585}"
+CALCIFORGE_HELICONE_S3_PORT="${CALCIFORGE_HELICONE_S3_PORT:-9080}"
+CALCIFORGE_HELICONE_AI_GATEWAY_PORT="${CALCIFORGE_HELICONE_AI_GATEWAY_PORT:-8787}"
+CALCIFORGE_HELICONE_API_KEY_FILE="${CALCIFORGE_HELICONE_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/helicone-local-api-key}"
+CALCIFORGE_HELICONE_PACKAGE="${CALCIFORGE_HELICONE_PACKAGE:-@helicone/ai-gateway@0.2.0-beta.30}"
+CALCIFORGE_HELICONE_CONTAINER="${CALCIFORGE_HELICONE_CONTAINER:-calciforge-helicone}"
+CALCIFORGE_HELICONE_PROVIDER="${CALCIFORGE_HELICONE_PROVIDER:-ollama}"
+CALCIFORGE_HELICONE_OLLAMA_BASE_URL="${CALCIFORGE_HELICONE_OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
+CALCIFORGE_HELICONE_MODELS="${CALCIFORGE_HELICONE_MODELS:-qwen3.6:27b}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
@@ -651,6 +666,242 @@ ensure_npm() {
     else
         warn "Skipping $bin — some features won't work"
         return 1
+    fi
+}
+
+calciforge_lan_ip() {
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true
+        return 0
+    fi
+    if command -v ip >/dev/null 2>&1; then
+        ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}'
+        return 0
+    fi
+    hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+helicone_install_dir() {
+    if [[ "$PLATFORM" == "Darwin" ]] || [[ $EUID -ne 0 ]]; then
+        printf '%s\n' "$HOME/.local/share/calciforge/helicone-ai-gateway"
+    else
+        printf '%s\n' "/opt/calciforge/helicone-ai-gateway"
+    fi
+}
+
+helicone_ai_gateway_bin() {
+    local dir="$1"
+    local real_bin="$dir/node_modules/@helicone/ai-gateway/node_modules/.bin_real/ai-gateway"
+    local wrapper_bin="$dir/node_modules/.bin/ai-gateway"
+    [[ -x "$real_bin" ]] && printf '%s\n' "$real_bin" || printf '%s\n' "$wrapper_bin"
+}
+
+ensure_helicone_key() {
+    mkdir -p "$(dirname "$CALCIFORGE_HELICONE_API_KEY_FILE")"
+    if [[ -s "$CALCIFORGE_HELICONE_API_KEY_FILE" ]]; then
+        chmod 600 "$CALCIFORGE_HELICONE_API_KEY_FILE" 2>/dev/null || true
+        return 0
+    fi
+    command -v openssl >/dev/null 2>&1 || die "openssl is required to generate the Helicone local API key"
+    ( umask 077; printf 'cfh_%s\n' "$(openssl rand -hex 24)" > "$CALCIFORGE_HELICONE_API_KEY_FILE" )
+    chmod 600 "$CALCIFORGE_HELICONE_API_KEY_FILE"
+}
+
+write_helicone_ai_gateway_config() {
+    local config_path="$1"
+    mkdir -p "$(dirname "$config_path")"
+    python3 - "$config_path" "$CALCIFORGE_HELICONE_AI_GATEWAY_PORT" "$CALCIFORGE_HELICONE_JAWN_PORT" "$CALCIFORGE_HELICONE_API_KEY_FILE" "$CALCIFORGE_HELICONE_PROVIDER" "$CALCIFORGE_HELICONE_OLLAMA_BASE_URL" "$CALCIFORGE_HELICONE_MODELS" <<'PY'
+import pathlib
+import sys
+
+config_path, port, jawn_port, key_file, provider, ollama_url, models_csv = sys.argv[1:]
+models = [m.strip() for m in models_csv.split(",") if m.strip()]
+api_key = pathlib.Path(key_file).read_text().strip()
+
+lines = [
+    "server:",
+    "  address: 127.0.0.1",
+    f"  port: {port}",
+    "",
+    "helicone:",
+    "  features: all",
+    f"  api-key: {api_key}",
+    f"  base-url: http://127.0.0.1:{jawn_port}",
+    f"  websocket-url: ws://127.0.0.1:{jawn_port}/ws/v1/router/control-plane",
+    "",
+    "providers:",
+]
+if provider == "ollama" and models:
+    lines.extend([
+        "  ollama:",
+        "    models:",
+        *[f'      - "{model}"' for model in models],
+        f"    base-url: {ollama_url}",
+        "",
+        "routers:",
+        "  calciforge:",
+        "    load-balance:",
+        "      chat:",
+        "        strategy: weighted",
+        "        providers:",
+        "          - provider: ollama",
+        "            weight: 1",
+    ])
+else:
+    lines.extend(["  {}", ""])
+pathlib.Path(config_path).write_text("\n".join(lines) + "\n")
+PY
+    chmod 600 "$config_path" 2>/dev/null || true
+}
+
+seed_helicone_api_key() {
+    truthy "$CALCIFORGE_HELICONE_DASHBOARD_ENABLED" || return 0
+    command -v docker >/dev/null 2>&1 || return 0
+    docker ps --format '{{.Names}}' | grep -qx "$CALCIFORGE_HELICONE_CONTAINER" || return 0
+
+    local key hash
+    key="$(tr -d '\n' < "$CALCIFORGE_HELICONE_API_KEY_FILE")"
+    hash="$(python3 - "$key" <<'PY'
+import hashlib, sys
+print(hashlib.sha256(("Bearer " + sys.argv[1]).encode()).hexdigest())
+PY
+)"
+    for _ in {1..30}; do
+        if docker exec "$CALCIFORGE_HELICONE_CONTAINER" sh -lc \
+            'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-helicone_test}" -Atc "select to_regclass('\''public.helicone_api_keys'\'')" 2>/dev/null | grep -q helicone_api_keys'; then
+            break
+        fi
+        sleep 1
+    done
+    docker exec \
+        -e HELICONE_LOCAL_KEY_HASH="$hash" \
+        "$CALCIFORGE_HELICONE_CONTAINER" sh -lc '
+PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-helicone_test}" -v key_hash="$HELICONE_LOCAL_KEY_HASH" >/dev/null <<SQL
+insert into public."user" (id, name, email, "emailVerified", "createdAt", "updatedAt", auth_user_id)
+values ('\''calciforge-local'\'', '\''Calciforge Local'\'', '\''calciforge-local@example.invalid'\'', false, now(), now(), '\''00000000-0000-4000-8000-000000000001'\'')
+on conflict (id) do update set name = excluded.name, email = excluded.email, "emailVerified" = excluded."emailVerified", "updatedAt" = now(), auth_user_id = excluded.auth_user_id;
+
+insert into public.organization (id, name, owner, is_personal, created_at)
+values ('\''00000000-0000-4000-8000-000000000002'\'', '\''Calciforge Local'\'', '\''00000000-0000-4000-8000-000000000001'\'', true, now())
+on conflict (id) do update set name = excluded.name, owner = excluded.owner;
+
+insert into public.organization_member (id, member, "user", organization, org_role, created_at)
+values ('\''00000000-0000-4000-8000-000000000003'\'', '\''00000000-0000-4000-8000-000000000001'\'', '\''calciforge-local'\'', '\''00000000-0000-4000-8000-000000000002'\'', '\''owner'\'', now())
+on conflict (id) do update set member = excluded.member, "user" = excluded."user", organization = excluded.organization, org_role = excluded.org_role;
+
+insert into public.helicone_api_keys (id, api_key_hash, api_key_name, user_id, organization_id, created_at)
+values (1000000001, :'\'key_hash\'', '\''Calciforge local gateway'\'', '\''00000000-0000-4000-8000-000000000001'\'', '\''00000000-0000-4000-8000-000000000002'\'', now())
+on conflict (id) do update set api_key_hash = excluded.api_key_hash, api_key_name = excluded.api_key_name, user_id = excluded.user_id, organization_id = excluded.organization_id;
+SQL
+' || warn "Could not seed local Helicone API key; dashboard login/routing metadata may need manual setup"
+}
+
+ensure_helicone() {
+    truthy "$CALCIFORGE_HELICONE_ENABLED" || return 0
+    ensure_helicone_key
+
+    local install_dir gateway_config gateway_bin ui_host
+    install_dir="$(helicone_install_dir)"
+    gateway_config="$CALCIFORGE_CONFIG_HOME/helicone-ai-gateway.yaml"
+    mkdir -p "$install_dir" "$ZC_LOG_DIR"
+
+    if truthy "$CALCIFORGE_HELICONE_DASHBOARD_ENABLED"; then
+        if command -v docker >/dev/null 2>&1; then
+            ui_host="$CALCIFORGE_HELICONE_DASHBOARD_BIND"
+            if [[ "$ui_host" == "0.0.0.0" || "$ui_host" == "::" ]]; then
+                ui_host="$(calciforge_lan_ip)"
+                [[ -n "$ui_host" ]] || ui_host="127.0.0.1"
+            fi
+            local dashboard_url="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
+            local better_auth_secret
+            better_auth_secret="$(openssl rand -hex 32)"
+            docker rm -f "$CALCIFORGE_HELICONE_CONTAINER" >/dev/null 2>&1 || true
+            docker run -d --name "$CALCIFORGE_HELICONE_CONTAINER" \
+                --restart unless-stopped \
+                -e "NEXT_PUBLIC_IS_ON_PREM=true" \
+                -e "NEXT_PUBLIC_APP_URL=${dashboard_url}" \
+                -e "SITE_URL=${dashboard_url}" \
+                -e "BETTER_AUTH_URL=${dashboard_url}" \
+                -e "BETTER_AUTH_SECRET=${better_auth_secret}" \
+                -e "NEXT_PUBLIC_HELICONE_JAWN_SERVICE=http://127.0.0.1:${CALCIFORGE_HELICONE_JAWN_PORT}" \
+                -e "S3_ENDPOINT=http://127.0.0.1:${CALCIFORGE_HELICONE_S3_PORT}" \
+                -p "${CALCIFORGE_HELICONE_DASHBOARD_BIND}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}:3000" \
+                -p "127.0.0.1:${CALCIFORGE_HELICONE_JAWN_PORT}:8585" \
+                -p "127.0.0.1:${CALCIFORGE_HELICONE_S3_PORT}:9080" \
+                -v calciforge-helicone-postgres:/var/lib/postgresql/data \
+                -v calciforge-helicone-clickhouse:/var/lib/clickhouse \
+                -v calciforge-helicone-minio:/data \
+                helicone/helicone-all-in-one:latest >/dev/null
+            ok "Helicone dashboard running at ${dashboard_url}"
+            sleep 3
+            seed_helicone_api_key
+        else
+            warn "Docker not found; skipping local Helicone dashboard container"
+        fi
+    fi
+
+    if [[ ! -d "$install_dir/node_modules/@helicone/ai-gateway" ]]; then
+        require_npm
+        ( cd "$install_dir" && npm init -y >/dev/null 2>&1 && npm install "$CALCIFORGE_HELICONE_PACKAGE" >/dev/null )
+    fi
+    gateway_bin="$(helicone_ai_gateway_bin "$install_dir")"
+    [[ -x "$gateway_bin" ]] || die "Helicone AI Gateway binary not found under $install_dir"
+    write_helicone_ai_gateway_config "$gateway_config"
+
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        local plist="$PLIST_DIR/com.calciforge.helicone-ai-gateway.plist"
+        mkdir -p "$PLIST_DIR"
+        cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>com.calciforge.helicone-ai-gateway</string>
+    <key>ProgramArguments</key><array>
+        <string>${gateway_bin}</string>
+        <string>--config</string>
+        <string>${gateway_config}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>${ZC_LOG_DIR}/helicone-ai-gateway.log</string>
+    <key>StandardErrorPath</key><string>${ZC_LOG_DIR}/helicone-ai-gateway.err</string>
+</dict></plist>
+EOF
+        load_launch_agent "com.calciforge.helicone-ai-gateway" "$plist"
+    else
+        local unit="$PLIST_DIR/calciforge-helicone-ai-gateway.service"
+        cat > "$unit" <<EOF
+[Unit]
+Description=Calciforge Helicone AI Gateway
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=${gateway_bin} --config ${gateway_config}
+Restart=always
+RestartSec=5
+StandardOutput=append:${ZC_LOG_DIR}/helicone-ai-gateway.log
+StandardError=append:${ZC_LOG_DIR}/helicone-ai-gateway.err
+
+[Install]
+WantedBy=${WANTED_BY_TARGET}
+EOF
+        $SYSTEMCTL daemon-reload
+        enable_restart_service calciforge-helicone-ai-gateway.service || warn "Could not start Helicone AI Gateway service"
+    fi
+
+    CALCIFORGE_GATEWAY_BACKEND_TYPE="helicone"
+    CALCIFORGE_GATEWAY_BACKEND_URL="http://127.0.0.1:${CALCIFORGE_HELICONE_AI_GATEWAY_PORT}/ai"
+    CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="$CALCIFORGE_HELICONE_API_KEY_FILE"
+    if [[ -z "$CALCIFORGE_GATEWAY_UI_URL" ]] && truthy "$CALCIFORGE_HELICONE_DASHBOARD_ENABLED"; then
+        ui_host="$CALCIFORGE_HELICONE_DASHBOARD_BIND"
+        if [[ "$ui_host" == "0.0.0.0" || "$ui_host" == "::" ]]; then
+            ui_host="$(calciforge_lan_ip)"
+            [[ -n "$ui_host" ]] || ui_host="127.0.0.1"
+        fi
+        CALCIFORGE_GATEWAY_UI_URL="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
     fi
 }
 
@@ -1534,6 +1785,11 @@ fi
 # default; users must populate it before the service starts (or the service
 # will fail health and launchd/systemd will keep retrying).
 if [[ "$AGENTS_ONLY" != true ]]; then
+if truthy "$CALCIFORGE_HELICONE_ENABLED"; then
+    hdr "Helicone AI Gateway"
+    ensure_helicone
+fi
+
 hdr "calciforge"
 
 mkdir -p "$ZC_LOG_DIR"
@@ -1545,18 +1801,108 @@ _write_proxy_section() {
     content="[proxy]
 enabled = true
 bind = \"127.0.0.1:${CALCIFORGE_GATEWAY_PORT}\"
-backend_type = \"http\"
+backend_type = \"${CALCIFORGE_GATEWAY_BACKEND_TYPE}\"
 timeout_seconds = 300"
     [[ -n "$CALCIFORGE_GATEWAY_BACKEND_URL" ]] && \
         content+=$'\n'"backend_url = \"${CALCIFORGE_GATEWAY_BACKEND_URL}\""
     [[ -n "$CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE" && -f "$CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE" ]] && \
         content+=$'\n'"backend_api_key_file = \"${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE}\""
+    [[ -n "$CALCIFORGE_GATEWAY_UI_URL" ]] && \
+        content+=$'\n'"gateway_ui_url = \"${CALCIFORGE_GATEWAY_UI_URL}\""
 
     if [[ "$mode" == "overwrite" ]]; then
         printf '[calciforge]\nversion = 2\n\n%s\n' "$content" > "$dest"
     else
         printf '\n%s\n' "$content" >> "$dest"
     fi
+}
+
+_ensure_proxy_gateway_settings() {
+    local config_path="$1"
+    python3 - "$config_path" \
+        "$CALCIFORGE_GATEWAY_BACKEND_TYPE" \
+        "$CALCIFORGE_GATEWAY_BACKEND_URL" \
+        "$CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE" \
+        "$CALCIFORGE_GATEWAY_UI_URL" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+backend_type, backend_url, api_key_file, ui_url = sys.argv[2:]
+text = path.read_text()
+match = re.search(r'(?ms)^\[proxy\]\n.*?(?=^\[|\Z)', text)
+if not match:
+    raise SystemExit(1)
+
+section = match.group(0)
+
+def set_key(section, key, value):
+    if not value:
+        return section
+    line = f'{key} = "{value}"'
+    pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
+    if re.search(pattern, section):
+        return re.sub(pattern, line, section, count=1)
+    return section.rstrip() + "\n" + line + "\n"
+
+new_section = section
+new_section = set_key(new_section, "backend_type", backend_type)
+new_section = set_key(new_section, "backend_url", backend_url)
+new_section = set_key(new_section, "backend_api_key_file", api_key_file)
+new_section = set_key(new_section, "gateway_ui_url", ui_url)
+if new_section != section:
+    path.write_text(text[:match.start()] + new_section + text[match.end():])
+PY
+}
+
+_ensure_helicone_ollama_provider() {
+    local config_path="$1"
+    python3 - "$config_path" \
+        "$CALCIFORGE_HELICONE_AI_GATEWAY_PORT" \
+        "$CALCIFORGE_HELICONE_API_KEY_FILE" \
+        "$CALCIFORGE_HELICONE_MODELS" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+port, api_key_file, models_csv = sys.argv[2:]
+models = [m.strip() for m in models_csv.split(",") if m.strip()]
+if not models:
+    raise SystemExit(0)
+
+text = path.read_text()
+
+for model in models:
+    route_re = re.compile(
+        r'(?ms)^\[\[proxy\.model_routes\]\]\n(?:(?!^\[\[).)*?^pattern\s*=\s*"'
+        + re.escape(model)
+        + r'"\s*$'
+    )
+    if not route_re.search(text):
+        text = text.rstrip() + (
+            "\n\n[[proxy.model_routes]]\n"
+            f'pattern = "{model}"\n'
+            'provider = "helicone-ollama"\n'
+        )
+
+provider_re = re.compile(
+    r'(?ms)^\[\[proxy\.providers\]\]\n(?:(?!^\[\[).)*?^id\s*=\s*"helicone-ollama"\s*$'
+)
+if not provider_re.search(text):
+    text = text.rstrip() + (
+        "\n\n[[proxy.providers]]\n"
+        'id = "helicone-ollama"\n'
+        'backend_type = "http"\n'
+        f'url = "http://127.0.0.1:{port}/ollama/v1"\n'
+        f'api_key_file = "{api_key_file}"\n'
+        "models = []\n"
+        "timeout_seconds = 900\n"
+    )
+
+path.write_text(text + ("\n" if not text.endswith("\n") else ""))
+PY
 }
 
 _ensure_proxy_enabled() {
@@ -1599,6 +1945,13 @@ m = re.search(r'(?m)^\[proxy\].*?(?=^\[|\Z)', text, re.S)
 sys.exit(0 if m and 'enabled = true' in m.group() else 1)
 " 2>/dev/null; then
     _ensure_proxy_enabled "$ZC_CONFIG" || warn "Could not set [proxy].enabled = true in $ZC_CONFIG"
+fi
+
+if truthy "$CALCIFORGE_HELICONE_ENABLED"; then
+    _ensure_proxy_gateway_settings "$ZC_CONFIG" || warn "Could not update [proxy] gateway settings in $ZC_CONFIG"
+    if [[ "$CALCIFORGE_HELICONE_PROVIDER" == "ollama" ]]; then
+        _ensure_helicone_ollama_provider "$ZC_CONFIG" || warn "Could not add Helicone Ollama provider entries in $ZC_CONFIG"
+    fi
 fi
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
