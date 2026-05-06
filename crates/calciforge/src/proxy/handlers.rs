@@ -38,7 +38,7 @@ const KNOWN_MODELS: &[&str] = &[
 pub async fn chat_completions(
     State(state): State<ProxyState>,
     headers: HeaderMap,
-    Json(req): Json<ChatCompletionRequest>,
+    Json(mut req): Json<ChatCompletionRequest>,
 ) -> Response {
     debug!(model = %req.model, stream = req.stream.unwrap_or(false), "Chat completion request");
 
@@ -52,15 +52,30 @@ pub async fn chat_completions(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("anonymous");
 
+    let requested_model = req.model.clone();
+    if let Some(resolved_model) = resolve_model_shortcut(&state, &requested_model) {
+        debug!(
+            requested_model = %requested_model,
+            resolved_model = %resolved_model,
+            "Resolved proxy model shortcut"
+        );
+        req.model = resolved_model;
+    }
+
     // Check model access for this agent
-    if !crate::proxy::auth::check_model_access(&state.config, agent_id, &req.model) {
-        warn!(agent_id = %agent_id, model = %req.model, "Model access denied");
+    if !crate::proxy::auth::check_model_access_for_names(
+        &state.config,
+        agent_id,
+        &requested_model,
+        &req.model,
+    ) {
+        warn!(agent_id = %agent_id, requested_model = %requested_model, model = %req.model, "Model access denied");
         return api_error(
             StatusCode::FORBIDDEN,
             "model_access_denied",
             &format!(
                 "Agent '{}' does not have access to model '{}'",
-                agent_id, req.model
+                agent_id, requested_model
             ),
             None,
         );
@@ -140,6 +155,14 @@ pub async fn chat_completions(
             )
         }
     }
+}
+
+fn resolve_model_shortcut(state: &ProxyState, model: &str) -> Option<String> {
+    state
+        .model_shortcuts
+        .iter()
+        .find(|shortcut| shortcut.alias == model)
+        .map(|shortcut| shortcut.model.clone())
 }
 
 fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
@@ -552,14 +575,104 @@ mod tests {
     use crate::config::{DispatcherConfig, ModelShortcutConfig, SyntheticModelConfig};
     use crate::providers::alloy::AlloyManager;
     use crate::providers::ProviderRegistry;
-    use crate::proxy::backend::{BackendConfig, BackendType};
-    use crate::proxy::gateway::{self, GatewayConfig, GatewayType};
-    use crate::proxy::{routing::ProviderEntry, ProxyState};
+    use crate::proxy::backend::{BackendError, ModelInfo};
+    use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
+    use crate::proxy::openai::{ChatCompletionResponse, Choice, Usage};
+    use crate::proxy::ProxyState;
     use crate::sync::Arc;
+    use async_trait::async_trait;
     use axum::body::to_bytes;
     use axum::http::HeaderValue;
-    use mockito::Matcher;
     use serde_json::Value;
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct RecordingGateway {
+        config: GatewayConfig,
+        requests: Mutex<Vec<ChatCompletionRequest>>,
+    }
+
+    impl RecordingGateway {
+        fn new() -> Self {
+            Self {
+                config: GatewayConfig {
+                    backend_type: GatewayType::Direct,
+                    base_url: None,
+                    api_key: None,
+                    timeout_seconds: 30,
+                    extra_config: None,
+                    headers: None,
+                    retry_enabled: false,
+                    max_retries: 0,
+                    retry_base_delay_ms: 0,
+                    retry_max_delay_ms: 0,
+                    ui_url: None,
+                },
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded_models(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .expect("recording gateway mutex poisoned")
+                .iter()
+                .map(|request| request.model.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl GatewayBackend for RecordingGateway {
+        fn gateway_type(&self) -> GatewayType {
+            GatewayType::Direct
+        }
+
+        async fn chat_completion(
+            &self,
+            request: ChatCompletionRequest,
+        ) -> Result<ChatCompletionResponse, BackendError> {
+            let model = request.model.clone();
+            self.requests
+                .lock()
+                .expect("recording gateway mutex poisoned")
+                .push(request);
+            Ok(ChatCompletionResponse {
+                id: "chatcmpl-test".to_string(),
+                object: "chat.completion".to_string(),
+                created: 1,
+                model,
+                choices: vec![Choice {
+                    index: 0,
+                    message: crate::proxy::openai::ChatMessage {
+                        role: "assistant".to_string(),
+                        content: Some(crate::proxy::openai::MessageContent::Text("ok".to_string())),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning: None,
+                        reasoning_content: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                    logprobs: None,
+                }],
+                usage: Usage {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                },
+                system_fingerprint: None,
+            })
+        }
+
+        async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
+            Ok(Vec::new())
+        }
+
+        fn config(&self) -> &GatewayConfig {
+            &self.config
+        }
+    }
 
     fn config_with_key(key: Option<&str>) -> ProxyConfig {
         ProxyConfig {
@@ -607,39 +720,6 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_resolves_model_shortcut_dispatcher_before_provider_routing() {
-        let mut server = mockito::Server::new_async().await;
-        let backend = server
-            .mock("POST", "/v1/chat/completions")
-            .match_body(Matcher::PartialJson(serde_json::json!({
-                "model": "qwen-test:small"
-            })))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                serde_json::json!({
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion",
-                    "created": 1,
-                    "model": "qwen-test:small",
-                    "choices": [{
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "ok"
-                        },
-                        "finish_reason": "stop"
-                    }],
-                    "usage": {
-                        "prompt_tokens": 1,
-                        "completion_tokens": 1,
-                        "total_tokens": 2
-                    }
-                })
-                .to_string(),
-            )
-            .create_async()
-            .await;
-
         let alloy_manager = AlloyManager::from_gateway_configs(
             &[],
             &[],
@@ -661,26 +741,8 @@ mod tests {
         )
         .unwrap();
 
-        let backend_config = BackendConfig {
-            backend_type: BackendType::Http,
-            url: Some(format!("{}/v1", server.url())),
-            ..Default::default()
-        };
-        let backend_client = crate::proxy::backend::create_backend(&backend_config).unwrap();
-        let gateway_config = GatewayConfig {
-            backend_type: GatewayType::Direct,
-            base_url: Some(format!("{}/v1", server.url())),
-            api_key: None,
-            timeout_seconds: 30,
-            extra_config: None,
-            headers: None,
-            retry_enabled: false,
-            max_retries: 0,
-            retry_base_delay_ms: 0,
-            retry_max_delay_ms: 0,
-            ui_url: None,
-        };
-        let gateway = gateway::create_gateway(gateway_config, Some(backend_client)).unwrap();
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -692,13 +754,8 @@ mod tests {
                 alias: "local-dispatcher".to_string(),
                 model: "local-cloud-balanced".to_string(),
             }],
-            gateway: Arc::clone(&gateway),
-            providers: vec![ProviderEntry {
-                id: "route:local-dispatcher->test".to_string(),
-                patterns: vec!["local-dispatcher".to_string()],
-                gateway,
-                on_switch: None,
-            }],
+            gateway,
+            providers: Vec::new(),
             local_manager: None,
             voice: None,
         };
@@ -717,6 +774,61 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
         assert_eq!(body["model"], "qwen-test:small");
-        backend.assert_async().await;
+        assert_eq!(recording_gateway.recorded_models(), vec!["qwen-test:small"]);
+    }
+
+    #[tokio::test]
+    async fn proxy_resolves_direct_dispatcher_id_before_gateway_request() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-dispatcher".to_string(),
+                name: Some("Local dispatcher".to_string()),
+                models: vec![
+                    SyntheticModelConfig {
+                        model: "qwen-test:small".to_string(),
+                        context_window: 60_000,
+                    },
+                    SyntheticModelConfig {
+                        model: "kimi-test:medium".to_string(),
+                        context_window: 250_000,
+                    },
+                ],
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "local-dispatcher",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(recording_gateway.recorded_models(), vec!["qwen-test:small"]);
     }
 }

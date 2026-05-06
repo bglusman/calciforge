@@ -19,6 +19,18 @@ pub struct AuthContext {
 
 /// Check if a model is allowed for a given agent.
 pub fn check_model_access(config: &ProxyConfig, agent_id: &str, model: &str) -> bool {
+    check_model_access_for_names(config, agent_id, model, model)
+}
+
+/// Check access when a client-facing model name may resolve to a different
+/// backend model name. Block rules apply to either name; allow rules can match
+/// either the requested alias or the resolved canonical model.
+pub fn check_model_access_for_names(
+    config: &ProxyConfig,
+    agent_id: &str,
+    requested_model: &str,
+    resolved_model: &str,
+) -> bool {
     // Find agent configuration
     let agent_config = config.agents.iter().find(|a| a.id == agent_id);
 
@@ -26,8 +38,9 @@ pub fn check_model_access(config: &ProxyConfig, agent_id: &str, model: &str) -> 
         Some(agent) => {
             // Check blocked models first (takes precedence)
             for pattern in &agent.blocked_models {
-                if model_matches(model, pattern) {
-                    debug!(agent_id = %agent_id, model = %model, pattern = %pattern, "Model blocked");
+                if model_matches(requested_model, pattern) || model_matches(resolved_model, pattern)
+                {
+                    debug!(agent_id = %agent_id, requested_model = %requested_model, resolved_model = %resolved_model, pattern = %pattern, "Model blocked");
                     return false;
                 }
             }
@@ -38,11 +51,11 @@ pub fn check_model_access(config: &ProxyConfig, agent_id: &str, model: &str) -> 
                 true
             } else {
                 // Must match at least one allowed pattern
-                let allowed = agent
-                    .allowed_models
-                    .iter()
-                    .any(|pattern| model_matches(model, pattern));
-                debug!(agent_id = %agent_id, model = %model, allowed = allowed, "Checked model access");
+                let allowed = agent.allowed_models.iter().any(|pattern| {
+                    model_matches(requested_model, pattern)
+                        || model_matches(resolved_model, pattern)
+                });
+                debug!(agent_id = %agent_id, requested_model = %requested_model, resolved_model = %resolved_model, allowed = allowed, "Checked model access");
                 allowed
             }
         }
@@ -315,6 +328,84 @@ mod tests {
 
         // Other models should be allowed
         assert!(check_model_access(&config, "test-agent", "safe-model"));
+    }
+
+    #[test]
+    fn test_check_model_access_for_resolved_names_allows_alias_or_canonical() {
+        use crate::config::ProxyAgentConfig;
+
+        let config = ProxyConfig {
+            default_policy: ProxyAccessPolicy::AllowConfigured,
+            agents: vec![ProxyAgentConfig {
+                id: "test-agent".to_string(),
+                name: Some("Test Agent".to_string()),
+                api_key: None,
+                api_key_file: None,
+                allowed_models: vec!["local-dispatcher".to_string(), "kimi/*".to_string()],
+                blocked_models: vec![],
+                rate_limit_rpm: 0,
+                rate_limit_tpm: 0,
+            }],
+            ..Default::default()
+        };
+
+        assert!(check_model_access_for_names(
+            &config,
+            "test-agent",
+            "local-dispatcher",
+            "qwen-test:small"
+        ));
+        assert!(check_model_access_for_names(
+            &config,
+            "test-agent",
+            "balanced",
+            "kimi/kimi-test:medium"
+        ));
+        assert!(!check_model_access_for_names(
+            &config,
+            "test-agent",
+            "balanced",
+            "codex/gpt-5.5"
+        ));
+    }
+
+    #[test]
+    fn test_check_model_access_for_resolved_names_blocks_alias_or_canonical() {
+        use crate::config::ProxyAgentConfig;
+
+        let config = ProxyConfig {
+            default_policy: ProxyAccessPolicy::AllowConfigured,
+            agents: vec![ProxyAgentConfig {
+                id: "test-agent".to_string(),
+                name: Some("Test Agent".to_string()),
+                api_key: None,
+                api_key_file: None,
+                allowed_models: vec!["*".to_string()],
+                blocked_models: vec!["local-dispatcher".to_string(), "secret/*".to_string()],
+                rate_limit_rpm: 0,
+                rate_limit_tpm: 0,
+            }],
+            ..Default::default()
+        };
+
+        assert!(!check_model_access_for_names(
+            &config,
+            "test-agent",
+            "local-dispatcher",
+            "qwen-test:small"
+        ));
+        assert!(!check_model_access_for_names(
+            &config,
+            "test-agent",
+            "balanced",
+            "secret/model"
+        ));
+        assert!(check_model_access_for_names(
+            &config,
+            "test-agent",
+            "balanced",
+            "qwen-test:small"
+        ));
     }
 
     /*
