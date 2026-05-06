@@ -3,7 +3,7 @@
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response, Sse},
+    response::{IntoResponse, Redirect, Response, Sse},
     Json,
 };
 use futures_util::stream::{self};
@@ -140,6 +140,24 @@ pub async fn chat_completions(
                 None,
             )
         }
+    }
+}
+
+/// Return operator-facing metadata for the active gateway engine.
+pub async fn gateway_info(State(state): State<ProxyState>) -> Response {
+    Json(state.gateway.engine_info()).into_response()
+}
+
+/// Redirect to the configured gateway UI/dashboard when one is available.
+pub async fn gateway_ui_redirect(State(state): State<ProxyState>) -> Response {
+    match state.gateway.engine_info().ui_url {
+        Some(url) if !url.trim().is_empty() => Redirect::temporary(url.trim()).into_response(),
+        _ => api_error(
+            StatusCode::NOT_FOUND,
+            "gateway_ui_unavailable",
+            "No gateway UI URL is configured for this Calciforge gateway.",
+            None,
+        ),
     }
 }
 

@@ -93,6 +93,7 @@ pub fn build_provider_entries(
                 max_retries: 0,
                 retry_base_delay_ms: 0,
                 retry_max_delay_ms: 0,
+                ui_url: None,
             };
             let gw = Arc::new(ExecGateway::new(
                 gw_cfg,
@@ -169,6 +170,7 @@ pub fn build_provider_entries(
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 10000,
+            ui_url: None,
         };
 
         let gw = gateway::create_gateway(gw_cfg, Some(backend))
@@ -213,6 +215,7 @@ pub fn build_provider_entries(
             max_retries: 0,
             retry_base_delay_ms: 0,
             retry_max_delay_ms: 0,
+            ui_url: None,
         };
         let gw = Arc::new(ExecGateway::new(
             gw_cfg,

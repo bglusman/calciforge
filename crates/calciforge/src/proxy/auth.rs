@@ -176,6 +176,7 @@ mod tests {
             token_estimator: Default::default(),
             agents: vec![],
             voice: None,
+            ..Default::default()
         };
 
         // With AllowAll policy, any model should be allowed
@@ -208,6 +209,7 @@ mod tests {
             token_estimator: Default::default(),
             agents: vec![],
             voice: None,
+            ..Default::default()
         };
 
         // With DenyAll policy, no models should be allowed
@@ -246,6 +248,7 @@ mod tests {
                 rate_limit_tpm: 0,
             }],
             voice: None,
+            ..Default::default()
         };
 
         // Agent should have access to allowed models
@@ -299,6 +302,7 @@ mod tests {
                 rate_limit_tpm: 0,
             }],
             voice: None,
+            ..Default::default()
         };
 
         // Blocked models should be denied even if allowed_models says "*"

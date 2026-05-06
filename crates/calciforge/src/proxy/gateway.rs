@@ -18,6 +18,27 @@ use crate::proxy::openai::{ChatCompletionRequest, ChatCompletionResponse};
 #[allow(unused_imports)]
 use tracing::{info, warn};
 
+/// High-level capability flags used to compare builtin and external gateway
+/// engines without committing Calciforge to one implementation.
+#[derive(Debug, Clone, Default, serde::Serialize, PartialEq, Eq)]
+pub struct GatewayCapabilities {
+    pub openai_chat_completions: bool,
+    pub model_listing: bool,
+    pub tool_call_transcripts: bool,
+    pub config_validation: bool,
+    pub observability: bool,
+    pub operator_ui: bool,
+}
+
+/// Operator-facing metadata for the active gateway engine.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct GatewayEngineInfo {
+    pub id: String,
+    pub display_name: String,
+    pub ui_url: Option<String>,
+    pub capabilities: GatewayCapabilities,
+}
+
 /// Configuration for a gateway backend
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
@@ -52,6 +73,9 @@ pub struct GatewayConfig {
     /// Maximum delay between retries in milliseconds (default: 10000)
     #[allow(dead_code)]
     pub retry_max_delay_ms: u64,
+
+    /// Optional operator UI or dashboard URL for this gateway engine.
+    pub ui_url: Option<String>,
 }
 
 impl Default for GatewayConfig {
@@ -67,6 +91,7 @@ impl Default for GatewayConfig {
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 10000,
+            ui_url: None,
         }
     }
 }
@@ -114,6 +139,65 @@ impl std::fmt::Display for GatewayType {
     }
 }
 
+impl GatewayType {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            GatewayType::Helicone => "Helicone AI Gateway",
+            GatewayType::Traceloop => "Traceloop Hub",
+            GatewayType::Direct => "Calciforge builtin gateway",
+            GatewayType::Mock => "Mock gateway",
+        }
+    }
+
+    pub fn default_capabilities(self) -> GatewayCapabilities {
+        match self {
+            GatewayType::Helicone => GatewayCapabilities {
+                openai_chat_completions: true,
+                model_listing: false,
+                tool_call_transcripts: false,
+                config_validation: false,
+                observability: true,
+                operator_ui: true,
+            },
+            GatewayType::Traceloop => GatewayCapabilities {
+                openai_chat_completions: true,
+                model_listing: false,
+                tool_call_transcripts: false,
+                config_validation: false,
+                observability: true,
+                operator_ui: false,
+            },
+            GatewayType::Direct => GatewayCapabilities {
+                openai_chat_completions: true,
+                model_listing: true,
+                tool_call_transcripts: false,
+                config_validation: false,
+                observability: false,
+                operator_ui: false,
+            },
+            GatewayType::Mock => GatewayCapabilities {
+                openai_chat_completions: true,
+                model_listing: true,
+                tool_call_transcripts: false,
+                config_validation: false,
+                observability: false,
+                operator_ui: false,
+            },
+        }
+    }
+}
+
+impl GatewayConfig {
+    pub fn engine_info(&self, gateway_type: GatewayType) -> GatewayEngineInfo {
+        GatewayEngineInfo {
+            id: gateway_type.to_string(),
+            display_name: gateway_type.display_name().to_string(),
+            ui_url: self.ui_url.clone(),
+            capabilities: gateway_type.default_capabilities(),
+        }
+    }
+}
+
 /// Main trait for gateway backends
 #[async_trait]
 #[allow(dead_code)]
@@ -132,6 +216,12 @@ pub trait GatewayBackend: Send + Sync + Debug {
 
     /// Get gateway configuration
     fn config(&self) -> &GatewayConfig;
+
+    /// Return operator-facing engine metadata. External gateway spikes should
+    /// make this accurate before becoming supported options.
+    fn engine_info(&self) -> GatewayEngineInfo {
+        self.config().engine_info(self.gateway_type())
+    }
 }
 
 /// Create a gateway backend from configuration
@@ -680,9 +770,30 @@ mod tests {
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 10000,
+            ui_url: None,
         };
 
         let gateway = MockGateway::new(config);
         assert_eq!(gateway.gateway_type(), GatewayType::Mock);
+    }
+
+    #[test]
+    fn gateway_engine_info_carries_operator_ui_link() {
+        let config = GatewayConfig {
+            backend_type: GatewayType::Helicone,
+            ui_url: Some("http://127.0.0.1:8585".to_string()),
+            ..Default::default()
+        };
+
+        let info = config.engine_info(GatewayType::Helicone);
+
+        assert_eq!(info.id, "helicone");
+        assert_eq!(info.display_name, "Helicone AI Gateway");
+        assert_eq!(info.ui_url.as_deref(), Some("http://127.0.0.1:8585"));
+        assert!(info.capabilities.operator_ui);
+        assert!(info.capabilities.observability);
+        assert!(!info.capabilities.model_listing);
+        assert!(!info.capabilities.tool_call_transcripts);
+        assert!(!info.capabilities.config_validation);
     }
 }

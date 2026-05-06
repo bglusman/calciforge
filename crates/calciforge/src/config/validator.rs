@@ -507,6 +507,18 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
             ));
         }
     }
+
+    if let Some(url) = proxy.gateway_ui_url.as_deref() {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            result.add_error("Proxy gateway_ui_url cannot be blank when set".to_string());
+        } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            result.add_error(format!(
+                "Proxy gateway_ui_url '{}' must start with http:// or https://",
+                url
+            ));
+        }
+    }
 }
 
 /// Validate security configuration.
@@ -985,6 +997,28 @@ endpoint = "http://127.0.0.1:8642"
         assert!(
             !result.is_valid(),
             "zero proxy timeout must fail; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a proxy config with a gateway UI link that chat users may open,
+    /// when validate_config runs,
+    /// then non-HTTP links are rejected before they appear in `!help`.
+    #[test]
+    fn gateway_ui_url_requires_http_url() {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"http\"\nbackend_url = \"https://api.example.com\"\ngateway_ui_url = \"localhost:8585\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "gateway UI URL without scheme must fail; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("gateway_ui_url")),
+            "error should name gateway_ui_url; errors: {:?}",
             result.errors
         );
     }

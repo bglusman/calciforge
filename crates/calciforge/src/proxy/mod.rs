@@ -88,6 +88,14 @@ fn resolve_api_key(
     Ok(api_key.and_then(normalize_api_key))
 }
 
+fn gateway_type_for_backend_type(backend_type: &str) -> gateway::GatewayType {
+    match backend_type {
+        "helicone" => gateway::GatewayType::Helicone,
+        "traceloop" => gateway::GatewayType::Traceloop,
+        _ => gateway::GatewayType::Direct,
+    }
+}
+
 /// Resolve all per-agent proxy API key files into in-memory keys before the
 /// config is shared with request handlers.
 fn resolve_proxy_agent_api_keys(config: &mut ProxyConfig) -> anyhow::Result<()> {
@@ -181,11 +189,7 @@ pub async fn start_proxy_server(
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;
 
     // Determine gateway type based on configuration
-    let gateway_type = if config.backend_type == "helicone" {
-        gateway::GatewayType::Helicone
-    } else {
-        gateway::GatewayType::Direct
-    };
+    let gateway_type = gateway_type_for_backend_type(&config.backend_type);
 
     let gateway_config = gateway::GatewayConfig {
         backend_type: gateway_type,
@@ -198,6 +202,7 @@ pub async fn start_proxy_server(
         max_retries: 3,
         retry_base_delay_ms: 1000,
         retry_max_delay_ms: 10000,
+        ui_url: config.gateway_ui_url.clone(),
     };
 
     // Create default gateway
@@ -222,6 +227,8 @@ pub async fn start_proxy_server(
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/models", get(handlers::list_models))
         .route("/health", get(handlers::health_check))
+        .route("/gateway", get(handlers::gateway_info))
+        .route("/gateway/ui", get(handlers::gateway_ui_redirect))
         .route("/control/local/switch", post(handlers::local_model_switch))
         // Voice passthrough — always registered; returns 501 when not configured.
         .route(
@@ -248,7 +255,7 @@ pub async fn start_proxy_server(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_api_key;
+    use super::{gateway, gateway_type_for_backend_type, resolve_api_key};
 
     #[test]
     fn resolve_api_key_ignores_empty_inline_key() {
@@ -260,6 +267,22 @@ mod tests {
         assert_eq!(
             resolve_api_key(Some(" test-key\n"), None).unwrap(),
             Some("test-key".to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_type_for_backend_type_preserves_external_engines() {
+        assert_eq!(
+            gateway_type_for_backend_type("helicone"),
+            gateway::GatewayType::Helicone
+        );
+        assert_eq!(
+            gateway_type_for_backend_type("traceloop"),
+            gateway::GatewayType::Traceloop
+        );
+        assert_eq!(
+            gateway_type_for_backend_type("http"),
+            gateway::GatewayType::Direct
         );
     }
 }
