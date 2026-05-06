@@ -466,7 +466,7 @@ models = ["local/*", "qwen/*", "mlx/*"]
 pattern = "coding/default"
 provider = "anthropic"
 
-# Chat aliases shown by `!model`; `!model sonnet` prints the expansion.
+# Chat aliases shown by `!model`; `!model sonnet` activates the target.
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"

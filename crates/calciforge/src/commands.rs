@@ -447,6 +447,12 @@ impl CommandHandler {
     /// Return model choices that can be activated with `!model use <id>`.
     pub fn activatable_model_choices(&self) -> Vec<(String, String)> {
         let mut choices = Vec::new();
+        choices.extend(self.config.model_shortcuts.iter().map(|shortcut| {
+            (
+                shortcut.alias.clone(),
+                format!("{} → {}", shortcut.alias, shortcut.model),
+            )
+        }));
         if let Some(manager) = self.alloy_manager.as_ref() {
             choices.extend(
                 manager
@@ -1734,7 +1740,7 @@ impl CommandHandler {
 
             lines.push("\nUsage:".to_string());
             lines.push("  !model list — show this list".to_string());
-            lines.push("  !model <alias> — show model for alias".to_string());
+            lines.push("  !model <alias> — activate the shortcut target".to_string());
             if self.alloy_manager.is_some() {
                 lines.push(
                     "  !model use <synthetic-id> — activate alloy/cascade/dispatcher/exec model for your identity"
@@ -1743,19 +1749,14 @@ impl CommandHandler {
             }
             Some(lines.join("\n"))
         } else {
-            // Argument provided — check if it's a model shortcut or synthetic selection
+            // Argument provided — defer to post-auth handling for activatable
+            // shortcuts, synthetic models, local models, and provider models.
             if args.first().is_some_and(|arg| {
                 arg.eq_ignore_ascii_case("use")
                     || arg.eq_ignore_ascii_case("switch")
                     || arg.eq_ignore_ascii_case("set")
             }) {
                 args.remove(0);
-            }
-            let arg = args.first().copied().unwrap_or("");
-
-            // First check if it's a model shortcut (show-only)
-            if let Some(shortcut) = self.config.model_shortcuts.iter().find(|s| s.alias == arg) {
-                return Some(format!("{} → {}", shortcut.alias, shortcut.model));
             }
 
             // Return None to trigger post-auth handling for activatable model
@@ -1789,7 +1790,16 @@ impl CommandHandler {
             return "Usage: !model use <id>\nAlias: !model <id>\n\nUse !model list to see available models.".to_string();
         }
 
-        let model_id = args[0];
+        let requested_model_id = args[0];
+        let shortcut_target = self
+            .config
+            .model_shortcuts
+            .iter()
+            .find(|shortcut| shortcut.alias == requested_model_id)
+            .map(|shortcut| shortcut.model.as_str());
+        let model_id = shortcut_target.unwrap_or(requested_model_id);
+        let shortcut_note =
+            shortcut_target.map(|target| format!(" via alias '{requested_model_id}' → '{target}'"));
 
         // 1. Synthetic model switch.
         if let Some(ref manager) = self.alloy_manager {
@@ -1806,15 +1816,17 @@ impl CommandHandler {
                         .map(|c| format!("{} (weight {})", c.model, c.weight))
                         .collect();
                     return format!(
-                        "✅ Activated alloy '{}' for your identity.\n\nConstituents ({:?} strategy): {}",
+                        "✅ Activated alloy '{}'{} for your identity.\n\nConstituents ({:?} strategy): {}",
                         model_id,
+                        shortcut_note.as_deref().unwrap_or(""),
                         alloy.definition().strategy,
                         constituents.join(", ")
                     );
                 }
                 return format!(
-                    "✅ Activated synthetic model '{}' for your identity.",
-                    model_id
+                    "✅ Activated synthetic model '{}'{} for your identity.",
+                    model_id,
+                    shortcut_note.as_deref().unwrap_or("")
                 );
             }
         }
@@ -1842,10 +1854,12 @@ impl CommandHandler {
                     }
                 });
                 return format!(
-                    "🔄 Switching to local model '{}' (HF: {}).\n\
+                    "🔄 Switching to local model '{}'{} (HF: {}).\n\
                     This may take 1-2 minutes while the model loads.\n\
                     The gateway will continue serving requests during the transition.",
-                    model_id, hf_id
+                    model_id,
+                    shortcut_note.as_deref().unwrap_or(""),
+                    hf_id
                 );
             }
         }
@@ -1894,14 +1908,18 @@ impl CommandHandler {
                                 }
                             });
                             return format!(
-                                "🔄 Activated model '{}' for your identity; running on_switch hook (provider: {}).",
-                                model_id, provider.id
+                                "🔄 Activated model '{}'{} for your identity; running on_switch hook (provider: {}).",
+                                model_id,
+                                shortcut_note.as_deref().unwrap_or(""),
+                                provider.id
                             );
                         }
                     }
                     return format!(
-                        "✅ Activated model '{}' for your identity (provider: {}).",
-                        model_id, provider.id
+                        "✅ Activated model '{}'{} for your identity (provider: {}).",
+                        model_id,
+                        shortcut_note.as_deref().unwrap_or(""),
+                        provider.id
                     );
                 }
             }
@@ -1909,6 +1927,12 @@ impl CommandHandler {
 
         // 4. Unknown model — show what's available.
         let mut available = vec![];
+        for shortcut in &self.config.model_shortcuts {
+            available.push(format!(
+                "  {} → {} (shortcut)",
+                shortcut.alias, shortcut.model
+            ));
+        }
         if let Some(ref mgr) = self.alloy_manager {
             for a in mgr.list() {
                 available.push(format!("  {} (alloy)", a.id));
@@ -1929,11 +1953,14 @@ impl CommandHandler {
             }
         }
         if available.is_empty() {
-            return format!("⚠️ Unknown model: '{}'\n\nNo models configured.", model_id);
+            return format!(
+                "⚠️ Unknown model: '{}'\n\nNo models configured.",
+                requested_model_id
+            );
         }
         format!(
             "⚠️ Unknown model: '{}'\n\nAvailable:\n{}",
-            model_id,
+            requested_model_id,
             available.join("\n")
         )
     }
@@ -2317,7 +2344,7 @@ mod tests {
     use crate::config::{
         AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CalciforgeConfig,
         CalciforgeHeader, CascadeConfig, ChannelAlias, ChannelConfig, DispatcherConfig,
-        ExecModelConfig, Identity, RoutingRule, SyntheticModelConfig,
+        ExecModelConfig, Identity, ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
 
@@ -3061,6 +3088,70 @@ mod tests {
         assert_eq!(
             h.active_model_for_identity("brian").as_deref(),
             Some("dispatcher-test")
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_activates_synthetic_target() {
+        let mut config = make_config();
+        config.model_shortcuts.push(ModelShortcutConfig {
+            alias: "fast".to_string(),
+            model: "dispatcher-test".to_string(),
+        });
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager());
+
+        assert!(
+            h.handle("!model fast").is_none(),
+            "shortcut activation should be handled after identity resolution"
+        );
+        let reply = h.handle_model("!model fast", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+        assert!(reply.contains("via alias 'fast'"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_activates_provider_target_and_is_choice() {
+        let mut config = make_config();
+        config.model_shortcuts.push(ModelShortcutConfig {
+            alias: "premium".to_string(),
+            model: "openai/gpt-5.5".to_string(),
+        });
+        let proxy = config.proxy.get_or_insert_with(Default::default);
+        proxy.providers.push(crate::config::ProxyProviderConfig {
+            id: "helicone".to_string(),
+            backend_type: "http".to_string(),
+            url: "http://127.0.0.1:1/v1".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["openai/gpt-5.5".to_string()],
+            timeout_seconds: None,
+            headers: HashMap::new(),
+            on_switch: None,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        });
+        let h = CommandHandler::new(Arc::new(config));
+
+        let choices = h.activatable_model_choices();
+        assert!(
+            choices
+                .iter()
+                .any(|(id, label)| id == "premium" && label.contains("openai/gpt-5.5")),
+            "shortcut should be available as an activatable model choice: {choices:?}"
+        );
+        let reply = h.handle_model("!model use premium", "brian");
+        assert!(reply.contains("Activated model"), "{reply}");
+        assert!(reply.contains("via alias 'premium'"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("openai/gpt-5.5")
         );
     }
 

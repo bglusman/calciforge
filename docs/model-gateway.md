@@ -142,8 +142,10 @@ forwards the expected auth headers, path, and model.
 
 - `!model` or `!model list` renders activatable choices for channels that can
   show buttons, with numbered text fallbacks everywhere else.
-- `!model use <id>` stores the selected model for the sender identity. Adapters
-  receive it only when their config explicitly allows model overrides.
+- `!model use <id>` stores the selected model for the sender identity. Shortcut
+  aliases such as `!model sonnet` resolve to their configured target before
+  storage. Adapters receive the selected target only when their config
+  explicitly allows model overrides.
 
 Exact model IDs listed in `[[proxy.providers]].models` are activatable choices.
 Wildcard patterns such as `openai/*` still route gateway requests, but they are

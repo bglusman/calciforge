@@ -46,7 +46,7 @@ pub struct CalciforgeConfig {
 
     /// `[model_shortcuts]` — aliases for provider/model combos.
     /// Use `!model <alias>` to quickly switch models.
-    /// Example: `!model sonnet` expands to `anthropic/claude-sonnet-4.6`
+    /// Example: `!model sonnet` activates `anthropic/claude-sonnet-4.6`.
     #[serde(default)]
     pub model_shortcuts: Vec<ModelShortcutConfig>,
 
