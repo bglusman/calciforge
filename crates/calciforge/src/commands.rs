@@ -343,12 +343,12 @@ impl CommandHandler {
                     true
                 }
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     identity = %identity_id,
                     model = %model_id,
-                    "dropping persisted active-model selection for unknown synthetic model"
+                    "keeping persisted active-model selection outside synthetic manager"
                 );
-                false
+                true
             }
         });
         save_active_models_to(&self.state_dir, &active_models);
@@ -371,11 +371,20 @@ impl CommandHandler {
         self.alloy_manager.as_ref()
     }
 
-    /// Return the active synthetic model override for an identity, if one was selected.
+    /// Return the active model override for an identity, if one was selected.
     pub fn active_model_for_identity(&self, identity_id: &str) -> Option<String> {
+        if let Some(model) = self.active_models.lock().unwrap().get(identity_id).cloned() {
+            return Some(model);
+        }
         self.alloy_manager
             .as_ref()
             .and_then(|manager| manager.active_for_identity(identity_id))
+    }
+
+    fn set_active_model_for_identity(&self, identity_id: &str, model_id: &str) {
+        let mut active_models = self.active_models.lock().unwrap();
+        active_models.insert(identity_id.to_string(), model_id.to_string());
+        save_active_models_to(&self.state_dir, &active_models);
     }
 
     /// Return agent choices the identity may activate, with display labels.
@@ -475,7 +484,18 @@ impl CommandHandler {
                 )
             }));
         }
+        if let Some(proxy_cfg) = self.config.proxy.as_ref() {
+            for provider in &proxy_cfg.providers {
+                for model in &provider.models {
+                    if model.contains('*') {
+                        continue;
+                    }
+                    choices.push((model.clone(), format!("{} ({})", model, provider.id)));
+                }
+            }
+        }
         choices.sort_by(|left, right| left.0.cmp(&right.0));
+        choices.dedup_by(|left, right| left.0 == right.0);
         choices
     }
 
@@ -689,15 +709,16 @@ impl CommandHandler {
         }
     }
 
-    /// Handle a pre-auth command (commands that do not require identity context).
+    /// Handle an identity-independent local command.
     ///
     /// Returns `Some(response)` if `text` starts with `!` and matches a known
-    /// pre-auth command.  Returns `None` otherwise (caller should proceed with
-    /// auth and routing).
+    /// local command that is safe to answer after the channel has resolved a
+    /// trusted sender identity. Returns `None` otherwise.
     ///
-    /// **Note:** `!switch` and `!status` are intentionally NOT handled here —
-    /// they need identity context and are handled after auth via [`handle_switch`]
-    /// and [`cmd_status_for_identity`] respectively.
+    /// **Note:** `!switch`, `!status`, and `!gateway` are intentionally NOT
+    /// handled here. They need an explicit identity-resolved path so future
+    /// pairing or room-based channels do not accidentally expose state before
+    /// sender authorization.
     pub fn handle(&self, text: &str) -> Option<String> {
         let trimmed = text.trim();
         if !trimmed.starts_with('!') {
@@ -713,7 +734,7 @@ impl CommandHandler {
             // !status needs auth — return None so the caller resolves identity first.
             "!status" => None,
             "!agents" => Some(self.cmd_agents_summary()),
-            "!gateway" => Some(self.cmd_gateway()),
+            "!gateway" => None,
             "!metrics" => Some(self.cmd_metrics()),
             "!ping" => Some("pong".to_string()),
             // !sessions needs auth — return None so caller resolves identity first.
@@ -793,6 +814,17 @@ impl CommandHandler {
         let trimmed = text.trim();
         let cmd = command_token(trimmed).to_lowercase();
         cmd == "!status"
+    }
+
+    /// Returns `true` if the text is a `!gateway` command (case-insensitive).
+    ///
+    /// The gateway command can include operator-facing URLs, so channel
+    /// handlers must only call [`cmd_gateway_for_identity`] after resolving a
+    /// trusted sender identity.
+    pub fn is_gateway_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = command_token(trimmed).to_lowercase();
+        cmd == "!gateway"
     }
 
     /// Returns `true` if the text is an `!approve` command (case-insensitive).
@@ -1554,7 +1586,7 @@ impl CommandHandler {
     // Individual command handlers
     // -----------------------------------------------------------------------
 
-    fn cmd_gateway(&self) -> String {
+    pub fn cmd_gateway_for_identity(&self, _identity_id: &str) -> String {
         let Some(proxy) = self.config.proxy.as_ref() else {
             return "Model gateway: disabled.".to_string();
         };
@@ -1582,7 +1614,7 @@ impl CommandHandler {
     }
 
     fn cmd_help(&self) -> String {
-        let mut lines = vec![
+        let lines = vec![
             "Calciforge — available commands:",
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
@@ -1599,21 +1631,9 @@ impl CommandHandler {
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
         ];
-        if let Some(url) = self
-            .config
-            .proxy
-            .as_ref()
-            .and_then(|proxy| proxy.gateway_ui_url.as_deref())
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            lines.push("");
-            lines.push("Gateway UI:");
-            lines.push(url);
-        }
         lines.join("\n")
     }
-    /// Pre-auth handling for !model — lists shortcuts/alloys.
+    /// Identity-independent handling for !model — lists shortcuts/alloys.
     /// Returns None if an alloy is being selected (requires post-auth handling).
     fn cmd_model_preauth(&self, text: &str) -> Option<String> {
         let mut args: Vec<&str> = text.split_whitespace().skip(1).collect();
@@ -1738,15 +1758,9 @@ impl CommandHandler {
                 return Some(format!("{} → {}", shortcut.alias, shortcut.model));
             }
 
-            // If no alloy manager, unknown alias
-            if self.alloy_manager.is_none() {
-                return Some(format!(
-                    "Unknown alias: '{}',\n\nUse !model to see available shortcuts.",
-                    arg
-                ));
-            }
-
-            // Return None to trigger post-auth handling for synthetic selection
+            // Return None to trigger post-auth handling for activatable model
+            // selections. Provider-backed and local model choices do not
+            // require an alloy manager.
             None
         }
     }
@@ -1783,11 +1797,7 @@ impl CommandHandler {
                 if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
                     return format!("⚠️ Failed to activate model: {}", e);
                 }
-                {
-                    let mut active_models = self.active_models.lock().unwrap();
-                    active_models.insert(identity_id.to_string(), model_id.to_string());
-                    save_active_models_to(&self.state_dir, &active_models);
-                }
+                self.set_active_model_for_identity(identity_id, model_id);
                 if let Some(alloy) = manager.get(model_id) {
                     let constituents: Vec<String> = alloy
                         .definition()
@@ -1815,6 +1825,7 @@ impl CommandHandler {
                 let hf_id = model_def.hf_id.clone();
                 let id = model_id.to_string();
                 let mgr = crate::sync::Arc::clone(lm_mgr);
+                self.set_active_model_for_identity(identity_id, model_id);
                 // Run the blocking switch in a background task — may take 1-2 minutes.
                 tokio::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
@@ -1847,6 +1858,7 @@ impl CommandHandler {
                     .iter()
                     .any(|p| crate::proxy::routing::model_matches_pattern(model_id, p));
                 if model_matches {
+                    self.set_active_model_for_identity(identity_id, model_id);
                     if let Some(ref hook_script) = provider.on_switch {
                         if !hook_script.is_empty() {
                             let script = hook_script.clone();
@@ -1882,16 +1894,15 @@ impl CommandHandler {
                                 }
                             });
                             return format!(
-                                "🔄 Running on_switch hook for model '{}' (provider: {}).",
+                                "🔄 Activated model '{}' for your identity; running on_switch hook (provider: {}).",
                                 model_id, provider.id
                             );
                         }
-                        // Provider matches but no hook — just acknowledge.
-                        return format!(
-                            "ℹ️ Model '{}' is served by provider '{}' (no on_switch hook configured).",
-                            model_id, provider.id
-                        );
                     }
+                    return format!(
+                        "✅ Activated model '{}' for your identity (provider: {}).",
+                        model_id, provider.id
+                    );
                 }
             }
         }
@@ -2582,14 +2593,14 @@ mod tests {
         assert!(reply.contains("!switch"));
         assert!(reply.contains("!agent list"));
         assert!(reply.contains("!secret"));
-        assert!(reply.contains("Gateway UI:"));
-        assert!(reply.contains("http://127.0.0.1:8585"));
+        assert!(!reply.contains("Gateway UI:"));
+        assert!(!reply.contains("http://127.0.0.1:8585"));
     }
 
     #[test]
     fn gateway_command_reports_engine_and_ui_link() {
         let h = make_handler();
-        let reply = h.handle("!gateway").unwrap();
+        let reply = h.cmd_gateway_for_identity("brian");
 
         assert!(reply.contains("Model gateway:"), "{reply}");
         assert!(reply.contains("engine: http"), "{reply}");
@@ -2608,7 +2619,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
         let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf());
 
-        let reply = h.handle("!gateway").unwrap();
+        let reply = h.cmd_gateway_for_identity("brian");
 
         assert!(reply.contains("engine: helicone"), "{reply}");
         assert!(
@@ -2618,11 +2629,21 @@ mod tests {
         assert!(reply.contains("/gateway/ui"), "{reply}");
     }
 
+    #[test]
+    fn gateway_command_is_not_identity_independent() {
+        let h = make_handler();
+        assert!(
+            h.handle("!gateway").is_none(),
+            "!gateway must be handled only after sender identity resolution"
+        );
+        assert!(CommandHandler::is_gateway_command("!GATEWAY"));
+    }
+
     // --- !status ---
 
     #[test]
-    fn test_status_handle_returns_none_pre_auth() {
-        // !status must NOT be handled pre-auth — it needs identity context
+    fn test_status_handle_returns_none_without_identity_context() {
+        // !status must NOT be handled by the identity-independent helper.
         let h = make_handler();
         assert!(
             h.handle("!status").is_none(),
@@ -3062,6 +3083,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_model_activation_becomes_dispatch_override_and_survives_alloy_manager() {
+        let mut config = make_config();
+        let proxy = config.proxy.get_or_insert_with(Default::default);
+        proxy.providers.push(crate::config::ProxyProviderConfig {
+            id: "helicone".to_string(),
+            backend_type: "http".to_string(),
+            url: "http://127.0.0.1:1/v1".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["openai/gpt-5.5".to_string()],
+            timeout_seconds: None,
+            headers: HashMap::new(),
+            on_switch: None,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        });
+        let config = Arc::new(config);
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let state_dir = tmp.path().to_path_buf();
+
+        let h = CommandHandler::with_state_dir(config.clone(), state_dir.clone())
+            .with_alloy_manager(synthetic_manager());
+        let reply = h.handle_model("!model use openai/gpt-5.5", "brian");
+        assert!(reply.contains("Activated model"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("openai/gpt-5.5")
+        );
+
+        let restored = CommandHandler::with_state_dir(config, state_dir)
+            .with_alloy_manager(synthetic_manager());
+        assert_eq!(
+            restored.active_model_for_identity("brian").as_deref(),
+            Some("openai/gpt-5.5"),
+            "non-synthetic provider model overrides must not be discarded when the synthetic manager initializes"
+        );
+    }
+
     #[tokio::test]
     async fn test_status_shows_active_model_override() {
         let h = make_handler_with_synthetics();
@@ -3172,7 +3233,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_switch_is_not_handled_pre_auth() {
+    fn test_switch_is_not_handled_by_identity_independent_helper() {
         // !switch must return None from handle() — it needs identity context
         let h = make_handler();
         assert!(h.handle("!switch custodian").is_none());
@@ -3496,7 +3557,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_default_command_not_handled_pre_auth() {
+    fn test_default_command_not_handled_by_identity_independent_helper() {
         let h = make_handler();
         assert!(
             h.handle("!default").is_none(),

@@ -110,7 +110,7 @@ pub async fn run(
 /// 1. Extract text + sender (synchronous)
 /// 2. Auth — unknown sender → drop silently (synchronous)
 /// 3. Build per-identity context key (synchronous)
-/// 4. Pre-auth commands (`!ping`, `!help`, `!agents`, `!metrics`) — spawn reply task, return immediately
+/// 4. Identity-resolved local commands (`!ping`, `!help`, `!agents`, `!metrics`) — spawn reply task, return immediately
 /// 5. `!status` — post-auth: shows per-identity active agent, spawn reply task, return immediately
 /// 6. `!switch <agent>` — post-auth: spawn reply task, return immediately
 /// 7. `!context clear` — spawn reply task, return immediately
@@ -235,9 +235,10 @@ fn handle_message_nonblocking(
         return;
     }
 
-    // Pre-auth-safe commands — no identity context needed.
+    // Identity-independent commands. The sender identity has already been
+    // resolved above; keep operator-state commands on explicit identity paths.
     if let Some(reply) = command_handler.handle(&text) {
-        debug!(chat_id = %chat_id, cmd = %text.trim(), "handled local pre-auth command");
+        debug!(chat_id = %chat_id, cmd = %text.trim(), "handled identity-resolved local command");
         telemetry::command_reply_ready(
             "telegram",
             &identity.id,
@@ -253,11 +254,13 @@ fn handle_message_nonblocking(
         return;
     }
 
-    // If the text looks like a !command but wasn't handled as a pre-auth
-    // local command and it is NOT a post-auth command (status/switch/default/sessions/secure),
+    // If the text looks like a !command but wasn't handled as an
+    // identity-independent local command and it is NOT an identity-context
+    // command (status/gateway/switch/default/sessions/secure),
     // reply with a helpful unknown-command message rather than routing it to an agent.
     if CommandHandler::is_command(&text)
         && !CommandHandler::is_status_command(&text)
+        && !CommandHandler::is_gateway_command(&text)
         && !CommandHandler::is_switch_command(&text)
         && !CommandHandler::is_default_command(&text)
         && !CommandHandler::is_sessions_command(&text)
@@ -301,6 +304,24 @@ fn handle_message_nonblocking(
                 reply.len(),
             );
             send_plain_reply(bot2, chat_id, reply, "status").await;
+        });
+        return;
+    }
+
+    if CommandHandler::is_gateway_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !gateway command");
+        let reply = command_handler.cmd_gateway_for_identity(&identity.id);
+        telemetry::command_reply_ready(
+            "telegram",
+            &identity.id,
+            "gateway",
+            received_at.elapsed().as_millis() as u64,
+            0,
+            reply.len(),
+        );
+        let bot2 = bot.clone();
+        tokio::spawn(async move {
+            send_plain_reply(bot2, chat_id, reply, "gateway").await;
         });
         return;
     }
@@ -1190,7 +1211,7 @@ async fn send_markdown_reply(
 /// 1. Extract text + sender
 /// 2. Auth — unknown sender → drop silently
 /// 3. Build per-identity context key `"{chat_id}-{identity_id}"` (isolates context per identity)
-/// 4. Pre-auth commands (`!ping`, `!help`, etc.) — reply and return
+/// 4. Identity-resolved local commands (`!ping`, `!help`, etc.) — reply and return
 /// 5. `!switch <agent>` — handle with identity context, reply and return
 /// 6. Resolve active agent for this identity
 /// 7. Augment message with conversation context preamble (unseen exchanges)
@@ -1249,9 +1270,10 @@ async fn handle_message(
     // This prevents context bleed when an operator switches between identities.
     let chat_key = format!("{}-{}", chat_id.0, identity.id);
 
-    // Pre-auth-safe commands — no identity context needed, intercept before any await.
+    // Identity-independent commands. The sender identity has already been
+    // resolved above; keep operator-state commands on explicit identity paths.
     if let Some(reply) = command_handler.handle(&text) {
-        debug!(chat_id = %chat_id, cmd = %text.trim(), "handled local pre-auth command");
+        debug!(chat_id = %chat_id, cmd = %text.trim(), "handled identity-resolved local command");
         if let Err(e) = bot.send_message(chat_id, &reply).await {
             warn!(chat_id = %chat_id, error = %e, "failed to send command reply");
         }
@@ -1265,6 +1287,15 @@ async fn handle_message(
         let reply = command_handler.cmd_status_for_identity(&identity.id).await;
         if let Err(e) = bot.send_message(chat_id, &reply).await {
             warn!(chat_id = %chat_id, error = %e, "failed to send status reply");
+        }
+        return;
+    }
+
+    if CommandHandler::is_gateway_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !gateway command");
+        let reply = command_handler.cmd_gateway_for_identity(&identity.id);
+        if let Err(e) = bot.send_message(chat_id, &reply).await {
+            warn!(chat_id = %chat_id, error = %e, "failed to send gateway reply");
         }
         return;
     }
@@ -1891,18 +1922,18 @@ mod tests {
         // so the dispatcher can resolve identity first, then call cmd_status_for_identity().
         assert!(
             handler.handle("!status").is_none(),
-            "!status must NOT be handled pre-auth (returns None from handle())"
+            "!status must NOT be handled by the identity-independent helper"
         );
         assert!(
             handler.handle("!STATUS").is_none(),
-            "!STATUS must NOT be handled pre-auth"
+            "!STATUS must NOT be handled by the identity-independent helper"
         );
 
         // !switch without args — handled by handle_switch (post-auth), NOT handle()
         // handle() must return None for !switch so the caller can do auth first.
         assert!(
             handler.handle("!switch librarian").is_none(),
-            "!switch must NOT be handled pre-auth (returns None from handle())"
+            "!switch must NOT be handled by the identity-independent helper"
         );
 
         // !context clear — also not in handle(), handled inline in the dispatcher.

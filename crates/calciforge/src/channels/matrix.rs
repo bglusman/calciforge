@@ -904,6 +904,7 @@ async fn handle_message(
     // Unknown !command
     if CommandHandler::is_command(body)
         && !CommandHandler::is_status_command(body)
+        && !CommandHandler::is_gateway_command(body)
         && !CommandHandler::is_switch_command(body)
         && !CommandHandler::is_default_command(body)
         && !CommandHandler::is_sessions_command(body)
@@ -919,6 +920,11 @@ async fn handle_message(
     if CommandHandler::is_status_command(body) {
         let reply = cmd_handler.cmd_status_for_identity(identity_id).await;
         send(reply, "status").await;
+        return;
+    }
+
+    if CommandHandler::is_gateway_command(body) {
+        send(cmd_handler.cmd_gateway_for_identity(identity_id), "gateway").await;
         return;
     }
 

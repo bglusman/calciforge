@@ -290,6 +290,7 @@ async fn route_mock_message(
 
     if CommandHandler::is_command(&text)
         && !CommandHandler::is_status_command(&text)
+        && !CommandHandler::is_gateway_command(&text)
         && !CommandHandler::is_switch_command(&text)
         && !CommandHandler::is_default_command(&text)
         && !CommandHandler::is_sessions_command(&text)
@@ -306,6 +307,10 @@ async fn route_mock_message(
             .command_handler
             .cmd_status_for_identity(&identity_id)
             .await);
+    }
+
+    if CommandHandler::is_gateway_command(&text) {
+        return Ok(state.command_handler.cmd_gateway_for_identity(&identity_id));
     }
 
     if CommandHandler::is_switch_command(&text) {
@@ -483,8 +488,9 @@ mod tests {
     use super::*;
     use crate::config::{
         AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig, Identity,
-        RoutingRule,
+        ProxyConfig, ProxyProviderConfig, RoutingRule,
     };
+    use mockito::Matcher;
     use std::collections::HashMap;
 
     fn agent(id: &str) -> AgentConfig {
@@ -546,6 +552,57 @@ mod tests {
             proxy: None,
             local_models: None,
         })
+    }
+
+    fn openai_agent(id: &str, endpoint: String, model: Option<&str>) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint,
+            timeout_ms: Some(5_000),
+            model: model.map(str::to_string),
+            auth_token: Some("agent-token".to_string()),
+            api_key: None,
+            api_key_file: None,
+            openclaw_agent_id: None,
+            allow_model_override: Some(true),
+            reply_port: None,
+            reply_auth_token: None,
+            reply_auth_token_file: None,
+            command: None,
+            args: None,
+            env: Some(HashMap::new()),
+            registry: None,
+            aliases: vec![],
+        }
+    }
+
+    fn config_with_openai_agent(endpoint: String) -> Arc<CalciforgeConfig> {
+        let mut config = (*config_with_mock_identity()).clone();
+        config.agents = vec![openai_agent("llm", endpoint, Some("default-model"))];
+        config.routing = vec![RoutingRule {
+            identity: "brian".to_string(),
+            default_agent: "llm".to_string(),
+            allowed_agents: vec!["llm".to_string()],
+        }];
+        config.proxy = Some(ProxyConfig {
+            providers: vec![ProxyProviderConfig {
+                id: "helicone".to_string(),
+                backend_type: "http".to_string(),
+                url: "http://127.0.0.1:1/v1".to_string(),
+                api_key: None,
+                api_key_file: None,
+                models: vec!["openai/gpt-5.5".to_string()],
+                timeout_seconds: None,
+                headers: HashMap::new(),
+                on_switch: None,
+                command: None,
+                args: Vec::new(),
+                env: HashMap::new(),
+            }],
+            ..Default::default()
+        });
+        Arc::new(config)
     }
 
     fn state(config: Arc<CalciforgeConfig>) -> MockState {
@@ -646,5 +703,58 @@ mod tests {
             .await
             .expect("stale numeric reply should route normally");
         assert_eq!(later_number, "1");
+    }
+
+    #[tokio::test]
+    async fn model_choice_override_is_sent_to_current_agent_request() {
+        let mut server = mockito::Server::new_async().await;
+        let completion = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("authorization", "Bearer agent-token")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "openai/gpt-5.5",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "hello selected model"
+                    }
+                ]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "override-ok"
+                            }
+                        }
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let state = state(config_with_openai_agent(server.url()));
+
+        let reply = route_mock_message(&state, "mock-brian", "!model use openai/gpt-5.5")
+            .await
+            .expect("provider model selection should be accepted");
+        assert!(reply.contains("Activated model"), "{reply}");
+        assert_eq!(
+            state
+                .command_handler
+                .active_model_for_identity("brian")
+                .as_deref(),
+            Some("openai/gpt-5.5")
+        );
+
+        let response = route_mock_message(&state, "mock-brian", "hello selected model")
+            .await
+            .expect("mock channel should dispatch selected model to agent");
+        assert_eq!(response, "override-ok");
+        completion.assert_async().await;
     }
 }

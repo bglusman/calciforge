@@ -39,6 +39,66 @@ or "chat routes" rather than as full agents in user-facing lists.
 | Exec models | Working | `[[exec_models]]` exposes a local binary or wrapper script as a model-gateway model, useful for subscription-backed CLIs. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
 | Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage can be exposed either as a Calciforge agent path or via an exec model wrapper when a local CLI owns authentication. |
+| External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected gateway engine and operator dashboard link after sender identity resolution. |
+| Helicone external gateway adapter | Working | `backend_type = "helicone"` forwards OpenAI-compatible requests to a Helicone AI Gateway while preserving Calciforge auth, routing, and command UX. |
+
+## External Gateway Engines
+
+Calciforge's gateway layer is pluggable at the engine boundary. The built-in
+`mock` and `http` engines remain useful for local development and direct
+provider forwarding. External engines can add operator-facing dashboards or
+provider management without changing how channels and agents talk to
+Calciforge.
+
+Helicone is the first external gateway adapter. Configure it by setting
+`backend_type = "helicone"` and pointing `backend_url` at the Helicone AI
+Gateway OpenAI-compatible base URL. `backend_url` must be a plain `http` or
+`https` base URL without query parameters or fragments.
+If it has no path, Calciforge posts to `/v1/chat/completions`; if it already
+includes a path such as `/v1`, `/ai`, or `/router/<name>`, Calciforge appends
+`/chat/completions` to that configured base path instead of injecting another
+`/v1`.
+
+```toml
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+api_key_file = "/etc/calciforge/secrets/model-gateway-client-key"
+backend_type = "helicone"
+backend_url = "http://127.0.0.1:8585/v1"
+backend_api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
+gateway_ui_url = "http://127.0.0.1:8585/dashboard"
+```
+
+`!gateway` is handled only after a channel resolves the sender identity. It can
+include internal bind addresses or dashboard URLs, so room-based channels and
+future pairing flows should keep their own authorization semantics rather than
+reusing trusted-owner DM assumptions.
+
+For process-boundary coverage, run:
+
+```bash
+python3 scripts/model-gateway-helicone-smoke.py
+```
+
+That script starts a local Helicone-shaped gateway, starts Calciforge in
+`--proxy-only` mode, checks `/gateway` metadata and `/gateway/ui`, and sends a
+real `/v1/chat/completions` request through Calciforge to prove the adapter
+forwards the expected auth headers, path, and model.
+
+## Model Selection
+
+`!model` has two related surfaces:
+
+- `!model` or `!model list` renders activatable choices for channels that can
+  show buttons, with numbered text fallbacks everywhere else.
+- `!model use <id>` stores the selected model for the sender identity. Adapters
+  receive it only when their config explicitly allows model overrides.
+
+Exact model IDs listed in `[[proxy.providers]].models` are activatable choices.
+Wildcard patterns such as `openai/*` still route gateway requests, but they are
+not shown as tap-to-select model choices because there is no concrete model ID
+to activate.
 
 ## Synthetic Model Classes
 
@@ -264,29 +324,6 @@ context_window = 200000
 model = "codex/gpt-5.5"
 context_window = 262144
 ```
-
-### Helicone AI Gateway (experimental)
-
-Helicone can be selected as the default external gateway engine with
-`backend_type = "helicone"`. `backend_url` is treated as the Helicone
-AI Gateway base path. If it has no path, Calciforge posts to
-`/v1/chat/completions`; if it already includes a path such as `/v1`,
-`/ai`, or `/router/<name>`, Calciforge appends `/chat/completions` to
-that configured base path instead of injecting another `/v1`.
-
-```toml
-[proxy]
-enabled = true
-bind = "127.0.0.1:8080"
-backend_type = "helicone"
-backend_url = "https://ai-gateway.helicone.ai"
-backend_api_key_file = "/etc/calciforge/secrets/helicone-key"
-gateway_ui_url = "https://us.helicone.ai/requests"
-```
-
-`GET /gateway` returns the active engine id, display name, UI URL, and
-capability flags. `GET /gateway/ui` redirects to `gateway_ui_url` when
-configured, and `!gateway` shows the same dashboard link to chat users.
 
 ## Notes
 
