@@ -810,9 +810,10 @@ ensure_helicone() {
     truthy "$CALCIFORGE_HELICONE_ENABLED" || return 0
     ensure_helicone_key
 
-    local install_dir gateway_config gateway_bin ui_host
+    local install_dir gateway_config gateway_bin ui_host dashboard_url dashboard_started
     install_dir="$(helicone_install_dir)"
     gateway_config="$CALCIFORGE_CONFIG_HOME/helicone-ai-gateway.yaml"
+    dashboard_started=false
     mkdir -p "$install_dir" "$ZC_LOG_DIR"
 
     if truthy "$CALCIFORGE_HELICONE_DASHBOARD_ENABLED"; then
@@ -822,7 +823,7 @@ ensure_helicone() {
                 ui_host="$(calciforge_lan_ip)"
                 [[ -n "$ui_host" ]] || ui_host="127.0.0.1"
             fi
-            local dashboard_url="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
+            dashboard_url="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
             local better_auth_secret
             better_auth_secret="$(openssl rand -hex 32)"
             docker rm -f "$CALCIFORGE_HELICONE_CONTAINER" >/dev/null 2>&1 || true
@@ -842,6 +843,7 @@ ensure_helicone() {
                 -v calciforge-helicone-clickhouse:/var/lib/clickhouse \
                 -v calciforge-helicone-minio:/data \
                 "$CALCIFORGE_HELICONE_IMAGE" >/dev/null
+            dashboard_started=true
             ok "Helicone dashboard running at ${dashboard_url}"
             sleep 3
             seed_helicone_api_key
@@ -908,13 +910,8 @@ EOF
     CALCIFORGE_GATEWAY_BACKEND_TYPE="helicone"
     CALCIFORGE_GATEWAY_BACKEND_URL="http://127.0.0.1:${CALCIFORGE_HELICONE_AI_GATEWAY_PORT}/ai"
     CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="$CALCIFORGE_HELICONE_API_KEY_FILE"
-    if [[ -z "$CALCIFORGE_GATEWAY_UI_URL" ]] && truthy "$CALCIFORGE_HELICONE_DASHBOARD_ENABLED"; then
-        ui_host="$CALCIFORGE_HELICONE_DASHBOARD_BIND"
-        if [[ "$ui_host" == "0.0.0.0" || "$ui_host" == "::" ]]; then
-            ui_host="$(calciforge_lan_ip)"
-            [[ -n "$ui_host" ]] || ui_host="127.0.0.1"
-        fi
-        CALCIFORGE_GATEWAY_UI_URL="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
+    if [[ -z "$CALCIFORGE_GATEWAY_UI_URL" ]] && truthy "$dashboard_started"; then
+        CALCIFORGE_GATEWAY_UI_URL="$dashboard_url"
     fi
 }
 

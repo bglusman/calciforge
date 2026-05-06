@@ -76,9 +76,9 @@ enabled = true
 bind = "127.0.0.1:8080"
 api_key_file = "/etc/calciforge/secrets/model-gateway-client-key"
 backend_type = "helicone"
-backend_url = "http://127.0.0.1:8585/v1"
+backend_url = "http://127.0.0.1:8787/ai"
 backend_api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
-gateway_ui_url = "http://127.0.0.1:8585/dashboard"
+gateway_ui_url = "http://127.0.0.1:3300"
 ```
 
 For a LAN-visible local dashboard during install:
