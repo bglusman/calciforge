@@ -549,7 +549,17 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{DispatcherConfig, ModelShortcutConfig, SyntheticModelConfig};
+    use crate::providers::alloy::AlloyManager;
+    use crate::providers::ProviderRegistry;
+    use crate::proxy::backend::{BackendConfig, BackendType};
+    use crate::proxy::gateway::{self, GatewayConfig, GatewayType};
+    use crate::proxy::{routing::ProviderEntry, ProxyState};
+    use crate::sync::Arc;
+    use axum::body::to_bytes;
     use axum::http::HeaderValue;
+    use mockito::Matcher;
+    use serde_json::Value;
 
     fn config_with_key(key: Option<&str>) -> ProxyConfig {
         ProxyConfig {
@@ -593,5 +603,120 @@ mod tests {
         assert!(backend_accepts_unlisted_models("helicone"));
         assert!(backend_accepts_unlisted_models("http"));
         assert!(!backend_accepts_unlisted_models("mock"));
+    }
+
+    #[tokio::test]
+    async fn proxy_resolves_model_shortcut_dispatcher_before_provider_routing() {
+        let mut server = mockito::Server::new_async().await;
+        let backend = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "qwen-test:small"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "qwen-test:small",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2
+                    }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-cloud-balanced".to_string(),
+                name: Some("Local/cloud balanced".to_string()),
+                models: vec![
+                    SyntheticModelConfig {
+                        model: "qwen-test:small".to_string(),
+                        context_window: 60_000,
+                    },
+                    SyntheticModelConfig {
+                        model: "kimi-test:medium".to_string(),
+                        context_window: 250_000,
+                    },
+                ],
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let backend_config = BackendConfig {
+            backend_type: BackendType::Http,
+            url: Some(format!("{}/v1", server.url())),
+            ..Default::default()
+        };
+        let backend_client = crate::proxy::backend::create_backend(&backend_config).unwrap();
+        let gateway_config = GatewayConfig {
+            backend_type: GatewayType::Direct,
+            base_url: Some(format!("{}/v1", server.url())),
+            api_key: None,
+            timeout_seconds: 30,
+            extra_config: None,
+            headers: None,
+            retry_enabled: false,
+            max_retries: 0,
+            retry_base_delay_ms: 0,
+            retry_max_delay_ms: 0,
+            ui_url: None,
+        };
+        let gateway = gateway::create_gateway(gateway_config, Some(backend_client)).unwrap();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: vec![ModelShortcutConfig {
+                alias: "local-dispatcher".to_string(),
+                model: "local-cloud-balanced".to_string(),
+            }],
+            gateway: Arc::clone(&gateway),
+            providers: vec![ProviderEntry {
+                id: "route:local-dispatcher->test".to_string(),
+                patterns: vec!["local-dispatcher".to_string()],
+                gateway,
+                on_switch: None,
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "local-dispatcher",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(body["model"], "qwen-test:small");
+        backend.assert_async().await;
     }
 }
