@@ -265,6 +265,29 @@ model = "codex/gpt-5.5"
 context_window = 262144
 ```
 
+### Helicone AI Gateway (experimental)
+
+Helicone can be selected as the default external gateway engine with
+`backend_type = "helicone"`. `backend_url` is treated as the Helicone
+AI Gateway base path. If it has no path, Calciforge posts to
+`/v1/chat/completions`; if it already includes a path such as `/v1`,
+`/ai`, or `/router/<name>`, Calciforge appends `/chat/completions` to
+that configured base path instead of injecting another `/v1`.
+
+```toml
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+backend_type = "helicone"
+backend_url = "https://ai-gateway.helicone.ai"
+backend_api_key_file = "/etc/calciforge/secrets/helicone-key"
+gateway_ui_url = "https://us.helicone.ai/requests"
+```
+
+`GET /gateway` returns the active engine id, display name, UI URL, and
+capability flags. `GET /gateway/ui` redirects to `gateway_ui_url` when
+configured, and `!gateway` shows the same dashboard link to chat users.
+
 ## Notes
 
 - Codex and Claude subscription-backed CLI routes can be configured as

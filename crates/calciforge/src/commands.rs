@@ -2598,6 +2598,26 @@ mod tests {
         assert!(reply.contains("/gateway/ui"), "{reply}");
     }
 
+    #[test]
+    fn gateway_command_reports_helicone_engine_and_dashboard_link() {
+        let mut config = make_config();
+        let proxy = config.proxy.as_mut().expect("test proxy config");
+        proxy.backend_type = "helicone".to_string();
+        proxy.backend_url = "https://ai-gateway.helicone.ai".to_string();
+        proxy.gateway_ui_url = Some("https://us.helicone.ai/requests".to_string());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf());
+
+        let reply = h.handle("!gateway").unwrap();
+
+        assert!(reply.contains("engine: helicone"), "{reply}");
+        assert!(
+            reply.contains("UI: https://us.helicone.ai/requests"),
+            "{reply}"
+        );
+        assert!(reply.contains("/gateway/ui"), "{reply}");
+    }
+
     // --- !status ---
 
     #[test]

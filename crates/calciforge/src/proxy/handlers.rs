@@ -70,12 +70,11 @@ pub async fn chat_completions(
 
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
-    //  - Backend is http (upstream is authoritative).
+    //  - Backend delegates model selection to an external OpenAI-compatible API.
     //  - It's a configured synthetic model (alloy, cascade, dispatcher, exec model).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
-    let is_http_backend = state.config.backend_type == "http";
     let is_valid_model = provider_matches
-        || is_http_backend
+        || backend_accepts_unlisted_models(&state.config.backend_type)
         || state.alloy_manager.is_synthetic_model(&req.model)
         || KNOWN_MODELS.contains(&req.model.as_str());
 
@@ -141,6 +140,10 @@ pub async fn chat_completions(
             )
         }
     }
+}
+
+fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
+    matches!(backend_type, "http" | "helicone")
 }
 
 /// Return operator-facing metadata for the active gateway engine.
@@ -583,5 +586,12 @@ mod tests {
         let headers = HeaderMap::new();
         let response = require_api_key(&config_with_key(Some("test-key")), &headers);
         assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn helicone_backend_allows_gateway_authoritative_model_ids() {
+        assert!(backend_accepts_unlisted_models("helicone"));
+        assert!(backend_accepts_unlisted_models("http"));
+        assert!(!backend_accepts_unlisted_models("mock"));
     }
 }

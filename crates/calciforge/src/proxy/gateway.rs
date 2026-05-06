@@ -390,7 +390,7 @@ impl LoggingGateway {
 #[async_trait]
 impl GatewayBackend for LoggingGateway {
     fn gateway_type(&self) -> GatewayType {
-        GatewayType::Direct // Same as inner
+        self.inner.gateway_type()
     }
 
     async fn chat_completion(
@@ -547,6 +547,10 @@ impl GatewayBackend for LoggingGateway {
 
     fn config(&self) -> &GatewayConfig {
         &self.config
+    }
+
+    fn engine_info(&self) -> GatewayEngineInfo {
+        self.inner.engine_info()
     }
 }
 
@@ -795,5 +799,34 @@ mod tests {
         assert!(!info.capabilities.model_listing);
         assert!(!info.capabilities.tool_call_transcripts);
         assert!(!info.capabilities.config_validation);
+    }
+
+    #[cfg(feature = "helicone")]
+    #[test]
+    fn create_helicone_gateway_preserves_engine_metadata_through_logging_wrapper() {
+        let gateway = create_gateway(
+            GatewayConfig {
+                backend_type: GatewayType::Helicone,
+                base_url: Some("https://ai-gateway.helicone.ai".to_string()),
+                api_key: Some("helicone-test-key".to_string()),
+                ui_url: Some("https://us.helicone.ai/requests".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let info = gateway.engine_info();
+
+        assert_eq!(gateway.gateway_type(), GatewayType::Helicone);
+        assert_eq!(info.id, "helicone");
+        assert_eq!(info.display_name, "Helicone AI Gateway");
+        assert_eq!(
+            info.ui_url.as_deref(),
+            Some("https://us.helicone.ai/requests")
+        );
+        assert!(info.capabilities.openai_chat_completions);
+        assert!(info.capabilities.operator_ui);
+        assert!(info.capabilities.observability);
     }
 }
