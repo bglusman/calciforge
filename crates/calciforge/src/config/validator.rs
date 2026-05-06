@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
+use url::Url;
 
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::CalciforgeConfig;
@@ -479,11 +480,8 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         let trimmed = url.trim();
         if trimmed.is_empty() {
             result.add_error("Proxy gateway_ui_url cannot be blank when set".to_string());
-        } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-            result.add_error(format!(
-                "Proxy gateway_ui_url '{}' must start with http:// or https://",
-                url
-            ));
+        } else {
+            validate_http_url("Proxy gateway_ui_url", trimmed, result, true);
         }
     }
 
@@ -517,6 +515,51 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
                 "Proxy backend_type '{}' is invalid. Use: http, embedded, library, mock, helicone, traceloop",
                 other
             ));
+        }
+    }
+
+    if proxy.backend_type == "helicone" {
+        let backend_url = proxy.backend_url.trim();
+        if backend_url.is_empty() {
+            result.add_error("Helicone backend_url cannot be blank".to_string());
+        } else {
+            validate_http_url("Helicone backend_url", backend_url, result, false);
+        }
+
+        let has_inline_key = proxy
+            .backend_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty());
+        if !has_inline_key && proxy.backend_api_key_file.is_none() {
+            result.add_warning(
+                "Helicone backend has no backend_api_key/backend_api_key_file; only unauthenticated local Helicone gateways should use this"
+                    .to_string(),
+            );
+        }
+    }
+}
+
+fn validate_http_url(
+    field: &str,
+    value: &str,
+    result: &mut ValidationResult,
+    allow_query_or_fragment: bool,
+) {
+    match Url::parse(value) {
+        Ok(url) => {
+            if !matches!(url.scheme(), "http" | "https") {
+                result.add_error(format!("{field} '{}' must use http:// or https://", value));
+            }
+            if !allow_query_or_fragment && (url.query().is_some() || url.fragment().is_some()) {
+                result.add_error(format!(
+                    "{field} '{}' must not include query parameters or fragments",
+                    value
+                ));
+            }
+        }
+        Err(e) => {
+            result.add_error(format!("{field} '{}' is invalid: {}", value, e));
         }
     }
 }
@@ -1043,6 +1086,59 @@ endpoint = "http://127.0.0.1:8642"
             result.errors.iter().any(|e| e.contains("gateway_ui_url")),
             "error should name gateway_ui_url; errors: {:?}",
             result.errors
+        );
+    }
+
+    /// Given Helicone is selected as the model gateway engine,
+    /// when the backend URL is malformed or contains request modifiers,
+    /// then validation rejects it before runtime path construction can fail.
+    #[test]
+    fn helicone_backend_url_must_be_plain_http_base_url() {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"helicone\"\nbackend_url = \"https://ai-gateway.helicone.ai/v1?debug=true\"\nbackend_api_key = \"test-key\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "Helicone backend URL with query string must fail; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("Helicone backend_url") && e.contains("query")),
+            "error should name Helicone backend_url and query/fragment issue; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given Helicone is selected for a likely local unauthenticated gateway,
+    /// when no backend key is configured,
+    /// then validation warns instead of silently accepting a surprising empty
+    /// `Authorization: Bearer` header.
+    #[test]
+    fn helicone_without_backend_key_warns_operator() {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"helicone\"\nbackend_url = \"http://127.0.0.1:8787\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "local unauthenticated Helicone should remain possible: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("Helicone backend has no backend_api_key")),
+            "missing Helicone key should produce an operator warning; warnings: {:?}",
+            result.warnings
         );
     }
 

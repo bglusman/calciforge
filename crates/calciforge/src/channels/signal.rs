@@ -238,9 +238,10 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
             return;
         }
 
-        // Pre-auth handler (`!ping`, `!help`, `!agents`, `!metrics`, …)
+        // Identity-independent local commands (`!ping`, `!help`, `!agents`,
+        // `!metrics`, ...). The sender identity has already been resolved.
         if let Some(reply) = self.command_handler.handle(&text) {
-            debug!(identity = %identity.id, cmd = %text.trim(), "Signal: handled pre-auth command");
+            debug!(identity = %identity.id, cmd = %text.trim(), "Signal: handled identity-resolved local command");
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {
@@ -252,6 +253,7 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         // Unknown !command
         if CommandHandler::is_command(&text)
             && !CommandHandler::is_status_command(&text)
+            && !CommandHandler::is_gateway_command(&text)
             && !CommandHandler::is_switch_command(&text)
             && !CommandHandler::is_default_command(&text)
             && !CommandHandler::is_sessions_command(&text)
@@ -275,6 +277,17 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
                 .command_handler
                 .cmd_status_for_identity(&identity.id)
                 .await;
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
+        }
+
+        // !gateway
+        if CommandHandler::is_gateway_command(&text) {
+            let reply = self.command_handler.cmd_gateway_for_identity(&identity.id);
             let channel = self.clone();
             let target = reply_target.clone();
             tokio::spawn(async move {

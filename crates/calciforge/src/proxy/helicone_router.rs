@@ -116,6 +116,8 @@ impl HeliconeRouter {
         };
 
         let url = self.chat_completions_url().map_err(BackendError::from)?;
+        let url_for_error = url.as_str().to_string();
+        let model_for_error = request_body.model.clone();
 
         let response = self
             .client
@@ -126,7 +128,12 @@ impl HeliconeRouter {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| BackendError::HttpError(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| {
+                BackendError::HttpError(format!(
+                    "Helicone request to {} for model '{}' failed: {}",
+                    url_for_error, model_for_error, e
+                ))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -135,13 +142,18 @@ impl HeliconeRouter {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(BackendError::HttpError(format!(
-                "Helicone API error ({}): {}",
-                status, error_text
+                "Helicone gateway returned {} for model '{}': {}",
+                status,
+                model_for_error,
+                truncate_error_body(error_text.trim())
             )));
         }
 
         let completion_response: ChatCompletionResponse = response.json().await.map_err(|e| {
-            BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
+            BackendError::InvalidResponse(format!(
+                "Failed to parse Helicone response for model '{}': {}",
+                model_for_error, e
+            ))
         })?;
 
         Ok(completion_response)
@@ -185,6 +197,17 @@ fn helicone_chat_completions_url(base_url: &str) -> Result<Url, HeliconeError> {
     };
     url.set_path(&chat_path);
     Ok(url)
+}
+
+fn truncate_error_body(body: &str) -> String {
+    const MAX_ERROR_BODY_CHARS: usize = 1024;
+    let mut chars = body.chars();
+    let truncated: String = chars.by_ref().take(MAX_ERROR_BODY_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +420,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.model, "openai/gpt-4o-mini");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn chat_completion_error_names_gateway_and_model_without_full_body_dump() {
+        let mut server = mockito::Server::new_async().await;
+        let long_body = format!("{}{}", "denied: ", "x".repeat(2048));
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(503)
+            .with_header("content-type", "text/plain")
+            .with_body(long_body)
+            .create_async()
+            .await;
+
+        let router = HeliconeRouter::new(config(format!("{}/v1/", server.url()))).unwrap();
+        let err = router
+            .chat_completion(
+                "openai/gpt-4o-mini".to_string(),
+                vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("hello".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("503 Service Unavailable"), "{err}");
+        assert!(err.contains("openai/gpt-4o-mini"), "{err}");
+        assert!(err.contains("denied:"), "{err}");
+        assert!(
+            err.len() < 1300,
+            "error should be truncated instead of dumping full upstream body: {} bytes",
+            err.len()
+        );
         mock.assert_async().await;
     }
 }

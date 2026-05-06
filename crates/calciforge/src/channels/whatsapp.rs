@@ -245,10 +245,10 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
         }
 
         if let Some(reply) = self.command_handler.handle(&text) {
-            debug!(identity = %identity.id, cmd = %text.trim(), "WhatsApp: handled pre-auth command");
+            debug!(identity = %identity.id, cmd = %text.trim(), "WhatsApp: handled identity-resolved local command");
             self.command_reply_ready(
                 &identity.id,
-                "pre_auth",
+                "local_command",
                 received_at,
                 command_start.elapsed().as_millis() as u64,
                 reply.len(),
@@ -263,6 +263,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
 
         if CommandHandler::is_command(&text)
             && !CommandHandler::is_status_command(&text)
+            && !CommandHandler::is_gateway_command(&text)
             && !CommandHandler::is_switch_command(&text)
             && !CommandHandler::is_default_command(&text)
             && !CommandHandler::is_sessions_command(&text)
@@ -297,6 +298,24 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             self.command_reply_ready(
                 &identity.id,
                 "status",
+                received_at,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
+        }
+
+        if CommandHandler::is_gateway_command(&text) {
+            let command_start = std::time::Instant::now();
+            let reply = self.command_handler.cmd_gateway_for_identity(&identity.id);
+            self.command_reply_ready(
+                &identity.id,
+                "gateway",
                 received_at,
                 command_start.elapsed().as_millis() as u64,
                 reply.len(),
