@@ -91,9 +91,29 @@ bash scripts/install.sh --yes
 ```
 
 The default dashboard bind is `127.0.0.1`. Use `0.0.0.0` only on a trusted LAN
-or behind WireGuard. When a dashboard URL is configured, `!gateway` and
-`/gateway` expose it so the operator can jump from Calciforge into Helicone's
-observability UI.
+or behind WireGuard. Bind addresses decide where local services listen; they
+are not necessarily the URLs users should click from another device.
+
+Set `gateway_ui_url` to the externally reachable dashboard URL you operate,
+such as a Tailscale MagicDNS name, Tailscale IP, WireGuard address, or
+authenticated reverse-proxy URL:
+
+```toml
+[proxy]
+gateway_ui_url = "https://calciforge-gateway.example.invalid"
+```
+
+The installer writes the same setting from `CALCIFORGE_GATEWAY_UI_URL` and
+does not require Calciforge to own the tunnel, DNS name, certificate, firewall,
+or reverse proxy. If `CALCIFORGE_GATEWAY_UI_URL` is unset, the installer only
+records a local dashboard URL when it actually starts the local dashboard
+container. When a dashboard URL is configured, `!gateway` and `/gateway` expose
+it so the operator can jump from Calciforge into Helicone's observability UI.
+
+Use the same pattern for other local web surfaces: keep the service bind
+conservative, then configure the advertised public URL separately. Paste-server
+links use `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for reverse proxies or tunnels and
+`CALCIFORGE_PASTE_PUBLIC_HOST` for a stable LAN/Tailscale host.
 
 The Helicone gateway is currently strongest for providers that Helicone knows
 how to route directly, such as Ollama via `/ollama/v1`. Arbitrary

@@ -324,6 +324,15 @@ Calciforge service. For a reverse-proxy or tunnel URL, set
 `CALCIFORGE_PASTE_PUBLIC_BASE_URL` and terminate authentication at that
 proxy. Do not expose the paste server directly to the open internet.
 
+Calciforge treats externally reachable URLs as operator-owned configuration.
+For local web surfaces, keep binds conservative and set the advertised URL to
+the address users can actually open from their device. The model gateway
+dashboard link uses `[proxy].gateway_ui_url`, or `CALCIFORGE_GATEWAY_UI_URL`
+during install. Paste links use `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for a
+reverse proxy or tunnel and `CALCIFORGE_PASTE_PUBLIC_HOST` for a stable
+LAN/Tailscale host. Calciforge will publish those URLs in chat commands, but it
+does not manage DNS, Tailscale, WireGuard, TLS, or reverse-proxy auth.
+
 Paste storage uses the Calciforge fnox working directory, defaulting to
 `~/.config/calciforge`, while provider definitions live in fnox's global
 config at `~/.config/fnox/config.toml`. On macOS, the installer creates a
