@@ -9,6 +9,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
+use url::Url;
 
 use crate::{
     proxy::backend::{BackendError, BackendType, ModelInfo, SecretsBackend},
@@ -87,6 +88,10 @@ impl HeliconeRouter {
         Ok(Self { config, client })
     }
 
+    fn chat_completions_url(&self) -> Result<Url, HeliconeError> {
+        helicone_chat_completions_url(&self.config.base_url)
+    }
+
     /// Create a default router with standard configuration
     #[allow(dead_code)]
     pub fn default() -> Result<Self, HeliconeError> {
@@ -110,11 +115,11 @@ impl HeliconeRouter {
             ..Default::default()
         };
 
-        let url = format!("{}/v1/chat/completions", self.config.base_url);
+        let url = self.chat_completions_url().map_err(BackendError::from)?;
 
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
             .header("Helicone-Auth", format!("Bearer {}", self.config.api_key))
@@ -148,6 +153,38 @@ impl HeliconeRouter {
         // For now, return an empty list
         Ok(vec![])
     }
+}
+
+fn helicone_chat_completions_url(base_url: &str) -> Result<Url, HeliconeError> {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return Err(HeliconeError::Config(
+            "Helicone base_url cannot be blank".to_string(),
+        ));
+    }
+
+    let mut url = Url::parse(trimmed).map_err(|e| {
+        HeliconeError::Config(format!(
+            "Helicone base_url '{}' is invalid: {}",
+            base_url, e
+        ))
+    })?;
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(HeliconeError::Config(
+            "Helicone base_url must not include query parameters or fragments".to_string(),
+        ));
+    }
+
+    let path = url.path().trim_end_matches('/');
+    let chat_path = if path.is_empty() {
+        "/v1/chat/completions".to_string()
+    } else if path.ends_with("/chat/completions") {
+        path.to_string()
+    } else {
+        format!("{path}/chat/completions")
+    };
+    url.set_path(&chat_path);
+    Ok(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -222,19 +259,23 @@ impl SecretsBackend for HeliconeRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::openai::{Choice, MessageContent, Usage};
+    use mockito::Matcher;
 
-    #[test]
-    fn test_helicone_router_creation() {
-        let config = HeliconeRouterConfig {
-            base_url: "http://localhost:8787".to_string(),
-            api_key: "test-key".to_string(),
+    fn config(base_url: String) -> HeliconeRouterConfig {
+        HeliconeRouterConfig {
+            base_url,
+            api_key: "helicone-test-key".to_string(),
             timeout_seconds: 30,
             router_name: "test".to_string(),
             enable_caching: false,
             cache_ttl_seconds: 300,
-        };
+        }
+    }
 
-        let router = HeliconeRouter::new(config);
+    #[test]
+    fn test_helicone_router_creation() {
+        let router = HeliconeRouter::new(config("http://localhost:8787".to_string()));
         assert!(router.is_ok());
     }
 
@@ -242,5 +283,120 @@ mod tests {
     fn test_default_router() {
         let router = HeliconeRouter::default();
         assert!(router.is_ok());
+    }
+
+    #[test]
+    fn helicone_url_adds_v1_path_for_origin_base() {
+        let url = helicone_chat_completions_url("https://ai-gateway.helicone.ai").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://ai-gateway.helicone.ai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn helicone_url_uses_configured_gateway_base_path() {
+        let url =
+            helicone_chat_completions_url("https://gateway.example.invalid/router/calciforge/")
+                .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://gateway.example.invalid/router/calciforge/chat/completions"
+        );
+    }
+
+    #[test]
+    fn helicone_url_does_not_duplicate_v1_path() {
+        let url = helicone_chat_completions_url("https://ai-gateway.helicone.ai/v1/").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://ai-gateway.helicone.ai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn helicone_url_rejects_query_or_fragment_base() {
+        let err = helicone_chat_completions_url("https://ai-gateway.helicone.ai/v1?debug=true")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("query parameters or fragments"),
+            "unexpected error: {err}"
+        );
+
+        let err = helicone_chat_completions_url("https://ai-gateway.helicone.ai/v1#dashboard")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("query parameters or fragments"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completion_posts_to_configured_v1_path_without_duplication() {
+        let mut server = mockito::Server::new_async().await;
+        let response = ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "openai/gpt-4o-mini".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text("ok".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+            system_fingerprint: None,
+        };
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("authorization", "Bearer helicone-test-key")
+            .match_header("helicone-auth", "Bearer helicone-test-key")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hello"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response).unwrap())
+            .create_async()
+            .await;
+
+        let router = HeliconeRouter::new(config(format!("{}/v1/", server.url()))).unwrap();
+        let result = router
+            .chat_completion(
+                "openai/gpt-4o-mini".to_string(),
+                vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("hello".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.model, "openai/gpt-4o-mini");
+        mock.assert_async().await;
     }
 }
