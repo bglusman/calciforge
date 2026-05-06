@@ -8,10 +8,12 @@
 //! as the stable default thread.
 
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use super::{AdapterError, AgentAdapter, DispatchContext};
 
@@ -63,6 +65,8 @@ impl HermesAdapter {
         session: Option<&str>,
     ) -> Result<String, AdapterError> {
         let url = self.chat_completions_url();
+        let request_id = Uuid::new_v4().to_string();
+        let started = Instant::now();
 
         let body = ChatRequest {
             model: self.model.clone(),
@@ -84,13 +88,31 @@ impl HermesAdapter {
         if let Some(session_id) = session_header_value(sender, session) {
             req = req.header("X-Hermes-Session-Id", session_id);
         }
+        req = req.header("X-Calciforge-Trace-Id", &request_id);
 
-        info!(endpoint = %url, sender = ?sender, session = ?session, "hermes dispatch");
+        info!(
+            endpoint = %url,
+            request_id = %request_id,
+            sender = ?sender,
+            session = ?session,
+            "hermes dispatch started"
+        );
 
         let resp = req.send().await.map_err(|e| {
             if e.is_timeout() {
+                warn!(
+                    request_id = %request_id,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "hermes dispatch timed out while sending request"
+                );
                 AdapterError::Timeout
             } else {
+                warn!(
+                    request_id = %request_id,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %e,
+                    "hermes dispatch request failed"
+                );
                 AdapterError::Unavailable(format!("Hermes API failed: {e}"))
             }
         })?;
@@ -98,14 +120,31 @@ impl HermesAdapter {
         let status = resp.status();
         let body_text = resp.text().await.map_err(|e| {
             if e.is_timeout() {
+                warn!(
+                    request_id = %request_id,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "hermes dispatch timed out while reading response"
+                );
                 AdapterError::Timeout
             } else {
+                warn!(
+                    request_id = %request_id,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %e,
+                    "hermes dispatch response read failed"
+                );
                 AdapterError::Unavailable(format!("Hermes response read failed: {e}"))
             }
         })?;
 
         if !status.is_success() {
-            warn!(status = %status, body = %body_text, "hermes error response");
+            warn!(
+                request_id = %request_id,
+                status = %status,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                body = %body_text,
+                "hermes error response"
+            );
             return Err(AdapterError::Protocol(format!(
                 "Hermes HTTP {status}: {body_text}"
             )));
@@ -115,13 +154,19 @@ impl HermesAdapter {
             .map_err(|e| AdapterError::Protocol(format!("Hermes JSON parse error: {e}")))?;
 
         if let Some(err) = parsed.error {
+            warn!(
+                request_id = %request_id,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                error = %err.message,
+                "hermes api returned application error"
+            );
             return Err(AdapterError::Protocol(format!(
                 "Hermes API error: {}",
                 err.message
             )));
         }
 
-        parsed
+        let content = parsed
             .choices
             .into_iter()
             .find_map(|choice| choice.message.content)
@@ -129,7 +174,15 @@ impl HermesAdapter {
                 AdapterError::Protocol(
                     "Hermes response did not include choices[0].message.content".to_string(),
                 )
-            })
+            })?;
+        info!(
+            request_id = %request_id,
+            status = %status,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            response_len = content.len(),
+            "hermes dispatch completed"
+        );
+        Ok(content)
     }
 }
 

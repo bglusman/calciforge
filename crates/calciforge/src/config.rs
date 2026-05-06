@@ -626,6 +626,14 @@ pub struct ProxyConfig {
     #[serde(default = "default_proxy_backend_type")]
     pub backend_type: String,
 
+    /// Optional operator UI URL for the selected gateway engine.
+    ///
+    /// External engines such as Helicone may expose their own dashboard. Engines
+    /// without a built-in dashboard can point this at a lightweight Calciforge
+    /// status page or an observability frontend.
+    #[serde(default)]
+    pub gateway_ui_url: Option<String>,
+
     /// Backend API key (for HTTP backend)
     #[serde(default)]
     pub backend_api_key: Option<String>,
@@ -773,6 +781,7 @@ impl Default for ProxyConfig {
             agents: Vec::new(),
             default_policy: default_proxy_default_policy(),
             backend_type: default_proxy_backend_type(),
+            gateway_ui_url: None,
             backend_api_key: None,
             backend_url: default_proxy_backend_url(),
             headers: None,

@@ -106,6 +106,7 @@ fn command_suggestion(cmd: &str) -> Option<&'static str> {
         "!agent",
         "!sessions",
         "!session",
+        "!gateway",
         "!metrics",
         "!ping",
         "!switch",
@@ -712,6 +713,7 @@ impl CommandHandler {
             // !status needs auth — return None so the caller resolves identity first.
             "!status" => None,
             "!agents" => Some(self.cmd_agents_summary()),
+            "!gateway" => Some(self.cmd_gateway()),
             "!metrics" => Some(self.cmd_metrics()),
             "!ping" => Some("pong".to_string()),
             // !sessions needs auth — return None so caller resolves identity first.
@@ -1552,13 +1554,41 @@ impl CommandHandler {
     // Individual command handlers
     // -----------------------------------------------------------------------
 
+    fn cmd_gateway(&self) -> String {
+        let Some(proxy) = self.config.proxy.as_ref() else {
+            return "Model gateway: disabled.".to_string();
+        };
+
+        let mut lines = vec![
+            "Model gateway:".to_string(),
+            format!("  enabled: {}", proxy.enabled),
+            format!("  engine: {}", proxy.backend_type),
+            format!("  bind: {}", proxy.bind),
+        ];
+
+        if let Some(url) = proxy
+            .gateway_ui_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        {
+            lines.push(format!("  UI: {url}"));
+            lines.push("  Calciforge redirect: /gateway/ui on the model gateway host".to_string());
+        } else {
+            lines.push("  UI: not configured".to_string());
+        }
+
+        lines.join("\n")
+    }
+
     fn cmd_help(&self) -> String {
-        [
+        let mut lines = vec![
             "Calciforge — available commands:",
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
             "  !agents  — list configured agents",
             "  !sessions <agent> — list ACP sessions for an agent (requires auth)",
+            "  !gateway — model gateway engine, bind address, and UI link",
             "  !metrics — messages routed, average latency",
             "  !ping    — connectivity check (replies: pong)",
             "  !switch, !agent <agent> [session] — switch active agent (requires auth)",
@@ -1568,8 +1598,20 @@ impl CommandHandler {
             "  !secure, !secret <input|bulk|list|help> — paste URLs and secret names; `set` is legacy fallback",
             "  !approve [request_id] — approve a pending Clash tool call",
             "  !deny [request_id] [reason] — deny a pending Clash tool call",
-        ]
-        .join("\n")
+        ];
+        if let Some(url) = self
+            .config
+            .proxy
+            .as_ref()
+            .and_then(|proxy| proxy.gateway_ui_url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            lines.push("");
+            lines.push("Gateway UI:");
+            lines.push(url);
+        }
+        lines.join("\n")
     }
     /// Pre-auth handling for !model — lists shortcuts/alloys.
     /// Returns None if an alloy is being selected (requires post-auth handling).
@@ -2455,7 +2497,13 @@ mod tests {
             dispatchers: vec![],
             exec_models: vec![],
             security: None,
-            proxy: None,
+            proxy: Some(crate::config::ProxyConfig {
+                enabled: true,
+                bind: "127.0.0.1:18083".to_string(),
+                backend_type: "http".to_string(),
+                gateway_ui_url: Some("http://127.0.0.1:8585".to_string()),
+                ..Default::default()
+            }),
             local_models: None,
         }
     }
@@ -2528,11 +2576,26 @@ mod tests {
         assert!(reply.contains("!help"));
         assert!(reply.contains("!status"));
         assert!(reply.contains("!agents"));
+        assert!(reply.contains("!gateway"));
         assert!(reply.contains("!metrics"));
         assert!(reply.contains("!ping"));
         assert!(reply.contains("!switch"));
         assert!(reply.contains("!agent list"));
         assert!(reply.contains("!secret"));
+        assert!(reply.contains("Gateway UI:"));
+        assert!(reply.contains("http://127.0.0.1:8585"));
+    }
+
+    #[test]
+    fn gateway_command_reports_engine_and_ui_link() {
+        let h = make_handler();
+        let reply = h.handle("!gateway").unwrap();
+
+        assert!(reply.contains("Model gateway:"), "{reply}");
+        assert!(reply.contains("engine: http"), "{reply}");
+        assert!(reply.contains("bind: 127.0.0.1:18083"), "{reply}");
+        assert!(reply.contains("UI: http://127.0.0.1:8585"), "{reply}");
+        assert!(reply.contains("/gateway/ui"), "{reply}");
     }
 
     // --- !status ---
