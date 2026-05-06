@@ -221,6 +221,7 @@ impl ContextStore {
     ///
     /// After calling this, the agent's watermark is NOT yet advanced — call
     /// [`push`] after a successful response to do that.
+    #[allow(dead_code)]
     pub fn augment_message(&self, chat_id: &str, agent_id: &str, message: &str) -> String {
         self.augment_message_with_options(chat_id, agent_id, message, false)
     }
@@ -253,6 +254,7 @@ impl ContextStore {
     }
 
     /// Record a completed exchange and advance the agent's watermark.
+    #[allow(dead_code)]
     pub fn push(
         &self,
         chat_id: &str,
@@ -297,6 +299,7 @@ impl ContextStore {
     }
 
     /// Return the number of exchanges stored for a chat (for status/debug).
+    #[allow(dead_code)]
     pub fn exchange_count(&self, chat_id: &str) -> usize {
         let map = self.inner.lock().unwrap();
         map.get(chat_id).map(|c| c.exchanges.len()).unwrap_or(0)

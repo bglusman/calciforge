@@ -85,6 +85,7 @@ CALCIFORGE_HELICONE_S3_PORT="${CALCIFORGE_HELICONE_S3_PORT:-9080}"
 CALCIFORGE_HELICONE_AI_GATEWAY_PORT="${CALCIFORGE_HELICONE_AI_GATEWAY_PORT:-8787}"
 CALCIFORGE_HELICONE_API_KEY_FILE="${CALCIFORGE_HELICONE_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/helicone-local-api-key}"
 CALCIFORGE_HELICONE_PACKAGE="${CALCIFORGE_HELICONE_PACKAGE:-@helicone/ai-gateway@0.2.0-beta.30}"
+CALCIFORGE_HELICONE_IMAGE="${CALCIFORGE_HELICONE_IMAGE:-helicone/helicone-all-in-one:v2025.08.21}"
 CALCIFORGE_HELICONE_CONTAINER="${CALCIFORGE_HELICONE_CONTAINER:-calciforge-helicone}"
 CALCIFORGE_HELICONE_PROVIDER="${CALCIFORGE_HELICONE_PROVIDER:-ollama}"
 CALCIFORGE_HELICONE_OLLAMA_BASE_URL="${CALCIFORGE_HELICONE_OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
@@ -696,6 +697,15 @@ helicone_ai_gateway_bin() {
     [[ -x "$real_bin" ]] && printf '%s\n' "$real_bin" || printf '%s\n' "$wrapper_bin"
 }
 
+systemd_exec_arg() {
+    python3 - "$1" <<'PY'
+import sys
+
+arg = sys.argv[1].replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+print(f'"{arg}"')
+PY
+}
+
 ensure_helicone_key() {
     mkdir -p "$(dirname "$CALCIFORGE_HELICONE_API_KEY_FILE")"
     if [[ -s "$CALCIFORGE_HELICONE_API_KEY_FILE" ]]; then
@@ -823,15 +833,15 @@ ensure_helicone() {
                 -e "SITE_URL=${dashboard_url}" \
                 -e "BETTER_AUTH_URL=${dashboard_url}" \
                 -e "BETTER_AUTH_SECRET=${better_auth_secret}" \
-                -e "NEXT_PUBLIC_HELICONE_JAWN_SERVICE=http://127.0.0.1:${CALCIFORGE_HELICONE_JAWN_PORT}" \
-                -e "S3_ENDPOINT=http://127.0.0.1:${CALCIFORGE_HELICONE_S3_PORT}" \
+                -e "NEXT_PUBLIC_HELICONE_JAWN_SERVICE=http://127.0.0.1:8585" \
+                -e "S3_ENDPOINT=http://127.0.0.1:9080" \
                 -p "${CALCIFORGE_HELICONE_DASHBOARD_BIND}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}:3000" \
                 -p "127.0.0.1:${CALCIFORGE_HELICONE_JAWN_PORT}:8585" \
                 -p "127.0.0.1:${CALCIFORGE_HELICONE_S3_PORT}:9080" \
                 -v calciforge-helicone-postgres:/var/lib/postgresql/data \
                 -v calciforge-helicone-clickhouse:/var/lib/clickhouse \
                 -v calciforge-helicone-minio:/data \
-                helicone/helicone-all-in-one:latest >/dev/null
+                "$CALCIFORGE_HELICONE_IMAGE" >/dev/null
             ok "Helicone dashboard running at ${dashboard_url}"
             sleep 3
             seed_helicone_api_key
@@ -871,6 +881,9 @@ EOF
         load_launch_agent "com.calciforge.helicone-ai-gateway" "$plist"
     else
         local unit="$PLIST_DIR/calciforge-helicone-ai-gateway.service"
+        local systemd_gateway_bin systemd_gateway_config
+        systemd_gateway_bin="$(systemd_exec_arg "$gateway_bin")"
+        systemd_gateway_config="$(systemd_exec_arg "$gateway_config")"
         cat > "$unit" <<EOF
 [Unit]
 Description=Calciforge Helicone AI Gateway
@@ -879,7 +892,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=${gateway_bin} --config ${gateway_config}
+ExecStart=${systemd_gateway_bin} --config ${systemd_gateway_config}
 Restart=always
 RestartSec=5
 StandardOutput=append:${ZC_LOG_DIR}/helicone-ai-gateway.log

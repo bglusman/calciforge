@@ -57,6 +57,9 @@ dashboard, local storage, and Jawn API, plus the standalone
 `@helicone/ai-gateway` package for request routing. The standalone gateway is
 intentional: current all-in-one images may start a bundled gateway supervisor
 that exits before routing traffic.
+The installer pins the dashboard image with `CALCIFORGE_HELICONE_IMAGE`
+(`helicone/helicone-all-in-one:v2025.08.21` by default) so local installs do
+not drift when upstream retags `latest`.
 
 Configure Calciforge manually by setting `backend_type = "helicone"` and
 pointing `backend_url` at the Helicone AI Gateway OpenAI-compatible base URL.

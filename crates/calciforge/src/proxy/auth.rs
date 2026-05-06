@@ -18,6 +18,7 @@ pub struct AuthContext {
 */
 
 /// Check if a model is allowed for a given agent.
+#[cfg(test)]
 pub fn check_model_access(config: &ProxyConfig, agent_id: &str, model: &str) -> bool {
     check_model_access_for_names(config, agent_id, model, model)
 }
