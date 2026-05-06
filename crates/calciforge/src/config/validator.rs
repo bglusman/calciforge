@@ -475,6 +475,18 @@ fn validate_synthetic_model_groups(config: &CalciforgeConfig, result: &mut Valid
 
 /// Validate proxy configuration.
 fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut ValidationResult) {
+    if let Some(url) = proxy.gateway_ui_url.as_deref() {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            result.add_error("Proxy gateway_ui_url cannot be blank when set".to_string());
+        } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            result.add_error(format!(
+                "Proxy gateway_ui_url '{}' must start with http:// or https://",
+                url
+            ));
+        }
+    }
+
     if !proxy.enabled {
         return;
     }
@@ -504,18 +516,6 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
             result.add_error(format!(
                 "Proxy backend_type '{}' is invalid. Use: http, embedded, library, mock, helicone, traceloop",
                 other
-            ));
-        }
-    }
-
-    if let Some(url) = proxy.gateway_ui_url.as_deref() {
-        let trimmed = url.trim();
-        if trimmed.is_empty() {
-            result.add_error("Proxy gateway_ui_url cannot be blank when set".to_string());
-        } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-            result.add_error(format!(
-                "Proxy gateway_ui_url '{}' must start with http:// or https://",
-                url
             ));
         }
     }
@@ -1014,6 +1014,29 @@ endpoint = "http://127.0.0.1:8642"
         assert!(
             !result.is_valid(),
             "gateway UI URL without scheme must fail; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("gateway_ui_url")),
+            "error should name gateway_ui_url; errors: {:?}",
+            result.errors
+        );
+    }
+
+    /// Given a disabled proxy with a configured gateway UI link,
+    /// when validate_config runs,
+    /// then the UI URL is still validated because chat help can surface it from
+    /// config even when the model gateway listener is disabled.
+    #[test]
+    fn disabled_proxy_still_validates_gateway_ui_url() {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = false\ngateway_ui_url = \"javascript:alert(1)\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "disabled proxy must still validate displayed gateway UI URLs; errors: {:?}",
             result.errors
         );
         assert!(
