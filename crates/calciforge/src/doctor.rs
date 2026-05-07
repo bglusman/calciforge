@@ -23,6 +23,7 @@ use crate::adapters::agent_supports_model_override;
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
 use crate::model_names::configured_first_class_model_ids;
+use crate::proxy::routing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
@@ -133,6 +134,7 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     ));
 
     check_secret_files(&config, &mut report);
+    check_model_gateway_config(&config, &mut report);
     check_secret_tooling(&mut report);
     check_scanner_config(&config, no_network, &mut report).await;
     check_proxy_environment(&mut report);
@@ -562,6 +564,27 @@ fn check_agent_proxy_coverage(
         report.warn(format!(
             "{external_count} externally managed HTTP/native agent endpoint(s) configured; doctor cannot verify their process proxy environment"
         ));
+    }
+}
+
+fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorReport) {
+    let Some(proxy) = config.proxy.as_ref().filter(|proxy| proxy.enabled) else {
+        report.ok("model gateway disabled");
+        return;
+    };
+
+    let first_class_models = configured_first_class_model_ids(config);
+    report.ok(format!(
+        "model gateway selectors configured: {}",
+        first_class_models.len()
+    ));
+
+    match routing::build_provider_entries(proxy, proxy.timeout_seconds) {
+        Ok(entries) => report.ok(format!(
+            "model gateway provider routing loads: {} route entries",
+            entries.len()
+        )),
+        Err(err) => report.error(format!("model gateway provider config invalid: {err}")),
     }
 }
 
@@ -1540,7 +1563,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use crate::config::{
-        CalciforgeHeader, ProxyConfig, RoutingRule, SecuritySectionConfig, SyntheticModelConfig,
+        CalciforgeHeader, ProxyConfig, ProxyModelRoute, ProxyProviderConfig, RoutingRule,
+        SecuritySectionConfig, SyntheticModelConfig,
     };
 
     fn base_config() -> CalciforgeConfig {
@@ -2216,6 +2240,62 @@ mod tests {
                 && finding
                     .message
                     .contains("doctor cannot verify their process proxy environment")
+        }));
+    }
+
+    #[test]
+    fn model_gateway_config_reports_unknown_route_provider() {
+        let mut config = base_config();
+        let proxy = config.proxy.as_mut().expect("proxy");
+        proxy.model_routes = vec![ProxyModelRoute {
+            pattern: "opencode-go/kimi-k2.6".to_string(),
+            provider: "opencode-go".to_string(),
+        }];
+        proxy.providers.clear();
+        let mut report = DoctorReport::default();
+
+        check_model_gateway_config(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding
+                    .message
+                    .contains("references unknown provider 'opencode-go'")
+        }));
+    }
+
+    #[test]
+    fn model_gateway_config_loads_configured_provider_routes() {
+        let mut config = base_config();
+        let proxy = config.proxy.as_mut().expect("proxy");
+        proxy.providers = vec![ProxyProviderConfig {
+            id: "opencode-go".to_string(),
+            backend_type: "http".to_string(),
+            url: "https://opencode.example/v1".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["opencode-go/*".to_string()],
+            strip_model_prefix: Some("opencode-go/".to_string()),
+            timeout_seconds: Some(60),
+            headers: HashMap::new(),
+            on_switch: None,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        }];
+        proxy.model_routes = vec![ProxyModelRoute {
+            pattern: "opencode-go/kimi-k2.6".to_string(),
+            provider: "opencode-go".to_string(),
+        }];
+        let mut report = DoctorReport::default();
+
+        check_model_gateway_config(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding
+                    .message
+                    .contains("model gateway provider routing loads: 2 route entries")
         }));
     }
 

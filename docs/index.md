@@ -764,7 +764,8 @@ The installer runs `calciforge doctor --no-network` after local service
 installation when a config file exists. `doctor` validates the config,
 checks referenced secret files without printing values, catches stale
 active-agent/model state, warns when an agent appears to point back into
-the local model gateway by accident, warns if the Calciforge daemon has
+the local model gateway by accident, validates model-gateway provider routing
+and referenced provider key files, warns if the Calciforge daemon has
 ambient proxy env, checks explicit subprocess-agent proxy env,
 warns about externally managed agent daemons whose proxy environment is
 unverified, validates configured scanner policy files and rule syntax,

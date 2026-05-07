@@ -66,7 +66,10 @@ flowchart TD
 
 Run `calciforge doctor` after config changes. Its per-agent coverage lines
 state whether each agent is using the model gateway, whether `!model` overrides
-are enabled, and whether security-proxy coverage is configured or unknown.
+are enabled, and whether security-proxy coverage is configured or unknown. It
+also validates configured provider routes and referenced provider key files, and
+reports stale persisted `!model` overrides that no longer point at a configured
+gateway selector.
 
 ## What Exists Today
 
@@ -256,7 +259,7 @@ requests send the provider's concrete model ID.
 id = "opencode-go"
 backend_type = "http"
 url = "https://opencode.ai/zen/go/v1"
-api_key_file = "/etc/calciforge/secrets/opencode-zen-key"
+api_key_file = "/etc/calciforge/secrets/opencode-api-key"
 models = [
   "opencode-go/kimi-k2.6",
   "opencode-go/qwen3.6-plus",
@@ -269,7 +272,7 @@ timeout_seconds = 300
 id = "opencode-zen"
 backend_type = "http"
 url = "https://opencode.ai/zen/v1"
-api_key_file = "/etc/calciforge/secrets/opencode-zen-key"
+api_key_file = "/etc/calciforge/secrets/opencode-api-key"
 models = [
   "opencode/qwen3.6-plus",
   "opencode/kimi-k2.6",
@@ -283,7 +286,7 @@ The installer can add these direct Calciforge provider routes when explicitly
 enabled:
 
 ```bash
-CALCIFORGE_OPENCODE_API_KEY_FILE=/etc/calciforge/secrets/opencode-zen-key \
+CALCIFORGE_OPENCODE_API_KEY_FILE=/etc/calciforge/secrets/opencode-api-key \
 CALCIFORGE_OPENCODE_GO_ENABLED=true \
 CALCIFORGE_OPENCODE_GO_MODELS=kimi-k2.6,qwen3.6-plus,deepseek-v4-pro \
 bash scripts/install.sh --yes
