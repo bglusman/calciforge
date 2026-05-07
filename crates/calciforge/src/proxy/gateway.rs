@@ -348,17 +348,7 @@ impl GatewayBackend for HeliconeGateway {
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        // Extract parameters from request to pass to HeliconeRouter
-        // Note: HeliconeRouter uses the old parameter-based API
-        self.router
-            .chat_completion(
-                request.model,
-                request.messages,
-                request.stream.unwrap_or(false),
-                request.tools,
-                request.tool_choice,
-            )
-            .await
+        self.router.chat_completion_request(request).await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
@@ -829,5 +819,89 @@ mod tests {
         assert!(info.capabilities.openai_chat_completions);
         assert!(info.capabilities.operator_ui);
         assert!(info.capabilities.observability);
+    }
+
+    #[cfg(feature = "helicone")]
+    #[tokio::test]
+    async fn helicone_gateway_forwards_complete_chat_request_options() {
+        use crate::proxy::openai::{ChatMessage, Choice, MessageContent, Usage};
+        use mockito::Matcher;
+
+        let mut server = mockito::Server::new_async().await;
+        let response = ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "ollama/qwen3.6:27b".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text("ok".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+            system_fingerprint: None,
+        };
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "ollama/qwen3.6:27b",
+                "max_tokens": 16,
+                "temperature": 0.2,
+                "stream": false,
+                "messages": [{"role": "user", "content": "hello"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response).unwrap())
+            .create_async()
+            .await;
+
+        let gateway = create_gateway(
+            GatewayConfig {
+                backend_type: GatewayType::Helicone,
+                base_url: Some(format!("{}/v1/", server.url())),
+                api_key: Some("helicone-test-key".to_string()),
+                timeout_seconds: 30,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let result = gateway
+            .chat_completion(ChatCompletionRequest {
+                model: "ollama/qwen3.6:27b".to_string(),
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("hello".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                max_tokens: Some(16),
+                temperature: Some(0.2),
+                stream: Some(false),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.model, "ollama/qwen3.6:27b");
+        mock.assert_async().await;
     }
 }

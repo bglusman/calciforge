@@ -114,15 +114,21 @@ impl HeliconeRouter {
         tools: Option<Vec<ToolDefinition>>,
         tool_choice: Option<ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        let request_body = ChatCompletionRequest {
+        self.chat_completion_request(ChatCompletionRequest {
             model,
             messages,
             stream: Some(stream),
             tools,
             tool_choice,
             ..Default::default()
-        };
+        })
+        .await
+    }
 
+    pub async fn chat_completion_request(
+        &self,
+        request_body: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
         let url = self.chat_completions_url().map_err(BackendError::from)?;
         let url_for_error = url.as_str().to_string();
         let model_for_error = request_body.model.clone();
