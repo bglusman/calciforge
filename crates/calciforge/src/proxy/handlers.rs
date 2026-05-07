@@ -9,7 +9,7 @@ use axum::{
 use futures_util::stream::{self};
 use serde_json::json;
 use std::collections::HashSet;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
@@ -341,6 +341,9 @@ fn run_provider_on_switch_script(
         .env("CALCIFORGE_MODEL_ID", model_id)
         .env("CALCIFORGE_UPSTREAM_MODEL_ID", upstream_model_id)
         .env("CALCIFORGE_PREV_MODEL_ID", previous)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| anyhow::anyhow!("provider on_switch spawn failed: {e}"))?;
 
@@ -1153,7 +1156,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("switch.log");
         let script = format!(
-            "printf '%s|%s|%s|%s\\n' \"$CALCIFORGE_PROVIDER_ID\" \"$CALCIFORGE_MODEL_ID\" \"$CALCIFORGE_UPSTREAM_MODEL_ID\" \"$CALCIFORGE_PREV_MODEL_ID\" >> '{}'",
+            "printf 'hook stdout must stay out of service logs\\n'; printf 'hook stderr must stay out of service logs\\n' >&2; read ignored || true; printf '%s|%s|%s|%s\\n' \"$CALCIFORGE_PROVIDER_ID\" \"$CALCIFORGE_MODEL_ID\" \"$CALCIFORGE_UPSTREAM_MODEL_ID\" \"$CALCIFORGE_PREV_MODEL_ID\" >> '{}'",
             marker.display()
         );
         let default_gateway = Arc::new(RecordingGateway::new());
