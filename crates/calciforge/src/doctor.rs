@@ -2276,6 +2276,7 @@ mod tests {
             api_key_file: None,
             models: vec!["opencode-go/*".to_string()],
             strip_model_prefix: Some("opencode-go/".to_string()),
+            add_model_prefix: None,
             timeout_seconds: Some(60),
             headers: HashMap::new(),
             on_switch: None,

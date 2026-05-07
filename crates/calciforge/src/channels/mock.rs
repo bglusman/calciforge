@@ -635,6 +635,7 @@ mod tests {
                 api_key_file: None,
                 models: vec!["openai/gpt-5.5".to_string()],
                 strip_model_prefix: None,
+                add_model_prefix: None,
                 timeout_seconds: None,
                 headers: HashMap::new(),
                 on_switch: None,

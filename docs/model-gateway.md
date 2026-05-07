@@ -216,7 +216,10 @@ links use `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for reverse proxies or tunnels and
 `CALCIFORGE_PASTE_PUBLIC_HOST` for a stable LAN/Tailscale host.
 
 The Helicone gateway is currently strongest for providers that Helicone knows
-how to route directly, such as Ollama via `/ollama/v1`. Arbitrary
+how to route directly, such as Ollama via the `/ai` router with
+provider-qualified model IDs. Keep user-facing local selectors such as
+`qwen3.6:27b` in Calciforge, then set `add_model_prefix = "ollama/"` on the
+Helicone provider so upstream requests send `ollama/qwen3.6:27b`. Arbitrary
 OpenAI-compatible providers may still be configured as direct Calciforge
 providers until their Helicone provider/converter support is validated.
 

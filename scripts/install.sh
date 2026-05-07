@@ -2279,9 +2279,10 @@ provider_block = (
     '[[proxy.providers]]\n'
     'id = "helicone-ollama"\n'
     'backend_type = "helicone"\n'
-    f'url = "http://127.0.0.1:{port}/ollama/v1"\n'
+    f'url = "http://127.0.0.1:{port}/ai"\n'
     f'api_key_file = "{api_key_file}"\n'
     "models = []\n"
+    'add_model_prefix = "ollama/"\n'
     "timeout_seconds = 900\n"
 )
 if provider_match:

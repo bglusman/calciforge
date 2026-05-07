@@ -890,6 +890,14 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub strip_model_prefix: Option<String>,
 
+    /// Optional upstream model prefix to add after `strip_model_prefix`.
+    ///
+    /// Helicone AI Gateway routes require provider-qualified model IDs such as
+    /// `ollama/qwen3.6:27b` even when Calciforge exposes the simpler local
+    /// selector `qwen3.6:27b`.
+    #[serde(default)]
+    pub add_model_prefix: Option<String>,
+
     /// Request timeout in seconds (overrides proxy-level default).
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
