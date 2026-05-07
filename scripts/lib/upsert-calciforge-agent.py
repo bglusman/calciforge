@@ -15,7 +15,7 @@ import re
 
 
 AGENT_TABLE_RE = re.compile(r"^\s*\[\[agents\]\]\s*$")
-HEADER_RE = re.compile(r"^\s*\[(.+)\]\s*$")
+HEADER_RE = re.compile(r"^\s*(\[\[|\[)\s*([^\[\]]+?)\s*(\]\]|\])\s*$")
 
 
 def q(value: str) -> str:
@@ -40,11 +40,10 @@ def header_kind(line: str) -> str | None:
     match = HEADER_RE.match(line)
     if not match:
         return None
-    name = match.group(1).strip()
-    if name == "[agents]":
-        return "agents"
-    if name.startswith("[agents."):
-        return "agents_child"
+    opener, name, closer = match.groups()
+    if (opener == "[[" and closer != "]]") or (opener == "[" and closer != "]"):
+        return None
+    name = name.strip()
     if name.startswith("agents."):
         return "agents_child"
     if name == "agents":

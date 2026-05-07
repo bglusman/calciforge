@@ -104,10 +104,56 @@ allowed_agents = ["hermes"]
         assert text.index("timeout_ms = 300000") < text.index("[agents.registry]")
 
 
+def test_updating_first_agent_preserves_second_agent_and_routing() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = pathlib.Path(tmpdir) / "config.toml"
+        second_agent = """
+[[agents]]
+id = "ironclaw"
+kind = "ironclaw"
+endpoint = "http://127.0.0.1:19191"
+api_key_file = "/tmp/ironclaw-key"
+
+[agents.registry]
+display_name = "IronClaw"
+""".strip()
+        routing = """
+[[routing]]
+identity = "owner"
+endpoint = "must-not-change"
+allowed_agents = ["hermes", "ironclaw"]
+""".strip()
+        config.write_text(
+            f"""
+[calciforge]
+version = 2
+
+[[agents]]
+id = "hermes"
+kind = "hermes"
+endpoint = "http://old.example.invalid"
+
+{second_agent}
+
+{routing}
+""".lstrip()
+        )
+
+        run_helper(config)
+
+        text = config.read_text()
+        assert_valid_toml(config)
+        assert second_agent in text
+        assert routing in text
+        assert 'endpoint = "http://old.example.invalid"' not in text
+        assert text.count('endpoint = "http://127.0.0.1:19090"') == 1
+
+
 def main() -> int:
     tests = [
         test_last_agent_does_not_rewrite_following_tables,
         test_nested_registry_table_prevents_inline_registry_collision,
+        test_updating_first_agent_preserves_second_agent_and_routing,
     ]
     for test in tests:
         test()
