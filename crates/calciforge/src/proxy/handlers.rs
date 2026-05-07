@@ -8,12 +8,13 @@ use axum::{
 };
 use futures_util::stream::{self};
 use serde_json::json;
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use crate::config::ProxyConfig;
-use crate::providers::alloy::AlloyPlan;
 use crate::proxy::{
+    model_resolver::ModelResolver,
     openai::{
         ApiError, ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, DeltaMessage,
         ErrorDetail, ModelInfo, ModelListResponse,
@@ -53,16 +54,30 @@ pub async fn chat_completions(
         .unwrap_or("anonymous");
 
     let requested_model = req.model.clone();
-    if let Some(resolved_model) = resolve_model_shortcut(&state, &requested_model) {
+    let model_resolver = ModelResolver::new(&state.model_shortcuts, &state.alloy_manager);
+    let resolved_request_model = match model_resolver.resolve_alias_chain(&requested_model) {
+        Ok(model) => model,
+        Err(e) => {
+            warn!(model = %requested_model, error = %e, "Model shortcut resolution failed");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_model_alias",
+                &e,
+                Some("model"),
+            );
+        }
+    };
+    if resolved_request_model != requested_model {
         debug!(
             requested_model = %requested_model,
-            resolved_model = %resolved_model,
+            resolved_model = %resolved_request_model,
             "Resolved proxy model shortcut"
         );
-        req.model = resolved_model;
+        req.model = resolved_request_model;
     }
 
-    // Check model access for this agent
+    // Check top-level model access for this agent. Concrete constituent access
+    // is checked after the synthetic plan is fully expanded below.
     if !crate::proxy::auth::check_model_access_for_names(
         &state.config,
         agent_id,
@@ -103,42 +118,56 @@ pub async fn chat_completions(
         );
     }
 
-    let plan = match state
-        .alloy_manager
-        .select_plan_for_model(&req.model, estimated_tokens)
-    {
-        Ok(Some(plan)) => {
+    let resolved = match model_resolver.plan_for_model(&req.model, estimated_tokens) {
+        Ok(resolved) => {
             info!(
                 synthetic_model = %req.model,
                 estimated_tokens,
-                attempts = plan.ordered_models.len(),
-                "Using synthetic model plan for request"
+                attempts = resolved.plan.ordered_models.len(),
+                "Resolved model plan for request"
             );
-            plan
+            resolved
         }
-        Ok(None) => crate::providers::alloy::AlloyPlan {
-            alloy_id: req.model.clone(),
-            alloy_name: req.model.clone(),
-            ordered_models: vec![req.model.clone()],
-        },
         Err(e) => {
-            warn!(model = %req.model, estimated_tokens, error = %e, "Synthetic model cannot fit request");
-            return api_error(
-                StatusCode::BAD_REQUEST,
-                "context_window_exceeded",
-                &e,
-                Some("messages"),
-            );
+            warn!(model = %req.model, estimated_tokens, error = %e, "Model plan cannot serve request");
+            let (code, param) = model_plan_error_response(&e);
+            return api_error(StatusCode::BAD_REQUEST, code, &e, param);
         }
     };
 
+    for concrete_model in &resolved.plan.ordered_models {
+        if !crate::proxy::auth::check_model_access_for_names(
+            &state.config,
+            agent_id,
+            &requested_model,
+            concrete_model,
+        ) {
+            warn!(
+                agent_id = %agent_id,
+                requested_model = %requested_model,
+                root_model = %resolved.root_model,
+                concrete_model = %concrete_model,
+                "Expanded model access denied"
+            );
+            return api_error(
+                StatusCode::FORBIDDEN,
+                "model_access_denied",
+                &format!(
+                    "Agent '{}' does not have access to model '{}'",
+                    agent_id, requested_model
+                ),
+                None,
+            );
+        }
+    }
+
     // Route to provider with fallback
-    let result = route_with_fallback(&state, &plan, &req).await;
+    let result = route_with_fallback(&state, &resolved.plan, &req).await;
 
     match result {
         Ok(response) => {
             if req.should_stream() {
-                streaming_response(response, &plan.alloy_name).await
+                streaming_response(response, &resolved.plan.alloy_name).await
             } else {
                 Json(response).into_response()
             }
@@ -157,16 +186,20 @@ pub async fn chat_completions(
     }
 }
 
-fn resolve_model_shortcut(state: &ProxyState, model: &str) -> Option<String> {
-    state
-        .model_shortcuts
-        .iter()
-        .find(|shortcut| shortcut.alias == model)
-        .map(|shortcut| shortcut.model.clone())
-}
-
 fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
     matches!(backend_type, "http" | "helicone")
+}
+
+fn model_plan_error_response(error: &str) -> (&'static str, Option<&'static str>) {
+    if error.contains("shortcut cycle") {
+        ("invalid_model_alias", Some("model"))
+    } else if error.contains("synthetic model cycle") {
+        ("invalid_model_plan", Some("model"))
+    } else if error.contains("context window") || error.contains("estimated request size") {
+        ("context_window_exceeded", Some("messages"))
+    } else {
+        ("invalid_model_plan", Some("model"))
+    }
 }
 
 /// Return operator-facing metadata for the active gateway engine.
@@ -190,7 +223,7 @@ pub async fn gateway_ui_redirect(State(state): State<ProxyState>) -> Response {
 /// Route request with fallback chain
 async fn route_with_fallback(
     state: &ProxyState,
-    plan: &AlloyPlan,
+    plan: &crate::providers::alloy::AlloyPlan,
     req: &ChatCompletionRequest,
 ) -> anyhow::Result<ChatCompletionResponse> {
     let mut last_error = None;
@@ -325,6 +358,27 @@ pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) ->
         .as_secs();
 
     let mut models = vec![];
+    let mut seen_model_ids = HashSet::new();
+
+    let mut push_model = |models: &mut Vec<ModelInfo>, model: ModelInfo| {
+        if seen_model_ids.insert(model.id.clone()) {
+            models.push(model);
+        }
+    };
+
+    // Add client-facing model shortcuts. They are valid model IDs for gateway
+    // requests, so `/v1/models` should advertise them as selectable aliases.
+    for shortcut in &state.model_shortcuts {
+        push_model(
+            &mut models,
+            ModelInfo {
+                id: shortcut.alias.clone(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: format!("calciforge/shortcut -> {}", shortcut.model),
+            },
+        );
+    }
 
     // Add configured local models (if any).
     if let Some(ref mgr) = state.local_manager {
@@ -335,59 +389,99 @@ pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) ->
             } else {
                 ""
             };
-            models.push(ModelInfo {
-                id: m.id.clone(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: format!("local/{}{}", m.provider_type, suffix),
-            });
+            push_model(
+                &mut models,
+                ModelInfo {
+                    id: m.id.clone(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: format!("local/{}{}", m.provider_type, suffix),
+                },
+            );
         }
     }
 
     // Add configured alloys
     for alloy in state.alloy_manager.list_alloys() {
-        models.push(ModelInfo {
-            id: alloy.definition().id.clone(),
-            object: "model".to_string(),
-            created: now,
-            owned_by: "calciforge".to_string(),
-        });
+        push_model(
+            &mut models,
+            ModelInfo {
+                id: alloy.definition().id.clone(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: "calciforge".to_string(),
+            },
+        );
     }
     for cascade in state.alloy_manager.list_cascades() {
-        models.push(ModelInfo {
-            id: cascade.id.clone(),
-            object: "model".to_string(),
-            created: now,
-            owned_by: "calciforge/cascade".to_string(),
-        });
+        push_model(
+            &mut models,
+            ModelInfo {
+                id: cascade.id.clone(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: "calciforge/cascade".to_string(),
+            },
+        );
     }
     for dispatcher in state.alloy_manager.list_dispatchers() {
-        models.push(ModelInfo {
-            id: dispatcher.id.clone(),
-            object: "model".to_string(),
-            created: now,
-            owned_by: "calciforge/dispatcher".to_string(),
-        });
+        push_model(
+            &mut models,
+            ModelInfo {
+                id: dispatcher.id.clone(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: "calciforge/dispatcher".to_string(),
+            },
+        );
     }
     for exec_model in state.alloy_manager.list_exec_models() {
-        models.push(ModelInfo {
-            id: exec_model.id.clone(),
-            object: "model".to_string(),
-            created: now,
-            owned_by: "calciforge/exec".to_string(),
-        });
+        push_model(
+            &mut models,
+            ModelInfo {
+                id: exec_model.id.clone(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: "calciforge/exec".to_string(),
+            },
+        );
+    }
+
+    // Add exact configured provider route IDs. Some backends, including local
+    // Helicone AI Gateway deployments, may not return a useful upstream model
+    // list even though Calciforge can route exact configured model IDs. This is
+    // intentionally after Calciforge-owned models so aliases, local models, and
+    // synthetic definitions keep their more specific ownership metadata.
+    for provider in &state.providers {
+        for pattern in &provider.patterns {
+            if pattern == "*" || pattern.ends_with("/*") {
+                continue;
+            }
+            push_model(
+                &mut models,
+                ModelInfo {
+                    id: pattern.clone(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: format!("calciforge/provider:{}", provider.id),
+                },
+            );
+        }
     }
 
     // Try to get models from gateway
     match state.gateway.list_models().await {
         Ok(gateway_models) => {
             for model_info in gateway_models {
-                models.push(ModelInfo {
-                    id: model_info.id,
-                    object: "model".to_string(),
-                    created: now,
-                    owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
-                });
+                push_model(
+                    &mut models,
+                    ModelInfo {
+                        id: model_info.id,
+                        object: "model".to_string(),
+                        created: now,
+                        owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
+                    },
+                );
             }
         }
         Err(e) => {
@@ -572,7 +666,10 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DispatcherConfig, ModelShortcutConfig, SyntheticModelConfig};
+    use crate::config::{
+        DispatcherConfig, ExecModelConfig, ModelShortcutConfig, ProxyAccessPolicy,
+        ProxyAgentConfig, SyntheticModelConfig,
+    };
     use crate::providers::alloy::AlloyManager;
     use crate::providers::ProviderRegistry;
     use crate::proxy::backend::{BackendError, ModelInfo};
@@ -718,6 +815,28 @@ mod tests {
         assert!(!backend_accepts_unlisted_models("mock"));
     }
 
+    #[test]
+    fn model_plan_error_response_distinguishes_config_cycles_from_context_limits() {
+        assert_eq!(
+            model_plan_error_response(
+                "synthetic model cycle detected after shortcut resolution: balanced -> balanced"
+            ),
+            ("invalid_model_plan", Some("model"))
+        );
+        assert_eq!(
+            model_plan_error_response(
+                "model shortcut cycle detected while resolving 'a': a -> b -> a"
+            ),
+            ("invalid_model_alias", Some("model"))
+        );
+        assert_eq!(
+            model_plan_error_response(
+                "dispatcher 'balanced': estimated request size 900 tokens exceeds largest configured context window 500"
+            ),
+            ("context_window_exceeded", Some("messages"))
+        );
+    }
+
     #[tokio::test]
     async fn proxy_resolves_model_shortcut_dispatcher_before_provider_routing() {
         let alloy_manager = AlloyManager::from_gateway_configs(
@@ -830,5 +949,420 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
         assert_eq!(recording_gateway.recorded_models(), vec!["qwen-test:small"]);
+    }
+
+    #[tokio::test]
+    async fn proxy_resolves_model_shortcuts_inside_dispatcher_constituents() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-cloud-balanced".to_string(),
+                name: Some("Local/cloud balanced".to_string()),
+                models: vec![
+                    SyntheticModelConfig {
+                        model: "local".to_string(),
+                        context_window: 60_000,
+                    },
+                    SyntheticModelConfig {
+                        model: "cloud".to_string(),
+                        context_window: 250_000,
+                    },
+                ],
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: vec![
+                ModelShortcutConfig {
+                    alias: "local".to_string(),
+                    model: "qwen-test:small".to_string(),
+                },
+                ModelShortcutConfig {
+                    alias: "cloud".to_string(),
+                    model: "kimi-test:medium".to_string(),
+                },
+            ],
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "local-cloud-balanced",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(body["model"], "qwen-test:small");
+        assert_eq!(recording_gateway.recorded_models(), vec!["qwen-test:small"]);
+    }
+
+    #[tokio::test]
+    async fn proxy_expands_constituent_shortcut_that_targets_another_synthetic_model() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[
+                DispatcherConfig {
+                    id: "outer-dispatcher".to_string(),
+                    name: Some("Outer dispatcher".to_string()),
+                    models: vec![SyntheticModelConfig {
+                        model: "inner".to_string(),
+                        context_window: 250_000,
+                    }],
+                },
+                DispatcherConfig {
+                    id: "inner-dispatcher".to_string(),
+                    name: Some("Inner dispatcher".to_string()),
+                    models: vec![SyntheticModelConfig {
+                        model: "qwen-test:small".to_string(),
+                        context_window: 60_000,
+                    }],
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: vec![ModelShortcutConfig {
+                alias: "inner".to_string(),
+                model: "inner-dispatcher".to_string(),
+            }],
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "outer-dispatcher",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(body["model"], "qwen-test:small");
+        assert_eq!(recording_gateway.recorded_models(), vec!["qwen-test:small"]);
+    }
+
+    #[tokio::test]
+    async fn proxy_blocks_synthetic_plan_when_expanded_constituent_is_blocked() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-cloud-balanced".to_string(),
+                name: Some("Local/cloud balanced".to_string()),
+                models: vec![
+                    SyntheticModelConfig {
+                        model: "local".to_string(),
+                        context_window: 60_000,
+                    },
+                    SyntheticModelConfig {
+                        model: "cloud".to_string(),
+                        context_window: 250_000,
+                    },
+                ],
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                default_policy: ProxyAccessPolicy::AllowConfigured,
+                agents: vec![ProxyAgentConfig {
+                    id: "test-agent".to_string(),
+                    name: Some("Test Agent".to_string()),
+                    api_key: None,
+                    api_key_file: None,
+                    allowed_models: vec!["*".to_string()],
+                    blocked_models: vec!["qwen-test:small".to_string()],
+                    rate_limit_rpm: 0,
+                    rate_limit_tpm: 0,
+                }],
+                ..Default::default()
+            },
+            model_shortcuts: vec![
+                ModelShortcutConfig {
+                    alias: "local".to_string(),
+                    model: "qwen-test:small".to_string(),
+                },
+                ModelShortcutConfig {
+                    alias: "cloud".to_string(),
+                    model: "kimi-test:medium".to_string(),
+                },
+            ],
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "local-cloud-balanced",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-agent-id", HeaderValue::from_static("test-agent"));
+        let response = chat_completions(State(state), headers, Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {body}");
+        assert_eq!(body["error"]["code"], "model_access_denied");
+        assert!(recording_gateway.recorded_models().is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_rejects_alias_to_synthetic_cycle_as_invalid_model_plan() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-cloud-balanced".to_string(),
+                name: Some("Local/cloud balanced".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "local".to_string(),
+                    context_window: 60_000,
+                }],
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: vec![ModelShortcutConfig {
+                alias: "local".to_string(),
+                model: "local-cloud-balanced".to_string(),
+            }],
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "local-cloud-balanced",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {body}");
+        assert_eq!(body["error"]["code"], "invalid_model_plan");
+        assert!(recording_gateway.recorded_models().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_models_includes_model_shortcut_aliases() {
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: vec![ModelShortcutConfig {
+                alias: "local".to_string(),
+                model: "qwen-test:small".to_string(),
+            }],
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let response = list_models(State(state), HeaderMap::new())
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert!(
+            body["data"].as_array().unwrap().iter().any(|model| {
+                model["id"] == "local"
+                    && model["owned_by"]
+                        .as_str()
+                        .is_some_and(|owner| owner.contains("qwen-test:small"))
+            }),
+            "shortcut alias should be advertised as a valid model: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_models_includes_exact_configured_provider_models() {
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let provider_gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "subscription".to_string(),
+                patterns: vec![
+                    "gpt-5.5".to_string(),
+                    "codex/*".to_string(),
+                    "*".to_string(),
+                ],
+                gateway: provider_gateway,
+                on_switch: None,
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let response = list_models(State(state), HeaderMap::new())
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        let model_ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["id"].as_str())
+            .collect();
+        assert!(
+            model_ids.contains(&"gpt-5.5"),
+            "exact configured provider model should be advertised: {body}"
+        );
+        assert!(
+            !model_ids.contains(&"codex/*") && !model_ids.contains(&"*"),
+            "wildcard provider patterns are route patterns, not selectable model IDs: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_models_keeps_synthetic_metadata_when_provider_entry_duplicates_id() {
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let provider_gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[],
+            &[ExecModelConfig {
+                id: "exec/fake".to_string(),
+                name: None,
+                context_window: 8_192,
+                command: "/bin/echo".to_string(),
+                args: Vec::new(),
+                env: Default::default(),
+                timeout_seconds: None,
+            }],
+        )
+        .unwrap();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "exec:exec/fake".to_string(),
+                patterns: vec!["exec/fake".to_string()],
+                gateway: provider_gateway,
+                on_switch: None,
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let response = list_models(State(state), HeaderMap::new())
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        let exec_models: Vec<&Value> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["id"] == "exec/fake")
+            .collect();
+        assert_eq!(
+            exec_models.len(),
+            1,
+            "duplicate provider entries should not duplicate synthetic IDs: {body}"
+        );
+        assert_eq!(
+            exec_models[0]["owned_by"], "calciforge/exec",
+            "Calciforge synthetic metadata should take precedence over provider route metadata"
+        );
     }
 }

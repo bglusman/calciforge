@@ -411,8 +411,10 @@ def evaluate(ctx):
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests to named providers, explicit model routes, local models, and
-synthetic models. Chat users can also inspect and switch configured
-aliases with `!model`.
+synthetic models. Model identifiers resolve through one path for gateway
+requests and `!model`: a name may be a concrete model, a `[[model_shortcuts]]`
+alias, or a synthetic model ID. Shortcuts may point to synthetic models, and
+synthetic model members may use shortcuts.
 
 The synthetic-model vocabulary is:
 
@@ -430,8 +432,8 @@ The synthetic-model vocabulary is:
   owns OAuth/session state.
 
 Synthetic models may compose other synthetic models as a DAG. Calciforge
-flattens the selected plan at request time and rejects cycles during
-initialization.
+flattens the selected plan at request time, rejects direct cycles during
+initialization, and rejects alias-induced cycles before provider routing.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -466,7 +468,8 @@ models = ["local/*", "qwen/*", "mlx/*"]
 pattern = "coding/default"
 provider = "anthropic"
 
-# Chat aliases shown by `!model`; `!model sonnet` activates the target.
+# Chat/API aliases shown by `!model`; aliases may target concrete or synthetic
+# model IDs.
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"

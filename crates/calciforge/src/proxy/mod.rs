@@ -25,6 +25,7 @@ mod backend;
 mod exec_gateway;
 mod gateway;
 mod handlers;
+mod model_resolver;
 mod openai;
 pub(crate) mod routing;
 mod streaming;

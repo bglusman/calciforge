@@ -20,6 +20,7 @@ mod hooks;
 mod install;
 mod local_model;
 mod messages;
+mod model_names;
 #[cfg(feature = "persistent-context")]
 mod persistent_context;
 mod providers;

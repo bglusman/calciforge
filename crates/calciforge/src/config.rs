@@ -96,7 +96,8 @@ pub struct CalciforgeConfig {
 pub struct ModelShortcutConfig {
     /// Short alias name (e.g. "sonnet", "opus", "fast")
     pub alias: String,
-    /// Full provider/model string this alias expands to (e.g. "anthropic/claude-sonnet-4.6")
+    /// Target model ID. This may be a concrete provider model or a synthetic
+    /// model ID such as an alloy, cascade, dispatcher, or exec model.
     pub model: String,
 }
 
@@ -738,12 +739,17 @@ pub struct ProxyAgentConfig {
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
 
-    /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier")
-    /// If empty and default_policy is "allow_all", all models are allowed
+    /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier").
+    /// Matches the requested/root model and, unless a block rule applies, can
+    /// authorize a synthetic model as a bundle. If empty and default_policy is
+    /// "allow_all", all models are allowed.
     #[serde(default)]
     pub allowed_models: Vec<String>,
 
-    /// Blocked model patterns (takes precedence over allowed)
+    /// Blocked model patterns (takes precedence over allowed). Blocks are
+    /// enforced after shortcut and synthetic expansion too, so a concrete
+    /// downstream model can be denied even when reached through an alias,
+    /// dispatcher, cascade, or alloy.
     #[serde(default)]
     pub blocked_models: Vec<String>,
 

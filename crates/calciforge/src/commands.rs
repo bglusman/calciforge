@@ -1791,15 +1791,19 @@ impl CommandHandler {
         }
 
         let requested_model_id = args[0];
-        let shortcut_target = self
-            .config
-            .model_shortcuts
-            .iter()
-            .find(|shortcut| shortcut.alias == requested_model_id)
-            .map(|shortcut| shortcut.model.as_str());
-        let model_id = shortcut_target.unwrap_or(requested_model_id);
-        let shortcut_note =
-            shortcut_target.map(|target| format!(" via alias '{requested_model_id}' → '{target}'"));
+        let resolved_model_id = match crate::model_names::resolve_model_alias_chain(
+            &self.config.model_shortcuts,
+            requested_model_id,
+        ) {
+            Ok(model_id) => model_id,
+            Err(e) => return format!("⚠️ {e}"),
+        };
+        let model_id = resolved_model_id.as_str();
+        let shortcut_note = if model_id == requested_model_id {
+            None
+        } else {
+            Some(format!(" via alias '{requested_model_id}' → '{model_id}'"))
+        };
 
         // 1. Synthetic model switch.
         if let Some(ref manager) = self.alloy_manager {
@@ -3106,6 +3110,30 @@ mod tests {
             h.handle("!model fast").is_none(),
             "shortcut activation should be handled after identity resolution"
         );
+        let reply = h.handle_model("!model fast", "brian");
+        assert!(reply.contains("Activated synthetic model"), "{reply}");
+        assert!(reply.contains("via alias 'fast'"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_chain_activates_synthetic_target() {
+        let mut config = make_config();
+        config.model_shortcuts.push(ModelShortcutConfig {
+            alias: "fast".to_string(),
+            model: "local-dispatcher".to_string(),
+        });
+        config.model_shortcuts.push(ModelShortcutConfig {
+            alias: "local-dispatcher".to_string(),
+            model: "dispatcher-test".to_string(),
+        });
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager());
+
         let reply = h.handle_model("!model fast", "brian");
         assert!(reply.contains("Activated synthetic model"), "{reply}");
         assert!(reply.contains("via alias 'fast'"), "{reply}");

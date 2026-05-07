@@ -14,6 +14,7 @@ use url::Url;
 
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::CalciforgeConfig;
+use crate::model_names::resolve_model_alias_chain;
 
 /// Validation result with detailed error messages.
 #[derive(Debug)]
@@ -338,6 +339,11 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
             ));
         }
     }
+    for shortcut in &config.model_shortcuts {
+        if let Err(e) = resolve_model_alias_chain(&config.model_shortcuts, &shortcut.alias) {
+            result.add_error(e);
+        }
+    }
 }
 
 /// Validate routing rules reference valid agents.
@@ -660,6 +666,39 @@ bot_token_file = "/tmp/nope"
         assert!(
             result.is_valid(),
             "baseline fixture should validate clean; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn model_shortcut_cycles_are_config_errors() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[model_shortcuts]]
+alias = "local"
+model = "balanced"
+
+[[model_shortcuts]]
+alias = "balanced"
+model = "local"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "cyclic model aliases should fail validation before runtime"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("model shortcut cycle")
+                    && e.contains("local -> balanced -> local")),
+            "error should identify the shortcut cycle; errors: {:?}",
             result.errors
         );
     }

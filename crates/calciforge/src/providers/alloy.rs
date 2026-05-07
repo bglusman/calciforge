@@ -767,6 +767,10 @@ impl AlloyManager {
             || self.exec_models.contains_key(model_id)
     }
 
+    pub fn is_exec_model(&self, model_id: &str) -> bool {
+        self.exec_models.contains_key(model_id)
+    }
+
     pub fn select_plan_for_model(
         &self,
         model_id: &str,

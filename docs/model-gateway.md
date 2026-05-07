@@ -147,6 +147,25 @@ forwards the expected auth headers, path, and model.
   storage. Adapters receive the selected target only when their config
   explicitly allows model overrides.
 
+### Model Identifier Resolution
+
+The gateway treats model identifiers uniformly across direct API calls,
+`!model` overrides, synthetic model definitions, and provider routing:
+
+- A model identifier may be a shortcut alias, a synthetic model ID, or a
+  concrete upstream model ID.
+- `[[model_shortcuts]]` may target concrete provider models or synthetic model
+  IDs such as dispatchers, cascades, alloys, or exec models.
+- Synthetic model constituents may also use shortcut aliases. Before provider
+  routing, Calciforge expands aliases and nested synthetic models through the
+  shared model resolver until the route plan contains concrete model IDs.
+- Shortcut cycles and synthetic cycles fail closed instead of falling through to
+  a backend as ambiguous model names.
+- Proxy model access is checked twice: first for the requested/root model, then
+  again for every concrete model in the expanded route plan. `blocked_models`
+  therefore applies to concrete downstream models even when a request entered
+  through an allowed dispatcher or alias.
+
 Exact model IDs listed in `[[proxy.providers]].models` are activatable choices.
 Wildcard patterns such as `openai/*` still route gateway requests, but they are
 not shown as tap-to-select model choices because there is no concrete model ID
@@ -336,6 +355,10 @@ provider = "anthropic"
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
 
+[[model_shortcuts]]
+alias = "local"
+model = "local/qwen3-35b"
+
 [local_models]
 enabled = true
 current = "qwen3-35b"
@@ -365,7 +388,7 @@ id = "smart-local"
 name = "Use local until the prompt outgrows it"
 
 [[dispatchers.models]]
-model = "local/qwen3-35b"
+model = "local" # shortcut aliases are valid inside synthetic definitions
 context_window = 32768
 
 [[dispatchers.models]]
