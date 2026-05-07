@@ -1,15 +1,15 @@
 //! Model identifier resolution for the gateway.
 //!
 //! The gateway accepts model names from several surfaces: API requests,
-//! `[[model_shortcuts]]`, and synthetic model definitions. Keep shortcut
-//! normalization and synthetic expansion here so auth, validation, and routing
-//! do not each grow subtly different model-name rules.
+//! `[[model_shortcuts]]`, synthetic model definitions, and exec-backed model
+//! shims. Keep shortcut normalization and expansion here so auth, validation,
+//! and routing do not each grow subtly different model-name rules.
 
 use crate::config::ModelShortcutConfig;
 use crate::model_names::resolve_model_alias_chain;
 use crate::providers::alloy::{AlloyManager, AlloyPlan};
 
-/// Resolves model shortcuts and synthetic model plans into concrete gateway
+/// Resolves model shortcuts and gateway selector plans into terminal gateway
 /// model names.
 pub struct ModelResolver<'a> {
     shortcuts: &'a [ModelShortcutConfig],
@@ -26,8 +26,9 @@ impl<'a> ModelResolver<'a> {
 
     /// Resolve a shortcut alias chain to the first non-alias model name.
     ///
-    /// This intentionally does not expand synthetic models. A shortcut may
-    /// target a synthetic model ID, and callers can then ask for a plan.
+    /// This intentionally does not expand gateway selectors. A shortcut may
+    /// target a synthetic routing ID or exec-backed shim, and callers can then
+    /// ask for a plan.
     pub fn resolve_alias_chain(&self, model: &str) -> Result<String, String> {
         resolve_model_alias_chain(self.shortcuts, model)
     }
@@ -35,8 +36,8 @@ impl<'a> ModelResolver<'a> {
     /// Build the full route plan for a requested model name.
     ///
     /// The returned plan contains only canonical concrete model names in
-    /// `ordered_models`; shortcut aliases and nested synthetic IDs are fully
-    /// expanded before provider routing.
+    /// `ordered_models`; shortcut aliases and nested gateway selectors are
+    /// fully expanded before terminal routing.
     pub fn plan_for_model(
         &self,
         model: &str,
@@ -101,7 +102,7 @@ impl<'a> ModelResolver<'a> {
 
 pub struct ResolvedModelPlan {
     /// Request model after resolving shortcut aliases, before synthetic
-    /// expansion. This may still be a synthetic model ID.
+    /// expansion. This may still be a synthetic routing ID or exec-backed shim.
     pub root_model: String,
     /// Fully expanded route plan. `ordered_models` are concrete gateway models.
     pub plan: AlloyPlan,
@@ -181,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_exec_models_as_terminal_synthetic_leaves() {
+    fn preserves_exec_models_as_terminal_exec_shims() {
         let manager = AlloyManager::from_gateway_configs(
             &[],
             &[],

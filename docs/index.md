@@ -411,12 +411,13 @@ def evaluate(ctx):
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests to named providers, explicit model routes, local models, and
-synthetic models. Model identifiers resolve through one path for gateway
-requests and `!model`: a name may be a concrete model, a `[[model_shortcuts]]`
-alias, or a synthetic model ID. Shortcuts may point to synthetic models, and
-synthetic model members may use shortcuts.
+synthetic routing selectors. Model identifiers resolve through one path for
+gateway requests and `!model`: a name may be a concrete model, a
+`[[model_shortcuts]]` alias, a synthetic routing selector, or an exec-backed
+model shim. Shortcuts may point to routing selectors, and routing selector
+members may use shortcuts.
 
-The synthetic-model vocabulary is:
+The synthetic routing vocabulary is:
 
 - **Alloy** — blend among interchangeable models by weighted or
   round-robin selection. Implemented today with context-window
@@ -427,13 +428,13 @@ The synthetic-model vocabulary is:
 - **Dispatcher** — choose by request shape, such as "smallest
   sufficient model." This is the size-routing primitive for mixing
   small local models with larger remote models.
-- **Exec model** — expose a local binary or wrapper script as a model
-  gateway model, typically for subscription-backed CLIs where the CLI
-  owns OAuth/session state.
 
-Synthetic models may compose other synthetic models as a DAG. Calciforge
-flattens the selected plan at request time, rejects direct cycles during
-initialization, and rejects alias-induced cycles before provider routing.
+Synthetic routing selectors may compose other routing selectors as a DAG.
+Calciforge flattens the selected plan at request time, rejects direct cycles
+during initialization, and rejects alias-induced cycles before provider routing.
+Exec-backed model shims are separate terminal selectors: Calciforge executes a
+local command directly after gateway auth/routing, so they do not pass through
+provider gateway observability or native provider tool-call semantics.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -543,7 +544,9 @@ Calciforge can call local CLIs such as Codex, Claude Code, OpenClaw,
 and other scriptable agents in two different ways. Use a direct agent
 adapter when the CLI should keep its own agent identity and workflow;
 use an `[[exec_models]]` entry when the CLI should appear as a model
-behind the OpenAI-compatible gateway.
+behind the OpenAI-compatible gateway. Exec-backed shims are useful for
+subscription-backed CLIs, but they are local process boundaries, not normal
+provider-backed models.
 
 That distinction matters for subscriptions and OAuth. The vendor CLI
 can own its local browser login, refresh tokens, project state, and

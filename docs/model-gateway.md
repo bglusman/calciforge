@@ -36,7 +36,7 @@ or "chat routes" rather than as full agents in user-facing lists.
 | Fallback behavior | Working, implicit | Alloy execution produces an ordered attempt plan; later constituents are tried when earlier ones fail. |
 | Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
-| Exec models | Working | `[[exec_models]]` exposes a local binary or wrapper script as a model-gateway model, useful for subscription-backed CLIs. |
+| Exec-backed model shims | Working | `[[exec_models]]` exposes a local binary or wrapper script as a terminal model-gateway selector, useful for subscription-backed CLIs. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
 | Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage can be exposed either as a Calciforge agent path or via an exec model wrapper when a local CLI owns authentication. |
 | External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected gateway engine and operator dashboard link after sender identity resolution. |
@@ -150,15 +150,25 @@ forwards the expected auth headers, path, and model.
 ### Model Identifier Resolution
 
 The gateway treats model identifiers uniformly across direct API calls,
-`!model` overrides, synthetic model definitions, and provider routing:
+`!model` overrides, routing selectors, and provider routing:
 
-- A model identifier may be a shortcut alias, a synthetic model ID, or a
-  concrete upstream model ID.
-- `[[model_shortcuts]]` may target concrete provider models or synthetic model
-  IDs such as dispatchers, cascades, alloys, or exec models.
-- Synthetic model constituents may also use shortcut aliases. Before provider
-  routing, Calciforge expands aliases and nested synthetic models through the
-  shared model resolver until the route plan contains concrete model IDs.
+- A model identifier may be a shortcut alias, a synthetic routing selector, an
+  exec-backed model shim, a local model ID, or a concrete upstream model ID.
+- `[[model_shortcuts]]` may target concrete provider models, synthetic routing
+  selectors such as dispatchers/cascades/alloys, or exec-backed model shims.
+- Shortcut aliases are themselves public model IDs. Calciforge rejects aliases
+  that collide with configured synthetic routing selectors, exec-backed model
+  shim IDs, local model IDs, exact provider model IDs, or exact
+  `[[proxy.model_routes]]` patterns.
+- Exact model IDs also share the operator-facing selector namespace with agent
+  IDs and agent aliases. Calciforge rejects a model route or provider model
+  named like an agent selector, because that usually means an agent name has
+  been accidentally treated as a concrete gateway model.
+- Synthetic routing constituents may also use shortcut aliases. Before provider
+  routing, Calciforge expands aliases and nested routing selectors through the
+  shared model resolver until the route plan contains terminal gateway model
+  IDs. Terminal IDs usually route to provider gateways; exec-backed shims run a
+  local command directly.
 - Shortcut cycles and synthetic cycles fail closed instead of falling through to
   a backend as ambiguous model names.
 - Proxy model access is checked twice: first for the requested/root model, then
@@ -171,12 +181,13 @@ Wildcard patterns such as `openai/*` still route gateway requests, but they are
 not shown as tap-to-select model choices because there is no concrete model ID
 to activate.
 
-## Synthetic Model Classes
+## Synthetic Routing Selectors
 
-Calciforge uses "synthetic model" to mean "a model name that represents
-logic, not a single upstream model ID." There are four intended
-classes. Synthetic models may reference other synthetic models as long
-as the resulting graph is a DAG; cycles fail config initialization.
+Calciforge uses "synthetic routing selector" to mean "a model name that
+represents routing logic, not a single upstream model ID." There are three
+intended classes: alloys, cascades, and dispatchers. They may reference other
+synthetic routing selectors as long as the resulting graph is a DAG; cycles
+fail config initialization.
 
 ### Alloy
 
@@ -284,20 +295,29 @@ model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
 ```
 
-### Exec Model
+## Exec-Backed Model Shims
 
-An exec model exposes an arbitrary local executable as an OpenAI-compatible
-model-gateway model. This is the subscription/OAuth escape hatch: Codex,
-Claude, Kimi, or another local CLI keeps its own login/session state, while
-Calciforge handles gateway auth, model ACLs, routing, and response wrapping.
+An exec-backed model shim exposes an arbitrary local executable as an
+OpenAI-compatible model-gateway selector. This is the subscription/OAuth escape
+hatch: Codex, Claude, Kimi, or another local CLI keeps its own login/session
+state, while Calciforge handles gateway auth, model ACLs, selector resolution,
+and response wrapping.
+
+Exec-backed shims are not provider-backed models and not synthetic routing
+selectors. After Calciforge chooses one, it invokes the configured command
+directly through `ExecGateway`; the downstream call does not pass through
+Helicone, Traceloop, a provider HTTP gateway, or provider observability. Use
+them deliberately when a local authenticated CLI is the desired boundary.
+They should not be assumed to support native tool calls, streaming, provider
+dashboards, or provider-specific telemetry.
 
 Calciforge treats the executable as a black box. It renders the chat transcript,
 passes it by stdin, and wraps stdout or `{output_file}` contents as the
 assistant message. `{prompt}` and `{message}` in exec-model args are legacy
 stdin markers: Calciforge replaces them with an empty string and sends the
 rendered transcript on stdin so prompt text is not exposed through process
-listings. It does not introspect the CLI, negotiate provider-specific flags, or
-verify vendor subscription terms.
+listings. It does not introspect the CLI, negotiate provider-specific flags,
+translate tool calls, or verify vendor subscription terms.
 
 ```toml
 [[exec_models]]

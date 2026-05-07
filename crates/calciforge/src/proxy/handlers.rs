@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use crate::config::ProxyConfig;
+use crate::model_names::is_exact_model_pattern;
 use crate::proxy::{
     model_resolver::ModelResolver,
     openai::{
@@ -101,11 +102,11 @@ pub async fn chat_completions(
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
     //  - Backend delegates model selection to an external OpenAI-compatible API.
-    //  - It's a configured synthetic model (alloy, cascade, dispatcher, exec model).
+    //  - It's a configured gateway selector (alloy, cascade, dispatcher, exec-backed shim).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_valid_model = provider_matches
         || backend_accepts_unlisted_models(&state.config.backend_type)
-        || state.alloy_manager.is_synthetic_model(&req.model)
+        || state.alloy_manager.is_gateway_model_selector(&req.model)
         || KNOWN_MODELS.contains(&req.model.as_str());
 
     if !is_valid_model {
@@ -454,7 +455,7 @@ pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) ->
     // synthetic definitions keep their more specific ownership metadata.
     for provider in &state.providers {
         for pattern in &provider.patterns {
-            if pattern == "*" || pattern.ends_with("/*") {
+            if !is_exact_model_pattern(pattern) {
                 continue;
             }
             push_model(
@@ -1429,7 +1430,7 @@ mod tests {
         assert_eq!(
             exec_models.len(),
             1,
-            "duplicate provider entries should not duplicate synthetic IDs: {body}"
+            "duplicate provider entries should not duplicate gateway selector IDs: {body}"
         );
         assert_eq!(
             exec_models[0]["owned_by"], "calciforge/exec",

@@ -9,12 +9,14 @@
 //! - No circular dependencies
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::CalciforgeConfig;
-use crate::model_names::resolve_model_alias_chain;
+use crate::model_names::{
+    configured_agent_selectors, configured_first_class_model_ids, resolve_model_alias_chain,
+};
 
 /// Validation result with detailed error messages.
 #[derive(Debug)]
@@ -306,26 +308,51 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
         }
     }
 
-    // Check duplicate synthetic model IDs across all synthetic model classes.
-    let mut synthetic_model_ids = HashSet::new();
-    for alloy in &config.alloys {
-        if !synthetic_model_ids.insert(&alloy.id) {
-            result.add_error(format!("Duplicate alloy ID: '{}'", alloy.id));
+    let configured_model_ids = configured_first_class_model_ids(config);
+    let configured_agent_selectors = configured_agent_selectors(config);
+
+    // Check duplicate agent selectors that would make chat routing ambiguous.
+    let mut agent_selectors = HashMap::new();
+    for selector in &configured_agent_selectors {
+        if let Some((previous_owner, previous_kind)) = agent_selectors.insert(
+            selector.id.as_str(),
+            (&selector.owner_agent_id, selector.kind),
+        ) {
+            if previous_owner != &selector.owner_agent_id {
+                result.add_error(format!(
+                    "Ambiguous agent selector '{}': configured as a {} for agent '{}' and a {} for agent '{}'. Agent IDs and aliases must resolve to one chat target.",
+                    selector.id,
+                    previous_kind.label(),
+                    previous_owner,
+                    selector.kind.label(),
+                    selector.owner_agent_id
+                ));
+            }
         }
     }
-    for cascade in &config.cascades {
-        if !synthetic_model_ids.insert(&cascade.id) {
-            result.add_error(format!("Duplicate synthetic model ID: '{}'", cascade.id));
+
+    // Check duplicate configured first-class model IDs across all configured
+    // model namespaces that are visible to callers.
+    let mut model_ids = HashMap::new();
+    for entry in &configured_model_ids {
+        if let Some(previous_kind) = model_ids.insert(entry.id.as_str(), entry.kind) {
+            result.add_error(format!(
+                "Ambiguous model selector '{}': configured as both a {} and a {}. Model selectors must be unique across synthetic models, exec-backed shims, local models, exact provider models, and exact model routes.",
+                entry.id,
+                previous_kind.label(),
+                entry.kind.label()
+            ));
         }
-    }
-    for dispatcher in &config.dispatchers {
-        if !synthetic_model_ids.insert(&dispatcher.id) {
-            result.add_error(format!("Duplicate synthetic model ID: '{}'", dispatcher.id));
-        }
-    }
-    for exec_model in &config.exec_models {
-        if !synthetic_model_ids.insert(&exec_model.id) {
-            result.add_error(format!("Duplicate synthetic model ID: '{}'", exec_model.id));
+        if let Some(conflict) = configured_agent_selectors
+            .iter()
+            .find(|selector| selector.id == entry.id)
+        {
+            result.add_error(format!(
+                "Ambiguous selector '{}': configured as a {} and a {}. Agent selectors are used for routing/chat targets; model selectors are used for gateway model requests. Rename one side so Calciforge cannot treat an agent name as a model name.",
+                entry.id,
+                entry.kind.label(),
+                conflict.kind.label()
+            ));
         }
     }
 
@@ -338,10 +365,14 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
                 shortcut.alias
             ));
         }
-        if synthetic_model_ids.contains(&shortcut.alias) {
+        if let Some(conflict) = configured_model_ids
+            .iter()
+            .find(|entry| entry.id == shortcut.alias)
+        {
             result.add_error(format!(
-                "Model shortcut alias '{}' conflicts with a configured synthetic model ID",
-                shortcut.alias
+                "Ambiguous model shortcut alias '{}': conflicts with a configured {}. Shortcuts must point to configured models; they cannot reuse a first-class model selector.",
+                shortcut.alias,
+                conflict.kind.label()
             ));
         }
     }
@@ -736,8 +767,231 @@ model = "qwen-test:small"
         );
         assert!(
             result.errors.iter().any(|e| e.contains("balanced")
-                && e.contains("conflicts with a configured synthetic model ID")),
+                && e.contains("Ambiguous model shortcut alias")
+                && e.contains("synthetic model ID")),
             "error should identify the colliding alias and synthetic ID; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_cannot_shadow_local_model_id() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[local_models]
+enabled = true
+
+[[local_models.models]]
+id = "local"
+hf_id = "example/local"
+
+[[model_shortcuts]]
+alias = "local"
+model = "qwen-test:small"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "shortcut aliases must not silently shadow local model IDs"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("local")
+                    && e.contains("Ambiguous model shortcut alias")
+                    && e.contains("local model ID")
+            }),
+            "error should identify the colliding alias and local model ID; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_cannot_shadow_exact_provider_model_id() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[proxy.providers]]
+id = "remote"
+backend_type = "http"
+url = "https://example.invalid/v1"
+models = ["openai/gpt-5.5", "openai/*"]
+
+[[model_shortcuts]]
+alias = "openai/gpt-5.5"
+model = "kimi-cli"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "shortcut aliases must not silently shadow exact provider model IDs"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("openai/gpt-5.5")
+                    && e.contains("Ambiguous model shortcut alias")
+                    && e.contains("provider model ID")
+            }),
+            "error should identify the colliding alias and provider model ID; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_cannot_shadow_exact_model_route_id() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[proxy.providers]]
+id = "remote"
+backend_type = "http"
+url = "https://example.invalid/v1"
+
+[[proxy.model_routes]]
+pattern = "coding/default"
+provider = "remote"
+
+[[model_shortcuts]]
+alias = "coding/default"
+model = "kimi-cli"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "shortcut aliases must not silently shadow exact model-route IDs"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("coding/default")
+                    && e.contains("Ambiguous model shortcut alias")
+                    && e.contains("model-route ID")
+            }),
+            "error should identify the colliding alias and model-route ID; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn exact_model_route_cannot_shadow_agent_selector() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[agents]]
+id = "local-dispatcher"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:18083"
+model = "local-cloud-coding"
+
+[[proxy.providers]]
+id = "remote"
+backend_type = "http"
+url = "https://example.invalid/v1"
+
+[[proxy.model_routes]]
+pattern = "local-dispatcher"
+provider = "remote"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "exact model routes must not silently treat agent names as concrete gateway models"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("local-dispatcher")
+                    && e.contains("model-route ID")
+                    && e.contains("agent ID")
+            }),
+            "error should identify the model route / agent selector collision; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn provider_model_id_cannot_shadow_agent_alias() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[agents]]
+id = "gateway-agent"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:18083"
+model = "local-cloud-coding"
+aliases = ["premium"]
+
+[[proxy.providers]]
+id = "remote"
+backend_type = "http"
+url = "https://example.invalid/v1"
+models = ["premium"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "exact provider model IDs must not silently reuse agent aliases"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("premium")
+                    && e.contains("provider model ID")
+                    && e.contains("agent alias")
+            }),
+            "error should identify the provider model / agent alias collision; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn duplicate_first_class_model_ids_are_config_errors() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[dispatchers]]
+id = "balanced"
+
+[[dispatchers.models]]
+model = "qwen-test:small"
+context_window = 60000
+
+[[proxy.model_routes]]
+pattern = "balanced"
+provider = "missing-provider"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "configured first-class model IDs must not collide across namespaces"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("Ambiguous model selector 'balanced'")),
+            "error should identify duplicate first-class model ID; errors: {:?}",
             result.errors
         );
     }
@@ -1057,6 +1311,28 @@ endpoint = "http://127.0.0.1:8642"
         assert!(
             result.errors.iter().any(|e| e.contains("bot")),
             "error must name the duplicated id 'bot'; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn agent_alias_cannot_shadow_another_agent_id() {
+        let fixture = format!(
+            "{MIN_VALID}\n[[agents]]\nid = \"helper\"\nkind = \"cli\"\ncommand = \"/bin/echo\"\nargs = []\naliases = [\"bot\"]\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "agent aliases must not silently shadow another agent id"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("Ambiguous agent selector 'bot'")
+                    && e.contains("agent 'bot'")
+                    && e.contains("agent 'helper'")
+            }),
+            "error should identify both agent selector owners; errors: {:?}",
             result.errors
         );
     }

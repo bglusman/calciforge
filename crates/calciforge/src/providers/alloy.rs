@@ -119,7 +119,11 @@ pub struct DispatcherDefinition {
     pub models: Vec<SyntheticModelTarget>,
 }
 
-/// Runtime definition for an executable-backed synthetic model.
+/// Runtime definition for an executable-backed gateway selector.
+///
+/// Unlike alloys, cascades, and dispatchers, this is not a routing synthetic
+/// model. It is a terminal local process shim: once selected, Calciforge
+/// invokes the configured command directly.
 #[derive(Debug, Clone)]
 pub struct ExecModelDefinition {
     pub id: String,
@@ -553,7 +557,7 @@ fn validate_synthetic_dag(
         dispatchers: &'a HashMap<String, DispatcherDefinition>,
         exec_models: &'a HashMap<String, ExecModelDefinition>,
     ) -> Vec<&'a str> {
-        let is_synthetic = |model: &&String| {
+        let is_gateway_selector = |model: &&String| {
             alloys.contains_key(*model)
                 || cascades.contains_key(*model)
                 || dispatchers.contains_key(*model)
@@ -566,7 +570,7 @@ fn validate_synthetic_dag(
                 .constituents
                 .iter()
                 .map(|c| &c.model)
-                .filter(is_synthetic)
+                .filter(is_gateway_selector)
                 .map(String::as_str)
                 .collect();
         }
@@ -575,7 +579,7 @@ fn validate_synthetic_dag(
                 .models
                 .iter()
                 .map(|m| &m.model)
-                .filter(is_synthetic)
+                .filter(is_gateway_selector)
                 .map(String::as_str)
                 .collect();
         }
@@ -584,7 +588,7 @@ fn validate_synthetic_dag(
                 .models
                 .iter()
                 .map(|m| &m.model)
-                .filter(is_synthetic)
+                .filter(is_gateway_selector)
                 .map(String::as_str)
                 .collect();
         }
@@ -607,7 +611,7 @@ fn validate_synthetic_dag(
             let mut cycle = visiting[pos..].to_vec();
             cycle.push(id.to_string());
             return Err(format!(
-                "synthetic model graph contains a cycle: {}",
+                "gateway model selector graph contains a cycle: {}",
                 cycle.join(" -> ")
             ));
         }
@@ -710,7 +714,7 @@ impl AlloyManager {
         for cfg in cascade_configs {
             let cascade = CascadeDefinition::from_config(cfg)?;
             if alloys.contains_key(&cfg.id) || cascades.insert(cfg.id.clone(), cascade).is_some() {
-                return Err(format!("duplicate synthetic model id '{}'", cfg.id));
+                return Err(format!("duplicate gateway model selector '{}'", cfg.id));
             }
         }
 
@@ -721,7 +725,7 @@ impl AlloyManager {
                 || cascades.contains_key(&cfg.id)
                 || dispatchers.insert(cfg.id.clone(), dispatcher).is_some()
             {
-                return Err(format!("duplicate synthetic model id '{}'", cfg.id));
+                return Err(format!("duplicate gateway model selector '{}'", cfg.id));
             }
         }
 
@@ -733,7 +737,7 @@ impl AlloyManager {
                 || dispatchers.contains_key(&cfg.id)
                 || exec_models.insert(cfg.id.clone(), exec_model).is_some()
             {
-                return Err(format!("duplicate synthetic model id '{}'", cfg.id));
+                return Err(format!("duplicate gateway model selector '{}'", cfg.id));
             }
         }
 
@@ -764,7 +768,10 @@ impl AlloyManager {
         self.alloys.contains_key(model_id)
             || self.cascades.contains_key(model_id)
             || self.dispatchers.contains_key(model_id)
-            || self.exec_models.contains_key(model_id)
+    }
+
+    pub fn is_gateway_model_selector(&self, model_id: &str) -> bool {
+        self.is_synthetic_model(model_id) || self.exec_models.contains_key(model_id)
     }
 
     pub fn is_exec_model(&self, model_id: &str) -> bool {
@@ -873,8 +880,8 @@ impl AlloyManager {
     }
 
     pub fn set_active_for_identity(&self, identity_id: &str, model_id: &str) -> Result<(), String> {
-        if !self.is_synthetic_model(model_id) {
-            return Err(format!("unknown synthetic model '{}'", model_id));
+        if !self.is_gateway_model_selector(model_id) {
+            return Err(format!("unknown gateway model selector '{}'", model_id));
         }
         self.active_by_identity
             .lock()
@@ -1103,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn manager_rejects_duplicate_synthetic_ids() {
+    fn manager_rejects_duplicate_gateway_model_selectors() {
         let alloy = sample_alloy("weighted");
         let dispatcher = DispatcherConfig {
             id: alloy.id.clone(),
@@ -1116,7 +1123,7 @@ mod tests {
         let err =
             AlloyManager::from_gateway_configs(&[alloy], &[], &[dispatcher], &[]).unwrap_err();
         assert!(
-            err.contains("duplicate synthetic model id"),
+            err.contains("duplicate gateway model selector"),
             "expected duplicate id error, got: {err}"
         );
     }
@@ -1134,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_model_is_a_synthetic_leaf_with_context_limit() {
+    fn exec_model_is_a_terminal_gateway_selector_with_context_limit() {
         let exec = ExecModelConfig {
             id: "codex/gpt-5.5".to_string(),
             name: Some("Codex GPT-5.5".to_string()),

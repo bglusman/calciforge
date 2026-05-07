@@ -1,9 +1,9 @@
 //! Multi-provider model routing for the proxy.
 //!
 //! Builds a priority-ordered `Vec<ProviderEntry>` from explicit
-//! `[[proxy.model_routes]]`, first-class `[[exec_models]]`, and
-//! `[[proxy.providers]]` config. The handler iterates entries in order and uses
-//! the first match, falling back to the default gateway.
+//! `[[proxy.model_routes]]`, exec-backed model shims, and `[[proxy.providers]]`
+//! config. The handler iterates entries in order and uses the first match,
+//! falling back to the default gateway.
 
 use std::collections::HashMap;
 
@@ -64,7 +64,7 @@ pub fn find_provider<'a>(providers: &'a [ProviderEntry], model: &str) -> Option<
 ///
 /// Priority order:
 /// 1. `[[proxy.model_routes]]` entries (explicit overrides, in declaration order)
-/// 2. first-class `[[exec_models]]` entries (exact model IDs)
+/// 2. `[[exec_models]]` entries (exact model IDs backed by local commands)
 /// 3. `[[proxy.providers]]` models patterns (in provider × pattern order)
 pub fn build_provider_entries(
     config: &ProxyConfig,
@@ -214,7 +214,7 @@ pub fn build_provider_entries(
         }
     }
 
-    // 2. First-class exec models. These are exact synthetic model IDs.
+    // 2. Exec-backed model shims. These are exact terminal gateway selectors.
     for model in exec_models {
         let timeout = model.timeout_seconds.unwrap_or(default_timeout);
         let gw_cfg = GatewayConfig {
@@ -236,7 +236,7 @@ pub fn build_provider_entries(
             model.args.clone(),
             model.env.clone(),
         ));
-        info!(id = %model.id, "Exec synthetic model loaded");
+        info!(id = %model.id, "Exec-backed model shim loaded");
         entries.push(ProviderEntry {
             id: format!("exec:{}", model.id),
             patterns: vec![model.id.clone()],
