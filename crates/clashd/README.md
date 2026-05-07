@@ -162,9 +162,10 @@ POST /evaluate
 }
 ```
 
-## OpenClaw Integration
+## Agent Runtime Integration
 
-The `calciforge-policy-plugin` connects OpenClaw to clashd:
+The current `calciforge-policy-plugin` connects OpenClaw to clashd, and the
+same `/evaluate` contract can be used by other first-class adapters:
 
 1. Plugin installed in OpenClaw's plugin directory
 2. Plugin calls `POST /evaluate` before each tool execution
@@ -188,8 +189,8 @@ Add any HOSTS-format or plain-text blocklist URL.
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   OpenClaw  │────▶│ Policy Plugin│────▶│   clashd    │
-│   (Agent)   │     │ (before_tool │     │  (Sidecar)  │
+│ Agent Runtime│───▶│ Policy Plugin│────▶│   clashd    │
+│ or Adapter   │    │ (before_tool │     │  (Sidecar)  │
 │             │     │    _call)    │     │             │
 └─────────────┘     └──────────────┘     └──────┬──────┘
                                                 │

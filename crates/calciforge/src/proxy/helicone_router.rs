@@ -5,8 +5,12 @@
 //! designed as a server application, not an embedded library.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    Client,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 use url::Url;
@@ -32,6 +36,9 @@ pub struct HeliconeRouterConfig {
     pub enable_caching: bool,
     /// Cache TTL in seconds
     pub cache_ttl_seconds: u64,
+    /// Custom headers forwarded to the Helicone AI Gateway.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 impl Default for HeliconeRouterConfig {
@@ -43,6 +50,7 @@ impl Default for HeliconeRouterConfig {
             router_name: "helicone".to_string(),
             enable_caching: false,
             cache_ttl_seconds: 300,
+            headers: HashMap::new(),
         }
     }
 }
@@ -119,12 +127,30 @@ impl HeliconeRouter {
         let url_for_error = url.as_str().to_string();
         let model_for_error = request_body.model.clone();
 
+        let mut headers = HeaderMap::new();
+        for (name, value) in &self.config.headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                BackendError::ConfigError(format!("Invalid Helicone custom header '{name}': {e}"))
+            })?;
+            let header_value = HeaderValue::from_str(value).map_err(|e| {
+                BackendError::ConfigError(format!(
+                    "Invalid value for Helicone custom header '{name}': {e}"
+                ))
+            })?;
+            headers.insert(header_name, header_value);
+        }
+        let bearer =
+            HeaderValue::from_str(&format!("Bearer {}", self.config.api_key)).map_err(|e| {
+                BackendError::ConfigError(format!("Invalid Helicone API key for auth header: {e}"))
+            })?;
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(AUTHORIZATION, bearer.clone());
+        headers.insert(HeaderName::from_static("helicone-auth"), bearer);
+
         let response = self
             .client
             .post(url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .header("Helicone-Auth", format!("Bearer {}", self.config.api_key))
+            .headers(headers)
             .json(&request_body)
             .send()
             .await
@@ -293,6 +319,7 @@ mod tests {
             router_name: "test".to_string(),
             enable_caching: false,
             cache_ttl_seconds: 300,
+            headers: HashMap::new(),
         }
     }
 
@@ -420,6 +447,76 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.model, "openai/gpt-4o-mini");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn chat_completion_forwards_custom_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let response = ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "openai/gpt-4o-mini".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text("ok".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+            system_fingerprint: None,
+        };
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("authorization", "Bearer helicone-test-key")
+            .match_header("helicone-auth", "Bearer helicone-test-key")
+            .match_header("x-provider-scope", "local-ollama")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response).unwrap())
+            .create_async()
+            .await;
+
+        let mut cfg = config(format!("{}/v1/", server.url()));
+        cfg.headers
+            .insert("x-provider-scope".to_string(), "local-ollama".to_string());
+        cfg.headers
+            .insert("authorization".to_string(), "Bearer wrong".to_string());
+        cfg.headers
+            .insert("helicone-auth".to_string(), "Bearer wrong".to_string());
+        let router = HeliconeRouter::new(cfg).unwrap();
+        router
+            .chat_completion(
+                "openai/gpt-4o-mini".to_string(),
+                vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("hello".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
         mock.assert_async().await;
     }
 

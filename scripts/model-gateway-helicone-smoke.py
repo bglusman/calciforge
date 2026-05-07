@@ -2,9 +2,10 @@
 """Smoke test Calciforge against a Helicone-shaped external gateway.
 
 This is intentionally process-boundary coverage: it starts a tiny local HTTP
-server that behaves like the Helicone AI Gateway `/v1/chat/completions` surface,
-then starts Calciforge with `backend_type = "helicone"` and proves requests flow
-through the gateway adapter rather than only unit-testing the router in-process.
+server that behaves like the Helicone AI Gateway chat-completions surface, then
+starts Calciforge with top-level and named-provider `backend_type = "helicone"`
+routes. This proves requests flow through the gateway adapter rather than only
+unit-testing the router in-process.
 """
 
 from __future__ import annotations
@@ -120,7 +121,7 @@ class HeliconeMockHandler(BaseHTTPRequestHandler):
             }
         )
 
-        if self.path != "/v1/chat/completions":
+        if self.path not in ("/v1/chat/completions", "/ollama/v1/chat/completions"):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"wrong path")
@@ -169,6 +170,18 @@ backend_url = "http://127.0.0.1:{upstream_port}/v1"
 backend_api_key = "helicone-test-key"
 gateway_ui_url = "http://127.0.0.1:{upstream_port}/dashboard"
 timeout_seconds = 10
+
+[[proxy.providers]]
+id = "helicone-local"
+backend_type = "helicone"
+url = "http://127.0.0.1:{upstream_port}/ollama/v1"
+api_key = "provider-helicone-key"
+models = []
+timeout_seconds = 10
+
+[[proxy.model_routes]]
+pattern = "provider-test"
+provider = "helicone-local"
 """
     path = tmp / "config.toml"
     path.write_text(config, encoding="utf-8")
@@ -287,6 +300,39 @@ def main() -> int:
                 raise AssertionError("Calciforge did not forward Helicone-Auth")
             if seen["body"].get("model") != "openai/gpt-5.5":
                 raise AssertionError(f"wrong upstream model: {seen}")
+
+            status, completion = http_json(
+                "POST",
+                f"{base_url}/v1/chat/completions",
+                {
+                    "model": "provider-test",
+                    "messages": [{"role": "user", "content": "reply exactly ok"}],
+                },
+                headers={"Authorization": "Bearer client-test-key"},
+            )
+            if status != 200:
+                raise AssertionError(
+                    f"named provider chat completion failed {status}: {completion}"
+                )
+            content = completion["choices"][0]["message"]["content"]
+            if content != "helicone-smoke-ok":
+                raise AssertionError(
+                    f"unexpected named provider completion content: {content!r}"
+                )
+
+            seen = HeliconeMockHandler.seen.get(timeout=5)
+            if seen["path"] != "/ollama/v1/chat/completions":
+                raise AssertionError(f"wrong named provider upstream path: {seen}")
+            if seen["authorization"] != "Bearer provider-helicone-key":
+                raise AssertionError(
+                    "Calciforge did not forward named-provider Helicone Authorization"
+                )
+            if seen["helicone_auth"] != "Bearer provider-helicone-key":
+                raise AssertionError(
+                    "Calciforge did not forward named-provider Helicone-Auth"
+                )
+            if seen["body"].get("model") != "provider-test":
+                raise AssertionError(f"wrong named provider upstream model: {seen}")
 
             print("Helicone gateway smoke passed")
             return 0

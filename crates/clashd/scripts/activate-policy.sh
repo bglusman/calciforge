@@ -1,6 +1,6 @@
 #!/bin/bash
-# Activate policy enforcement on OpenClaw agent
-# This sets up the calciforge-policy-plugin to call clashd
+# Activate Calciforge policy enforcement for a compatible agent runtime.
+# The default plugin path targets OpenClaw, but clashd itself is agent-agnostic.
 
 set -e
 
@@ -43,7 +43,7 @@ echo "Installing plugin..."
 cp "$PLUGIN_SOURCE/index.ts" "$PLUGIN_DIR/before_tool_call/"
 cp "$PLUGIN_SOURCE/tsconfig.json" "$PLUGIN_DIR/before_tool_call/" 2>/dev/null || true
 
-# Create environment config for OpenClaw
+# Create environment config for the agent runtime.
 echo "Configuring environment..."
 mkdir -p "$HOME/.config/openclaw"
 cat > "$HOME/.config/openclaw/policy.env" <<EOF
@@ -61,7 +61,7 @@ echo ""
 echo "Add to your shell profile to persist:"
 echo "  source $HOME/.config/openclaw/policy.env"
 echo ""
-echo "Or add to OpenClaw's environment:"
+echo "Or add to the agent runtime environment:"
 echo "  export CLASHD_ENDPOINT=http://$CLASHD_HOST:$CLASHD_PORT/evaluate"
 echo ""
 echo "Test the setup:"

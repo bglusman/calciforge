@@ -324,6 +324,15 @@ Calciforge service. For a reverse-proxy or tunnel URL, set
 `CALCIFORGE_PASTE_PUBLIC_BASE_URL` and terminate authentication at that
 proxy. Do not expose the paste server directly to the open internet.
 
+Calciforge treats externally reachable URLs as operator-owned configuration.
+For local web surfaces, keep binds conservative and set the advertised URL to
+the address users can actually open from their device. The model gateway
+dashboard link uses `[proxy].gateway_ui_url`, or `CALCIFORGE_GATEWAY_UI_URL`
+during install. Paste links use `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for a
+reverse proxy or tunnel and `CALCIFORGE_PASTE_PUBLIC_HOST` for a stable
+LAN/Tailscale host. Calciforge will publish those URLs in chat commands, but it
+does not manage DNS, Tailscale, WireGuard, TLS, or reverse-proxy auth.
+
 Paste storage uses the Calciforge fnox working directory, defaulting to
 `~/.config/calciforge`, while provider definitions live in fnox's global
 config at `~/.config/fnox/config.toml`. On macOS, the installer creates a
@@ -402,10 +411,13 @@ def evaluate(ctx):
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests to named providers, explicit model routes, local models, and
-synthetic models. Chat users can also inspect and switch configured
-aliases with `!model`.
+synthetic routing selectors. Model identifiers resolve through one path for
+gateway requests and `!model`: a name may be a concrete model, a
+`[[model_shortcuts]]` alias, a synthetic routing selector, or an exec-backed
+model shim. Shortcuts may point to routing selectors, and routing selector
+members may use shortcuts.
 
-The synthetic-model vocabulary is:
+The synthetic routing vocabulary is:
 
 - **Alloy** — blend among interchangeable models by weighted or
   round-robin selection. Implemented today with context-window
@@ -416,13 +428,13 @@ The synthetic-model vocabulary is:
 - **Dispatcher** — choose by request shape, such as "smallest
   sufficient model." This is the size-routing primitive for mixing
   small local models with larger remote models.
-- **Exec model** — expose a local binary or wrapper script as a model
-  gateway model, typically for subscription-backed CLIs where the CLI
-  owns OAuth/session state.
 
-Synthetic models may compose other synthetic models as a DAG. Calciforge
-flattens the selected plan at request time and rejects cycles during
-initialization.
+Synthetic routing selectors may compose other routing selectors as a DAG.
+Calciforge flattens the selected plan at request time, rejects direct cycles
+during initialization, and rejects alias-induced cycles before provider routing.
+Exec-backed model shims are separate terminal selectors: Calciforge executes a
+local command directly after gateway auth/routing, so they do not pass through
+provider gateway observability or native provider tool-call semantics.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -457,7 +469,8 @@ models = ["local/*", "qwen/*", "mlx/*"]
 pattern = "coding/default"
 provider = "anthropic"
 
-# Chat aliases shown by `!model`; `!model sonnet` prints the expansion.
+# Chat/API aliases shown by `!model`; aliases may target concrete models,
+# synthetic routing selectors, or exec-backed model shims.
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
@@ -531,7 +544,9 @@ Calciforge can call local CLIs such as Codex, Claude Code, OpenClaw,
 and other scriptable agents in two different ways. Use a direct agent
 adapter when the CLI should keep its own agent identity and workflow;
 use an `[[exec_models]]` entry when the CLI should appear as a model
-behind the OpenAI-compatible gateway.
+behind the OpenAI-compatible gateway. Exec-backed shims are useful for
+subscription-backed CLIs, but they are local process boundaries, not normal
+provider-backed models.
 
 That distinction matters for subscriptions and OAuth. The vendor CLI
 can own its local browser login, refresh tokens, project state, and
@@ -539,7 +554,7 @@ provider-specific flags while Calciforge only sees a configured command,
 stdin prompt, stdout answer, timeout, and context-window declaration.
 The example wrappers are intentionally small because provider CLIs and
 terms change; operators should validate the installed CLI version and
-subscription terms before making an exec model part of their default
+subscription terms before making an exec-backed model shim part of their default
 route.
 
 Read the [agent adapter notes](agent-adapters.html) and
@@ -794,7 +809,7 @@ Solo-operator usable and actively hardening, multi-user team mode in
 progress. Mac-tested, Linux-ready (CI runs Ubuntu, daily-use includes
 macOS and a headless Linux service host). Treat new deployments as
 operator-reviewed until their channel credentials, fnox store, model
-gateway providers, and synthetic model routes pass smoke tests.
+gateway providers, and synthetic routing selectors pass smoke tests.
 
 The status summary above is the site-facing snapshot of what works today and
 what is still in flight. Public roadmap ideas live in

@@ -1400,7 +1400,7 @@ fn check_persisted_state_in(
         .iter()
         .map(|agent| agent.id.as_str())
         .collect();
-    let synthetic_ids = synthetic_model_ids(config);
+    let gateway_model_selectors = gateway_model_selector_ids(config);
 
     let active_agents_path = state_dir.join("active-agents.json");
     if let Ok(map) = read_state_map(&active_agents_path) {
@@ -1420,13 +1420,13 @@ fn check_persisted_state_in(
     let active_models_path = state_dir.join("active-models.json");
     if let Ok(map) = read_state_map(&active_models_path) {
         for (identity, model_id) in map {
-            if synthetic_ids.contains(model_id.as_str()) {
+            if gateway_model_selectors.contains(model_id.as_str()) {
                 report.ok(format!(
                     "active model override for '{identity}' points to '{model_id}'"
                 ));
             } else {
                 report.error(format!(
-                    "active model override for '{identity}' points to unknown synthetic model '{model_id}'"
+                    "active model override for '{identity}' points to unknown gateway model selector '{model_id}'"
                 ));
             }
         }
@@ -1442,7 +1442,7 @@ fn read_state_map(path: &Path) -> Result<HashMap<String, String>, ()> {
     serde_json::from_str(&text).map_err(|_| ())
 }
 
-fn synthetic_model_ids(config: &CalciforgeConfig) -> HashSet<&str> {
+fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<&str> {
     config
         .alloys
         .iter()
@@ -1697,7 +1697,7 @@ mod tests {
             finding.severity == Severity::Error
                 && finding
                     .message
-                    .contains("unknown synthetic model 'missing-model'")
+                    .contains("unknown gateway model selector 'missing-model'")
         }));
     }
 

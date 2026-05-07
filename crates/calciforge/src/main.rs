@@ -20,6 +20,7 @@ mod hooks;
 mod install;
 mod local_model;
 mod messages;
+mod model_names;
 #[cfg(feature = "persistent-context")]
 mod persistent_context;
 mod providers;
@@ -529,6 +530,7 @@ async fn main() -> Result<()> {
             let providers = Arc::new(crate::providers::ProviderRegistry::new());
             proxy::start_proxy_server(
                 proxy_config,
+                config.model_shortcuts.clone(),
                 config.exec_models.clone(),
                 alloy_mgr,
                 providers,

@@ -244,6 +244,7 @@ pub fn create_gateway(
                 router_name: "helicone".to_string(),
                 enable_caching: false,
                 cache_ttl_seconds: 300,
+                headers: config.headers.clone().unwrap_or_default(),
             };
 
             let router = HeliconeRouter::new(helicone_config).map_err(|e| {

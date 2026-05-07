@@ -46,6 +46,7 @@ User-facing tour: `README.md` → [calciforge.org](https://calciforge.org/).
 6. **No secret values in logs.** Log the secret *name*, never the value. URLs containing bearer tokens or short-lived auth go to `debug!`, not `info!`/`warn!`.
 7. **`fnox set <name> <value>` leaks via `ps`/`procfs`.** Use stdin mode (`set <name> -` + write to stdin).
 8. **Exec-backed model prompts should travel by stdin or secure temp files.** Avoid putting prompt or secret-bearing text in argv; process listings can expose it on multi-user systems.
+9. **Bugfixes start with a failing regression test.** Before changing behavior, write or identify a test that reproduces the user-visible failure and verify it fails for the right reason. If a reproducing test is impractical, document why in the commit or PR and include the closest executable guardrail.
 
 ## Build / test
 

@@ -1,7 +1,8 @@
 //! Model Gateway
 //!
 //! OpenAI-compatible HTTP server with multi-provider routing, retries,
-//! graceful degradation, Traceloop observability, and alloy support.
+//! graceful degradation, optional external gateway adapters, and synthetic
+//! model routing.
 
 use std::net::SocketAddr;
 
@@ -15,16 +16,16 @@ use tracing::info;
 
 use crate::sync::Arc;
 
-use crate::config::{ExecModelConfig, ProxyConfig};
+use crate::config::{ExecModelConfig, ModelShortcutConfig, ProxyConfig};
 use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
 
-mod alloy_router;
 mod auth;
 mod backend;
 mod exec_gateway;
 mod gateway;
 mod handlers;
+mod model_resolver;
 mod openai;
 pub(crate) mod routing;
 mod streaming;
@@ -35,7 +36,7 @@ mod voice_handlers;
 #[cfg(feature = "helicone")]
 mod helicone_router;
 
-// Traceloop-inspired router
+// Experimental Traceloop-compatible router.
 #[cfg(feature = "traceloop")]
 mod traceloop;
 
@@ -49,6 +50,8 @@ pub struct ProxyState {
     pub alloy_manager: Arc<AlloyManager>,
     pub provider_registry: Arc<ProviderRegistry>,
     pub config: ProxyConfig,
+    /// Root-level `[[model_shortcuts]]` aliases available to direct proxy requests.
+    pub model_shortcuts: Vec<ModelShortcutConfig>,
     /// Default gateway — used when no named provider matches the model.
     pub gateway: Arc<dyn gateway::GatewayBackend>,
     /// Named provider entries, in routing priority order.
@@ -113,6 +116,7 @@ fn resolve_proxy_agent_api_keys(config: &mut ProxyConfig) -> anyhow::Result<()> 
 /// Start the model gateway HTTP server
 pub async fn start_proxy_server(
     mut config: ProxyConfig,
+    model_shortcuts: Vec<ModelShortcutConfig>,
     exec_models: Vec<ExecModelConfig>,
     alloy_manager: Arc<AlloyManager>,
     provider_registry: Arc<ProviderRegistry>,
@@ -217,6 +221,7 @@ pub async fn start_proxy_server(
         alloy_manager,
         provider_registry,
         config: config.clone(),
+        model_shortcuts,
         gateway,
         providers,
         local_manager,
