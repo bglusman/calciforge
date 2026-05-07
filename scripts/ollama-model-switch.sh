@@ -4,6 +4,7 @@ set -euo pipefail
 # Provider on_switch hook for Ollama-backed gateway providers.
 #
 # Calciforge sets:
+#   CALCIFORGE_PROVIDER_ID       proxy provider id
 #   CALCIFORGE_MODEL_ID          public model ID (for example qwen3.6:27b)
 #   CALCIFORGE_UPSTREAM_MODEL_ID upstream ID (for example ollama/qwen3.6:27b)
 #   CALCIFORGE_PREV_MODEL_ID     previous public model ID, when known

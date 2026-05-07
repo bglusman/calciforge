@@ -906,8 +906,9 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
 
-    /// Shell script path to run when `!model <id>` switches to any model
-    /// served by this provider. Env: CALCIFORGE_MODEL_ID, CALCIFORGE_MODEL_HF_ID,
+    /// Shell script path to run before a gateway request switches to a model
+    /// served by this provider. Env: CALCIFORGE_PROVIDER_ID,
+    /// CALCIFORGE_MODEL_ID, CALCIFORGE_UPSTREAM_MODEL_ID, and
     /// CALCIFORGE_PREV_MODEL_ID.
     #[serde(default)]
     pub on_switch: Option<String>,

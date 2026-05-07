@@ -38,7 +38,7 @@ pub struct ProviderEntry {
     pub patterns: Vec<String>,
     /// Gateway to use for matching requests.
     pub gateway: Arc<dyn GatewayBackend>,
-    /// Shell script to run on `!model <id>` switch to any model of this provider.
+    /// Shell script to run before a gateway request switches to any model of this provider.
     pub on_switch: Option<String>,
     /// Shared state for serializing provider model swaps before gateway requests.
     pub switch_state: Arc<ProviderSwitchState>,

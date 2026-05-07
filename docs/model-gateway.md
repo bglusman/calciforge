@@ -240,10 +240,19 @@ timeout_seconds = 900
 ```
 
 The installer writes `calciforge-ollama-switch` when Helicone is enabled. The
-hook receives `CALCIFORGE_MODEL_ID`, `CALCIFORGE_UPSTREAM_MODEL_ID`,
-`CALCIFORGE_PROVIDER_ID`, and `CALCIFORGE_PREV_MODEL_ID`. Calciforge runs it
-synchronously and serializes switches per provider, including dispatcher and
-cascade fallback attempts.
+hook receives `CALCIFORGE_PROVIDER_ID`, `CALCIFORGE_MODEL_ID`,
+`CALCIFORGE_UPSTREAM_MODEL_ID`, and `CALCIFORGE_PREV_MODEL_ID`. `!model` only
+stores the selected model for the sender identity; provider hooks run
+synchronously before the next gateway request that uses that provider.
+Calciforge serializes switches per provider, applies the hook to dispatcher and
+cascade fallback attempts, and fails the request if the hook exits non-zero or
+times out.
+
+Provider `on_switch` hooks are different from `[local_models]` lifecycle hooks.
+Use `[local_models.mlx_lm.hooks]` when Calciforge owns a local `mlx_lm.server`
+process. Use `[[proxy.providers]].on_switch` when an external runtime such as
+Ollama owns model residency and Calciforge only needs to prepare that runtime
+before forwarding an OpenAI-compatible request.
 
 `!gateway` is handled only after a channel resolves the sender identity. It can
 include internal bind addresses or dashboard URLs, so room-based channels and
