@@ -38,4 +38,9 @@ run_smoke "Gas Town CLI" \
     node:22-slim \
     sh -lc "npm install -g @gastown/gt >/tmp/gt-install.log 2>&1 && command -v gt && gt --help >/tmp/gt-help.txt && sed -n '1,36p' /tmp/gt-help.txt"
 
+run_smoke "Paperclip CLI" \
+  docker run --rm \
+    node:22-slim \
+    sh -lc "npx --yes paperclipai --help >/tmp/paperclip-help.txt && npx --yes paperclipai onboard --help >/tmp/paperclip-onboard-help.txt && sed -n '1,36p' /tmp/paperclip-onboard-help.txt"
+
 echo "agent recipe smoke checks passed"

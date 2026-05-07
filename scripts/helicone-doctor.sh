@@ -95,7 +95,10 @@ check_env_and_ports() {
 }
 
 psql_query() {
-    docker exec "$CONTAINER" psql "postgresql://postgres:password@localhost:5432/$DB" -Atc "$1"
+    local sql="$1"
+    docker exec -i "$CONTAINER" sh -lc \
+        'PGPASSWORD="${POSTGRES_PASSWORD:-password}" psql -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}" -d "$1" -At' \
+        sh "$DB" <<<"$sql"
 }
 
 clickhouse_query() {

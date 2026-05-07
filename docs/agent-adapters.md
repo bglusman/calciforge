@@ -5,7 +5,7 @@ title: Agent Adapter Notes
 
 # Agent Adapter Notes
 
-Calciforge can dispatch to agents in three broad ways:
+Calciforge can dispatch to agents in four broad ways:
 
 - HTTP adapters for long-running services such as OpenClaw or ZeroClaw.
 - CLI adapters for one-shot terminal agents such as Codex, Claude Code, Dirac,
@@ -13,8 +13,6 @@ Calciforge can dispatch to agents in three broad ways:
 - Artifact CLI recipes for one-shot terminal agents that may generate images,
   audio, video, reports, or other files in a Calciforge-controlled run
   directory.
-- Exec models for model-gateway calls where the executable owns provider
-  authentication and Calciforge only wraps the final text as a chat completion.
 - Orchestrators for async work systems such as Gas Town, where Calciforge
   should submit, observe, and relay work rather than pretending every request is
   a synchronous chat completion.
@@ -39,6 +37,8 @@ proxy, model-gateway, or future Calciforge API surfaces.
 | Claude Code | `kind = "claude-cli"` or `acpx` | Use the first-class CLI adapter for simple subscription-backed prompt execution with `--session-id`. Use `acpx` when ACP sessions are needed. |
 | OpenClaw | `openclaw-channel` | Preferred path for richer OpenClaw runtime, skills, plugins, provider routing, and slash commands. It talks to the Calciforge bridge plugin inside OpenClaw, not to another Calciforge gateway. Calciforge no longer supports OpenClaw agent chat through `/v1/chat/completions`. |
 | ZeroClaw | `kind = "zeroclaw"` legacy adapter or future managed path | Treat the official release as compatibility/best-effort until its blocking policy hook and instruction surfaces are verified. If Calciforge needs ZeroClaw behavior with Calciforge/Clash as the policy authority, the roadmap tracks a possible fork or library-mode path rather than assuming upstream defaults are the right contract. |
+| Hermes | `kind = "hermes"` | HTTP adapter for a running Hermes API server. It preserves session continuity with `X-Hermes-Session-Id` and can forward Calciforge `!model` selections when `allow_model_override = true`. |
+| IronClaw | `kind = "ironclaw"` | HTTP webhook adapter for IronClaw. Model selection is configured in IronClaw today; do not enable `allow_model_override` until the upstream webhook contract accepts model selectors. |
 | OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
 | Artifact-producing CLI | `kind = "artifact-cli"` | Prototype path for tools such as npcsh media workflows. Calciforge sends the task on stdin, exposes `{artifact_dir}` and `CALCIFORGE_ARTIFACT_DIR`, validates produced files, and returns a text fallback that names attachments without exposing local paths. Telegram and Matrix already use the richer internal envelope; native media upload can be added channel by channel. |
 | opencode | `acpx` or generic CLI | Model-agnostic terminal agent with a mature CLI/TUI surface. Prefer ACP when available. |
@@ -56,6 +56,7 @@ hard first-class adapters:
 | npcsh | `artifact-cli` recipe first | Installs cleanly via `pip install 'npcsh[lite]'`, exposes `npcsh` and `npc`, and has explicit image/video/team commands. The best early value is multimodal artifacts through Calciforge's secured artifact directory. |
 | OmO / oh-my-openagent | Orchestrator recipe | Installs through `bunx oh-my-opencode`; the `run` command has noninteractive flags, `--json`, `--on-complete`, `--session-id`, and agent/model overrides. It is primarily an OpenCode harness, so Calciforge should wrap it as async work rather than owning its internals. |
 | Gas Town | Orchestrator recipe, then API/state integration | The `gt` CLI exposes Mayor, convoy, sling, feed, dashboard, callbacks, and status commands. Calciforge should talk to Mayor or a work/status API and relay progress/artifacts rather than treating Gas Town as a one-shot chat agent. |
+| Paperclip | Orchestrator recipe candidate | Paperclip positions itself as a self-hosted control plane for teams of agents, with org charts, goals, tickets, budgets, governance, heartbeats, and a React UI. It is not a chat adapter; evaluate it as an upstream orchestration system Calciforge can secure, notify, and observe. |
 
 Ironclaw, nullclaw, and similar smaller tools should start as documented
 recipes unless they expose a stable protocol that needs Calciforge-specific
@@ -148,9 +149,23 @@ scripts/agent-recipe-smoke.sh
 CALCIFORGE_AGENT_RECIPE_SMOKE=1 scripts/manual-docker-test.sh
 ```
 
-The smoke script installs npcsh, OmO/oh-my-opencode, and Gas Town in disposable
-Docker containers and verifies their current noninteractive CLI surfaces. It
-does not authenticate providers or run paid model calls.
+The smoke script installs npcsh, OmO/oh-my-opencode, Gas Town, and Paperclip in
+disposable Docker containers and verifies their current noninteractive CLI
+surfaces. It does not authenticate providers or run paid model calls.
+
+Artifact and recipe validation is intentionally layered:
+
+- Unit tests cover artifact directory permissions, symlink rejection, path
+  escape rejection, max file size, max artifact count, and fallback rendering.
+- Channel tests cover text fallback and native media paths where supported by
+  the channel implementation.
+- `scripts/agent-recipe-smoke.sh` covers installability and CLI entrypoints for
+  candidate recipes in disposable Docker runs.
+
+That is not yet production-level validation for every documented recipe. A
+recipe should not be described as known working until it has a reproducible
+smoke that produces the expected artifact or work-status event through
+Calciforge's adapter path.
 
 ## OpenClaw Integration Findings
 

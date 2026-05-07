@@ -52,7 +52,7 @@ predictable:
   `task`.
 - Prefer noun/verb aliases in chat while preserving old commands.
   The first implemented set is `!agent list`,
-  `!agent switch custodian`, `!session list claude-acpx`,
+  `!agent switch analyst`, `!session list claude-acpx`,
   `!model list`, `!model use dispatcher`, and
   `!secret input OPENAI_API_KEY`.
 - Keep one-line shortcuts for frequent actions: `!status`, `!help`,

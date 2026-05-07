@@ -143,7 +143,11 @@ impl AgentAdapter for ZeroClawHttpAdapter {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            warn!(status = %status, body = %body, "zeroclaw-http error response");
+            warn!(
+                status = %status,
+                body_len = body.len(),
+                "zeroclaw-http error response"
+            );
             return Err(AdapterError::Protocol(format!(
                 "ZeroClaw returned HTTP {status}: {body}"
             )));

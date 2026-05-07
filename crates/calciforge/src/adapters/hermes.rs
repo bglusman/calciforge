@@ -62,6 +62,7 @@ impl HermesAdapter {
         &self,
         message: &str,
         sender: Option<&str>,
+        model_override: Option<&str>,
         session: Option<&str>,
     ) -> Result<String, AdapterError> {
         let url = self.chat_completions_url();
@@ -69,7 +70,7 @@ impl HermesAdapter {
         let started = Instant::now();
 
         let body = ChatRequest {
-            model: self.model.clone(),
+            model: model_override.unwrap_or(&self.model).to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: message.to_string(),
@@ -94,6 +95,7 @@ impl HermesAdapter {
             endpoint = %url,
             request_id = %request_id,
             sender = ?sender,
+            model_overridden = model_override.is_some(),
             session = ?session,
             "hermes dispatch started"
         );
@@ -142,7 +144,7 @@ impl HermesAdapter {
                 request_id = %request_id,
                 status = %status,
                 elapsed_ms = started.elapsed().as_millis() as u64,
-                body = %body_text,
+                body_len = body_text.len(),
                 "hermes error response"
             );
             return Err(AdapterError::Protocol(format!(
@@ -189,14 +191,14 @@ impl HermesAdapter {
 #[async_trait]
 impl AgentAdapter for HermesAdapter {
     async fn dispatch(&self, msg: &str) -> Result<String, AdapterError> {
-        self.send_message(msg, None, None).await
+        self.send_message(msg, None, None, None).await
     }
 
     async fn dispatch_with_context(
         &self,
         ctx: DispatchContext<'_>,
     ) -> Result<String, AdapterError> {
-        self.send_message(ctx.message, ctx.sender, ctx.session)
+        self.send_message(ctx.message, ctx.sender, ctx.model_override, ctx.session)
             .await
     }
 
@@ -450,5 +452,60 @@ mod tests {
 
         adapter.dispatch_with_context(ctx).await.unwrap();
         assert_eq!(*captured_session.lock().await, "calciforge-project_thread");
+    }
+
+    #[tokio::test]
+    async fn model_override_wins_over_configured_model() {
+        use axum::extract::Request;
+        use axum::routing::post;
+        use axum::Router;
+        use serde_json::json;
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tokio::sync::Mutex;
+
+        let captured_model = Arc::new(Mutex::new(String::new()));
+        let captured_clone = captured_model.clone();
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |req: Request| {
+                let captured = captured_clone.clone();
+                async move {
+                    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    *captured.lock().await = body["model"].as_str().unwrap_or_default().to_string();
+                    axum::Json(json!({
+                        "choices": [{
+                            "message": {"role": "assistant", "content": "ok"}
+                        }]
+                    }))
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app).into_future());
+
+        let adapter = HermesAdapter::new(
+            format!("http://{addr}"),
+            "".to_string(),
+            Some("configured-model".to_string()),
+            None,
+        );
+
+        let ctx = DispatchContext {
+            message: "test",
+            sender: Some("brian"),
+            model_override: Some("dispatcher-model"),
+            session: None,
+            channel: None,
+        };
+
+        adapter.dispatch_with_context(ctx).await.unwrap();
+        assert_eq!(*captured_model.lock().await, "dispatcher-model");
     }
 }

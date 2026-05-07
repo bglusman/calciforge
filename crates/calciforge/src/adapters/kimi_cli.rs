@@ -120,7 +120,14 @@ impl AgentAdapter for KimiCliAdapter {
         ctx: DispatchContext<'_>,
     ) -> Result<String, AdapterError> {
         let (args, stdin_message) = self.build_args(ctx.message, ctx.model_override, ctx.session);
-        info!(command = %self.command, args = ?args, "kimi-cli dispatch");
+        info!(
+            command = %self.command,
+            arg_count = args.len(),
+            stdin_prompt = stdin_message.is_some(),
+            has_model = ctx.model_override.is_some() || self.model.is_some(),
+            has_session = ctx.session.is_some(),
+            "kimi-cli dispatch"
+        );
         debug!(
             message_bytes = ctx.message.len(),
             "kimi-cli outbound message"

@@ -251,10 +251,12 @@ impl AgentAdapter for CliAdapter {
 
         info!(
             command = %self.command,
-            args = ?args,
+            arg_count = args.len(),
+            has_model = ctx.model_override.is_some() || self.model.is_some(),
+            has_session = ctx.session.is_some(),
             "cli dispatch"
         );
-        debug!(msg = %ctx.message, "outbound message");
+        debug!(message_bytes = ctx.message.len(), "cli outbound message");
 
         let mut cmd = Command::new(&self.command);
         cmd.args(&args)
@@ -332,7 +334,6 @@ impl AgentAdapter for CliAdapter {
         }
 
         info!(command = %self.command, response_len = %response.len(), "cli: received response");
-        debug!(response = %response, "cli response");
 
         Ok(response)
     }

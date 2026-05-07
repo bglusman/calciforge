@@ -207,7 +207,7 @@ agent path rather than a niche media CLI. The current `openclaw-channel` bridge
 sends text into OpenClaw and receives a correlated callback:
 
 ```json
-{ "sessionKey": "calciforge:librarian:brian", "message": "done" }
+{ "sessionKey": "calciforge:primary-agent:operator", "message": "done" }
 ```
 
 For diagrams, memes, screenshots, reports, or generated files, the callback can
@@ -216,7 +216,7 @@ boundary:
 
 ```json
 {
-  "sessionKey": "calciforge:librarian:brian",
+  "sessionKey": "calciforge:primary-agent:operator",
   "message": "I made a diagram.",
   "attachments": [
     {

@@ -49,7 +49,7 @@ adapter. All other fields are adapter-specific.
 | `api_key_file` | no | — | Path to file containing the API key (preferred over inline `api_key`) |
 | `auth_token` | no | — | Legacy alias for `api_key` (openclaw-channel) |
 | `aliases` | no | `[]` | Additional names matched by `!switch` |
-| `allow_model_override` | no | adapter default | Whether `!model` overrides from identities are forwarded |
+| `allow_model_override` | no | `false` | Whether `!model` overrides from identities are forwarded |
 | `registry` | no | — | Optional metadata shown in `!agents` output (see below) |
 
 ### `kind = "openclaw-channel"`
@@ -89,14 +89,14 @@ service.
 
 ```toml
 [[agents]]
-id = "librarian"
+id = "primary-agent"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.config/calciforge/secrets/librarian-token"
-reply_auth_token_file = "~/.config/calciforge/secrets/librarian-reply-token"
+api_key_file = "~/.config/calciforge/secrets/primary-agent-token"
+reply_auth_token_file = "~/.config/calciforge/secrets/primary-agent-reply-token"
 timeout_ms = 120000
-aliases = ["lib", "main"]
-registry = { display_name = "Librarian", specialties = ["general", "homelab-ops"] }
+aliases = ["main"]
+registry = { display_name = "Primary Agent", specialties = ["general", "homelab-ops"] }
 ```
 
 `openclaw_agent_id` (optional) sets the lane id sent to the gateway; defaults
@@ -114,7 +114,7 @@ Installer example:
 ```sh
 calciforge install \
   --calciforge-host calciforge@calciforge.lan \
-  --claw 'name=librarian,adapter=openclaw-channel,host=root@openclaw.lan,endpoint=http://openclaw.lan:18789,auth_token=REPLACE_WITH_INBOUND_TOKEN,reply_webhook=http://calciforge.lan:18797/hooks/reply,reply_auth_token=REPLACE_WITH_REPLY_TOKEN'
+  --claw 'name=primary-agent,adapter=openclaw-channel,host=root@openclaw.lan,endpoint=http://openclaw.lan:18789,auth_token=REPLACE_WITH_INBOUND_TOKEN,reply_webhook=http://calciforge.lan:18797/hooks/reply,reply_auth_token=REPLACE_WITH_REPLY_TOKEN'
 ```
 
 Use the same inbound token in the Calciforge agent `api_key`/`api_key_file`,
@@ -140,6 +140,15 @@ allow_model_override = true
 Without `model`, Calciforge will not forward a model name to the backend
 unless `allow_model_override = true` and the identity sets `!model`.
 
+`allow_model_override` is explicit because Calciforge model selectors are not
+portable across every agent API. Enable it only for agents that are wired to
+Calciforge's model gateway or are known to accept the selected model names.
+Current adapters with an implemented model-override path are `openai-compat`,
+`hermes`, `zeroclaw-http`, `zeroclaw-native`, `codex-cli`, `claude-cli`,
+`kimi-cli`, `cli`, and `artifact-cli`; all still require
+`allow_model_override = true` before the chat command forwards a user's selected
+model.
+
 ### `kind = "zeroclaw"`
 
 Direct ZeroClaw agent endpoint (legacy; use `openclaw-channel` for new
@@ -154,6 +163,39 @@ kind = "zeroclaw"
 endpoint = "http://127.0.0.1:18792"
 api_key_file = "~/.config/calciforge/secrets/zeroclaw-token"
 timeout_ms = 90000
+```
+
+### `kind = "hermes"`
+
+HTTP adapter for a running Hermes API server. Hermes keeps its own session
+state through the `X-Hermes-Session-Id` header, and Calciforge can forward
+`!model` selections when this adapter is explicitly opted in.
+
+```toml
+[[agents]]
+id = "hermes"
+kind = "hermes"
+endpoint = "http://127.0.0.1:8642"
+api_key_file = "~/.config/calciforge/secrets/hermes-api-key"
+model = "local-cloud-balanced"
+allow_model_override = true
+timeout_ms = 600000
+```
+
+### `kind = "ironclaw"`
+
+HTTP webhook adapter for IronClaw. Calciforge can route identity and session
+metadata to IronClaw, but `!model` override is not currently forwarded by this
+adapter; configure IronClaw's model/provider through IronClaw's own settings or
+installer-managed environment.
+
+```toml
+[[agents]]
+id = "ironclaw"
+kind = "ironclaw"
+endpoint = "http://127.0.0.1:3000"
+api_key_file = "~/.config/calciforge/secrets/ironclaw-webhook-secret"
+timeout_ms = 300000
 ```
 
 ### `kind = "cli"`
@@ -237,14 +279,14 @@ The optional `registry` table is not used at dispatch time — it populates the
 
 ```toml
 [[agents]]
-id = "librarian"
+id = "primary-agent"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.config/calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/primary-agent-token"
 timeout_ms = 120000
 
 [agents.registry]
-display_name = "Librarian"
+display_name = "Primary Agent"
 description = "General-purpose assistant for homelab and daily tasks"
 specialties = ["general", "homelab-ops", "research"]
 access = ["admin", "user"]
@@ -305,13 +347,13 @@ allowlist of agents they may switch to.
 ```toml
 [[routing]]
 identity = "operator"
-default_agent = "librarian"
-allowed_agents = ["librarian", "claude-code", "local-llm"]
+default_agent = "primary-agent"
+allowed_agents = ["primary-agent", "claude-code", "local-llm"]
 
 [[routing]]
 identity = "readonly-user"
-default_agent = "librarian"
-allowed_agents = ["librarian"]
+default_agent = "primary-agent"
+allowed_agents = ["primary-agent"]
 ```
 
 When `allowed_agents` is empty, the identity can switch to any configured
@@ -335,16 +377,16 @@ role = "admin"
 aliases = [{ channel = "telegram", id = "7000000001" }]
 
 [[agents]]
-id = "librarian"
+id = "primary-agent"
 kind = "openclaw-channel"
 endpoint = "http://127.0.0.1:18789"
-api_key_file = "~/.config/calciforge/secrets/librarian-token"
+api_key_file = "~/.config/calciforge/secrets/primary-agent-token"
 timeout_ms = 120000
 
 [[routing]]
 identity = "operator"
-default_agent = "librarian"
-allowed_agents = ["librarian"]
+default_agent = "primary-agent"
+allowed_agents = ["primary-agent"]
 
 [[channels]]
 kind = "telegram"

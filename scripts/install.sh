@@ -1575,6 +1575,121 @@ print(f"added calciforge agent {agent_id!r} to {path}")
 PYEOF
 }
 
+ensure_calciforge_agent_config() {
+    local agent_id="$1" kind="$2" endpoint="$3" timeout_ms="$4" aliases_csv="$5" api_key_file="$6"
+    local allow_model_override="${7:-false}" model="${8:-}"
+
+    mkdir -p "$(dirname "$ZC_CONFIG")"
+    python3 - "$ZC_CONFIG" "$agent_id" "$kind" "$endpoint" "$timeout_ms" \
+        "$aliases_csv" "$api_key_file" "$allow_model_override" "$model" <<'PYEOF'
+import json
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1]).expanduser()
+agent_id, kind, endpoint, timeout_ms, aliases_csv, api_key_file, allow_model_override, model = sys.argv[2:10]
+
+if not path.exists() or not path.read_text().strip():
+    path.write_text("[calciforge]\nversion = 2\n")
+
+def q(value: str) -> str:
+    return json.dumps(value)
+
+aliases = [item.strip() for item in aliases_csv.split(",") if item.strip()]
+display_name = {
+    "hermes": "Hermes",
+    "ironclaw": "IronClaw",
+}.get(agent_id, agent_id)
+
+lines = [
+    f"# Managed by calciforge install for {agent_id}.",
+    "[[agents]]",
+    f"id = {q(agent_id)}",
+    f"kind = {q(kind)}",
+    f"endpoint = {q(endpoint)}",
+    f"api_key_file = {q(api_key_file)}",
+]
+if model:
+    lines.append(f"model = {q(model)}")
+lines.append(f"timeout_ms = {int(timeout_ms)}")
+if allow_model_override.lower() == "true":
+    lines.append("allow_model_override = true")
+if aliases:
+    lines.append(f"aliases = {q(aliases)}")
+lines.append(
+    "registry = { "
+    f"display_name = {q(display_name)}, "
+    f"specialties = {q([kind, 'managed'])} "
+    "}"
+)
+block = "\n".join(lines) + "\n"
+
+text = path.read_text()
+if not text.endswith("\n"):
+    text += "\n"
+
+table_re = re.compile(r"(?m)^\[\[agents\]\]\s*$")
+matches = list(table_re.finditer(text))
+existing = None
+for index, match in enumerate(matches):
+    table_start = match.start()
+    end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+    section_start = text.rfind("\n# Managed by calciforge install for", 0, table_start)
+    start = table_start
+    if section_start != -1 and text[section_start + 1:table_start].count("\n") <= 1:
+        start = section_start + 1
+    section = text[table_start:end]
+    found_id = re.search(r"(?m)^\s*id\s*=\s*[\"']([^\"']+)[\"']", section)
+    if found_id and found_id.group(1) == agent_id:
+        existing = (start, table_start, end)
+        break
+
+def has_key(section: str, key: str) -> bool:
+    return re.search(rf"(?m)^\s*{re.escape(key)}\s*=", section) is not None
+
+def upsert_key(section: str, key: str, value: str, overwrite: bool = True) -> str:
+    if has_key(section, key):
+        if not overwrite:
+            return section
+        return re.sub(
+            rf"(?m)^(\s*{re.escape(key)}\s*=\s*).*$",
+            rf"\g<1>{value}",
+            section,
+            count=1,
+        )
+    insert_at = len(section.rstrip())
+    return section[:insert_at] + f"\n{key} = {value}" + section[insert_at:]
+
+if existing:
+    start, table_start, end = existing
+    comment = text[start:table_start]
+    section = text[table_start:end].rstrip()
+    if "Managed by calciforge install for" not in comment:
+        comment = f"# Managed by calciforge install for {agent_id}.\n"
+    section = upsert_key(section, "kind", q(kind))
+    section = upsert_key(section, "endpoint", q(endpoint))
+    section = upsert_key(section, "api_key_file", q(api_key_file))
+    section = upsert_key(section, "timeout_ms", str(int(timeout_ms)))
+    if model:
+        section = upsert_key(section, "model", q(model), overwrite=False)
+    if allow_model_override.lower() == "true":
+        section = upsert_key(section, "allow_model_override", "true")
+    if aliases:
+        section = upsert_key(section, "aliases", q(aliases), overwrite=False)
+    if not has_key(section, "registry"):
+        section += "\n" + lines[-1]
+    text = text[:start].rstrip() + "\n\n" + comment + section + "\n" + text[end:].lstrip("\n")
+    action = "updated"
+else:
+    text = text.rstrip() + "\n\n" + block
+    action = "added"
+
+path.write_text(text)
+print(f"{action} calciforge agent {agent_id!r} in {path}")
+PYEOF
+}
+
 configure_openclaw_model_gateway() {
     local patch_json patch_stderr
     patch_stderr="$(mktemp)"
@@ -2638,7 +2753,7 @@ ENVEOF
         fi
 
         ensure_calciforge_agent_config "ironclaw" "ironclaw" \
-            "$CALCIFORGE_IRONCLAW_ENDPOINT" 300000 "iron" "$secret_file"
+            "$CALCIFORGE_IRONCLAW_ENDPOINT" 300000 "iron" "$secret_file" false "$gateway_model"
     fi
 fi
 
@@ -2811,7 +2926,7 @@ ENVEOF
 
         # Register in Calciforge config
         ensure_calciforge_agent_config "hermes" "hermes" \
-            "$CALCIFORGE_HERMES_ENDPOINT" 600000 "h,nous" "$hermes_api_key_file"
+            "$CALCIFORGE_HERMES_ENDPOINT" 600000 "h,nous" "$hermes_api_key_file" true "$gateway_model"
     fi
 fi
 

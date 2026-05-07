@@ -2046,7 +2046,7 @@ impl CommandHandler {
         };
         if !agent_supports_model_override(active_agent) {
             return format!(
-                "⚠️ Active agent '{}' ({}) does not consume Calciforge model overrides.\n\nSwitch to a gateway-backed agent or configure that agent's native model setting instead.",
+                "⚠️ Active agent '{}' ({}) does not consume Calciforge model overrides.\n\nUse an agent explicitly configured with allow_model_override = true, or configure this agent's native model setting instead. Only enable that flag for agents wired to Calciforge's model gateway or known to accept these model IDs.",
                 active_agent.id, active_agent.kind
             );
         }
