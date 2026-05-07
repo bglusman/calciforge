@@ -183,7 +183,13 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            Some(AgentKind::Cli | AgentKind::ArtifactCli | AgentKind::Acp | AgentKind::Acpx) => {
+            Some(
+                AgentKind::Exec
+                | AgentKind::Cli
+                | AgentKind::ArtifactCli
+                | AgentKind::Acp
+                | AgentKind::Acpx,
+            ) => {
                 if agent
                     .command
                     .as_deref()
@@ -195,7 +201,12 @@ fn validate_agents(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     ));
                 }
             }
-            Some(AgentKind::CodexCli | AgentKind::DiracCli) => {}
+            Some(
+                AgentKind::CodexCli
+                | AgentKind::ClaudeCli
+                | AgentKind::DiracCli
+                | AgentKind::KimiCli,
+            ) => {}
             None if agent.kind == "openclaw-http" => {
                 result.add_error(format!(
                     "Agent '{}' uses removed kind 'openclaw-http'; migrate to kind='openclaw-channel' and install the Calciforge OpenClaw channel plugin",
@@ -337,7 +348,7 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
     for entry in &configured_model_ids {
         if let Some(previous_kind) = model_ids.insert(entry.id.as_str(), entry.kind) {
             result.add_error(format!(
-                "Ambiguous model selector '{}': configured as both a {} and a {}. Model selectors must be unique across synthetic routing selectors, exec-backed shims, local models, exact provider models, and exact model routes.",
+                "Ambiguous model selector '{}': configured as both a {} and a {}. Model selectors must be unique across synthetic routing selectors, local models, exact provider models, and exact model routes.",
                 entry.id,
                 previous_kind.label(),
                 entry.kind.label()
@@ -375,6 +386,17 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
                 conflict.kind.label()
             ));
         }
+        if let Some(conflict) = configured_agent_selectors
+            .iter()
+            .find(|selector| selector.id == shortcut.alias)
+        {
+            result.add_error(format!(
+                "Ambiguous model shortcut alias '{}': conflicts with a configured {} for agent '{}'. Agent selectors route chat targets; model shortcuts select gateway models. Rename one side.",
+                shortcut.alias,
+                conflict.kind.label(),
+                conflict.owner_agent_id
+            ));
+        }
     }
     for shortcut in &config.model_shortcuts {
         if let Err(e) = resolve_model_alias_chain(&config.model_shortcuts, &shortcut.alias) {
@@ -394,6 +416,23 @@ fn validate_routing_rules(config: &CalciforgeConfig, result: &mut ValidationResu
                 "Routing rule for '{}' references non-existent agent: '{}'",
                 rule.identity, rule.default_agent
             ));
+        }
+
+        if let Some(btw_agent) = rule.btw_agent.as_deref() {
+            if !config.agents.iter().any(|agent| agent.id == btw_agent) {
+                result.add_error(format!(
+                    "Routing rule for '{}' references non-existent btw_agent: '{}'",
+                    rule.identity, btw_agent
+                ));
+            }
+            if !rule.allowed_agents.is_empty()
+                && !rule.allowed_agents.iter().any(|agent| agent == btw_agent)
+            {
+                result.add_error(format!(
+                    "Routing rule for '{}' sets btw_agent '{}' outside allowed_agents",
+                    rule.identity, btw_agent
+                ));
+            }
         }
 
         // Check all allowed_agents exist
@@ -459,7 +498,7 @@ fn validate_alloys(config: &CalciforgeConfig, result: &mut ValidationResult) {
     }
 }
 
-/// Validate named cascades, dispatchers, and exec-backed model shims.
+/// Validate named synthetic model selectors.
 fn validate_synthetic_model_groups(config: &CalciforgeConfig, result: &mut ValidationResult) {
     for cascade in &config.cascades {
         if cascade.models.is_empty() {
@@ -498,22 +537,11 @@ fn validate_synthetic_model_groups(config: &CalciforgeConfig, result: &mut Valid
         }
     }
 
-    for exec_model in &config.exec_models {
-        if exec_model.id.trim().is_empty() {
-            result.add_error("Exec model has an empty id".to_string());
-        }
-        if exec_model.context_window == 0 {
-            result.add_error(format!(
-                "Exec model '{}' has context_window=0",
-                exec_model.id
-            ));
-        }
-        if exec_model.command.trim().is_empty() {
-            result.add_error(format!(
-                "Exec model '{}' has an empty command",
-                exec_model.id
-            ));
-        }
+    if !config.exec_models.is_empty() {
+        result.add_error(
+            "`[[exec_models]]` is deprecated and no longer registers gateway models; configure an `[[agents]]` entry with kind = \"exec\", \"codex-cli\", \"dirac-cli\", or an ACP adapter instead."
+                .to_string(),
+        );
     }
 }
 
@@ -579,6 +607,20 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
                 "Helicone backend has no backend_api_key/backend_api_key_file; only unauthenticated local Helicone gateways should use this"
                     .to_string(),
             );
+        }
+    }
+
+    for provider in &proxy.providers {
+        match provider.backend_type.as_str() {
+            "http" | "helicone" => {}
+            "exec" => result.add_error(format!(
+                "Proxy provider '{}' uses deprecated backend_type = \"exec\". CLI-backed subscriptions must be configured as [[agents]], not gateway providers.",
+                provider.id
+            )),
+            other => result.add_error(format!(
+                "Proxy provider '{}' backend_type '{}' is invalid. Use: http, helicone",
+                provider.id, other
+            )),
         }
     }
 }
@@ -957,6 +999,107 @@ models = ["premium"]
                     && e.contains("agent alias")
             }),
             "error should identify the provider model / agent alias collision; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_cannot_shadow_agent_selector() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[agents]]
+id = "gateway-agent"
+kind = "openai-compat"
+endpoint = "http://127.0.0.1:18083"
+model = "local-cloud-coding"
+aliases = ["premium"]
+
+[[model_shortcuts]]
+alias = "premium"
+model = "openai/gpt-5.5"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "model shortcut aliases must not silently reuse agent selectors"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("premium")
+                    && e.contains("model shortcut alias")
+                    && e.contains("agent alias")
+            }),
+            "error should identify shortcut / agent alias collision; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn exec_models_are_deprecated_config_errors() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[exec_models]]
+id = "codex/gpt-5.5"
+context_window = 262144
+command = "codex"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "deprecated exec model shims should not silently register as gateway models"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("[[exec_models]]")
+                    && e.contains("deprecated")
+                    && e.contains("kind = \"exec\"")
+            }),
+            "error should explain the agent migration path; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn exec_proxy_providers_are_deprecated_config_errors() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+bind = "127.0.0.1:18083"
+
+[[proxy.providers]]
+id = "codex-cli"
+backend_type = "exec"
+models = ["codex/gpt-5.5"]
+command = "codex"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "exec proxy providers must not silently register as gateway models"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("codex-cli")
+                    && e.contains("backend_type = \"exec\"")
+                    && e.contains("[[agents]]")
+            }),
+            "error should explain that CLI-backed subscriptions are agents; errors: {:?}",
             result.errors
         );
     }

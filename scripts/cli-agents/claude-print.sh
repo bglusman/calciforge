@@ -1,5 +1,5 @@
 #!/bin/sh
-# Example Calciforge exec-model wrapper for Claude CLI subscription access.
+# Example Calciforge CLI-agent wrapper for Claude CLI subscription access.
 #
 # Claude CLI flags and subscription terms can change. Treat this as a starting
 # point, not a compatibility guarantee; test with your installed version.

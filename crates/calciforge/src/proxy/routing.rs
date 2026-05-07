@@ -1,20 +1,19 @@
 //! Multi-provider model routing for the proxy.
 //!
 //! Builds a priority-ordered `Vec<ProviderEntry>` from explicit
-//! `[[proxy.model_routes]]`, exec-backed model shims, and `[[proxy.providers]]`
-//! config. The handler iterates entries in order and uses the first match,
-//! falling back to the default gateway.
+//! `[[proxy.model_routes]]` and `[[proxy.providers]]` config. The handler
+//! iterates entries in order and uses the first match, falling back to the
+//! default gateway.
 
 use std::collections::HashMap;
 
 use anyhow::Context as _;
 use tracing::info;
 
-use crate::config::{ExecModelConfig, ProxyConfig};
+use crate::config::ProxyConfig;
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
-use super::exec_gateway::ExecGateway;
 use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
 
 /// A resolved provider entry: a set of model-name patterns and a ready gateway.
@@ -64,11 +63,9 @@ pub fn find_provider<'a>(providers: &'a [ProviderEntry], model: &str) -> Option<
 ///
 /// Priority order:
 /// 1. `[[proxy.model_routes]]` entries (explicit overrides, in declaration order)
-/// 2. `[[exec_models]]` entries (exact model IDs backed by local commands)
-/// 3. `[[proxy.providers]]` models patterns (in provider × pattern order)
+/// 2. `[[proxy.providers]]` models patterns (in provider × pattern order)
 pub fn build_provider_entries(
     config: &ProxyConfig,
-    exec_models: &[ExecModelConfig],
     default_timeout: u64,
 ) -> anyhow::Result<Vec<ProviderEntry>> {
     // Build a map of provider_id → resolved gateway for efficient lookup.
@@ -76,37 +73,6 @@ pub fn build_provider_entries(
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
 
     for p in &config.providers {
-        if p.backend_type == "exec" {
-            let command = p
-                .command
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("exec provider '{}' requires command", p.id))?;
-            let timeout = p.timeout_seconds.unwrap_or(default_timeout);
-            let gw_cfg = GatewayConfig {
-                backend_type: GatewayType::Direct,
-                base_url: None,
-                api_key: None,
-                timeout_seconds: timeout,
-                extra_config: None,
-                headers: None,
-                retry_enabled: false,
-                max_retries: 0,
-                retry_base_delay_ms: 0,
-                retry_max_delay_ms: 0,
-                ui_url: None,
-            };
-            let gw = Arc::new(ExecGateway::new(
-                gw_cfg,
-                command,
-                p.args.clone(),
-                p.env.clone(),
-            ));
-            info!(id = %p.id, models = ?p.models, "Exec provider loaded");
-            provider_gateways.insert(p.id.clone(), gw);
-            provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
-            continue;
-        }
-
         if p.backend_type == "helicone" {
             if p.url.trim().is_empty() {
                 anyhow::bail!(
@@ -144,7 +110,7 @@ pub fn build_provider_entries(
 
         if p.backend_type != "http" {
             anyhow::bail!(
-                "provider '{}' has unsupported backend_type '{}'",
+                "provider '{}' has unsupported backend_type '{}'; use 'http' or 'helicone'. CLI-backed subscriptions must be configured as [[agents]], not gateway providers.",
                 p.id,
                 p.backend_type
             );
@@ -219,38 +185,7 @@ pub fn build_provider_entries(
         }
     }
 
-    // 2. Exec-backed model shims. These are exact terminal gateway selectors.
-    for model in exec_models {
-        let timeout = model.timeout_seconds.unwrap_or(default_timeout);
-        let gw_cfg = GatewayConfig {
-            backend_type: GatewayType::Direct,
-            base_url: None,
-            api_key: None,
-            timeout_seconds: timeout,
-            extra_config: None,
-            headers: None,
-            retry_enabled: false,
-            max_retries: 0,
-            retry_base_delay_ms: 0,
-            retry_max_delay_ms: 0,
-            ui_url: None,
-        };
-        let gw = Arc::new(ExecGateway::new(
-            gw_cfg,
-            model.command.clone(),
-            model.args.clone(),
-            model.env.clone(),
-        ));
-        info!(id = %model.id, "Exec-backed model shim loaded");
-        entries.push(ProviderEntry {
-            id: format!("exec:{}", model.id),
-            patterns: vec![model.id.clone()],
-            gateway: gw,
-            on_switch: None,
-        });
-    }
-
-    // 3. Provider model patterns (in declaration order).
+    // 2. Provider model patterns (in declaration order).
     for p in &config.providers {
         if p.models.is_empty() {
             continue;
@@ -307,11 +242,7 @@ mod tests {
             timeout_seconds: None,
             headers: HashMap::new(),
             on_switch: None,
-            command: if backend_type == "exec" {
-                Some("/bin/echo".to_string())
-            } else {
-                None
-            },
+            command: None,
             args: Vec::new(),
             env: HashMap::new(),
         }
@@ -324,19 +255,22 @@ mod tests {
             ..Default::default()
         };
 
-        let err = build_provider_entries(&config, &[], 30).unwrap_err();
+        let err = build_provider_entries(&config, 30).unwrap_err();
         assert!(err.to_string().contains("requires non-empty url"));
     }
 
     #[test]
-    fn exec_provider_may_omit_url() {
+    fn exec_provider_is_rejected_because_cli_subscriptions_are_agents() {
         let config = ProxyConfig {
             providers: vec![provider("exec-provider", "exec", "")],
             ..Default::default()
         };
 
-        let entries = build_provider_entries(&config, &[], 30).unwrap();
-        assert_eq!(entries.len(), 1);
+        let err = build_provider_entries(&config, 30).unwrap_err();
+        assert!(
+            err.to_string().contains("configured as [[agents]]"),
+            "{err}"
+        );
     }
 
     #[cfg(feature = "helicone")]
@@ -351,32 +285,9 @@ mod tests {
             ..Default::default()
         };
 
-        let entries = build_provider_entries(&config, &[], 30).unwrap();
+        let entries = build_provider_entries(&config, 30).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].patterns, vec!["test-model"]);
         assert_eq!(entries[0].gateway.gateway_type(), GatewayType::Helicone);
-    }
-
-    #[test]
-    fn exec_models_become_exact_provider_entries() {
-        let config = ProxyConfig::default();
-        let entries = build_provider_entries(
-            &config,
-            &[ExecModelConfig {
-                id: "codex/gpt-5.5".to_string(),
-                name: None,
-                context_window: 262_144,
-                command: "/bin/echo".to_string(),
-                args: vec!["ok".to_string()],
-                env: HashMap::new(),
-                timeout_seconds: Some(10),
-            }],
-            30,
-        )
-        .unwrap();
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].patterns, vec!["codex/gpt-5.5"]);
-        assert!(find_provider(&entries, "codex/gpt-5.5").is_some());
     }
 }

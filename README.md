@@ -25,7 +25,7 @@ being treated as daily-driver infrastructure.
 | MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
 | Agent runtime contract for CLI-first guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
 | Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
-| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, exec models, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning via editable default Starlark policy | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
@@ -92,6 +92,12 @@ network unless you configure an authenticated reverse proxy/tunnel with
 
 Do not put proxy variables on the Calciforge daemon itself; that can route
 Calciforge's own provider and control-plane traffic through its security proxy.
+For model traffic, configure agents to use Calciforge's OpenAI-compatible
+model gateway as their model API base URL; this is the ingress that makes
+model aliases, alloys, cascades, dispatchers, provider routing, and model
+observability work. Separately, configure agent tool/web traffic to use
+`security-proxy` or a Calciforge fetch/tool integration when returned content
+must be scanned.
 Do not assume CLI agents can be wrapped by setting `HTTP_PROXY` or
 `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and streaming clients
 may use CONNECT, WebSockets, or browser-backed auth flows that the current
@@ -153,13 +159,6 @@ strategy = "auto"
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
-
-[[exec_models]]
-id = "codex/gpt-5.5"
-name = "Codex GPT-5.5 subscription"
-context_window = 262144
-command = "/etc/calciforge/exec-models/codex-exec.sh"
-args = ["-"]
 ```
 
 ## Architecture

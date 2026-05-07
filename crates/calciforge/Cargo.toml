@@ -107,7 +107,6 @@ rand = "0.9"
 # UUID generation for API responses
 uuid = { version = "1", features = ["v4"] }
 
-# Secure temporary files for exec-backed model output handoff.
 tempfile = "3"
 
 # Retry logic (Helicone-style)

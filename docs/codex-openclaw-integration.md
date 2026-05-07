@@ -10,8 +10,6 @@ Calciforge supports Codex in two practical ways:
 1. direct Codex CLI dispatch with `kind = "codex-cli"`.
 2. OpenClaw as an upstream agent or model gateway, using OpenClaw's
    Codex-aware model prefixes.
-3. an executable-backed `[[exec_models]]` model-gateway entry when an
-   OpenAI-compatible client needs to call a local subscription CLI.
 
 Use direct `codex-cli` when Calciforge should call the official Codex
 CLI under the same Unix account that owns `~/.codex` credentials. Use
@@ -46,7 +44,7 @@ allowed_agents = ["codex"]
 By default the adapter runs:
 
 ```bash
-codex exec --color never --sandbox read-only --ephemeral --skip-git-repo-check -
+codex exec --color never --sandbox read-only --skip-git-repo-check -
 ```
 
 The prompt is sent on stdin and Calciforge captures Codex's
@@ -66,7 +64,6 @@ args = [
   "exec",
   "--color", "never",
   "--sandbox", "workspace-write",
-  "--ephemeral",
   "--skip-git-repo-check",
   "-",
 ]
@@ -74,10 +71,10 @@ args = [
 
 Do not wrap Codex CLI with generic `HTTP_PROXY`/`HTTPS_PROXY` unless you have
 validated that specific route. Codex uses streaming and browser/OAuth-backed
-control-plane calls; the current `security-proxy` does not inspect CONNECT
-tunnels and can break those flows. Use Calciforge's OpenAI-compatible gateway,
-exec-backed model shims, explicit fetch/tool integration, or audited recipes for traffic
-that needs scanning or secret substitution.
+control-plane calls; route traffic that needs scanning or secret substitution
+through Calciforge's OpenAI-compatible gateway, explicit fetch/tool
+integration, or audited recipes rather than assuming a generic process proxy
+will cover every control-plane path.
 
 Keep chat-facing Codex agents conservative. `read-only` is the safer
 default for general messaging channels. Use `workspace-write` only for
@@ -175,9 +172,8 @@ the operator has confirmed that route is allowed for their account:
 ```toml
 [[agents]]
 id = "claude-cli"
-kind = "cli"
-command = "claude"
-args = ["-p", "{message}", "--output-format", "text"]
+kind = "claude-cli"
+model = "sonnet"
 timeout_ms = 600000
 aliases = ["claude", "sonnet"]
 ```
@@ -186,39 +182,50 @@ aliases = ["claude", "sonnet"]
 sessions, but it is no longer the only local-CLI bridge Calciforge can
 use.
 
-## Model gateway expectations
+## Kimi Code CLI path
 
-Calciforge's OpenAI-compatible model gateway can forward HTTP requests to
-OpenAI-compatible providers, or it can expose trusted local CLI wrappers as
-`[[exec_models]]`.
-
-Use an exec-backed model shim when the subscription-owning CLI should remain a black
-box and Calciforge only needs to render a prompt, invoke the process, and
-wrap the final text as a chat completion:
+Kimi Code can be configured as either a CLI adapter or a generic ACP adapter.
+Use `kimi-cli` when Calciforge should make one scripted print-mode call and
+optionally attach a selected session:
 
 ```toml
-[proxy]
-enabled = true
-bind = "127.0.0.1:8080"
+[[agents]]
+id = "kimi"
+kind = "kimi-cli"
+model = "kimi-k2.6"
+args = ["--quiet", "--input-format", "text", "--no-thinking"]
+aliases = ["kimi"]
 
-[[exec_models]]
-id = "claude/sonnet"
-name = "Claude subscription CLI"
-context_window = 200000
-command = "/etc/calciforge/exec-models/claude-print.sh"
-timeout_seconds = 900
-
-[exec_models.env]
-CALCIFORGE_CLAUDE_MODEL = "sonnet"
+[[agents]]
+id = "kimi-thinking"
+kind = "kimi-cli"
+model = "kimi-k2.6"
+args = ["--quiet", "--input-format", "text", "--thinking"]
+aliases = ["kimi-think"]
 ```
 
-The example wrappers in `scripts/exec-models/` are intentionally conservative
-starting points. CLI flags, installed versions, and vendor subscription terms
-can change, so validate the exact wrapper under the Unix account running
-Calciforge before exposing it to agents. Prefer wrappers that accept prompts on
-stdin; if a vendor CLI only accepts prompts as argv, treat that wrapper as a
-local process-listing leakage risk and expose it only on trusted single-user
-hosts.
+Use generic ACP for Kimi's native ACP server:
+
+```toml
+[[agents]]
+id = "kimi-acp"
+kind = "acp"
+command = "kimi"
+args = ["acp"]
+```
+
+Gateway Kimi model routes should default to thinking disabled unless the
+calling client preserves Kimi's reasoning-message shape. Configure thinking-on
+routes deliberately and test the exact request/response format with the target
+client.
+
+## Model gateway expectations
+
+Calciforge's OpenAI-compatible model gateway forwards HTTP requests to
+OpenAI-compatible providers, local model endpoints, and synthetic routing
+selectors such as alloys, cascades, and dispatchers. CLI-backed subscriptions
+are agents, not gateway models, so they do not appear in `/v1/models` and do
+not participate in Helicone/provider observability.
 
 For deterministic gateway tests, use a mock OpenAI-compatible provider or
 replay fixture rather than a live LLM.

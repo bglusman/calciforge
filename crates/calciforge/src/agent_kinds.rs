@@ -12,10 +12,13 @@ pub enum AgentKind {
     ZeroClaw,
     IronClaw,
     Hermes,
+    Exec,
     Cli,
     ArtifactCli,
     CodexCli,
+    ClaudeCli,
     DiracCli,
+    KimiCli,
     Acp,
     Acpx,
 }
@@ -30,10 +33,13 @@ impl AgentKind {
             "zeroclaw" => Some(Self::ZeroClaw),
             "ironclaw" => Some(Self::IronClaw),
             "hermes" => Some(Self::Hermes),
+            "exec" => Some(Self::Exec),
             "cli" => Some(Self::Cli),
             "artifact-cli" => Some(Self::ArtifactCli),
             "codex-cli" => Some(Self::CodexCli),
+            "claude-cli" => Some(Self::ClaudeCli),
             "dirac-cli" => Some(Self::DiracCli),
+            "kimi-cli" => Some(Self::KimiCli),
             "acp" => Some(Self::Acp),
             "acpx" => Some(Self::Acpx),
             _ => None,
@@ -60,10 +66,13 @@ impl AgentKind {
     pub fn is_subprocess_agent(self) -> bool {
         matches!(
             self,
-            Self::Cli
+            Self::Exec
+                | Self::Cli
                 | Self::ArtifactCli
                 | Self::CodexCli
+                | Self::ClaudeCli
                 | Self::DiracCli
+                | Self::KimiCli
                 | Self::Acp
                 | Self::Acpx
         )

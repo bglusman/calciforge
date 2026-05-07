@@ -1,5 +1,5 @@
 #!/bin/sh
-# Example Calciforge exec-model wrapper for Kimi CLI subscription access.
+# Example Calciforge CLI-agent wrapper for Kimi CLI subscription access.
 #
 # Kimi CLI flags and subscription/API-key behavior can change. Treat this as a
 # starting point, not a compatibility guarantee; test with your installed

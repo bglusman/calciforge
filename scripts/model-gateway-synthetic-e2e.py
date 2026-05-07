@@ -75,17 +75,6 @@ def http_json(
 
 
 def write_config(tmp: Path, port: int) -> Path:
-    fake_exec = tmp / "fake-exec-model.sh"
-    fake_exec.write_text(
-        """#!/bin/sh
-set -eu
-prompt="$(cat)"
-printf 'exec-model:%s\\n' "$prompt"
-""",
-        encoding="utf-8",
-    )
-    fake_exec.chmod(0o755)
-
     config = f"""
 [calciforge]
 version = 2
@@ -129,14 +118,6 @@ context_window = 40
 model = "kimi-free"
 context_window = 140
 
-[[cascades]]
-id = "cascade-exec"
-name = "Cascade Into Exec"
-
-[[cascades.models]]
-model = "exec/fake"
-context_window = 160
-
 [[dispatchers]]
 id = "dispatcher-size-aware"
 name = "Size Aware Dispatcher"
@@ -153,11 +134,6 @@ context_window = 90
 model = "kimi-free"
 context_window = 140
 
-[[exec_models]]
-id = "exec/fake"
-name = "Fake Exec Model"
-context_window = 160
-command = "{fake_exec}"
 """
     config_path = tmp / "calciforge.toml"
     config_path.write_text(config, encoding="utf-8")
@@ -276,22 +252,6 @@ def assert_context_exceeded(base_url: str, model: str, content: str) -> None:
         raise AssertionError(f"{model}: expected context_window_exceeded, got {body}")
 
 
-def assert_exec_model(base_url: str, model: str, content: str) -> None:
-    status, body = chat(base_url, model, content)
-    if status != 200:
-        raise AssertionError(f"{model}: expected 200, got {status}: {body}")
-    actual_model = body.get("model")
-    if actual_model != "exec/fake":
-        raise AssertionError(f"{model}: expected exec/fake response model, got {body}")
-    text = (
-        body.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-    )
-    if "exec-model:user: hello from exec" not in text:
-        raise AssertionError(f"{model}: response did not come from fake exec: {body}")
-
-
 def run_assertions(base_url: str) -> None:
     status, models_body = http_json("GET", f"{base_url}/v1/models", timeout=5.0)
     if status != 200:
@@ -300,9 +260,7 @@ def run_assertions(base_url: str) -> None:
     expected_ids = {
         "alloy-round-robin",
         "cascade-size-aware",
-        "cascade-exec",
         "dispatcher-size-aware",
-        "exec/fake",
     }
     missing = expected_ids - model_ids
     if missing:
@@ -314,8 +272,6 @@ def run_assertions(base_url: str) -> None:
     assert_model(base_url, "dispatcher-size-aware", "short", "gpt-4")
     assert_model(base_url, "dispatcher-size-aware", "x" * 60, "claude-3-5-sonnet")
     assert_model(base_url, "dispatcher-size-aware", "x" * 110, "kimi/kimi-free")
-    assert_exec_model(base_url, "exec/fake", "hello from exec")
-    assert_exec_model(base_url, "cascade-exec", "hello from exec")
     assert_context_exceeded(base_url, "dispatcher-size-aware", "x" * 200)
 
 

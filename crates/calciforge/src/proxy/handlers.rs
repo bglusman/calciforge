@@ -102,11 +102,11 @@ pub async fn chat_completions(
     // Validate model exists. Skip when:
     //  - A named provider matches (provider is authoritative for its models).
     //  - Backend delegates model selection to an external OpenAI-compatible API.
-    //  - It's a configured gateway selector (alloy, cascade, dispatcher, exec-backed shim).
+    //  - It's a configured synthetic selector (alloy, cascade, dispatcher).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_valid_model = provider_matches
         || backend_accepts_unlisted_models(&state.config.backend_type)
-        || state.alloy_manager.is_gateway_model_selector(&req.model)
+        || state.alloy_manager.is_synthetic_model(&req.model)
         || KNOWN_MODELS.contains(&req.model.as_str());
 
     if !is_valid_model {
@@ -436,18 +436,6 @@ pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) ->
             },
         );
     }
-    for exec_model in state.alloy_manager.list_exec_models() {
-        push_model(
-            &mut models,
-            ModelInfo {
-                id: exec_model.id.clone(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "calciforge/exec".to_string(),
-            },
-        );
-    }
-
     // Add exact configured provider route IDs. Some backends, including local
     // Helicone AI Gateway deployments, may not return a useful upstream model
     // list even though Calciforge can route exact configured model IDs. This is
@@ -668,8 +656,8 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
 mod tests {
     use super::*;
     use crate::config::{
-        DispatcherConfig, ExecModelConfig, ModelShortcutConfig, ProxyAccessPolicy,
-        ProxyAgentConfig, SyntheticModelConfig,
+        DispatcherConfig, ModelShortcutConfig, ProxyAccessPolicy, ProxyAgentConfig,
+        SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
     use crate::providers::ProviderRegistry;
@@ -857,7 +845,6 @@ mod tests {
                     },
                 ],
             }],
-            &[],
         )
         .unwrap();
 
@@ -916,7 +903,6 @@ mod tests {
                     },
                 ],
             }],
-            &[],
         )
         .unwrap();
 
@@ -953,6 +939,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_routes_resolved_synthetic_constituent_to_matching_provider_gateway() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-dispatcher".to_string(),
+                name: Some("Local dispatcher".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "qwen-test:small".to_string(),
+                    context_window: 60_000,
+                }],
+            }],
+        )
+        .unwrap();
+
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let provider_gateway = Arc::new(RecordingGateway::new());
+        let default_gateway_dyn: Arc<dyn GatewayBackend> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "helicone".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: vec![ModelShortcutConfig {
+                alias: "balanced".to_string(),
+                model: "local-dispatcher".to_string(),
+            }],
+            gateway: default_gateway_dyn,
+            providers: vec![routing::ProviderEntry {
+                id: "helicone-local".to_string(),
+                patterns: vec!["qwen-test:small".to_string()],
+                gateway: provider_gateway_dyn,
+                on_switch: None,
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "balanced",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(
+            provider_gateway.recorded_models(),
+            vec!["qwen-test:small"],
+            "provider gateway must receive the concrete constituent, not the synthetic alias"
+        );
+        assert!(
+            default_gateway.recorded_models().is_empty(),
+            "configured provider gateway should handle the concrete routed model"
+        );
+    }
+
+    #[tokio::test]
     async fn proxy_resolves_model_shortcuts_inside_dispatcher_constituents() {
         let alloy_manager = AlloyManager::from_gateway_configs(
             &[],
@@ -971,7 +1023,6 @@ mod tests {
                     },
                 ],
             }],
-            &[],
         )
         .unwrap();
 
@@ -1040,7 +1091,6 @@ mod tests {
                     }],
                 },
             ],
-            &[],
         )
         .unwrap();
 
@@ -1099,7 +1149,6 @@ mod tests {
                     },
                 ],
             }],
-            &[],
         )
         .unwrap();
 
@@ -1171,7 +1220,6 @@ mod tests {
                     context_window: 60_000,
                 }],
             }],
-            &[],
         )
         .unwrap();
 
@@ -1242,7 +1290,6 @@ mod tests {
                     context_window: 60_000,
                 }],
             }],
-            &[],
         )
         .unwrap();
 
@@ -1371,70 +1418,6 @@ mod tests {
         assert!(
             !model_ids.contains(&"codex/*") && !model_ids.contains(&"*"),
             "wildcard provider patterns are route patterns, not selectable model IDs: {body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_models_keeps_synthetic_metadata_when_provider_entry_duplicates_id() {
-        let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
-        let provider_gateway: Arc<dyn GatewayBackend> = recording_gateway;
-        let alloy_manager = AlloyManager::from_gateway_configs(
-            &[],
-            &[],
-            &[],
-            &[ExecModelConfig {
-                id: "exec/fake".to_string(),
-                name: None,
-                context_window: 8_192,
-                command: "/bin/echo".to_string(),
-                args: Vec::new(),
-                env: Default::default(),
-                timeout_seconds: None,
-            }],
-        )
-        .unwrap();
-        let state = ProxyState {
-            alloy_manager: Arc::new(alloy_manager),
-            provider_registry: Arc::new(ProviderRegistry::new()),
-            config: ProxyConfig {
-                backend_type: "http".to_string(),
-                ..Default::default()
-            },
-            model_shortcuts: Vec::new(),
-            gateway,
-            providers: vec![routing::ProviderEntry {
-                id: "exec:exec/fake".to_string(),
-                patterns: vec!["exec/fake".to_string()],
-                gateway: provider_gateway,
-                on_switch: None,
-            }],
-            local_manager: None,
-            voice: None,
-        };
-
-        let response = list_models(State(state), HeaderMap::new())
-            .await
-            .into_response();
-
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
-        let exec_models: Vec<&Value> = body["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|model| model["id"] == "exec/fake")
-            .collect();
-        assert_eq!(
-            exec_models.len(),
-            1,
-            "duplicate provider entries should not duplicate gateway selector IDs: {body}"
-        );
-        assert_eq!(
-            exec_models[0]["owned_by"], "calciforge/exec",
-            "Calciforge synthetic metadata should take precedence over provider route metadata"
         );
     }
 }

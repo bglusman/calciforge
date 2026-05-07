@@ -51,6 +51,10 @@ const DEFAULT_MAX_ARG_CHARS: usize = 300;
 const MESSAGE_PLACEHOLDER: &str = "{message}";
 /// Placeholder string in args/env that gets replaced with the active model.
 const MODEL_PLACEHOLDER: &str = "{model}";
+/// Placeholder string in args/env that gets replaced with the selected downstream session.
+const SESSION_PLACEHOLDER: &str = "{session}";
+/// Placeholder alias for selected downstream session values expected to be UUIDs.
+const SESSION_UUID_PLACEHOLDER: &str = "{session_uuid}";
 
 /// CLI adapter — spawns a binary and reads its stdout as the response.
 pub struct CliAdapter {
@@ -180,28 +184,52 @@ impl CliAdapter {
         model_override.or(self.model.as_deref())
     }
 
-    fn build_args(&self, msg: &str, model_override: Option<&str>) -> Vec<String> {
+    fn build_args(
+        &self,
+        msg: &str,
+        model_override: Option<&str>,
+        session: Option<&str>,
+    ) -> Vec<String> {
         let effective = self.effective_message(msg);
         let model = self.selected_model(model_override).unwrap_or("");
+        let session = session.unwrap_or("");
         self.args
             .iter()
             .map(|a| {
                 a.replace(MESSAGE_PLACEHOLDER, effective)
                     .replace(MODEL_PLACEHOLDER, model)
+                    .replace(SESSION_PLACEHOLDER, session)
+                    .replace(SESSION_UUID_PLACEHOLDER, session)
             })
             .collect()
     }
 
-    fn build_env(&self, model_override: Option<&str>) -> HashMap<String, String> {
+    fn build_env(
+        &self,
+        model_override: Option<&str>,
+        session: Option<&str>,
+    ) -> HashMap<String, String> {
         let model = self.selected_model(model_override).unwrap_or("");
+        let session = session.unwrap_or("");
         let mut env: HashMap<String, String> = self
             .env
             .iter()
-            .map(|(k, v)| (k.clone(), v.replace(MODEL_PLACEHOLDER, model)))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    v.replace(MODEL_PLACEHOLDER, model)
+                        .replace(SESSION_PLACEHOLDER, session)
+                        .replace(SESSION_UUID_PLACEHOLDER, session),
+                )
+            })
             .collect();
         if !model.is_empty() {
             env.insert("CALCIFORGE_MODEL".to_string(), model.to_string());
             env.insert("CALCIFORGE_MODEL_OVERRIDE".to_string(), model.to_string());
+        }
+        if !session.is_empty() {
+            env.insert("CALCIFORGE_SESSION".to_string(), session.to_string());
+            env.insert("CALCIFORGE_SESSION_UUID".to_string(), session.to_string());
         }
         env
     }
@@ -218,8 +246,8 @@ impl AgentAdapter for CliAdapter {
         &self,
         ctx: DispatchContext<'_>,
     ) -> Result<String, AdapterError> {
-        let args = self.build_args(ctx.message, ctx.model_override);
-        let env = self.build_env(ctx.model_override);
+        let args = self.build_args(ctx.message, ctx.model_override, ctx.session);
+        let env = self.build_env(ctx.model_override, ctx.session);
 
         info!(
             command = %self.command,
@@ -337,7 +365,7 @@ mod tests {
             "/usr/local/bin/ironclaw",
             Some(vec!["run", "-m", "{message}"]),
         );
-        let args = adapter.build_args("hello world", None);
+        let args = adapter.build_args("hello world", None, None);
         assert_eq!(args, vec!["run", "-m", "hello world"]);
     }
 
@@ -353,7 +381,7 @@ mod tests {
             HashMap::new(),
             Some(5000),
         );
-        let args = adapter.build_args("ping", None);
+        let args = adapter.build_args("ping", None, None);
         assert_eq!(args, vec!["ping", "--input", "ping"]);
     }
 
@@ -370,8 +398,29 @@ mod tests {
             Some("configured-model".to_string()),
             Some(5000),
         );
-        let args = adapter.build_args("ping", Some("override-model"));
+        let args = adapter.build_args("ping", Some("override-model"), None);
         assert_eq!(args, vec!["--model", "override-model", "ping"]);
+    }
+
+    #[test]
+    fn test_build_args_substitutes_session_placeholders() {
+        let adapter = CliAdapter::new(
+            "/bin/echo".to_string(),
+            Some(vec![
+                "--session".to_string(),
+                "{session}".to_string(),
+                "--uuid".to_string(),
+                "{session_uuid}".to_string(),
+                "{message}".to_string(),
+            ]),
+            HashMap::new(),
+            Some(5000),
+        );
+        let args = adapter.build_args("ping", None, Some("session-123"));
+        assert_eq!(
+            args,
+            vec!["--session", "session-123", "--uuid", "session-123", "ping"]
+        );
     }
 
     #[test]
@@ -383,7 +432,7 @@ mod tests {
             Some("configured-model".to_string()),
             Some(5000),
         );
-        let env = adapter.build_env(Some("override-model"));
+        let env = adapter.build_env(Some("override-model"), None);
         assert_eq!(
             env.get("DOWNSTREAM_MODEL").map(String::as_str),
             Some("override-model")
@@ -395,9 +444,31 @@ mod tests {
     }
 
     #[test]
+    fn test_build_env_exposes_session() {
+        let adapter = CliAdapter::new(
+            "/bin/echo".to_string(),
+            None,
+            HashMap::from([(
+                "DOWNSTREAM_SESSION".to_string(),
+                "{session_uuid}".to_string(),
+            )]),
+            Some(5000),
+        );
+        let env = adapter.build_env(None, Some("session-123"));
+        assert_eq!(
+            env.get("DOWNSTREAM_SESSION").map(String::as_str),
+            Some("session-123")
+        );
+        assert_eq!(
+            env.get("CALCIFORGE_SESSION").map(String::as_str),
+            Some("session-123")
+        );
+    }
+
+    #[test]
     fn test_build_args_no_placeholder_passes_through() {
         let adapter = make_adapter("/bin/echo", Some(vec!["--version"]));
-        let args = adapter.build_args("ignored message", None);
+        let args = adapter.build_args("ignored message", None, None);
         // When no placeholder, args are unchanged
         assert_eq!(args, vec!["--version"]);
     }
@@ -406,7 +477,7 @@ mod tests {
     fn test_default_args_when_none() {
         let adapter = CliAdapter::new("/bin/echo".to_string(), None, HashMap::new(), None);
         // Default: ["-m", "{message}"]
-        let args = adapter.build_args("test", None);
+        let args = adapter.build_args("test", None, None);
         assert_eq!(args, vec!["-m", "test"]);
     }
 
@@ -489,7 +560,7 @@ mod tests {
             Some(50), // small limit to force stripping
         );
         let augmented = "[Recent context:\nBrian: hi\nlibrarian: hello\n]\n\nwhat is 2+2?";
-        let args = adapter.build_args(augmented, None);
+        let args = adapter.build_args(augmented, None, None);
         assert_eq!(args, vec!["run", "-m", "what is 2+2?"]);
     }
 

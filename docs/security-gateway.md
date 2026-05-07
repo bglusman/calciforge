@@ -176,7 +176,7 @@ For agents Calciforge launches as subprocesses, start with direct channel
 routing plus conservative CLI flags. Add gateway coverage only through a path
 that has been tested for that specific runtime:
 
-- use `kind = "openai-compat"` or `[[exec_models]]` when the work is really a
+- use `kind = "openai-compat"` or the model gateway when the work is really a
   model call;
 - use artifact or recipe wrappers when the network action is a known command
   Calciforge can run and audit;

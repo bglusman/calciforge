@@ -413,9 +413,8 @@ Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests to named providers, explicit model routes, local models, and
 synthetic routing selectors. Model identifiers resolve through one path for
 gateway requests and `!model`: a name may be a concrete model, a
-`[[model_shortcuts]]` alias, a synthetic routing selector, or an exec-backed
-model shim. Shortcuts may point to routing selectors, and routing selector
-members may use shortcuts.
+`[[model_shortcuts]]` alias, or a synthetic routing selector. Shortcuts may
+point to routing selectors, and routing selector members may use shortcuts.
 
 The synthetic routing vocabulary is:
 
@@ -432,9 +431,10 @@ The synthetic routing vocabulary is:
 Synthetic routing selectors may compose other routing selectors as a DAG.
 Calciforge flattens the selected plan at request time, rejects direct cycles
 during initialization, and rejects alias-induced cycles before provider routing.
-Exec-backed model shims are separate terminal selectors: Calciforge executes a
-local command directly after gateway auth/routing, so they do not pass through
-provider gateway observability or native provider tool-call semantics.
+CLI-backed subscriptions are agents, not gateway models. Use `kind =
+"codex-cli"`, `kind = "claude-cli"`, `kind = "kimi-cli"`, or a generic
+`kind = "exec"` / `kind = "cli"` adapter when a local executable owns its own
+login, session state, or native workflow.
 
 ```toml
 # /etc/calciforge/config.toml — model gateway
@@ -461,7 +461,7 @@ timeout_seconds = 120
 
 [[proxy.providers]]
 id = "local-mlx"
-url = "http://127.0.0.1:8888/v1"
+url = "http://127.0.0.1:11434/v1"
 models = ["local/*", "qwen/*", "mlx/*"]
 
 # Explicit routes take precedence over provider pattern lists.
@@ -470,7 +470,7 @@ pattern = "coding/default"
 provider = "anthropic"
 
 # Chat/API aliases shown by `!model`; aliases may target concrete models,
-# synthetic routing selectors, or exec-backed model shims.
+# synthetic routing selectors, or local model IDs.
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
@@ -508,13 +508,6 @@ id = "qwen3-35b"
 hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
 display_name = "Qwen 35B local"
 
-[[exec_models]]
-id = "codex/gpt-5.5"
-name = "Codex GPT-5.5 subscription"
-context_window = 262144
-command = "/etc/calciforge/exec-models/codex-exec.sh"
-args = ["-"]
-
 [[dispatchers]]
 id = "smart-local"
 name = "Use local until the prompt outgrows it"
@@ -527,9 +520,6 @@ context_window = 32768
 model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
 
-[[dispatchers.models]]
-model = "codex/gpt-5.5"
-context_window = 262144
 ```
 
 The full gateway reference is
@@ -540,27 +530,25 @@ in
 
 ### Subscription-backed agents and models
 
-Calciforge can call local CLIs such as Codex, Claude Code, OpenClaw,
-and other scriptable agents in two different ways. Use a direct agent
-adapter when the CLI should keep its own agent identity and workflow;
-use an `[[exec_models]]` entry when the CLI should appear as a model
-behind the OpenAI-compatible gateway. Exec-backed shims are useful for
-subscription-backed CLIs, but they are local process boundaries, not normal
-provider-backed models.
+Calciforge can call local CLIs such as Codex, Claude Code, Kimi Code,
+OpenClaw, and other scriptable agents through direct agent adapters. Use an
+agent adapter when the CLI should keep its own identity, workflow, session
+state, approvals, and native flags. Do not configure subscription CLIs as model
+gateway selectors; gateway models are provider/local/synthetic routes, while
+CLI-backed tools are agents.
 
 That distinction matters for subscriptions and OAuth. The vendor CLI
 can own its local browser login, refresh tokens, project state, and
 provider-specific flags while Calciforge only sees a configured command,
-stdin prompt, stdout answer, timeout, and context-window declaration.
+stdin prompt, stdout answer, timeout, and optional downstream session.
 The example wrappers are intentionally small because provider CLIs and
 terms change; operators should validate the installed CLI version and
-subscription terms before making an exec-backed model shim part of their default
-route.
+subscription terms before making a CLI-backed agent part of their default route.
 
 Read the [agent adapter notes](agent-adapters.html) and
 [Codex/OpenClaw integration guide](codex-openclaw-integration.html) for
-direct `codex-cli`, `openclaw-channel`, `cli`, `acpx`, and exec-model
-examples.
+direct `codex-cli`, `claude-cli`, `kimi-cli`, `openclaw-channel`, `cli`, and
+ACP examples.
 
 ### Secured recipes and orchestrators
 

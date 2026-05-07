@@ -19,6 +19,8 @@ use super::{AdapterError, AgentAdapter, DispatchContext};
 
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 const MESSAGE_PLACEHOLDER: &str = "{message}";
+const SESSION_PLACEHOLDER: &str = "{session}";
+const SESSION_UUID_PLACEHOLDER: &str = "{session_uuid}";
 static NEXT_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Adapter for the official OpenAI Codex CLI.
@@ -122,6 +124,7 @@ impl CodexCliAdapter {
         &self,
         message: &str,
         model_override: Option<&str>,
+        session: Option<&str>,
         output_path: &Path,
     ) -> Result<(Vec<String>, Option<String>, OutputCapture), AdapterError> {
         let has_placeholder = Self::has_message_placeholder(&self.args);
@@ -134,8 +137,20 @@ impl CodexCliAdapter {
         let mut args: Vec<String> = self
             .args
             .iter()
-            .map(|arg| arg.replace(MESSAGE_PLACEHOLDER, message))
+            .map(|arg| {
+                arg.replace(MESSAGE_PLACEHOLDER, message)
+                    .replace(SESSION_PLACEHOLDER, session.unwrap_or(""))
+                    .replace(SESSION_UUID_PLACEHOLDER, session.unwrap_or(""))
+            })
             .collect();
+        if let Some(session) = session.filter(|session| !session.trim().is_empty()) {
+            if args.first().is_some_and(|arg| arg == "exec")
+                && !args.iter().any(|arg| arg == "resume")
+            {
+                args.insert(1, "resume".to_string());
+                args.insert(2, session.to_string());
+            }
+        }
         let configured_output_path = Self::configured_output_path(&args)?;
 
         let insert_at = Self::prompt_arg_index(&self.args, has_placeholder).unwrap_or(args.len());
@@ -224,7 +239,6 @@ fn default_codex_args() -> Vec<String> {
         "never".to_string(),
         "--sandbox".to_string(),
         "read-only".to_string(),
-        "--ephemeral".to_string(),
         "--skip-git-repo-check".to_string(),
     ]
 }
@@ -244,7 +258,7 @@ impl AgentAdapter for CodexCliAdapter {
 
         let output_path = self.output_path();
         let (args, stdin_message, capture) =
-            self.build_args(ctx.message, ctx.model_override, &output_path)?;
+            self.build_args(ctx.message, ctx.model_override, ctx.session, &output_path)?;
 
         info!(command = %self.command, args = ?args, "codex-cli dispatch");
         debug!(msg = %ctx.message, "codex-cli outbound message");
@@ -330,11 +344,12 @@ mod tests {
             CodexCliAdapter::new(None, None, Some("gpt-5.5".to_string()), None, Some(1_000));
         let output_path = PathBuf::from("/tmp/out.txt");
 
-        let (args, stdin_message, capture) =
-            adapter.build_args("hello", None, &output_path).unwrap();
+        let (args, stdin_message, capture) = adapter
+            .build_args("hello", None, None, &output_path)
+            .unwrap();
 
         assert!(args.starts_with(&["exec".to_string()]));
-        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--ephemeral".to_string()));
         assert!(!args.contains(&"--ask-for-approval".to_string()));
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.5".to_string()));
@@ -343,6 +358,26 @@ mod tests {
         assert_eq!(stdin_message.as_deref(), Some("hello"));
         assert_eq!(capture.path, output_path);
         assert!(capture.cleanup);
+    }
+
+    #[test]
+    fn selected_session_uses_codex_resume_path() {
+        let adapter = CodexCliAdapter::new(None, None, None, None, None);
+        let output_path = PathBuf::from("/tmp/out.txt");
+
+        let (args, stdin, _) = adapter
+            .build_args("hello", None, Some("session-123"), &output_path)
+            .unwrap();
+
+        assert_eq!(
+            &args[0..3],
+            &[
+                "exec".to_string(),
+                "resume".to_string(),
+                "session-123".to_string()
+            ]
+        );
+        assert_eq!(stdin.as_deref(), Some("hello"));
     }
 
     #[test]
@@ -361,7 +396,7 @@ mod tests {
         );
 
         let (args, stdin_message, _) = adapter
-            .build_args("hello", None, &PathBuf::from("/tmp/out.txt"))
+            .build_args("hello", None, None, &PathBuf::from("/tmp/out.txt"))
             .unwrap();
 
         assert_eq!(args[0], "exec");
@@ -383,7 +418,7 @@ mod tests {
         );
 
         let (args, stdin_message, _) = adapter
-            .build_args("hello", None, &PathBuf::from("/tmp/out.txt"))
+            .build_args("hello", None, None, &PathBuf::from("/tmp/out.txt"))
             .unwrap();
 
         let stdin_pos = args.iter().position(|arg| arg == "-").unwrap();
@@ -412,6 +447,7 @@ mod tests {
             .build_args(
                 "hello",
                 Some("local-kimi-gpt55"),
+                None,
                 &PathBuf::from("/tmp/out.txt"),
             )
             .unwrap();
@@ -439,7 +475,7 @@ mod tests {
         );
 
         let err = adapter
-            .build_args("hello", None, &PathBuf::from("/tmp/out.txt"))
+            .build_args("hello", None, None, &PathBuf::from("/tmp/out.txt"))
             .unwrap_err();
         assert!(matches!(err, AdapterError::Protocol(msg) if msg.contains("cannot combine")));
     }
@@ -459,7 +495,7 @@ mod tests {
         );
 
         let (args, _, capture) = adapter
-            .build_args("hello", None, &PathBuf::from("/tmp/generated.txt"))
+            .build_args("hello", None, None, &PathBuf::from("/tmp/generated.txt"))
             .unwrap();
 
         assert!(!args.contains(&"--output-last-message".to_string()));

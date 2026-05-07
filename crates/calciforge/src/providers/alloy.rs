@@ -14,8 +14,7 @@ use rand::rng;
 use serde::Serialize;
 
 use crate::config::{
-    AlloyConfig, AlloyConstituentConfig, CascadeConfig, DispatcherConfig, ExecModelConfig,
-    SyntheticModelConfig,
+    AlloyConfig, AlloyConstituentConfig, CascadeConfig, DispatcherConfig, SyntheticModelConfig,
 };
 
 /// Runtime strategy for constituent selection.
@@ -117,18 +116,6 @@ pub struct DispatcherDefinition {
     pub id: String,
     pub name: String,
     pub models: Vec<SyntheticModelTarget>,
-}
-
-/// Runtime definition for an executable-backed gateway selector.
-///
-/// Unlike alloys, cascades, and dispatchers, this is not a routing synthetic
-/// model. It is a terminal local process shim: once selected, Calciforge
-/// invokes the configured command directly.
-#[derive(Debug, Clone)]
-pub struct ExecModelDefinition {
-    pub id: String,
-    pub name: String,
-    pub context_window: u32,
 }
 
 fn validate_synthetic_model(
@@ -264,45 +251,6 @@ impl DispatcherDefinition {
             alloy_id: self.id.clone(),
             alloy_name: self.name.clone(),
             ordered_models: eligible.into_iter().map(|m| m.model.clone()).collect(),
-        })
-    }
-}
-
-impl ExecModelDefinition {
-    pub fn from_config(cfg: &ExecModelConfig) -> Result<Self, String> {
-        if cfg.id.trim().is_empty() {
-            return Err("exec-backed model shim id must not be empty".to_string());
-        }
-        if cfg.context_window == 0 {
-            return Err(format!(
-                "exec-backed model shim '{}': context_window must be > 0",
-                cfg.id
-            ));
-        }
-        if cfg.command.trim().is_empty() {
-            return Err(format!(
-                "exec-backed model shim '{}': command must not be empty",
-                cfg.id
-            ));
-        }
-        Ok(Self {
-            id: cfg.id.clone(),
-            name: cfg.name.clone().unwrap_or_else(|| cfg.id.clone()),
-            context_window: cfg.context_window,
-        })
-    }
-
-    pub fn select_plan(&self, estimated_tokens: u32) -> Result<AlloyPlan, String> {
-        if estimated_tokens > self.context_window {
-            return Err(format!(
-                "exec-backed model shim '{}': estimated request size {} tokens exceeds context window {}",
-                self.id, estimated_tokens, self.context_window
-            ));
-        }
-        Ok(AlloyPlan {
-            alloy_id: self.id.clone(),
-            alloy_name: self.name.clone(),
-            ordered_models: vec![self.id.clone()],
         })
     }
 }
@@ -544,24 +492,21 @@ fn validate_constituent(alloy: &AlloyConfig, c: &AlloyConstituentConfig) -> Resu
     Ok(())
 }
 
-fn validate_gateway_selector_graph(
+fn validate_synthetic_selector_graph(
     alloys: &HashMap<String, AlloyProvider>,
     cascades: &HashMap<String, CascadeDefinition>,
     dispatchers: &HashMap<String, DispatcherDefinition>,
-    exec_models: &HashMap<String, ExecModelDefinition>,
 ) -> Result<(), String> {
     fn child_refs<'a>(
         id: &str,
         alloys: &'a HashMap<String, AlloyProvider>,
         cascades: &'a HashMap<String, CascadeDefinition>,
         dispatchers: &'a HashMap<String, DispatcherDefinition>,
-        exec_models: &'a HashMap<String, ExecModelDefinition>,
     ) -> Vec<&'a str> {
-        let is_gateway_selector = |model: &&String| {
+        let is_synthetic_selector = |model: &&String| {
             alloys.contains_key(*model)
                 || cascades.contains_key(*model)
                 || dispatchers.contains_key(*model)
-                || exec_models.contains_key(*model)
         };
 
         if let Some(alloy) = alloys.get(id) {
@@ -570,7 +515,7 @@ fn validate_gateway_selector_graph(
                 .constituents
                 .iter()
                 .map(|c| &c.model)
-                .filter(is_gateway_selector)
+                .filter(is_synthetic_selector)
                 .map(String::as_str)
                 .collect();
         }
@@ -579,7 +524,7 @@ fn validate_gateway_selector_graph(
                 .models
                 .iter()
                 .map(|m| &m.model)
-                .filter(is_gateway_selector)
+                .filter(is_synthetic_selector)
                 .map(String::as_str)
                 .collect();
         }
@@ -588,7 +533,7 @@ fn validate_gateway_selector_graph(
                 .models
                 .iter()
                 .map(|m| &m.model)
-                .filter(is_gateway_selector)
+                .filter(is_synthetic_selector)
                 .map(String::as_str)
                 .collect();
         }
@@ -600,7 +545,6 @@ fn validate_gateway_selector_graph(
         alloys: &HashMap<String, AlloyProvider>,
         cascades: &HashMap<String, CascadeDefinition>,
         dispatchers: &HashMap<String, DispatcherDefinition>,
-        exec_models: &HashMap<String, ExecModelDefinition>,
         visiting: &mut Vec<String>,
         visited: &mut std::collections::HashSet<String>,
     ) -> Result<(), String> {
@@ -611,22 +555,14 @@ fn validate_gateway_selector_graph(
             let mut cycle = visiting[pos..].to_vec();
             cycle.push(id.to_string());
             return Err(format!(
-                "gateway model selector graph contains a cycle: {}",
+                "synthetic model selector graph contains a cycle: {}",
                 cycle.join(" -> ")
             ));
         }
 
         visiting.push(id.to_string());
-        for child in child_refs(id, alloys, cascades, dispatchers, exec_models) {
-            visit(
-                child,
-                alloys,
-                cascades,
-                dispatchers,
-                exec_models,
-                visiting,
-                visited,
-            )?;
+        for child in child_refs(id, alloys, cascades, dispatchers) {
+            visit(child, alloys, cascades, dispatchers, visiting, visited)?;
         }
         visiting.pop();
         visited.insert(id.to_string());
@@ -637,15 +573,13 @@ fn validate_gateway_selector_graph(
     let roots = alloys
         .keys()
         .chain(cascades.keys())
-        .chain(dispatchers.keys())
-        .chain(exec_models.keys());
+        .chain(dispatchers.keys());
     for id in roots {
         visit(
             id,
             alloys,
             cascades,
             dispatchers,
-            exec_models,
             &mut Vec::new(),
             &mut visited,
         )?;
@@ -659,7 +593,6 @@ pub struct AlloyManager {
     alloys: HashMap<String, AlloyProvider>,
     cascades: HashMap<String, CascadeDefinition>,
     dispatchers: HashMap<String, DispatcherDefinition>,
-    exec_models: HashMap<String, ExecModelDefinition>,
     active_by_identity: Mutex<HashMap<String, String>>,
 }
 
@@ -669,7 +602,6 @@ impl Clone for AlloyManager {
             alloys: self.alloys.clone(),
             cascades: self.cascades.clone(),
             dispatchers: self.dispatchers.clone(),
-            exec_models: self.exec_models.clone(),
             active_by_identity: Mutex::new(
                 self.active_by_identity
                     .lock()
@@ -687,20 +619,18 @@ impl AlloyManager {
             alloys: HashMap::new(),
             cascades: HashMap::new(),
             dispatchers: HashMap::new(),
-            exec_models: HashMap::new(),
             active_by_identity: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn from_configs(configs: &[AlloyConfig]) -> Result<Self, String> {
-        Self::from_gateway_configs(configs, &[], &[], &[])
+        Self::from_gateway_configs(configs, &[], &[])
     }
 
     pub fn from_gateway_configs(
         configs: &[AlloyConfig],
         cascade_configs: &[CascadeConfig],
         dispatcher_configs: &[DispatcherConfig],
-        exec_model_configs: &[ExecModelConfig],
     ) -> Result<Self, String> {
         let mut alloys = HashMap::new();
         for cfg in configs {
@@ -714,7 +644,7 @@ impl AlloyManager {
         for cfg in cascade_configs {
             let cascade = CascadeDefinition::from_config(cfg)?;
             if alloys.contains_key(&cfg.id) || cascades.insert(cfg.id.clone(), cascade).is_some() {
-                return Err(format!("duplicate gateway model selector '{}'", cfg.id));
+                return Err(format!("duplicate synthetic model selector '{}'", cfg.id));
             }
         }
 
@@ -725,38 +655,22 @@ impl AlloyManager {
                 || cascades.contains_key(&cfg.id)
                 || dispatchers.insert(cfg.id.clone(), dispatcher).is_some()
             {
-                return Err(format!("duplicate gateway model selector '{}'", cfg.id));
+                return Err(format!("duplicate synthetic model selector '{}'", cfg.id));
             }
         }
 
-        let mut exec_models = HashMap::new();
-        for cfg in exec_model_configs {
-            let exec_model = ExecModelDefinition::from_config(cfg)?;
-            if alloys.contains_key(&cfg.id)
-                || cascades.contains_key(&cfg.id)
-                || dispatchers.contains_key(&cfg.id)
-                || exec_models.insert(cfg.id.clone(), exec_model).is_some()
-            {
-                return Err(format!("duplicate gateway model selector '{}'", cfg.id));
-            }
-        }
-
-        validate_gateway_selector_graph(&alloys, &cascades, &dispatchers, &exec_models)?;
+        validate_synthetic_selector_graph(&alloys, &cascades, &dispatchers)?;
 
         Ok(Self {
             alloys,
             cascades,
             dispatchers,
-            exec_models,
             active_by_identity: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.alloys.is_empty()
-            && self.cascades.is_empty()
-            && self.dispatchers.is_empty()
-            && self.exec_models.is_empty()
+        self.alloys.is_empty() && self.cascades.is_empty() && self.dispatchers.is_empty()
     }
 
     /// Get an alloy by ID.
@@ -768,14 +682,6 @@ impl AlloyManager {
         self.alloys.contains_key(model_id)
             || self.cascades.contains_key(model_id)
             || self.dispatchers.contains_key(model_id)
-    }
-
-    pub fn is_gateway_model_selector(&self, model_id: &str) -> bool {
-        self.is_synthetic_model(model_id) || self.exec_models.contains_key(model_id)
-    }
-
-    pub fn is_exec_model(&self, model_id: &str) -> bool {
-        self.exec_models.contains_key(model_id)
     }
 
     pub fn select_plan_for_model(
@@ -833,9 +739,6 @@ impl AlloyManager {
             stack.pop();
             return Ok(Some(plan));
         }
-        if let Some(exec_model) = self.exec_models.get(model_id) {
-            return exec_model.select_plan(estimated_tokens).map(Some);
-        }
         Ok(None)
     }
 
@@ -873,15 +776,9 @@ impl AlloyManager {
         v
     }
 
-    pub fn list_exec_models(&self) -> Vec<&ExecModelDefinition> {
-        let mut v: Vec<&ExecModelDefinition> = self.exec_models.values().collect();
-        v.sort_by(|a, b| a.id.cmp(&b.id));
-        v
-    }
-
     pub fn set_active_for_identity(&self, identity_id: &str, model_id: &str) -> Result<(), String> {
-        if !self.is_gateway_model_selector(model_id) {
-            return Err(format!("unknown gateway model selector '{}'", model_id));
+        if !self.is_synthetic_model(model_id) {
+            return Err(format!("unknown synthetic model selector '{}'", model_id));
         }
         self.active_by_identity
             .lock()
@@ -930,7 +827,7 @@ impl AlloyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CascadeConfig, DispatcherConfig, ExecModelConfig, SyntheticModelConfig};
+    use crate::config::{CascadeConfig, DispatcherConfig, SyntheticModelConfig};
 
     fn sample_alloy(strategy: &str) -> AlloyConfig {
         AlloyConfig {
@@ -1120,10 +1017,9 @@ mod tests {
                 context_window: 32_768,
             }],
         };
-        let err =
-            AlloyManager::from_gateway_configs(&[alloy], &[], &[dispatcher], &[]).unwrap_err();
+        let err = AlloyManager::from_gateway_configs(&[alloy], &[], &[dispatcher]).unwrap_err();
         assert!(
-            err.contains("duplicate gateway model selector"),
+            err.contains("duplicate synthetic model selector"),
             "expected duplicate id error, got: {err}"
         );
     }
@@ -1131,7 +1027,7 @@ mod tests {
     #[test]
     fn manager_rejects_alloy_plan_that_exceeds_effective_context_window() {
         let alloy = alloy_with_sizes(&[("small", 50, 32_768), ("large", 50, 262_144)], None);
-        let manager = AlloyManager::from_gateway_configs(&[alloy], &[], &[], &[]).unwrap();
+        let manager = AlloyManager::from_gateway_configs(&[alloy], &[], &[]).unwrap();
 
         let err = manager.select_plan_for_model("sized", 40_000).unwrap_err();
         assert!(
@@ -1141,46 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_model_is_a_terminal_gateway_selector_with_context_limit() {
-        let exec = ExecModelConfig {
-            id: "codex/gpt-5.5".to_string(),
-            name: Some("Codex GPT-5.5".to_string()),
-            context_window: 262_144,
-            command: "codex".to_string(),
-            args: vec![
-                "exec".to_string(),
-                "-m".to_string(),
-                "gpt-5.5".to_string(),
-                "-".to_string(),
-            ],
-            env: HashMap::new(),
-            timeout_seconds: Some(900),
-        };
-        let manager = AlloyManager::from_gateway_configs(&[], &[], &[], &[exec]).unwrap();
-
-        let plan = manager
-            .select_plan_for_model("codex/gpt-5.5", 100_000)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.ordered_models, vec!["codex/gpt-5.5"]);
-
-        let err = manager
-            .select_plan_for_model("codex/gpt-5.5", 300_000)
-            .unwrap_err();
-        assert!(err.contains("context window"), "{err}");
-    }
-
-    #[test]
     fn synthetic_models_can_compose_as_a_dag() {
-        let exec = ExecModelConfig {
-            id: "codex/gpt-5.5".to_string(),
-            name: None,
-            context_window: 262_144,
-            command: "codex".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_seconds: None,
-        };
         let cascade = CascadeConfig {
             id: "local-then-codex".to_string(),
             name: None,
@@ -1203,8 +1060,7 @@ mod tests {
                 context_window: 262_144,
             }],
         };
-        let manager =
-            AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher], &[exec]).unwrap();
+        let manager = AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher]).unwrap();
 
         let plan = manager
             .select_plan_for_model("smart", 40_000)
@@ -1237,8 +1093,7 @@ mod tests {
                 context_window: 262_144,
             }],
         };
-        let manager =
-            AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher], &[]).unwrap();
+        let manager = AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher]).unwrap();
 
         manager.set_active_for_identity("alice", "smart").unwrap();
         let plan = manager.select_plan_for_identity("alice").unwrap();
@@ -1265,8 +1120,7 @@ mod tests {
             }],
         };
 
-        let err =
-            AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher], &[]).unwrap_err();
+        let err = AlloyManager::from_gateway_configs(&[], &[cascade], &[dispatcher]).unwrap_err();
         assert!(err.contains("cycle"), "{err}");
     }
 }

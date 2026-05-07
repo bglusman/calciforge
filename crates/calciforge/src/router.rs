@@ -217,6 +217,38 @@ impl Router {
                 anyhow::anyhow!("{}", msg)
             })
     }
+
+    /// Dispatch a one-off prompt to a named configured agent without attaching
+    /// downstream session state. Used by `!btw` so callers can ask another
+    /// agent without changing their active agent or interrupting an active
+    /// session thread.
+    pub async fn dispatch_one_off_for_identity(
+        &self,
+        text: &str,
+        agent_id: &str,
+        config: &CalciforgeConfig,
+        identity_id: &str,
+        channel: &'static str,
+        model_override: Option<&str>,
+    ) -> Result<OutboundMessage> {
+        let agent = config
+            .agents
+            .iter()
+            .find(|agent| agent.id == agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent '{agent_id}' is not configured."))?;
+        self.dispatch_message_with_full_context(
+            text,
+            agent,
+            config,
+            RouterDispatchContext {
+                sender: Some(identity_id),
+                model_override,
+                session: None,
+                channel: Some(channel),
+            },
+        )
+        .await
+    }
 }
 
 impl Default for Router {
