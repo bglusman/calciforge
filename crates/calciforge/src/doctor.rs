@@ -21,6 +21,7 @@ use tokio::time::timeout;
 
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
+use crate::model_names::configured_first_class_model_ids;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
@@ -1420,7 +1421,7 @@ fn check_persisted_state_in(
     let active_models_path = state_dir.join("active-models.json");
     if let Ok(map) = read_state_map(&active_models_path) {
         for (identity, model_id) in map {
-            if gateway_model_selectors.contains(model_id.as_str()) {
+            if gateway_model_selectors.contains(&model_id) {
                 report.ok(format!(
                     "active model override for '{identity}' points to '{model_id}'"
                 ));
@@ -1442,14 +1443,16 @@ fn read_state_map(path: &Path) -> Result<HashMap<String, String>, ()> {
     serde_json::from_str(&text).map_err(|_| ())
 }
 
-fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<&str> {
-    config
-        .alloys
-        .iter()
-        .map(|model| model.id.as_str())
-        .chain(config.cascades.iter().map(|model| model.id.as_str()))
-        .chain(config.dispatchers.iter().map(|model| model.id.as_str()))
-        .chain(config.exec_models.iter().map(|model| model.id.as_str()))
+fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<String> {
+    configured_first_class_model_ids(config)
+        .into_iter()
+        .map(|model| model.id)
+        .chain(
+            config
+                .model_shortcuts
+                .iter()
+                .map(|shortcut| shortcut.alias.clone()),
+        )
         .collect()
 }
 
@@ -1487,6 +1490,7 @@ mod tests {
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
                 default_agent: "gateway".to_string(),
+                btw_agent: None,
                 allowed_agents: vec!["gateway".to_string(), "custodian".to_string()],
             }],
             proxy: Some(ProxyConfig {
@@ -1672,7 +1676,13 @@ mod tests {
 
     #[test]
     fn validates_persisted_active_state_against_config() {
-        let config = base_config();
+        let mut config = base_config();
+        config
+            .model_shortcuts
+            .push(crate::config::ModelShortcutConfig {
+                alias: "balanced".to_string(),
+                model: "local-kimi-gpt55".to_string(),
+            });
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path()).unwrap();
         std::fs::write(
@@ -1682,7 +1692,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             tmp.path().join("active-models.json"),
-            r#"{"brian":"missing-model"}"#,
+            r#"{"brian":"balanced","david":"missing-model"}"#,
         )
         .unwrap();
 
@@ -1698,6 +1708,12 @@ mod tests {
                 && finding
                     .message
                     .contains("unknown gateway model selector 'missing-model'")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding
+                    .message
+                    .contains("active model override for 'brian' points to 'balanced'")
         }));
     }
 

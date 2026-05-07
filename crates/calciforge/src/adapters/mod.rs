@@ -25,11 +25,13 @@ use std::fmt;
 pub mod acp;
 pub mod acpx;
 pub mod artifact_cli;
+pub mod claude_cli;
 pub mod cli;
 pub mod codex_cli;
 pub mod dirac_cli;
 pub mod hermes;
 pub mod ironclaw;
+pub mod kimi_cli;
 pub mod openai_compat;
 pub mod openclaw;
 pub mod openclaw_channel;
@@ -41,11 +43,13 @@ pub mod zeroclaw_native;
 pub use acp::AcpAdapter;
 pub use acpx::AcpxAdapter;
 pub use artifact_cli::ArtifactCliAdapter;
+pub use claude_cli::ClaudeCliAdapter;
 pub use cli::CliAdapter;
 pub use codex_cli::CodexCliAdapter;
 pub use dirac_cli::DiracCliAdapter;
 pub use hermes::HermesAdapter;
 pub use ironclaw::IronClawAdapter;
+pub use kimi_cli::KimiCliAdapter;
 pub use openai_compat::OpenAiCompatAdapter;
 pub use openclaw::ZeroClawHttpAdapter;
 pub use openclaw_channel::OpenClawChannelAdapter;
@@ -155,6 +159,18 @@ pub struct RuntimeStatus {
     pub _last_selected: Option<(String, String)>,
 }
 
+/// User-visible downstream session behavior for an adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSessionCapability {
+    /// No downstream session selection is exposed through Calciforge.
+    None,
+    /// Calciforge can pass a selected session name/id downstream, but cannot
+    /// list sessions from the agent.
+    Named,
+    /// Calciforge can list downstream sessions and pass a selected session.
+    Listable,
+}
+
 /// Common interface for all agent adapters.
 ///
 /// Implementations are `Send + Sync` so they can be wrapped in `Arc` and
@@ -209,6 +225,15 @@ pub fn agent_supports_native_commands(agent: &AgentConfig) -> bool {
     matches!(agent.kind.as_str(), "openclaw-channel")
 }
 
+/// Return the downstream session behavior exposed by this adapter kind.
+pub fn agent_session_capability(agent: &AgentConfig) -> AgentSessionCapability {
+    match agent.kind.as_str() {
+        "acpx" => AgentSessionCapability::Listable,
+        "hermes" | "codex-cli" | "claude-cli" | "kimi-cli" => AgentSessionCapability::Named,
+        _ => AgentSessionCapability::None,
+    }
+}
+
 /// Return true if this adapter kind intentionally consumes Calciforge's
 /// per-identity `!model` override.
 ///
@@ -220,10 +245,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
         return allow_model_override;
     }
 
-    matches!(
-        agent.kind.as_str(),
-        "zeroclaw-http" | "zeroclaw-native" | "zeroclaw" | "cli" | "artifact-cli" | "codex-cli"
-    )
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -244,10 +266,13 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 /// | `zeroclaw-http`    | `/webhook`          | ❌ stateless        | ✅ |
 /// | `zeroclaw-native`  | `/webhook` + history | ✅ in-process ring buffer | ✅ |
 /// | `zeroclaw`         | `/webhook`          | per-ZeroClaw-config | n/a |
-/// | `cli`              | subprocess stdin    | ❌ one-shot         | n/a |
+/// | `exec`             | subprocess argv/stdout | ❌ one-shot      | n/a |
+/// | `cli`              | subprocess argv/stdout | ❌ one-shot      | n/a |
 /// | `artifact-cli`     | subprocess stdin + artifact dir | ❌ one-shot | n/a |
-/// | `codex-cli`        | `codex exec`        | ❌ one-shot         | n/a |
+/// | `codex-cli`        | `codex exec`        | ✅ `resume` path    | n/a |
+/// | `claude-cli`       | `claude --print`    | ✅ `--session-id`   | n/a |
 /// | `dirac-cli`        | `dirac --yolo --json` | ❌ one-shot       | n/a |
+/// | `kimi-cli`         | `kimi --quiet`      | ✅ `--session`      | n/a |
 /// | `ironclaw`         | HTTP + SSE events   | ✅ server-side      | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |
 /// | `acpx`             | acpx CLI            | ✅ acpx sessions    | n/a |
@@ -382,11 +407,11 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
-        "cli" => {
+        "exec" | "cli" => {
             let command = agent
                 .command
                 .clone()
-                .ok_or_else(|| format!("agent '{}': kind='cli' requires command", agent.id))?;
+                .ok_or_else(|| format!("agent '{}': kind='{}' requires command", agent.id, agent.kind))?;
             Ok(Box::new(CliAdapter::with_model(
                 command,
                 agent.args.clone(),
@@ -408,6 +433,20 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "codex-cli" => Ok(Box::new(CodexCliAdapter::new(
+            agent.command.clone(),
+            agent.args.clone(),
+            agent.model.clone(),
+            agent.env.clone(),
+            agent.timeout_ms,
+        ))),
+        "claude-cli" => Ok(Box::new(ClaudeCliAdapter::new(
+            agent.command.clone(),
+            agent.args.clone(),
+            agent.model.clone(),
+            agent.env.clone(),
+            agent.timeout_ms,
+        ))),
+        "kimi-cli" => Ok(Box::new(KimiCliAdapter::new(
             agent.command.clone(),
             agent.args.clone(),
             agent.model.clone(),
@@ -948,7 +987,7 @@ mod tests {
         agent.kind = "openai-compat".to_string();
         assert!(
             !agent_supports_model_override(&agent),
-            "OpenAI-compatible endpoints require explicit opt-in because supported model IDs are endpoint-specific"
+            "OpenAI-compatible agents must opt into Calciforge model overrides because upstream model namespaces differ"
         );
 
         agent.allow_model_override = Some(true);
@@ -956,10 +995,16 @@ mod tests {
         agent.allow_model_override = None;
 
         agent.kind = "cli".to_string();
-        assert!(agent_supports_model_override(&agent));
+        assert!(
+            !agent_supports_model_override(&agent),
+            "generic exec/CLI agents are one-shot agent adapters, not gateway model consumers"
+        );
 
         agent.kind = "artifact-cli".to_string();
-        assert!(agent_supports_model_override(&agent));
+        assert!(!agent_supports_model_override(&agent));
+
+        agent.kind = "codex-cli".to_string();
+        assert!(!agent_supports_model_override(&agent));
 
         agent.kind = "acpx".to_string();
         assert!(

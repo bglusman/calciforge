@@ -12,7 +12,6 @@ use crate::config::{CalciforgeConfig, ModelShortcutConfig};
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ModelIdKind {
     Synthetic,
-    ExecShim,
     Local,
     ProviderExact,
     ModelRouteExact,
@@ -22,7 +21,6 @@ impl ModelIdKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Synthetic => "synthetic model ID",
-            Self::ExecShim => "exec-backed model shim ID",
             Self::Local => "local model ID",
             Self::ProviderExact => "provider model ID",
             Self::ModelRouteExact => "model-route ID",
@@ -93,16 +91,6 @@ pub fn configured_first_class_model_ids(config: &CalciforgeConfig) -> Vec<Config
                 kind: ModelIdKind::Synthetic,
             }),
     );
-    ids.extend(
-        config
-            .exec_models
-            .iter()
-            .map(|exec_model| ConfiguredModelId {
-                id: exec_model.id.clone(),
-                kind: ModelIdKind::ExecShim,
-            }),
-    );
-
     if let Some(local_models) = &config.local_models {
         ids.extend(local_models.models.iter().map(|model| ConfiguredModelId {
             id: model.id.clone(),

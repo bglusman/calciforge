@@ -1,9 +1,9 @@
 //! Model identifier resolution for the gateway.
 //!
 //! The gateway accepts model names from several surfaces: API requests,
-//! `[[model_shortcuts]]`, synthetic model definitions, and exec-backed model
-//! shims. Keep shortcut normalization and expansion here so auth, validation,
-//! and routing do not each grow subtly different model-name rules.
+//! `[[model_shortcuts]]`, and synthetic model definitions. Keep shortcut
+//! normalization and expansion here so auth, validation, and routing do not
+//! each grow subtly different model-name rules.
 
 use crate::config::ModelShortcutConfig;
 use crate::model_names::resolve_model_alias_chain;
@@ -26,9 +26,8 @@ impl<'a> ModelResolver<'a> {
 
     /// Resolve a shortcut alias chain to the first non-alias model name.
     ///
-    /// This intentionally does not expand gateway selectors. A shortcut may
-    /// target a synthetic routing ID or exec-backed shim, and callers can then
-    /// ask for a plan.
+    /// This intentionally does not expand synthetic selectors. A shortcut may
+    /// target a synthetic routing ID, and callers can then ask for a plan.
     pub fn resolve_alias_chain(&self, model: &str) -> Result<String, String> {
         resolve_model_alias_chain(self.shortcuts, model)
     }
@@ -78,10 +77,6 @@ impl<'a> ModelResolver<'a> {
         let mut expanded = Vec::new();
         for target in &plan.ordered_models {
             let resolved = self.resolve_alias_chain(target)?;
-            if resolved == plan.alloy_id && self.alloy_manager.is_exec_model(&resolved) {
-                expanded.push(resolved);
-                continue;
-            }
             match self
                 .alloy_manager
                 .select_plan_for_model(&resolved, estimated_tokens)?
@@ -102,7 +97,7 @@ impl<'a> ModelResolver<'a> {
 
 pub struct ResolvedModelPlan {
     /// Request model after resolving shortcut aliases, before synthetic
-    /// expansion. This may still be a synthetic routing ID or exec-backed shim.
+    /// expansion. This may still be a synthetic routing ID.
     pub root_model: String,
     /// Fully expanded route plan. `ordered_models` are concrete gateway models.
     pub plan: AlloyPlan,
@@ -111,7 +106,7 @@ pub struct ResolvedModelPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DispatcherConfig, ExecModelConfig, SyntheticModelConfig};
+    use crate::config::{DispatcherConfig, SyntheticModelConfig};
 
     fn dispatcher_manager() -> AlloyManager {
         AlloyManager::from_gateway_configs(
@@ -135,7 +130,6 @@ mod tests {
                     }],
                 },
             ],
-            &[],
         )
         .unwrap()
     }
@@ -179,30 +173,5 @@ mod tests {
         let err = resolver.resolve_alias_chain("a").unwrap_err();
 
         assert!(err.contains("shortcut cycle"), "{err}");
-    }
-
-    #[test]
-    fn preserves_exec_models_as_terminal_exec_shims() {
-        let manager = AlloyManager::from_gateway_configs(
-            &[],
-            &[],
-            &[],
-            &[ExecModelConfig {
-                id: "exec/fake".to_string(),
-                name: Some("Fake exec".to_string()),
-                context_window: 4_000,
-                command: "/bin/echo".to_string(),
-                args: Vec::new(),
-                env: std::collections::HashMap::new(),
-                timeout_seconds: None,
-            }],
-        )
-        .unwrap();
-        let resolver = ModelResolver::new(&[], &manager);
-
-        let resolved = resolver.plan_for_model("exec/fake", 100).unwrap();
-
-        assert_eq!(resolved.root_model, "exec/fake");
-        assert_eq!(resolved.plan.ordered_models, vec!["exec/fake"]);
     }
 }

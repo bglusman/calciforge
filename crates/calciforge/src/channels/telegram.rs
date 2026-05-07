@@ -264,6 +264,8 @@ fn handle_message_nonblocking(
         && !CommandHandler::is_switch_command(&text)
         && !CommandHandler::is_default_command(&text)
         && !CommandHandler::is_sessions_command(&text)
+        && !CommandHandler::is_new_session_command(&text)
+        && !CommandHandler::is_btw_command(&text)
         && !CommandHandler::is_model_command(&text)
         && !CommandHandler::is_secure_command(&text)
         && !CommandHandler::is_approve_command(&text)
@@ -394,6 +396,63 @@ fn handle_message_nonblocking(
                 "sessions",
             )
             .await;
+        });
+        return;
+    }
+
+    if CommandHandler::is_new_session_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !new command");
+        let reply = command_handler.handle_new_session(&text, &identity.id);
+        let bot2 = bot.clone();
+        tokio::spawn(async move {
+            send_plain_reply(bot2, chat_id, reply, "new-session").await;
+        });
+        return;
+    }
+
+    if CommandHandler::is_btw_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !btw command");
+        let bot2 = bot.clone();
+        let identity_id = identity.id.clone();
+        let command_handler2 = command_handler.clone();
+        let router2 = router.clone();
+        let config2 = config.clone();
+        tokio::spawn(async move {
+            let command_start = std::time::Instant::now();
+            let reply = match command_handler2.parse_btw_command(&text, &identity_id) {
+                Ok(request) => {
+                    let model_override = command_handler2.active_model_for_identity(&identity_id);
+                    let dispatch_start = std::time::Instant::now();
+                    match router2
+                        .dispatch_one_off_for_identity(
+                            &request.prompt,
+                            &request.agent_id,
+                            &config2,
+                            &identity_id,
+                            "telegram",
+                            model_override.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(response) => {
+                            command_handler2
+                                .record_dispatch(dispatch_start.elapsed().as_millis() as u64);
+                            format!("{}:\n{}", request.agent_id, response.render_text_fallback())
+                        }
+                        Err(err) => format!("⚠️ !btw dispatch failed: {err}"),
+                    }
+                }
+                Err(err) => err,
+            };
+            telemetry::command_reply_ready(
+                "telegram",
+                &identity_id,
+                "btw",
+                received_at.elapsed().as_millis() as u64,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            send_plain_reply(bot2, chat_id, reply, "btw").await;
         });
         return;
     }
@@ -1333,6 +1392,48 @@ async fn handle_message(
         return;
     }
 
+    if CommandHandler::is_new_session_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !new command");
+        let reply = command_handler.handle_new_session(&text, &identity.id);
+        if let Err(e) = bot.send_message(chat_id, &reply).await {
+            warn!(chat_id = %chat_id, error = %e, "failed to send new-session reply");
+        }
+        return;
+    }
+
+    if CommandHandler::is_btw_command(&text) {
+        debug!(chat_id = %chat_id, identity = %identity.id, "handling !btw command");
+        let reply = match command_handler.parse_btw_command(&text, &identity.id) {
+            Ok(request) => {
+                let model_override = command_handler.active_model_for_identity(&identity.id);
+                let dispatch_start = std::time::Instant::now();
+                match router
+                    .dispatch_one_off_for_identity(
+                        &request.prompt,
+                        &request.agent_id,
+                        &config,
+                        &identity.id,
+                        "telegram",
+                        model_override.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(response) => {
+                        command_handler
+                            .record_dispatch(dispatch_start.elapsed().as_millis() as u64);
+                        format!("{}:\n{}", request.agent_id, response.render_text_fallback())
+                    }
+                    Err(err) => format!("⚠️ !btw dispatch failed: {err}"),
+                }
+            }
+            Err(err) => err,
+        };
+        if let Err(e) = bot.send_message(chat_id, &reply).await {
+            warn!(chat_id = %chat_id, error = %e, "failed to send btw reply");
+        }
+        return;
+    }
+
     // !default — switch back to configured default agent; requires identity context.
     if CommandHandler::is_default_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !default command");
@@ -1538,6 +1639,7 @@ mod tests {
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
                 default_agent: "librarian".to_string(),
+                btw_agent: None,
                 allowed_agents: vec![],
             }],
             channels: vec![ChannelConfig {

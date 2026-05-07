@@ -908,6 +908,8 @@ async fn handle_message(
         && !CommandHandler::is_switch_command(body)
         && !CommandHandler::is_default_command(body)
         && !CommandHandler::is_sessions_command(body)
+        && !CommandHandler::is_new_session_command(body)
+        && !CommandHandler::is_btw_command(body)
         && !CommandHandler::is_model_command(body)
         && !CommandHandler::is_secure_command(body)
         && !CommandHandler::is_approve_command(body)
@@ -942,6 +944,44 @@ async fn handle_message(
         let reply = cmd_handler.handle_sessions_message(body, identity_id).await;
         cmd_handler.record_pending_choices(identity_id, &reply);
         send_outbound(reply, "sessions").await;
+        return;
+    }
+
+    if CommandHandler::is_new_session_command(body) {
+        send(
+            cmd_handler.handle_new_session(body, identity_id),
+            "new-session",
+        )
+        .await;
+        return;
+    }
+
+    if CommandHandler::is_btw_command(body) {
+        let reply = match cmd_handler.parse_btw_command(body, identity_id) {
+            Ok(request) => {
+                let model_override = cmd_handler.active_model_for_identity(identity_id);
+                let dispatch_start = std::time::Instant::now();
+                match router
+                    .dispatch_one_off_for_identity(
+                        &request.prompt,
+                        &request.agent_id,
+                        config,
+                        identity_id,
+                        "matrix",
+                        model_override.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(response) => {
+                        cmd_handler.record_dispatch(dispatch_start.elapsed().as_millis() as u64);
+                        format!("{}:\n{}", request.agent_id, response.render_text_fallback())
+                    }
+                    Err(err) => format!("⚠️ !btw dispatch failed: {err}"),
+                }
+            }
+            Err(err) => err,
+        };
+        send(reply, "btw").await;
         return;
     }
 
@@ -1735,6 +1775,7 @@ printf 'mock-agent saw: %s\n' "$1"
             routing: vec![RoutingRule {
                 identity: "alice".to_string(),
                 default_agent: "mock".to_string(),
+                btw_agent: None,
                 allowed_agents: vec!["mock".to_string()],
             }],
             channels: vec![ChannelConfig {

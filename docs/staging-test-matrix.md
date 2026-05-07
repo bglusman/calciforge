@@ -50,8 +50,8 @@ Current fit:
 - Per-crate test matrix.
 - Loom concurrency tests.
 - Real Matrix DM E2E with disposable Synapse (`scripts/matrix-real-e2e.py`).
-- Synthetic model gateway E2E for alloys, cascades, dispatchers, and exec-backed
-  model leaves (`scripts/model-gateway-synthetic-e2e.py`).
+- Synthetic model gateway E2E for alloys, cascades, and dispatchers
+  (`scripts/model-gateway-synthetic-e2e.py`).
 - Helicone external gateway process-boundary smoke
   (`scripts/model-gateway-helicone-smoke.py`).
 - Docker model-gateway smoke and installer-adjacent coverage.

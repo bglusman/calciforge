@@ -267,6 +267,8 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             && !CommandHandler::is_switch_command(&text)
             && !CommandHandler::is_default_command(&text)
             && !CommandHandler::is_sessions_command(&text)
+            && !CommandHandler::is_new_session_command(&text)
+            && !CommandHandler::is_btw_command(&text)
             && !CommandHandler::is_model_command(&text)
             && !CommandHandler::is_secure_command(&text)
             && !CommandHandler::is_approve_command(&text)
@@ -383,6 +385,68 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             let target = reply_target.clone();
             tokio::spawn(async move {
                 channel.send_outbound(&target, &reply).await;
+            });
+            return;
+        }
+
+        if CommandHandler::is_new_session_command(&text) {
+            let command_start = std::time::Instant::now();
+            let reply = self.command_handler.handle_new_session(&text, &identity.id);
+            self.command_reply_ready(
+                &identity.id,
+                "new-session",
+                received_at,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
+        }
+
+        if CommandHandler::is_btw_command(&text) {
+            let command_start = std::time::Instant::now();
+            let reply = match self.command_handler.parse_btw_command(&text, &identity.id) {
+                Ok(request) => {
+                    let model_override =
+                        self.command_handler.active_model_for_identity(&identity.id);
+                    let dispatch_start = std::time::Instant::now();
+                    match self
+                        .router
+                        .dispatch_one_off_for_identity(
+                            &request.prompt,
+                            &request.agent_id,
+                            &self.config,
+                            &identity.id,
+                            "whatsapp",
+                            model_override.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(response) => {
+                            self.command_handler
+                                .record_dispatch(dispatch_start.elapsed().as_millis() as u64);
+                            format!("{}:\n{}", request.agent_id, response.render_text_fallback())
+                        }
+                        Err(err) => format!("⚠️ !btw dispatch failed: {err}"),
+                    }
+                }
+                Err(err) => err,
+            };
+            self.command_reply_ready(
+                &identity.id,
+                "btw",
+                received_at,
+                command_start.elapsed().as_millis() as u64,
+                reply.len(),
+            );
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
             });
             return;
         }
@@ -867,6 +931,7 @@ mod tests {
             routing: vec![RoutingRule {
                 identity: "alice".to_string(),
                 default_agent: "librarian".to_string(),
+                btw_agent: None,
                 allowed_agents: vec![],
             }],
             channels: vec![channel],

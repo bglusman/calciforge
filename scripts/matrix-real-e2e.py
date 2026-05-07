@@ -233,6 +233,7 @@ kind = "cli"
 command = "{agent_path}"
 args = ["{{message}}"]
 timeout_ms = 5000
+allow_model_override = true
 
 [[agents]]
 id = "backup-agent"
@@ -240,6 +241,7 @@ kind = "cli"
 command = "{backup_agent_path}"
 args = ["{{message}}"]
 timeout_ms = 5000
+allow_model_override = true
 
 [[routing]]
 identity = "alice"
@@ -557,7 +559,7 @@ def main() -> int:
             ("!status", "active agent: real-matrix-agent"),
             ("!metrics", "messages routed: 0"),
             ("!model", "Configured dispatchers:"),
-            ("!sessions real-matrix-agent", "does not support session listing"),
+            ("!sessions real-matrix-agent", "does not expose downstream sessions"),
         ]
         for body, expected in command_cases:
             send_and_expect(

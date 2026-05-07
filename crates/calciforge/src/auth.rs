@@ -139,11 +139,13 @@ mod tests {
                 RoutingRule {
                     identity: "brian".to_string(),
                     default_agent: "librarian".to_string(),
+                    btw_agent: None,
                     allowed_agents: vec![],
                 },
                 RoutingRule {
                     identity: "david".to_string(),
                     default_agent: "librarian".to_string(),
+                    btw_agent: None,
                     allowed_agents: vec!["librarian".to_string()],
                 },
             ],

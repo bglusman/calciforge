@@ -14,7 +14,7 @@
 //! [`CommandHandler::handle_switch`] and
 //! [`CommandHandler::cmd_status_for_identity`] respectively.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -23,9 +23,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
-use crate::adapters::openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter};
+use crate::adapters::{
+    agent_session_capability, agent_supports_model_override,
+    openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter},
+    AgentSessionCapability,
+};
 use crate::config::{calciforge_config_home, CalciforgeConfig};
 use crate::messages::{ChoiceControl, ChoiceOption, Match, OutboundMessage};
+use crate::model_names::configured_first_class_model_ids;
 use crate::providers::alloy::AlloyManager;
 
 const PENDING_CHOICE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -62,6 +67,19 @@ fn command_token(text: &str) -> &str {
     text.split_whitespace().next().unwrap_or("")
 }
 
+fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<String> {
+    configured_first_class_model_ids(config)
+        .into_iter()
+        .map(|model| model.id)
+        .chain(
+            config
+                .model_shortcuts
+                .iter()
+                .map(|shortcut| shortcut.alias.clone()),
+        )
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChoiceError {
     MissingRoutingRule {
@@ -77,6 +95,12 @@ pub enum AgentChoiceError {
 pub enum PendingChoiceReply {
     Command(String),
     Reply(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtwRequest {
+    pub agent_id: String,
+    pub prompt: String,
 }
 
 impl fmt::Display for AgentChoiceError {
@@ -106,6 +130,8 @@ fn command_suggestion(cmd: &str) -> Option<&'static str> {
         "!agent",
         "!sessions",
         "!session",
+        "!new",
+        "!btw",
         "!gateway",
         "!metrics",
         "!ping",
@@ -328,9 +354,36 @@ impl CommandHandler {
 
     /// Set the gateway selector manager for this command handler.
     pub fn with_alloy_manager(mut self, manager: AlloyManager) -> Self {
+        let mut configured_gateway_selectors = gateway_model_selector_ids(&self.config);
+        configured_gateway_selectors.extend(
+            manager
+                .list_alloys()
+                .into_iter()
+                .map(|alloy| alloy.definition().id.clone()),
+        );
+        configured_gateway_selectors.extend(
+            manager
+                .list_cascades()
+                .into_iter()
+                .map(|cascade| cascade.id.clone()),
+        );
+        configured_gateway_selectors.extend(
+            manager
+                .list_dispatchers()
+                .into_iter()
+                .map(|dispatcher| dispatcher.id.clone()),
+        );
         let mut active_models = self.active_models.lock().unwrap();
         active_models.retain(|identity_id, model_id| {
-            if manager.is_gateway_model_selector(model_id) {
+            if !configured_gateway_selectors.contains(model_id) {
+                tracing::warn!(
+                    identity = %identity_id,
+                    model = %model_id,
+                    "dropping persisted active-model selection that is not configured"
+                );
+                return false;
+            }
+            if manager.is_synthetic_model(model_id) {
                 if let Err(err) = manager.set_active_for_identity(identity_id, model_id) {
                     tracing::warn!(
                         identity = %identity_id,
@@ -471,12 +524,6 @@ impl CommandHandler {
                     .list_dispatchers()
                     .into_iter()
                     .map(|model| (model.id.clone(), format!("{} (dispatcher)", model.name))),
-            );
-            choices.extend(
-                manager
-                    .list_exec_models()
-                    .into_iter()
-                    .map(|model| (model.id.clone(), format!("{} (exec)", model.name))),
             );
         }
         if let Some(manager) = self.local_manager.as_ref() {
@@ -634,12 +681,138 @@ impl CommandHandler {
         crate::auth::default_agent_for(identity_id, &self.config)
     }
 
+    fn routing_rule_for_identity(&self, identity_id: &str) -> Option<&crate::config::RoutingRule> {
+        self.config
+            .routing
+            .iter()
+            .find(|rule| rule.identity == identity_id)
+    }
+
+    fn allowed_agent_ids_for_rule<'a>(
+        &'a self,
+        rule: &'a crate::config::RoutingRule,
+    ) -> Vec<&'a str> {
+        if rule.allowed_agents.is_empty() {
+            self.config
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect()
+        } else {
+            rule.allowed_agents.iter().map(String::as_str).collect()
+        }
+    }
+
+    fn resolve_allowed_agent_selector(&self, identity_id: &str, selector: &str) -> Option<String> {
+        let rule = self.routing_rule_for_identity(identity_id)?;
+        self.allowed_agent_ids_for_rule(rule)
+            .into_iter()
+            .find_map(|agent_id| {
+                let agent = self
+                    .config
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == agent_id)?;
+                if agent.id.eq_ignore_ascii_case(selector)
+                    || agent
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(selector))
+                {
+                    Some(agent.id.clone())
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn selector_matches_any_agent(&self, selector: &str) -> bool {
+        self.config.agents.iter().any(|agent| {
+            agent.id.eq_ignore_ascii_case(selector)
+                || agent
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(selector))
+        })
+    }
+
+    /// Parse `!btw <agent> <prompt>` or `!btw <prompt>` with a configured
+    /// per-identity `btw_agent`. This does not mutate active agent/session
+    /// state; channel handlers use it for one-off dispatch.
+    pub fn parse_btw_command(&self, text: &str, identity_id: &str) -> Result<BtwRequest, String> {
+        if !Self::is_btw_command(text) {
+            return Err("Usage: !btw <agent> <prompt>".to_string());
+        }
+
+        let trimmed = text.trim();
+        let rest = trimmed
+            .split_once(char::is_whitespace)
+            .map(|(_, rest)| rest.trim())
+            .unwrap_or("");
+        if rest.is_empty() {
+            return Err("Usage: !btw <agent> <prompt>\nOr configure routing.btw_agent and use !btw <prompt>.".to_string());
+        }
+
+        let Some(rule) = self.routing_rule_for_identity(identity_id) else {
+            return Err(format!(
+                "⚠️ No routing rule found for identity '{}'.",
+                identity_id
+            ));
+        };
+
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let first = parts.next().unwrap_or("");
+        let after_first = parts.next().map(str::trim).unwrap_or("");
+
+        if let Some(agent_id) = self.resolve_allowed_agent_selector(identity_id, first) {
+            if after_first.is_empty() {
+                return Err(format!(
+                    "Usage: !btw {} <prompt>\nThe one-off prompt cannot be empty.",
+                    first
+                ));
+            }
+            return Ok(BtwRequest {
+                agent_id,
+                prompt: after_first.to_string(),
+            });
+        }
+        if self.selector_matches_any_agent(first) {
+            return Err(format!("⚠️ Agent '{}' is not available to you.", first));
+        }
+
+        let Some(default_agent) = rule.btw_agent.as_deref() else {
+            return Err("Usage: !btw <agent> <prompt>\nNo routing.btw_agent is configured for !btw <prompt>.".to_string());
+        };
+        let Some(agent_id) = self.resolve_allowed_agent_selector(identity_id, default_agent) else {
+            return Err(format!(
+                "⚠️ Configured btw_agent '{}' is not available to you.",
+                default_agent
+            ));
+        };
+        Ok(BtwRequest {
+            agent_id,
+            prompt: rest.to_string(),
+        })
+    }
+
     /// Return the currently selected downstream session for an identity/agent.
     pub fn active_session_for(&self, identity_id: &str, agent_id: &str) -> Option<String> {
         let map = self.active_sessions.lock().unwrap();
         map.get(identity_id)
             .and_then(|sessions| sessions.get(agent_id))
             .cloned()
+    }
+
+    fn set_active_session_for(&self, identity_id: &str, agent_id: &str, session: &str) {
+        let sessions_snapshot = {
+            let mut sessions = self.active_sessions.lock().unwrap();
+            sessions
+                .entry(identity_id.to_string())
+                .or_default()
+                .insert(agent_id.to_string(), session.to_string());
+            sessions.clone()
+        };
+        save_active_sessions_to(&self.state_dir, &sessions_snapshot);
     }
 
     /// Remember the latest discrete choice sent to an identity.
@@ -743,8 +916,8 @@ impl CommandHandler {
             "!gateway" => None,
             "!metrics" => Some(self.cmd_metrics()),
             "!ping" => Some("pong".to_string()),
-            // !sessions needs auth — return None so caller resolves identity first.
-            "!sessions" | "!session" => None,
+            // Session commands need auth — return None so caller resolves identity first.
+            "!sessions" | "!session" | "!new" | "!btw" => None,
             // !switch needs auth — return None here so the caller can do auth
             // first, then call handle_switch().
             // !agent is an alias: reads as "pick an agent" since !agents lists them.
@@ -780,6 +953,20 @@ impl CommandHandler {
         let trimmed = text.trim();
         let cmd = command_token(trimmed).to_lowercase();
         cmd == "!sessions" || cmd == "!session"
+    }
+
+    /// Returns `true` if the text is a `!new` session command.
+    pub fn is_new_session_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = command_token(trimmed).to_lowercase();
+        cmd == "!new"
+    }
+
+    /// Returns `true` if the text is a `!btw` one-off dispatch command.
+    pub fn is_btw_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = command_token(trimmed).to_lowercase();
+        cmd == "!btw"
     }
 
     /// Returns `true` if the text is a `!switch` (or `!agent` alias) command.
@@ -1301,16 +1488,17 @@ impl CommandHandler {
                     .and_then(|r| r.display_name.as_deref())
                     .unwrap_or(agent_id);
 
-                // Check if this is an acpx agent and session was specified
-                let is_acpx = agent_cfg.map(|a| a.kind == "acpx").unwrap_or(false);
-                if is_acpx {
+                let session_capability = agent_cfg
+                    .map(agent_session_capability)
+                    .unwrap_or(AgentSessionCapability::None);
+                if session_capability != AgentSessionCapability::None {
                     if let Some(session) = session_arg.as_deref() {
                         if !valid_downstream_session_name(session) {
                             return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash.".to_string();
                         }
                     }
                 }
-                let session_info = if is_acpx {
+                let session_info = if session_capability != AgentSessionCapability::None {
                     if let Some(session) = session_arg.as_ref() {
                         format!(" (session: {})", session)
                     } else {
@@ -1323,19 +1511,24 @@ impl CommandHandler {
                 };
 
                 // Update per-identity active agent and persist to disk.
-                {
+                let active_agents_snapshot = {
                     let mut map = self.active_agents.lock().unwrap();
                     map.insert(identity_id.to_string(), agent_id.to_string());
-                    save_active_agents_to(&self.state_dir, &map);
-                }
-                {
+                    map.clone()
+                };
+                save_active_agents_to(&self.state_dir, &active_agents_snapshot);
+
+                let active_sessions_snapshot = {
                     let mut sessions = self.active_sessions.lock().unwrap();
-                    if let Some(session) = session_arg.as_ref().filter(|_| is_acpx) {
+                    if let Some(session) = session_arg
+                        .as_ref()
+                        .filter(|_| session_capability != AgentSessionCapability::None)
+                    {
                         sessions
                             .entry(identity_id.to_string())
                             .or_default()
                             .insert(agent_id.to_string(), session.to_string());
-                    } else if is_acpx {
+                    } else if session_capability != AgentSessionCapability::None {
                         let mut remove_identity = false;
                         if let Some(identity_sessions) = sessions.get_mut(identity_id) {
                             identity_sessions.remove(agent_id);
@@ -1345,8 +1538,9 @@ impl CommandHandler {
                             sessions.remove(identity_id);
                         }
                     }
-                    save_active_sessions_to(&self.state_dir, &sessions);
-                }
+                    sessions.clone()
+                };
+                save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
 
                 format!(
                     "✅ Switched to {}{}. Your messages will now route to {}.",
@@ -1364,6 +1558,45 @@ impl CommandHandler {
         self.handle_sessions_message(text, identity_id)
             .await
             .render_text_fallback()
+    }
+
+    /// Start or attach a new named downstream session for the current agent.
+    pub fn handle_new_session(&self, text: &str, identity_id: &str) -> String {
+        let args: Vec<&str> = text.split_whitespace().skip(1).collect();
+        if args.len() > 1 {
+            return "Usage: !new [session]\n\nCreates or selects a new named session for your active agent.".to_string();
+        }
+
+        let Some(agent_id) = self.active_agent_for(identity_id) else {
+            return "⚠️ No active agent is configured for your identity.".to_string();
+        };
+        let Some(agent_cfg) = self.config.agents.iter().find(|agent| agent.id == agent_id) else {
+            return format!(
+                "⚠️ Active agent '{}' is not present in configuration.",
+                agent_id
+            );
+        };
+        if agent_session_capability(agent_cfg) == AgentSessionCapability::None {
+            return format!(
+                "ℹ️ Active agent '{}' ({}) does not expose downstream sessions through Calciforge.",
+                agent_cfg.id, agent_cfg.kind
+            );
+        }
+
+        let session = args
+            .first()
+            .map(|s| (*s).to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if !valid_downstream_session_name(&session) {
+            return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash."
+                .to_string();
+        }
+
+        self.set_active_session_for(identity_id, &agent_id, &session);
+        format!(
+            "✅ Started session '{}' for {}.\n\nUse !switch {} {} to return to it later.",
+            session, agent_id, agent_id, session
+        )
     }
 
     /// Handle a `!sessions` command for an authenticated identity.
@@ -1440,7 +1673,7 @@ impl CommandHandler {
             Some(id) => id,
         };
 
-        // Get agent config to check if it's an acpx agent.
+        // Get agent config to check session capability.
         let agent_cfg = match self.config.agents.iter().find(|a| a.id == agent_id) {
             Some(cfg) => cfg,
             None => {
@@ -1451,30 +1684,28 @@ impl CommandHandler {
             }
         };
 
-        if agent_cfg.kind != "acpx" {
-            return OutboundMessage::text(format!(
-                "ℹ️ Agent '{}' ({}) does not support session listing.\nOnly 'acpx' type agents support sessions.",
+        match agent_session_capability(agent_cfg) {
+            AgentSessionCapability::None => OutboundMessage::text(format!(
+                "ℹ️ Agent '{}' ({}) does not expose downstream sessions through Calciforge.",
                 agent_id, agent_cfg.kind
-            ));
-        }
-
-        // List sessions using acpx.
-        let agent_name = agent_cfg.command.as_deref().unwrap_or(agent_id);
-        match self.list_acpx_sessions(agent_name).await {
-            Ok(sessions) if sessions.is_empty() => {
-                OutboundMessage::text(format!(
-                    "ℹ️ No active sessions for '{}'.\n\nUse !switch {} to create a new session.",
-                    agent_id, agent_id
-                ))
-            }
-            Ok(sessions) => {
-                active_sessions_message(agent_id, sessions)
-            }
-            Err(e) => {
-                OutboundMessage::text(format!(
-                    "⚠️ Failed to list sessions for '{}': {}\n\nMake sure acpx is installed and the agent is properly configured.",
-                    agent_id, e
-                ))
+            )),
+            AgentSessionCapability::Named => OutboundMessage::text(format!(
+                "ℹ️ Agent '{}' ({}) supports named sessions, but Calciforge cannot list them from the agent yet.\n\nUse !switch {} <session> to attach by name, or !new to create a new Calciforge-managed session for your current agent.",
+                agent_id, agent_cfg.kind, agent_id
+            )),
+            AgentSessionCapability::Listable => {
+                let agent_name = agent_cfg.command.as_deref().unwrap_or(agent_id);
+                match self.list_acpx_sessions(agent_name).await {
+                    Ok(sessions) if sessions.is_empty() => OutboundMessage::text(format!(
+                        "ℹ️ No active sessions for '{}'.\n\nUse !new while '{}' is active to create a new session.",
+                        agent_id, agent_id
+                    )),
+                    Ok(sessions) => active_sessions_message(agent_id, sessions),
+                    Err(e) => OutboundMessage::text(format!(
+                        "⚠️ Failed to list sessions for '{}': {}\n\nMake sure the session backend is installed and the agent is properly configured.",
+                        agent_id, e
+                    )),
+                }
             }
         }
     }
@@ -1522,16 +1753,19 @@ impl CommandHandler {
         };
 
         // Update per-identity active agent back to the configured default and persist.
-        {
+        let active_agents_snapshot = {
             let mut map = self.active_agents.lock().unwrap();
             map.insert(identity_id.to_string(), default_agent_id.clone());
-            save_active_agents_to(&self.state_dir, &map);
-        }
-        {
+            map.clone()
+        };
+        save_active_agents_to(&self.state_dir, &active_agents_snapshot);
+
+        let active_sessions_snapshot = {
             let mut sessions = self.active_sessions.lock().unwrap();
             sessions.remove(identity_id);
-            save_active_sessions_to(&self.state_dir, &sessions);
-        }
+            sessions.clone()
+        };
+        save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
 
         format!("✅ Switched to default agent: {}", default_agent_id)
     }
@@ -1625,7 +1859,9 @@ impl CommandHandler {
             "  !help, !commands — show this help",
             "  !status  — version, uptime, active agent, config summary",
             "  !agents  — list configured agents",
-            "  !sessions <agent> — list ACP sessions for an agent (requires auth)",
+            "  !sessions <agent> — list downstream sessions when the adapter supports it",
+            "  !new [session] — start a new named session with your active agent",
+            "  !btw <agent> <prompt> — ask another agent once without switching",
             "  !gateway — model gateway engine, bind address, and UI link",
             "  !metrics — messages routed, average latency",
             "  !ping    — connectivity check (replies: pong)",
@@ -1720,17 +1956,6 @@ impl CommandHandler {
                             ));
                         }
                     }
-                    let exec_models = manager.list_exec_models();
-                    if !exec_models.is_empty() {
-                        lines.push(String::new());
-                        lines.push("Configured exec-backed model shims:".to_string());
-                        for exec_model in exec_models {
-                            lines.push(format!(
-                                "  {} — {} ({} tokens)",
-                                exec_model.id, exec_model.name, exec_model.context_window
-                            ));
-                        }
-                    }
                 }
             }
 
@@ -1743,15 +1968,14 @@ impl CommandHandler {
             lines.push("  !model <alias> — activate the shortcut target".to_string());
             if self.alloy_manager.is_some() {
                 lines.push(
-                    "  !model use <id> — activate an alloy/cascade/dispatcher or exec-backed model shim for your identity"
+                    "  !model use <id> — activate an alloy/cascade/dispatcher for your identity"
                         .to_string(),
                 );
             }
             Some(lines.join("\n"))
         } else {
             // Argument provided — defer to post-auth handling for activatable
-            // shortcuts, synthetic routing selectors, exec shims, local models,
-            // and provider models.
+            // shortcuts, synthetic routing selectors, local models, and provider models.
             if args.first().is_some_and(|arg| {
                 arg.eq_ignore_ascii_case("use")
                     || arg.eq_ignore_ascii_case("switch")
@@ -1806,9 +2030,30 @@ impl CommandHandler {
             Some(format!(" via alias '{requested_model_id}' → '{model_id}'"))
         };
 
-        // 1. Gateway model selector switch.
+        let Some(active_agent_id) = self.active_agent_for(identity_id) else {
+            return "⚠️ No active agent is configured for your identity, so Calciforge cannot apply a model override.".to_string();
+        };
+        let Some(active_agent) = self
+            .config
+            .agents
+            .iter()
+            .find(|agent| agent.id == active_agent_id)
+        else {
+            return format!(
+                "⚠️ Active agent '{}' is not present in configuration.",
+                active_agent_id
+            );
+        };
+        if !agent_supports_model_override(active_agent) {
+            return format!(
+                "⚠️ Active agent '{}' ({}) does not consume Calciforge model overrides.\n\nSwitch to a gateway-backed agent or configure that agent's native model setting instead.",
+                active_agent.id, active_agent.kind
+            );
+        }
+
+        // 1. Synthetic model selector switch.
         if let Some(ref manager) = self.alloy_manager {
-            if manager.is_gateway_model_selector(model_id) {
+            if manager.is_synthetic_model(model_id) {
                 if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
                     return format!("⚠️ Failed to activate model: {}", e);
                 }
@@ -1828,9 +2073,7 @@ impl CommandHandler {
                         constituents.join(", ")
                     );
                 }
-                let kind = if manager.is_exec_model(model_id) {
-                    "exec-backed model shim"
-                } else if manager
+                let kind = if manager
                     .list_cascades()
                     .iter()
                     .any(|cascade| cascade.id == model_id)
@@ -1843,15 +2086,8 @@ impl CommandHandler {
                 {
                     "dispatcher"
                 } else {
-                    "gateway model selector"
+                    "synthetic model selector"
                 };
-                if kind == "exec-backed model shim" {
-                    return format!(
-                        "✅ Activated exec-backed model shim '{}'{} for your identity.\n\nThis runs a local command directly after Calciforge gateway auth/routing; it does not use provider gateway observability or native tool-call semantics.",
-                        model_id,
-                        shortcut_note.as_deref().unwrap_or("")
-                    );
-                }
                 return format!(
                     "✅ Activated {kind} '{}'{} for your identity.",
                     model_id,
@@ -1971,9 +2207,6 @@ impl CommandHandler {
             }
             for d in mgr.list_dispatchers() {
                 available.push(format!("  {} (dispatcher)", d.id));
-            }
-            for e in mgr.list_exec_models() {
-                available.push(format!("  {} (exec)", e.id));
             }
         }
         if let Some(ref lm) = self.local_manager {
@@ -2372,8 +2605,8 @@ mod tests {
     use super::*;
     use crate::config::{
         AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CalciforgeConfig,
-        CalciforgeHeader, CascadeConfig, ChannelAlias, ChannelConfig, DispatcherConfig,
-        ExecModelConfig, Identity, ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
+        CalciforgeHeader, CascadeConfig, ChannelAlias, ChannelConfig, DispatcherConfig, Identity,
+        ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
 
@@ -2424,20 +2657,6 @@ mod tests {
                     context_window: 128_000,
                 }],
             }],
-            &[ExecModelConfig {
-                id: "codex/gpt-5.5".to_string(),
-                name: Some("Codex GPT-5.5".to_string()),
-                context_window: 262_144,
-                command: "codex".to_string(),
-                args: vec![
-                    "exec".to_string(),
-                    "-m".to_string(),
-                    "gpt-5.5".to_string(),
-                    "-".to_string(),
-                ],
-                env: std::collections::HashMap::new(),
-                timeout_seconds: Some(900),
-            }],
         )
         .expect("synthetic manager")
     }
@@ -2445,8 +2664,14 @@ mod tests {
     fn make_handler_with_synthetics() -> CommandHandler {
         let config = Arc::new(make_config());
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
-        CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
-            .with_alloy_manager(synthetic_manager())
+        let handler = CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager());
+        let switched = handler.handle_switch("!switch gateway", "brian");
+        assert!(
+            switched.contains("gateway"),
+            "model tests require an override-capable active agent: {switched}"
+        );
+        handler
     }
 
     fn make_config() -> CalciforgeConfig {
@@ -2536,16 +2761,64 @@ mod tests {
                     registry: None,
                     aliases: vec!["claude".to_string()],
                 },
+                AgentConfig {
+                    id: "gateway".to_string(),
+                    kind: "openai-compat".to_string(),
+                    endpoint: "http://127.0.0.1:18083/v1".to_string(),
+                    timeout_ms: Some(120000),
+                    model: None,
+                    auth_token: None,
+                    api_key: Some("test-gateway-key".to_string()),
+                    api_key_file: None,
+                    openclaw_agent_id: None,
+                    allow_model_override: Some(true),
+                    reply_port: None,
+                    reply_auth_token: None,
+                    reply_auth_token_file: None,
+                    command: None,
+                    args: None,
+                    env: None,
+                    registry: Some(AgentRegistry {
+                        display_name: Some("Gateway".to_string()),
+                        ..Default::default()
+                    }),
+                    aliases: vec![],
+                },
+                AgentConfig {
+                    id: "codex".to_string(),
+                    kind: "codex-cli".to_string(),
+                    endpoint: String::new(),
+                    timeout_ms: Some(120000),
+                    model: Some("gpt-5.5".to_string()),
+                    auth_token: None,
+                    api_key: None,
+                    api_key_file: None,
+                    openclaw_agent_id: None,
+                    allow_model_override: None,
+                    reply_port: None,
+                    reply_auth_token: None,
+                    reply_auth_token_file: None,
+                    command: None,
+                    args: None,
+                    env: None,
+                    registry: Some(AgentRegistry {
+                        display_name: Some("Codex".to_string()),
+                        ..Default::default()
+                    }),
+                    aliases: vec!["code".to_string()],
+                },
             ],
             routing: vec![
                 RoutingRule {
                     identity: "brian".to_string(),
                     default_agent: "librarian".to_string(),
+                    btw_agent: None,
                     allowed_agents: vec![], // unrestricted
                 },
                 RoutingRule {
                     identity: "david".to_string(),
                     default_agent: "librarian".to_string(),
+                    btw_agent: None,
                     allowed_agents: vec!["librarian".to_string()], // restricted
                 },
             ],
@@ -2736,9 +3009,9 @@ mod tests {
     #[tokio::test]
     async fn session_list_alias_parses_agent_after_list_verb() {
         let h = make_handler();
-        let reply = h.handle_sessions("!session list librarian", "brian").await;
+        let reply = h.handle_sessions("!session list codex", "brian").await;
         assert!(
-            reply.contains("librarian") && reply.contains("does not support session listing"),
+            reply.contains("codex") && reply.contains("supports named sessions"),
             "noun-style session alias should parse the agent after 'list': {reply}"
         );
     }
@@ -3040,6 +3313,7 @@ mod tests {
         config.routing.push(RoutingRule {
             identity: "typoed".to_string(),
             default_agent: "librarian".to_string(),
+            btw_agent: None,
             allowed_agents: vec!["missing-agent".to_string()],
         });
         let h = CommandHandler::new(Arc::new(config));
@@ -3090,11 +3364,7 @@ mod tests {
         assert!(reply.contains("cascade-test"), "{reply}");
         assert!(reply.contains("Configured dispatchers:"), "{reply}");
         assert!(reply.contains("dispatcher-test"), "{reply}");
-        assert!(
-            reply.contains("Configured exec-backed model shims:"),
-            "{reply}"
-        );
-        assert!(reply.contains("codex/gpt-5.5"), "{reply}");
+        assert!(!reply.contains("exec-backed model"), "{reply}");
     }
 
     #[test]
@@ -3106,6 +3376,22 @@ mod tests {
             h.active_model_for_identity("brian").as_deref(),
             Some("dispatcher-test")
         );
+    }
+
+    #[test]
+    fn model_command_fails_cleanly_when_active_agent_ignores_model_overrides() {
+        let config = Arc::new(make_config());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let h = CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager());
+
+        let reply = h.handle_model("!model dispatcher-test", "brian");
+
+        assert!(
+            reply.contains("does not consume Calciforge model overrides"),
+            "reply should explain the active agent mismatch: {reply}"
+        );
+        assert_eq!(h.active_model_for_identity("brian"), None);
     }
 
     #[test]
@@ -3133,6 +3419,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
         let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf())
             .with_alloy_manager(synthetic_manager());
+        h.handle_switch("!switch gateway", "brian");
 
         assert!(
             h.handle("!model fast").is_none(),
@@ -3161,6 +3448,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
         let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf())
             .with_alloy_manager(synthetic_manager());
+        h.handle_switch("!switch gateway", "brian");
 
         let reply = h.handle_model("!model fast", "brian");
         assert!(reply.contains("Activated dispatcher"), "{reply}");
@@ -3194,6 +3482,7 @@ mod tests {
             env: HashMap::new(),
         });
         let h = CommandHandler::new(Arc::new(config));
+        h.handle_switch("!switch gateway", "brian");
 
         let choices = h.activatable_model_choices();
         assert!(
@@ -3219,6 +3508,7 @@ mod tests {
 
         let h = CommandHandler::with_state_dir(config.clone(), state_dir.clone())
             .with_alloy_manager(synthetic_manager());
+        h.handle_switch("!switch gateway", "brian");
         let reply = h.handle_model("!model dispatcher-test", "brian");
         assert!(reply.contains("Activated dispatcher"), "{reply}");
 
@@ -3254,6 +3544,7 @@ mod tests {
 
         let h = CommandHandler::with_state_dir(config.clone(), state_dir.clone())
             .with_alloy_manager(synthetic_manager());
+        h.handle_switch("!switch gateway", "brian");
         let reply = h.handle_model("!model use openai/gpt-5.5", "brian");
         assert!(reply.contains("Activated model"), "{reply}");
         assert_eq!(
@@ -3270,9 +3561,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_active_model_override_is_pruned_on_restore() {
+        let config = Arc::new(make_config());
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let state_dir = tmp.path().to_path_buf();
+        let mut stale = HashMap::new();
+        stale.insert("brian".to_string(), "openai/gpt-5.5".to_string());
+        save_active_models_to(&state_dir, &stale);
+
+        let h = CommandHandler::with_state_dir(config, state_dir.clone())
+            .with_alloy_manager(synthetic_manager());
+
+        assert_eq!(
+            h.active_model_for_identity("brian"),
+            None,
+            "persisted model overrides must be dropped when the selector is no longer configured"
+        );
+        assert_eq!(
+            load_active_models_from(&state_dir).get("brian"),
+            None,
+            "pruned model overrides must be removed from disk so doctor and service state agree"
+        );
+    }
+
     #[tokio::test]
     async fn test_status_shows_active_model_override() {
         let h = make_handler_with_synthetics();
+        h.handle_switch("!switch gateway", "brian");
         h.handle_model("!model dispatcher-test", "brian");
         let reply = h.cmd_status_for_identity("brian").await;
         assert!(
@@ -3584,6 +3900,7 @@ mod tests {
             switch_reply.contains('✅') && switch_reply.contains("custodian"),
             "tab-separated agent switch should succeed: {switch_reply}"
         );
+        h.handle_switch("!agent switch gateway", "brian");
 
         let model_reply = h.handle_model("!model\tuse\tdispatcher-test", "brian");
         assert!(
@@ -3591,13 +3908,9 @@ mod tests {
             "tab-separated model use should succeed: {model_reply}"
         );
 
-        let sessions = h
-            .handle_sessions("!session\tlist\tlibrarian", "brian")
-            .await;
+        let sessions = h.handle_sessions("!session\tlist\tcodex", "brian").await;
         assert!(
-            sessions.contains("does not support session listing")
-                || sessions.contains("No active sessions")
-                || sessions.contains("Active sessions"),
+            sessions.contains("codex") && sessions.contains("supports named sessions"),
             "tab-separated session list should parse the agent argument: {sessions}"
         );
     }
@@ -3627,6 +3940,48 @@ mod tests {
         assert_eq!(
             h.active_session_for("brian", "claude-acpx"),
             Some("backend".to_string())
+        );
+    }
+
+    #[test]
+    fn test_switch_records_named_session_for_session_capable_cli_agent() {
+        let h = make_handler();
+        let reply = h.handle_switch("!switch codex work-thread", "brian");
+        assert!(
+            reply.contains("session: work-thread"),
+            "reply should identify selected session for codex-cli: {}",
+            reply
+        );
+        assert_eq!(h.active_agent_for("brian"), Some("codex".to_string()));
+        assert_eq!(
+            h.active_session_for("brian", "codex"),
+            Some("work-thread".to_string())
+        );
+    }
+
+    #[test]
+    fn test_new_session_requires_session_capable_active_agent() {
+        let h = make_handler();
+        let reply = h.handle_new_session("!new scratch", "brian");
+        assert!(
+            reply.contains("does not expose downstream sessions"),
+            "default openclaw-channel test agent should reject !new: {reply}"
+        );
+        assert_eq!(h.active_session_for("brian", "librarian"), None);
+    }
+
+    #[test]
+    fn test_new_session_sets_named_session_for_current_agent() {
+        let h = make_handler();
+        h.handle_switch("!switch codex", "brian");
+        let reply = h.handle_new_session("!new scratch", "brian");
+        assert!(
+            reply.contains("Started session 'scratch' for codex"),
+            "explicit !new session should be acknowledged: {reply}"
+        );
+        assert_eq!(
+            h.active_session_for("brian", "codex"),
+            Some("scratch".to_string())
         );
     }
 
@@ -3697,6 +4052,51 @@ mod tests {
             reply
         );
         assert_eq!(h.active_agent_for("david"), Some("librarian".to_string()));
+    }
+
+    #[test]
+    fn parse_btw_uses_explicit_allowed_agent_without_switching_active_agent() {
+        let h = make_handler();
+        assert_eq!(h.active_agent_for("brian"), Some("librarian".to_string()));
+
+        let request = h
+            .parse_btw_command("!btw code summarize this", "brian")
+            .expect("explicit alias should resolve");
+
+        assert_eq!(request.agent_id, "codex");
+        assert_eq!(request.prompt, "summarize this");
+        assert_eq!(
+            h.active_agent_for("brian"),
+            Some("librarian".to_string()),
+            "!btw must not change active agent"
+        );
+    }
+
+    #[test]
+    fn parse_btw_uses_configured_default_agent_when_agent_omitted() {
+        let mut config = make_config();
+        config.routing[0].btw_agent = Some("codex".to_string());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf());
+
+        let request = h
+            .parse_btw_command("!btw quick one-off question", "brian")
+            .expect("configured btw_agent should handle omitted target");
+
+        assert_eq!(request.agent_id, "codex");
+        assert_eq!(request.prompt, "quick one-off question");
+    }
+
+    #[test]
+    fn parse_btw_rejects_unavailable_explicit_agent_for_identity() {
+        let h = make_handler();
+        let err = h
+            .parse_btw_command("!btw keeper check this", "david")
+            .unwrap_err();
+        assert!(
+            err.contains("not available"),
+            "unavailable explicit target should not route through default fallback: {err}"
+        );
     }
 
     // -----------------------------------------------------------------------

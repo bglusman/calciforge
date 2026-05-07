@@ -36,9 +36,8 @@ or "chat routes" rather than as full agents in user-facing lists.
 | Fallback behavior | Working, implicit | Alloy execution produces an ordered attempt plan; later constituents are tried when earlier ones fail. |
 | Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
-| Exec-backed model shims | Working | `[[exec_models]]` exposes a local binary or wrapper script as a terminal model-gateway selector, useful for subscription-backed CLIs. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
-| Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage can be exposed either as a Calciforge agent path or via an exec-backed model shim when a local CLI owns authentication. |
+| CLI-backed subscription agents | Working | Codex, Claude Code, Kimi Code, Dirac, and generic executable adapters are agent routes, not gateway model selectors. |
 | External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected gateway engine and operator dashboard link after sender identity resolution. |
 | Helicone external gateway adapter | Working | `backend_type = "helicone"` forwards OpenAI-compatible requests to a Helicone AI Gateway while preserving Calciforge auth, routing, and command UX. |
 
@@ -50,10 +49,20 @@ provider forwarding. External engines can add operator-facing dashboards or
 provider management without changing how channels and agents talk to
 Calciforge.
 
-Helicone is the first external gateway adapter. Calciforge's installer can
+Helicone is the first external gateway adapter and the default batteries-included
+observability path we ship today. It gives operators a real request dashboard,
+provider routing surface, and persisted gateway logs, while Calciforge remains
+the local identity, command, alias, alloy, dispatcher, and policy boundary.
+That convenience has a cost: the local stack is heavier than a plain HTTP
+forwarder because it includes dashboard, Postgres, ClickHouse, Jawn, and
+S3-compatible object storage pieces. A lighter external gateway or a smaller
+Calciforge-native observability engine may be desirable later; the adapter
+boundary is intentionally where future PRs can plug in those alternatives.
+
+Calciforge's installer can
 provision a local Helicone deployment when `CALCIFORGE_HELICONE_ENABLED=true`.
 The tested local setup uses Helicone's all-in-one Docker image for the
-dashboard, local storage, and Jawn API, plus the standalone
+dashboard, bundled MinIO S3-compatible storage, and Jawn API, plus the standalone
 `@helicone/ai-gateway` package for request routing. The standalone gateway is
 intentional: current all-in-one images may start a bundled gateway supervisor
 that exits before routing traffic.
@@ -87,12 +96,55 @@ For a LAN-visible local dashboard during install:
 CALCIFORGE_HELICONE_ENABLED=true \
 CALCIFORGE_HELICONE_DASHBOARD_ENABLED=true \
 CALCIFORGE_HELICONE_DASHBOARD_BIND=0.0.0.0 \
+CALCIFORGE_HELICONE_DASHBOARD_USER_EMAIL=you@example.com \
+CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE=/path/to/dashboard-password \
 bash scripts/install.sh --yes
 ```
 
 The default dashboard bind is `127.0.0.1`. Use `0.0.0.0` only on a trusted LAN
 or behind WireGuard. Bind addresses decide where local services listen; they
 are not necessarily the URLs users should click from another device.
+
+The all-in-one image includes MinIO, which is the default local storage backend
+for request/response bodies. For LAN dashboards, the browser-visible runtime
+environment must expose LAN URLs for both Jawn and S3-compatible storage;
+otherwise the page can load while request lists or bodies silently call the
+client machine's `localhost`. The installer patches Helicone's `__ENV.js` for
+this all-in-one path. Managed S3, Garage, SeaweedFS, or another S3-compatible
+service can be used by operating Helicone separately and setting its storage
+environment variables there; Calciforge then only needs `[proxy].gateway_ui_url`
+and `backend_url` pointed at that deployment.
+
+After installing or repairing the local Helicone stack, run the focused doctor
+to verify the same path a remote browser uses:
+
+```bash
+CALCIFORGE_HELICONE_DASHBOARD_USER_EMAIL=you@example.com \
+CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE=/path/to/dashboard-password \
+CALCIFORGE_HELICONE_REQUIRE_VISIBLE_ROWS=true \
+scripts/helicone-doctor.sh
+```
+
+The script checks the dashboard URL, browser-visible Jawn/S3 endpoints,
+published ports, dashboard credential account, gateway API-key permissions,
+ClickHouse rows visible to the configured dashboard user's organization, and
+the same Jawn request-list API that the dashboard calls after login. If
+`CALCIFORGE_HELICONE_REQUIRE_VISIBLE_ROWS=true`, the doctor fails until at least
+one gateway request is actually visible to the dashboard user.
+
+The Helicone doctor is deliberately narrower than `calciforge doctor`: it is a
+gateway-stack smoke test for the browser path, including the failure mode where
+the dashboard loads on another machine but its runtime config still points at
+that browser's own `localhost`.
+
+When a dashboard user email is provided, the installer attaches the local
+gateway API key to that user's Helicone organization. It creates or repairs the
+credential account only when `CALCIFORGE_HELICONE_DASHBOARD_PASSWORD` or
+`CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE` is set; otherwise it only attaches
+to an existing dashboard user and falls back to the service-owned local org.
+The local gateway key is seeded with read/write permissions because Helicone's
+AI Gateway needs read access to its control-plane signed-URL endpoint before it
+can persist request/response bodies.
 
 Set `gateway_ui_url` to the externally reachable dashboard URL you operate,
 such as a Tailscale MagicDNS name, Tailscale IP, WireGuard address, or
@@ -152,14 +204,14 @@ forwards the expected auth headers, path, and model.
 The gateway treats model identifiers uniformly across direct API calls,
 `!model` overrides, routing selectors, and provider routing:
 
-- A model identifier may be a shortcut alias, a synthetic routing selector, an
-  exec-backed model shim, a local model ID, or a concrete upstream model ID.
+- A model identifier may be a shortcut alias, a synthetic routing selector, a
+  local model ID, or a concrete upstream model ID.
 - `[[model_shortcuts]]` may target concrete provider models, synthetic routing
-  selectors such as dispatchers/cascades/alloys, or exec-backed model shims.
+  selectors such as dispatchers/cascades/alloys, or local model IDs.
 - Shortcut aliases are themselves public model IDs. Calciforge rejects aliases
-  that collide with configured synthetic routing selectors, exec-backed model
-  shim IDs, local model IDs, exact provider model IDs, or exact
-  `[[proxy.model_routes]]` patterns.
+  that collide with configured synthetic routing selectors, local model IDs,
+  exact provider model IDs, exact `[[proxy.model_routes]]` patterns, agent IDs,
+  or agent aliases.
 - Exact model IDs also share the operator-facing selector namespace with agent
   IDs and agent aliases. Calciforge rejects a model route or provider model
   named like an agent selector, because that usually means an agent name has
@@ -167,8 +219,7 @@ The gateway treats model identifiers uniformly across direct API calls,
 - Synthetic routing constituents may also use shortcut aliases. Before provider
   routing, Calciforge expands aliases and nested routing selectors through the
   shared model resolver until the route plan contains terminal gateway model
-  IDs. Terminal IDs usually route to provider gateways; exec-backed shims run a
-  local command directly.
+  IDs. Terminal IDs route to provider gateways or local model endpoints.
 - Shortcut cycles and synthetic cycles fail closed instead of falling through to
   a backend as ambiguous model names.
 - Proxy model access is checked twice: first for the requested/root model, then
@@ -295,50 +346,28 @@ model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
 ```
 
-## Exec-Backed Model Shims
+## CLI-Backed Agents
 
-An exec-backed model shim exposes an arbitrary local executable as an
-OpenAI-compatible model-gateway selector. This is the subscription/OAuth escape
-hatch: Codex, Claude, Kimi, or another local CLI keeps its own login/session
-state, while Calciforge handles gateway auth, model ACLs, selector resolution,
-and response wrapping.
+Executable CLIs are Calciforge agents, not model gateway selectors. Use
+`kind = "codex-cli"`, `kind = "claude-cli"`, `kind = "kimi-cli"`,
+`kind = "dirac-cli"`, `kind = "exec"`, or `kind = "cli"` when a local
+subscription-owning CLI should keep its own login, session state, and native
+workflow. Those adapters receive chat messages through the normal agent router,
+can participate in `!agent` / `!sessions` / `!btw`, and are intentionally kept
+out of `/v1/models` so agents and models do not share an ambiguous namespace.
 
-Exec-backed shims are not provider-backed models and not synthetic routing
-selectors. After Calciforge chooses one, it invokes the configured command
-directly through `ExecGateway`; the downstream call does not pass through
-Helicone, Traceloop, a provider HTTP gateway, or provider observability. Use
-them deliberately when a local authenticated CLI is the desired boundary.
-They should not be assumed to support native tool calls, streaming, provider
-dashboards, or provider-specific telemetry.
+Generic `exec` / `cli` adapters support `{message}`, `{model}`, `{session}`,
+and `{session_uuid}` placeholders in args and environment values. First-class
+adapters add safer defaults for their CLIs: Codex uses stdin and
+`--output-last-message`, Claude Code uses print mode and `--session-id`, and
+Kimi Code uses quiet print mode with explicit `--session` plus configurable
+thinking flags. Example wrapper scripts live in `scripts/cli-agents/`.
 
-Calciforge treats the executable as a black box. It renders the chat transcript,
-passes it by stdin, and wraps stdout or `{output_file}` contents as the
-assistant message. `{prompt}` and `{message}` in exec-model args are legacy
-stdin markers: Calciforge replaces them with an empty string and sends the
-rendered transcript on stdin so prompt text is not exposed through process
-listings. It does not introspect the CLI, negotiate provider-specific flags,
-translate tool calls, or verify vendor subscription terms.
-
-```toml
-[[exec_models]]
-id = "codex/gpt-5.5"
-name = "Codex GPT-5.5 subscription"
-context_window = 262144
-command = "/etc/calciforge/exec-models/codex-exec.sh"
-args = ["-"]
-timeout_seconds = 900
-
-[exec_models.env]
-CALCIFORGE_CODEX_MODEL = "gpt-5.5"
-```
-
-Example wrappers live in `scripts/exec-models/`. Treat them as starting
-points: CLI flags and subscription terms can change, and wrapper scripts are
-trusted operator code. Keep config files and wrapper paths writable only by
-trusted admins, validate behavior against the exact CLI version installed, and
-prefer small wrapper scripts over complex inline argument templates. If a
-vendor CLI requires prompt text in argv, document that wrapper as a local
-process-listing leakage risk and run it only on trusted single-user hosts.
+If an OpenAI-compatible client needs access to a subscription-backed model,
+prefer a provider route through a real gateway or a dedicated OpenAI-compatible
+agent endpoint. Do not model local CLIs as gateway models unless that boundary
+has been reintroduced deliberately with a clear observability and security
+contract.
 
 ## Config Example
 
@@ -392,17 +421,6 @@ id = "qwen3-35b"
 hf_id = "mlx-community/Qwen2.5-35B-Instruct-8bit"
 display_name = "Qwen 35B local"
 
-[[exec_models]]
-id = "codex/gpt-5.5"
-name = "Codex GPT-5.5 subscription"
-context_window = 262144
-command = "/etc/calciforge/exec-models/codex-exec.sh"
-args = ["-"]
-timeout_seconds = 900
-
-[exec_models.env]
-CALCIFORGE_CODEX_MODEL = "gpt-5.5"
-
 [[dispatchers]]
 id = "smart-local"
 name = "Use local until the prompt outgrows it"
@@ -414,19 +432,15 @@ context_window = 32768
 [[dispatchers.models]]
 model = "anthropic/claude-sonnet-4.6"
 context_window = 200000
-
-[[dispatchers.models]]
-model = "codex/gpt-5.5"
-context_window = 262144
 ```
 
 ## Notes
 
-- Codex and Claude subscription-backed CLI routes can be configured as
-  agent integrations or as `[[exec_models]]`. See
+- Codex, Claude, Kimi, and other subscription-backed CLI routes are configured
+  as agent integrations. See
   [Codex/OpenClaw integration](codex-openclaw-integration.html) for direct
-  `codex-cli`, OpenClaw `openai-codex/*`, OpenClaw `codex/*`, and
-  Claude CLI setup choices.
+  `codex-cli`, `claude-cli`, `kimi-cli`, OpenClaw `openai-codex/*`, and
+  OpenClaw `codex/*` setup choices.
 - The model gateway uses a shared `TokenEstimator` trait for fit
   checks. The default `auto` strategy uses `tiktoken-rs` for recognized
   OpenAI-compatible model names when Calciforge is built with

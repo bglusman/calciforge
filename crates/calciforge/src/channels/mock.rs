@@ -294,6 +294,8 @@ async fn route_mock_message(
         && !CommandHandler::is_switch_command(&text)
         && !CommandHandler::is_default_command(&text)
         && !CommandHandler::is_sessions_command(&text)
+        && !CommandHandler::is_new_session_command(&text)
+        && !CommandHandler::is_btw_command(&text)
         && !CommandHandler::is_model_command(&text)
         && !CommandHandler::is_secure_command(&text)
         && !CommandHandler::is_approve_command(&text)
@@ -330,6 +332,43 @@ async fn route_mock_message(
             .command_handler
             .record_pending_choices(&identity_id, &reply);
         return Ok(reply.render_text_fallback());
+    }
+
+    if CommandHandler::is_new_session_command(&text) {
+        return Ok(state
+            .command_handler
+            .handle_new_session(&text, &identity_id));
+    }
+
+    if CommandHandler::is_btw_command(&text) {
+        let request = state
+            .command_handler
+            .parse_btw_command(&text, &identity_id)
+            .map_err(|err| err.to_string())?;
+        let model_override = state
+            .command_handler
+            .active_model_for_identity(&identity_id);
+        let dispatch_start = std::time::Instant::now();
+        let response = state
+            .router
+            .dispatch_one_off_for_identity(
+                &request.prompt,
+                &request.agent_id,
+                &state.config,
+                &identity_id,
+                "mock",
+                model_override.as_deref(),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        state
+            .command_handler
+            .record_dispatch(dispatch_start.elapsed().as_millis() as u64);
+        return Ok(format!(
+            "{}:\n{}",
+            request.agent_id,
+            response.render_text_fallback()
+        ));
     }
 
     if CommandHandler::is_default_command(&text) {
@@ -532,6 +571,7 @@ mod tests {
             routing: vec![RoutingRule {
                 identity: "brian".to_string(),
                 default_agent: "echo".to_string(),
+                btw_agent: None,
                 allowed_agents: vec!["echo".to_string(), "other".to_string()],
             }],
             alloys: vec![],
@@ -583,6 +623,7 @@ mod tests {
         config.routing = vec![RoutingRule {
             identity: "brian".to_string(),
             default_agent: "llm".to_string(),
+            btw_agent: None,
             allowed_agents: vec!["llm".to_string()],
         }];
         config.proxy = Some(ProxyConfig {

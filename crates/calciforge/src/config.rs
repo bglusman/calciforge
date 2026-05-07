@@ -67,10 +67,11 @@ pub struct CalciforgeConfig {
     #[serde(default)]
     pub dispatchers: Vec<DispatcherConfig>,
 
-    /// `[[exec_models]]` — executable-backed model gateway shims.
-    /// These expose subscription-authenticated CLIs such as `codex exec` or
-    /// `claude -p` through the OpenAI-compatible model gateway without copying
-    /// their OAuth/session credentials into provider API keys.
+    /// Deprecated `[[exec_models]]` compatibility field.
+    ///
+    /// Executable-backed subscription CLIs are agent adapters, not gateway
+    /// models. The parser still accepts this field so validation can report a
+    /// migration error instead of failing with an unknown TOML section.
     #[serde(default)]
     pub exec_models: Vec<ExecModelConfig>,
 
@@ -96,9 +97,8 @@ pub struct CalciforgeConfig {
 pub struct ModelShortcutConfig {
     /// Short alias name (e.g. "sonnet", "opus", "fast")
     pub alias: String,
-    /// Target model ID. This may be a concrete provider model, a synthetic
-    /// routing selector such as an alloy, cascade, or dispatcher, or an
-    /// exec-backed model shim.
+    /// Target model ID. This may be a concrete provider model or a synthetic
+    /// routing selector such as an alloy, cascade, or dispatcher.
     pub model: String,
 }
 
@@ -172,7 +172,7 @@ pub struct DispatcherConfig {
     pub models: Vec<SyntheticModelConfig>,
 }
 
-/// Executable-backed model gateway shim definition (`[[exec_models]]`).
+/// Deprecated executable-backed model gateway shim definition (`[[exec_models]]`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecModelConfig {
     /// Gateway model selector requested by agents, such as `codex/gpt-5.5`.
@@ -308,6 +308,11 @@ pub struct AgentRegistry {
 pub struct RoutingRule {
     pub identity: String,
     pub default_agent: String,
+    /// Optional default one-off target for `!btw <prompt>`.
+    ///
+    /// When unset, users must provide `!btw <agent> <prompt>`.
+    #[serde(default)]
+    pub btw_agent: Option<String>,
     #[serde(default)]
     pub allowed_agents: Vec<String>,
 }
@@ -853,8 +858,8 @@ pub struct ProxyProviderConfig {
 
     /// Provider backend kind. "http" forwards to an OpenAI-compatible API;
     /// "helicone" forwards through a Helicone AI Gateway with Helicone auth
-    /// headers; "exec" runs a local authenticated CLI and wraps its output as a
-    /// chat-completion response.
+    /// headers. CLI-backed subscriptions are configured as `[[agents]]`, not
+    /// gateway providers.
     #[serde(default = "default_proxy_provider_backend")]
     pub backend_type: String,
 
@@ -891,20 +896,15 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub on_switch: Option<String>,
 
-    /// Command for `backend_type = "exec"` providers.
+    /// Deprecated compatibility field. CLI-backed subscriptions are agents.
     #[serde(default)]
     pub command: Option<String>,
 
-    /// Argument template for `backend_type = "exec"` providers.
-    ///
-    /// Placeholders:
-    /// - `{prompt}` / `{message}`: stdin marker; replaced with an empty string
-    /// - `{model}`: requested model after provider routing
-    /// - `{output_file}`: temp file path for CLIs such as `codex exec`
+    /// Deprecated compatibility field. CLI-backed subscriptions are agents.
     #[serde(default)]
     pub args: Vec<String>,
 
-    /// Extra environment variables for `backend_type = "exec"` providers.
+    /// Deprecated compatibility field. CLI-backed subscriptions are agents.
     #[serde(default)]
     pub env: HashMap<String, String>,
 }
