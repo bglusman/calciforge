@@ -9,7 +9,8 @@ use axum::{
 use futures_util::stream::{self};
 use serde_json::json;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use crate::config::ProxyConfig;
@@ -35,6 +36,7 @@ const KNOWN_MODELS: &[&str] = &[
     "kimi/kimi-for-coding",
     "kimi-for-coding",
 ];
+const PROVIDER_ON_SWITCH_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Handler for POST /v1/chat/completions
 pub async fn chat_completions(
@@ -272,11 +274,96 @@ async fn try_provider(
         .map(|entry| entry.upstream_model_name(model))
         .unwrap_or_else(|| model.to_string());
 
+    if let Some(provider) = provider {
+        ensure_provider_model_ready(provider, model, &gateway_req.model).await?;
+    }
+
     match gateway.chat_completion(gateway_req).await {
         Ok(response) => Ok(response),
         Err(e) => {
             anyhow::bail!("Gateway error: {}", e);
         }
+    }
+}
+
+async fn ensure_provider_model_ready(
+    provider: &routing::ProviderEntry,
+    model: &str,
+    upstream_model: &str,
+) -> anyhow::Result<()> {
+    let Some(script) = provider
+        .on_switch
+        .as_deref()
+        .map(str::trim)
+        .filter(|script| !script.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let mut current = provider.switch_state.lock().await;
+    if current.as_deref() == Some(model) {
+        return Ok(());
+    }
+    let previous = current.clone().unwrap_or_default();
+    let provider_id = provider.id.clone();
+    let model_id = model.to_string();
+    let upstream_model_id = upstream_model.to_string();
+    let script = script.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        run_provider_on_switch_script(
+            &script,
+            &provider_id,
+            &model_id,
+            &upstream_model_id,
+            &previous,
+        )
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("provider on_switch task failed: {e}"))?
+    .map_err(|e| anyhow::anyhow!("provider on_switch failed: {e}"))?;
+
+    *current = Some(model.to_string());
+    Ok(())
+}
+
+fn run_provider_on_switch_script(
+    script: &str,
+    provider_id: &str,
+    model_id: &str,
+    upstream_model_id: &str,
+    previous: &str,
+) -> anyhow::Result<()> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .env("CALCIFORGE_PROVIDER_ID", provider_id)
+        .env("CALCIFORGE_MODEL_ID", model_id)
+        .env("CALCIFORGE_UPSTREAM_MODEL_ID", upstream_model_id)
+        .env("CALCIFORGE_PREV_MODEL_ID", previous)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("provider on_switch spawn failed: {e}"))?;
+
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| anyhow::anyhow!("provider on_switch wait failed: {e}"))?
+        {
+            if status.success() {
+                return Ok(());
+            }
+            anyhow::bail!("provider on_switch exited with status {status}");
+        }
+        if start.elapsed() >= PROVIDER_ON_SWITCH_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!(
+                "provider on_switch exceeded {}s timeout",
+                PROVIDER_ON_SWITCH_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -977,6 +1064,7 @@ mod tests {
                 patterns: vec!["qwen-test:small".to_string()],
                 gateway: provider_gateway_dyn,
                 on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: None,
                 add_model_prefix: None,
             }],
@@ -1028,6 +1116,7 @@ mod tests {
                 patterns: vec!["opencode-go/kimi-k2.6".to_string()],
                 gateway: provider_gateway_dyn,
                 on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: Some("opencode-go/".to_string()),
                 add_model_prefix: None,
             }],
@@ -1056,6 +1145,114 @@ mod tests {
         assert!(
             default_gateway.recorded_models().is_empty(),
             "provider route should not fall through to default gateway"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_route_runs_on_switch_before_gateway_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("switch.log");
+        let script = format!(
+            "printf '%s|%s|%s|%s\\n' \"$CALCIFORGE_PROVIDER_ID\" \"$CALCIFORGE_MODEL_ID\" \"$CALCIFORGE_UPSTREAM_MODEL_ID\" \"$CALCIFORGE_PREV_MODEL_ID\" >> '{}'",
+            marker.display()
+        );
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let provider_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "helicone-ollama".to_string(),
+                patterns: vec!["local/qwen3.6:27b".to_string()],
+                gateway: provider_gateway_dyn,
+                on_switch: Some(script),
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
+                strip_model_prefix: Some("local/".to_string()),
+                add_model_prefix: Some("ollama/".to_string()),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "local/qwen3.6:27b",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(
+            provider_gateway.recorded_models(),
+            vec!["ollama/qwen3.6:27b"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap(),
+            "helicone-ollama|local/qwen3.6:27b|ollama/qwen3.6:27b|\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_route_blocks_gateway_request_when_on_switch_fails() {
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let provider_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "helicone-ollama".to_string(),
+                patterns: vec!["qwen3.6:27b".to_string()],
+                gateway: provider_gateway_dyn,
+                on_switch: Some("exit 42".to_string()),
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
+                strip_model_prefix: None,
+                add_model_prefix: Some("ollama/".to_string()),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "qwen3.6:27b",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected body: {body}"
+        );
+        assert!(
+            provider_gateway.recorded_models().is_empty(),
+            "gateway must not receive a request when the model switch hook fails"
         );
     }
 
@@ -1447,6 +1644,7 @@ mod tests {
                 ],
                 gateway: provider_gateway,
                 on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: None,
                 add_model_prefix: None,
             }],

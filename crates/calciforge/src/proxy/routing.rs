@@ -16,6 +16,18 @@ use crate::sync::Arc;
 use super::backend::{BackendConfig, BackendType};
 use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
 
+/// Per-provider model switch state shared by routes that point to the same provider.
+#[derive(Debug, Default)]
+pub struct ProviderSwitchState {
+    current_model: tokio::sync::Mutex<Option<String>>,
+}
+
+impl ProviderSwitchState {
+    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Option<String>> {
+        self.current_model.lock().await
+    }
+}
+
 /// A resolved provider entry: a set of model-name patterns and a ready gateway.
 #[derive(Clone)]
 pub struct ProviderEntry {
@@ -28,6 +40,8 @@ pub struct ProviderEntry {
     pub gateway: Arc<dyn GatewayBackend>,
     /// Shell script to run on `!model <id>` switch to any model of this provider.
     pub on_switch: Option<String>,
+    /// Shared state for serializing provider model swaps before gateway requests.
+    pub switch_state: Arc<ProviderSwitchState>,
     /// Optional public model prefix stripped before forwarding upstream.
     pub strip_model_prefix: Option<String>,
     /// Optional provider model prefix added before forwarding upstream.
@@ -109,8 +123,12 @@ pub fn build_provider_entries(
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_strip_prefix: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_add_prefix: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_switch_state: HashMap<String, Arc<ProviderSwitchState>> = HashMap::new();
 
     for p in &config.providers {
+        provider_switch_state
+            .entry(p.id.clone())
+            .or_insert_with(|| Arc::new(ProviderSwitchState::default()));
         if p.backend_type == "helicone" {
             if p.url.trim().is_empty() {
                 anyhow::bail!(
@@ -217,6 +235,10 @@ pub fn build_provider_entries(
                 patterns: vec![route.pattern.clone()],
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&route.provider).cloned().flatten(),
+                switch_state: provider_switch_state
+                    .get(&route.provider)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(ProviderSwitchState::default())),
                 strip_model_prefix: provider_strip_prefix
                     .get(&route.provider)
                     .cloned()
@@ -243,6 +265,10 @@ pub fn build_provider_entries(
                 patterns: p.models.clone(),
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&p.id).cloned().flatten(),
+                switch_state: provider_switch_state
+                    .get(&p.id)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(ProviderSwitchState::default())),
                 strip_model_prefix: provider_strip_prefix.get(&p.id).cloned().flatten(),
                 add_model_prefix: provider_add_prefix.get(&p.id).cloned().flatten(),
             });

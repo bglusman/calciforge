@@ -466,9 +466,11 @@ models = ["claude-*", "anthropic/*"]
 timeout_seconds = 120
 
 [[proxy.providers]]
-id = "local-mlx"
+id = "local-ollama"
 url = "http://127.0.0.1:11434/v1"
-models = ["local/*", "qwen/*", "mlx/*"]
+models = ["local/*", "qwen/*", "ollama/*"]
+# Optional hook for single-resident local runtimes such as large Ollama models.
+on_switch = "/usr/local/bin/calciforge-ollama-switch"
 
 # Explicit routes take precedence over provider pattern lists.
 [[proxy.model_routes]]

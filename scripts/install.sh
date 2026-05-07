@@ -200,6 +200,8 @@ case "$PLATFORM" in
         ;;
 esac
 
+CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH="${CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH:-$BIN_DIR/calciforge-ollama-switch}"
+
 rotate_log_file() {
     local file="$1" max_bytes="${2:-$LOG_MAX_BYTES}" backups="${3:-$LOG_BACKUPS}"
     [[ -f "$file" ]] || return 0
@@ -1861,6 +1863,14 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
         }
         ok "Installed $bin → $BIN_DIR/$bin"
     done
+    if [[ -f "$REPO_ROOT/scripts/ollama-model-switch.sh" ]]; then
+        install -m 755 "$REPO_ROOT/scripts/ollama-model-switch.sh" "$BIN_DIR/calciforge-ollama-switch" 2>/dev/null || {
+            rm -f "$BIN_DIR/calciforge-ollama-switch" 2>/dev/null
+            cp "$REPO_ROOT/scripts/ollama-model-switch.sh" "$BIN_DIR/calciforge-ollama-switch"
+            chmod +x "$BIN_DIR/calciforge-ollama-switch"
+        }
+        ok "Installed calciforge-ollama-switch → $BIN_DIR/calciforge-ollama-switch"
+    fi
 
     [[ ":$PATH:" != *":$BIN_DIR:"* ]] && \
         warn "$BIN_DIR not in PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\""
@@ -2245,13 +2255,15 @@ _ensure_helicone_ollama_provider() {
     python3 - "$config_path" \
         "$CALCIFORGE_HELICONE_AI_GATEWAY_PORT" \
         "$CALCIFORGE_HELICONE_API_KEY_FILE" \
-        "$CALCIFORGE_HELICONE_MODELS" <<'PY'
+        "$CALCIFORGE_HELICONE_MODELS" \
+        "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH" <<'PY'
 import pathlib
 import re
+import json
 import sys
 
 path = pathlib.Path(sys.argv[1])
-port, api_key_file, models_csv = sys.argv[2:]
+port, api_key_file, models_csv, on_switch = sys.argv[2:]
 models = [m.strip() for m in models_csv.split(",") if m.strip()]
 if not models:
     raise SystemExit(0)
@@ -2283,6 +2295,7 @@ provider_block = (
     f'api_key_file = "{api_key_file}"\n'
     "models = []\n"
     'add_model_prefix = "ollama/"\n'
+    f'on_switch = {json.dumps(on_switch)}\n'
     "timeout_seconds = 900\n"
 )
 if provider_match:

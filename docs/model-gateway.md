@@ -76,7 +76,7 @@ gateway selector.
 | Feature | Status | Notes |
 |---|---:|---|
 | OpenAI-compatible `/v1/chat/completions` proxy | Working | Local endpoint forwards to configured providers. |
-| Provider pattern routing | Working | `[[proxy.providers]]` model globs map model names to upstream APIs. |
+| Provider pattern routing | Working | `[[proxy.providers]]` model globs map model names to upstream APIs. Provider `on_switch` hooks can prepare single-resident local runtimes before a request. |
 | Explicit model routes | Working | `[[proxy.model_routes]]` overrides provider pattern matching. |
 | Model shortcuts | Working | `[[model_shortcuts]]` gives users short aliases such as `sonnet`. |
 | Local model switching | Working | `[local_models]` manages local `mlx_lm.server` targets. |
@@ -222,6 +222,28 @@ provider-qualified model IDs. Keep user-facing local selectors such as
 Helicone provider so upstream requests send `ollama/qwen3.6:27b`. Arbitrary
 OpenAI-compatible providers may still be configured as direct Calciforge
 providers until their Helicone provider/converter support is validated.
+
+Large local Ollama models usually cannot stay resident together. For Ollama
+providers, configure `on_switch` so Calciforge unloads any other resident model
+before it forwards the next provider request:
+
+```toml
+[[proxy.providers]]
+id = "helicone-ollama"
+backend_type = "helicone"
+url = "http://127.0.0.1:8787/ai"
+api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
+models = []
+add_model_prefix = "ollama/"
+on_switch = "/usr/local/bin/calciforge-ollama-switch"
+timeout_seconds = 900
+```
+
+The installer writes `calciforge-ollama-switch` when Helicone is enabled. The
+hook receives `CALCIFORGE_MODEL_ID`, `CALCIFORGE_UPSTREAM_MODEL_ID`,
+`CALCIFORGE_PROVIDER_ID`, and `CALCIFORGE_PREV_MODEL_ID`. Calciforge runs it
+synchronously and serializes switches per provider, including dispatcher and
+cascade fallback attempts.
 
 `!gateway` is handled only after a channel resolves the sender identity. It can
 include internal bind addresses or dashboard URLs, so room-based channels and
