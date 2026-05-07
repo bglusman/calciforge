@@ -222,10 +222,10 @@ impl AdversaryDetector {
         rate_limit: RateLimitConfig,
     ) -> Self {
         let override_on_review = config.override_on_review;
-        let store_path = config.digest_store_path.clone().unwrap_or_else(|| {
-            let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-            home.join(".calciforge/digests.json")
-        });
+        let store_path = config
+            .digest_store_path
+            .clone()
+            .unwrap_or_else(default_digest_store_path);
         let store = DigestStore::open(store_path).await;
         let scanner = AdversaryScanner::new(config);
         Self::new(scanner, store, logger, override_on_review, rate_limit)
@@ -402,6 +402,30 @@ impl AdversaryDetector {
     }
 }
 
+fn default_digest_store_path() -> PathBuf {
+    default_digest_store_path_from(
+        std::env::var_os("CALCIFORGE_CONFIG_HOME").map(PathBuf::from),
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        home::home_dir(),
+    )
+}
+
+fn default_digest_store_path_from(
+    calciforge_config_home: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+) -> PathBuf {
+    calciforge_config_home
+        .or_else(|| xdg_config_home.map(|base| base.join("calciforge")))
+        .unwrap_or_else(|| {
+            home_dir
+                .unwrap_or_else(|| PathBuf::from("/root"))
+                .join(".config")
+                .join("calciforge")
+        })
+        .join("digests.json")
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -418,6 +442,32 @@ mod tests {
         let p = f.path().to_path_buf();
         let _ = std::fs::remove_file(&p);
         p
+    }
+
+    #[test]
+    fn default_digest_store_path_uses_calciforge_config_home() {
+        let path = default_digest_store_path_from(None, None, Some(PathBuf::from("/home/alice")));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/alice/.config/calciforge/digests.json")
+        );
+        assert!(
+            !path.to_string_lossy().contains("/.calciforge/"),
+            "digest store must not default to legacy dot-config path: {path:?}"
+        );
+
+        assert_eq!(
+            default_digest_store_path_from(
+                Some(PathBuf::from("/state/calciforge")),
+                Some(PathBuf::from("/xdg")),
+                Some(PathBuf::from("/home/alice")),
+            ),
+            PathBuf::from("/state/calciforge/digests.json")
+        );
+        assert_eq!(
+            default_digest_store_path_from(None, Some(PathBuf::from("/xdg")), None),
+            PathBuf::from("/xdg/calciforge/digests.json")
+        );
     }
 
     async fn detector_with_store(store_path: PathBuf) -> AdversaryDetector {

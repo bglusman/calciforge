@@ -32,10 +32,10 @@ services:
       dockerfile: crates/calciforge/Dockerfile
     container_name: test-calciforge
     volumes:
-      - ./test-config.toml:/root/.calciforge/config.toml:ro
+      - ./test-config.toml:/root/.config/calciforge/config.toml:ro
     environment:
       - RUST_LOG=calciforge=debug
-    command: ["--config", "/root/.calciforge/config.toml", "--proxy-only"]
+    command: ["--config", "/root/.config/calciforge/config.toml", "--proxy-only"]
     ports:
       - "18792:18792"
     depends_on:
