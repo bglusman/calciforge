@@ -103,8 +103,12 @@ CALCIFORGE_OPENCODE_ZEN_MODELS="${CALCIFORGE_OPENCODE_ZEN_MODELS:-qwen3.6-plus,k
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
+CALCIFORGE_FNOX_WARMUP="${CALCIFORGE_FNOX_WARMUP:-true}"
 FNOX_AGE_KEY_FILE="${FNOX_AGE_KEY_FILE:-${CALCIFORGE_FNOX_AGE_KEY_FILE:-}}"
 CALCIFORGE_FNOX_AGE_RECIPIENT="${CALCIFORGE_FNOX_AGE_RECIPIENT:-}"
+CALCIFORGE_PASTE_BIND="${CALCIFORGE_PASTE_BIND:-}"
+CALCIFORGE_PASTE_PUBLIC_BASE_URL="${CALCIFORGE_PASTE_PUBLIC_BASE_URL:-}"
+CALCIFORGE_PASTE_PUBLIC_HOST="${CALCIFORGE_PASTE_PUBLIC_HOST:-}"
 REMOTE_SCANNER_ENABLED="${CALCIFORGE_REMOTE_SCANNER_ENABLED:-${REMOTE_SCANNER_ENABLED:-0}}"
 REMOTE_SCANNER_PORT="${REMOTE_SCANNER_PORT:-9801}"
 REMOTE_SCANNER_URL=""
@@ -1416,11 +1420,39 @@ ensure_fnox_age_provider() {
     return 1
 }
 
+warm_fnox_provider() {
+    truthy "$CALCIFORGE_FNOX_WARMUP" || return 0
+
+    local key value err_file
+    key="CALCIFORGE_INSTALL_PRECHECK"
+    value="calciforge-install-preflight-$(date +%s)-$$"
+    err_file="$(mktemp)"
+
+    echo "  Warming fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' with a temporary secret..."
+    if ! (cd "$CALCIFORGE_FNOX_DIR" && printf '%s' "$value" | fnox set "$key" >/dev/null 2>"$err_file"); then
+        warn "fnox provider warmup failed; first secret write may still ask for local approval"
+        sed 's/^/  fnox: /' "$err_file" | tail -5
+        rm -f "$err_file"
+        return 0
+    fi
+
+    if ! (cd "$CALCIFORGE_FNOX_DIR" && fnox remove "$key" >/dev/null 2>"$err_file"); then
+        warn "fnox provider warmup stored temporary secret '$key' but could not remove it; remove it manually with: fnox remove $key"
+        sed 's/^/  fnox: /' "$err_file" | tail -5
+        rm -f "$err_file"
+        return 0
+    fi
+
+    rm -f "$err_file"
+    ok "fnox provider write path warmed"
+}
+
 ensure_fnox_provider() {
     local count provider_type err_file
     count="$(fnox_provider_count)"
     if [[ "$count" -gt 0 ]]; then
         ok "fnox provider configured"
+        warm_fnox_provider
         return 0
     fi
 
@@ -1431,8 +1463,11 @@ ensure_fnox_provider() {
     fi
 
     if [[ "$provider_type" == "age" ]]; then
-        ensure_fnox_age_provider
-        return $?
+        if ensure_fnox_age_provider; then
+            warm_fnox_provider
+            return 0
+        fi
+        return 1
     fi
 
     err_file="$(mktemp)"
@@ -1441,6 +1476,7 @@ ensure_fnox_provider() {
         if fnox provider test "$CALCIFORGE_FNOX_PROVIDER_NAME" >/dev/null 2>"$err_file"; then
             rm -f "$err_file"
             ok "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' ready"
+            warm_fnox_provider
             return 0
         fi
         warn "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' was added but did not pass its connection test"
@@ -2475,6 +2511,35 @@ if truthy "$CALCIFORGE_OPENCODE_ZEN_ENABLED"; then
         300 || warn "Could not add OpenCode Zen provider entries in $ZC_CONFIG"
 fi
 
+_xml_escape() {
+    python3 - "$1" <<'PY'
+import html
+import sys
+print(html.escape(sys.argv[1], quote=True), end="")
+PY
+}
+
+_calciforge_launchd_optional_env() {
+    local key value
+    for key in CALCIFORGE_PASTE_BIND CALCIFORGE_PASTE_PUBLIC_BASE_URL CALCIFORGE_PASTE_PUBLIC_HOST; do
+        value="${!key:-}"
+        [[ -n "$value" ]] || continue
+        printf '        <key>%s</key><string>%s</string>\n' "$(_xml_escape "$key")" "$(_xml_escape "$value")"
+    done
+}
+
+_calciforge_systemd_optional_env() {
+    local key value
+    for key in CALCIFORGE_PASTE_BIND CALCIFORGE_PASTE_PUBLIC_BASE_URL CALCIFORGE_PASTE_PUBLIC_HOST; do
+        value="${!key:-}"
+        [[ -n "$value" ]] || continue
+        printf 'Environment=%s=%s\n' "$key" "$value"
+    done
+}
+
+CALCIFORGE_LAUNCHD_OPTIONAL_ENV="$(_calciforge_launchd_optional_env)"
+CALCIFORGE_SYSTEMD_OPTIONAL_ENV="$(_calciforge_systemd_optional_env)"
+
 if [[ "$PLATFORM" == "Darwin" ]]; then
     ZC_PLIST="$PLIST_DIR/com.calciforge.calciforge.plist"
     cat > "$ZC_PLIST" <<EOF
@@ -2495,6 +2560,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>FNOX_AGE_KEY_FILE</key><string>${FNOX_AGE_KEY_FILE}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
+${CALCIFORGE_LAUNCHD_OPTIONAL_ENV}
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
@@ -2522,6 +2588,7 @@ Environment=CALCIFORGE_FNOX_DIR=${CALCIFORGE_FNOX_DIR}
 Environment=FNOX_AGE_KEY_FILE=${FNOX_AGE_KEY_FILE}
 Environment=CALCIFORGE_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
+${CALCIFORGE_SYSTEMD_OPTIONAL_ENV}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=30
@@ -3556,6 +3623,11 @@ REMOTE_MITM_CA
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
+            if [[ "$bin" == "calciforge" ]]; then
+                [[ -z "$CALCIFORGE_PASTE_BIND" ]] || env_pairs="${env_pairs}\nCALCIFORGE_PASTE_BIND=${CALCIFORGE_PASTE_BIND}"
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_BASE_URL" ]] || env_pairs="${env_pairs}\nCALCIFORGE_PASTE_PUBLIC_BASE_URL=${CALCIFORGE_PASTE_PUBLIC_BASE_URL}"
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_HOST" ]] || env_pairs="${env_pairs}\nCALCIFORGE_PASTE_PUBLIC_HOST=${CALCIFORGE_PASTE_PUBLIC_HOST}"
+            fi
             exec_args=""
             if [[ "$bin" == "calciforge" ]]; then
                 exec_args=" --config ${config_dir}/config.toml"
@@ -3591,6 +3663,9 @@ REMOTE_MITM_CA
                     "CALCIFORGE_FNOX_DIR=${config_dir}"
                     "FNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519"
                 )
+                [[ -z "$CALCIFORGE_PASTE_BIND" ]] || launchd_env+=("CALCIFORGE_PASTE_BIND=${CALCIFORGE_PASTE_BIND}")
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_BASE_URL" ]] || launchd_env+=("CALCIFORGE_PASTE_PUBLIC_BASE_URL=${CALCIFORGE_PASTE_PUBLIC_BASE_URL}")
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_HOST" ]] || launchd_env+=("CALCIFORGE_PASTE_PUBLIC_HOST=${CALCIFORGE_PASTE_PUBLIC_HOST}")
             fi
             if [[ "$bin" == "security-proxy" ]]; then
                 launchd_env+=(

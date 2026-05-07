@@ -416,21 +416,23 @@ fn parse_fnox_list_names(stdout: &str) -> Vec<String> {
 
             trimmed
                 .split(|c: char| c.is_whitespace() || c == '|' || c == '│' || c == ':')
-                .find(|part| is_secret_name_token(part))
+                .find(|part| !part.is_empty())
+                .filter(|part| !is_fnox_list_header_token(part))
+                .filter(|part| is_secret_name_token(part))
                 .map(String::from)
         })
         .collect()
 }
 
 fn is_secret_name_token(token: &str) -> bool {
-    let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first.is_ascii_uppercase() || first == '_') {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    crate::secret_refs::is_valid_secret_name(token)
+}
+
+fn is_fnox_list_header_token(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "key" | "name" | "secret" | "type" | "provider" | "description"
+    )
 }
 
 #[cfg(test)]
@@ -656,12 +658,17 @@ mod tests {
 KEY_A  redacted-value-A
 KEY_B  redacted-value-B
 KEY_C  redacted-value-C
+test  provider (calciforge-local) test
+anthropic-key  provider (calciforge-local) anthropic-key
 OUT"#,
         );
         let client = FnoxClient::with_binary(bin);
 
         let names = client.list().await.unwrap();
-        assert_eq!(names, vec!["KEY_A", "KEY_B", "KEY_C"]);
+        assert_eq!(
+            names,
+            vec!["KEY_A", "KEY_B", "KEY_C", "test", "anthropic-key"]
+        );
         // Defensive: we don't trust the wrapper not to leak; assert
         // explicitly that no value substring survived.
         for v in ["redacted-value-A", "redacted-value-B", "redacted-value-C"] {
@@ -727,12 +734,14 @@ OUT"#,
 | API_TOKEN  | redacted    |
 | DB_PASS    | redacted    |
 +------------+-------------+
+ Key   Type                         Provider Key  Description
+ test  provider (calciforge-local)  test
 OUT"#,
         );
         let client = FnoxClient::with_binary(bin);
 
         let names = client.list().await.unwrap();
-        assert_eq!(names, vec!["API_TOKEN", "DB_PASS"]);
+        assert_eq!(names, vec!["API_TOKEN", "DB_PASS", "test"]);
     }
 
     /// Given a real fake fnox that runs `--version` on `is_available`,

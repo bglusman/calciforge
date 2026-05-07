@@ -322,7 +322,10 @@ Direct `paste-server` CLI use binds to localhost by default. For a
 stable LAN hostname/IP, set `CALCIFORGE_PASTE_PUBLIC_HOST` on the
 Calciforge service. For a reverse-proxy or tunnel URL, set
 `CALCIFORGE_PASTE_PUBLIC_BASE_URL` and terminate authentication at that
-proxy. Do not expose the paste server directly to the open internet.
+proxy. Reverse proxies also need a stable listener, so set
+`CALCIFORGE_PASTE_BIND`, for example `127.0.0.1:58083` for same-host
+proxies or `0.0.0.0:58083` for a trusted LAN proxy. Do not expose the
+paste server directly to the open internet.
 
 Calciforge treats externally reachable URLs as operator-owned configuration.
 For local web surfaces, keep binds conservative and set the advertised URL to
@@ -343,7 +346,10 @@ On Linux, it creates a local `age` provider with a dedicated Ed25519 key at
 preconfigure fnox globally or set `CALCIFORGE_FNOX_PROVIDER_NAME`,
 `CALCIFORGE_FNOX_PROVIDER_TYPE`, `CALCIFORGE_FNOX_AGE_RECIPIENT`, or
 `FNOX_AGE_KEY_FILE` before running the installer. Protect the generated age
-key like any other local decrypt key.
+key like any other local decrypt key. The installer warms the fnox write path
+with a temporary secret by default so macOS Keychain or provider approval
+prompts happen during setup instead of the first chat-driven paste. Set
+`CALCIFORGE_FNOX_WARMUP=false` to skip that preflight.
 
 ### Outbound traffic gating
 
