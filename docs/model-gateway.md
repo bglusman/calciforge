@@ -49,10 +49,20 @@ provider forwarding. External engines can add operator-facing dashboards or
 provider management without changing how channels and agents talk to
 Calciforge.
 
-Helicone is the first external gateway adapter. Calciforge's installer can
+Helicone is the first external gateway adapter and the default batteries-included
+observability path we ship today. It gives operators a real request dashboard,
+provider routing surface, and persisted gateway logs, while Calciforge remains
+the local identity, command, alias, alloy, dispatcher, and policy boundary.
+That convenience has a cost: the local stack is heavier than a plain HTTP
+forwarder because it includes dashboard, Postgres, ClickHouse, Jawn, and
+S3-compatible object storage pieces. A lighter external gateway or a smaller
+Calciforge-native observability engine may be desirable later; the adapter
+boundary is intentionally where future PRs can plug in those alternatives.
+
+Calciforge's installer can
 provision a local Helicone deployment when `CALCIFORGE_HELICONE_ENABLED=true`.
 The tested local setup uses Helicone's all-in-one Docker image for the
-dashboard, local storage, and Jawn API, plus the standalone
+dashboard, bundled MinIO S3-compatible storage, and Jawn API, plus the standalone
 `@helicone/ai-gateway` package for request routing. The standalone gateway is
 intentional: current all-in-one images may start a bundled gateway supervisor
 that exits before routing traffic.
@@ -95,17 +105,37 @@ The default dashboard bind is `127.0.0.1`. Use `0.0.0.0` only on a trusted LAN
 or behind WireGuard. Bind addresses decide where local services listen; they
 are not necessarily the URLs users should click from another device.
 
+The all-in-one image includes MinIO, which is the default local storage backend
+for request/response bodies. For LAN dashboards, the browser-visible runtime
+environment must expose LAN URLs for both Jawn and S3-compatible storage;
+otherwise the page can load while request lists or bodies silently call the
+client machine's `localhost`. The installer patches Helicone's `__ENV.js` for
+this all-in-one path. Managed S3, Garage, SeaweedFS, or another S3-compatible
+service can be used by operating Helicone separately and setting its storage
+environment variables there; Calciforge then only needs `[proxy].gateway_ui_url`
+and `backend_url` pointed at that deployment.
+
 After installing or repairing the local Helicone stack, run the focused doctor
 to verify the same path a remote browser uses:
 
 ```bash
 CALCIFORGE_HELICONE_DASHBOARD_USER_EMAIL=you@example.com \
+CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE=/path/to/dashboard-password \
+CALCIFORGE_HELICONE_REQUIRE_VISIBLE_ROWS=true \
 scripts/helicone-doctor.sh
 ```
 
-The script checks the dashboard URL, browser-visible Jawn endpoint, published
-ports, dashboard credential account, gateway API-key permissions, and whether
-ClickHouse rows are visible to the configured dashboard user's organization.
+The script checks the dashboard URL, browser-visible Jawn/S3 endpoints,
+published ports, dashboard credential account, gateway API-key permissions,
+ClickHouse rows visible to the configured dashboard user's organization, and
+the same Jawn request-list API that the dashboard calls after login. If
+`CALCIFORGE_HELICONE_REQUIRE_VISIBLE_ROWS=true`, the doctor fails until at least
+one gateway request is actually visible to the dashboard user.
+
+The Helicone doctor is deliberately narrower than `calciforge doctor`: it is a
+gateway-stack smoke test for the browser path, including the failure mode where
+the dashboard loads on another machine but its runtime config still points at
+that browser's own `localhost`.
 
 When a dashboard user email is provided, the installer attaches the local
 gateway API key to that user's Helicone organization. It creates or repairs the

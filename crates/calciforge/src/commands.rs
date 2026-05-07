@@ -1511,12 +1511,14 @@ impl CommandHandler {
                 };
 
                 // Update per-identity active agent and persist to disk.
-                {
+                let active_agents_snapshot = {
                     let mut map = self.active_agents.lock().unwrap();
                     map.insert(identity_id.to_string(), agent_id.to_string());
-                    save_active_agents_to(&self.state_dir, &map);
-                }
-                {
+                    map.clone()
+                };
+                save_active_agents_to(&self.state_dir, &active_agents_snapshot);
+
+                let active_sessions_snapshot = {
                     let mut sessions = self.active_sessions.lock().unwrap();
                     if let Some(session) = session_arg
                         .as_ref()
@@ -1536,8 +1538,9 @@ impl CommandHandler {
                             sessions.remove(identity_id);
                         }
                     }
-                    save_active_sessions_to(&self.state_dir, &sessions);
-                }
+                    sessions.clone()
+                };
+                save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
 
                 format!(
                     "✅ Switched to {}{}. Your messages will now route to {}.",
@@ -1750,16 +1753,19 @@ impl CommandHandler {
         };
 
         // Update per-identity active agent back to the configured default and persist.
-        {
+        let active_agents_snapshot = {
             let mut map = self.active_agents.lock().unwrap();
             map.insert(identity_id.to_string(), default_agent_id.clone());
-            save_active_agents_to(&self.state_dir, &map);
-        }
-        {
+            map.clone()
+        };
+        save_active_agents_to(&self.state_dir, &active_agents_snapshot);
+
+        let active_sessions_snapshot = {
             let mut sessions = self.active_sessions.lock().unwrap();
             sessions.remove(identity_id);
-            save_active_sessions_to(&self.state_dir, &sessions);
-        }
+            sessions.clone()
+        };
+        save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
 
         format!("✅ Switched to default agent: {}", default_agent_id)
     }

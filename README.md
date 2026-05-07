@@ -26,6 +26,7 @@ being treated as daily-driver infrastructure.
 | Agent runtime contract for CLI-first guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
 | Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| Helicone-backed gateway observability with dashboard-visible doctor checks | Working | [Model gateway](docs/model-gateway.md#external-gateway-engines) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
 | Inbound prompt-injection scanning and outbound exfiltration-pattern scanning via editable default Starlark policy | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |

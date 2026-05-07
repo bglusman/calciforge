@@ -1051,6 +1051,70 @@ fi
 ' >/dev/null || warn "Could not run Helicone ClickHouse migrations; dashboard request history may be empty"
 }
 
+patch_helicone_dashboard_runtime_urls() {
+    truthy "$CALCIFORGE_HELICONE_DASHBOARD_ENABLED" || return 0
+    command -v docker >/dev/null 2>&1 || return 0
+    docker ps --format '{{.Names}}' | grep -qx "$CALCIFORGE_HELICONE_CONTAINER" || return 0
+
+    local ui_host dashboard_url jawn_url s3_url
+    ui_host="$CALCIFORGE_HELICONE_DASHBOARD_BIND"
+    if [[ "$ui_host" == "0.0.0.0" || "$ui_host" == "::" ]]; then
+        ui_host="$(calciforge_lan_ip)"
+        [[ -n "$ui_host" ]] || ui_host="127.0.0.1"
+    fi
+    dashboard_url="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
+    jawn_url="http://${ui_host}:${CALCIFORGE_HELICONE_JAWN_PORT}"
+    s3_url="http://${ui_host}:${CALCIFORGE_HELICONE_S3_PORT}"
+
+    docker exec \
+        -e CALCIFORGE_HELICONE_DASHBOARD_URL="$dashboard_url" \
+        -e CALCIFORGE_HELICONE_JAWN_URL="$jawn_url" \
+        -e CALCIFORGE_HELICONE_S3_URL="$s3_url" \
+        "$CALCIFORGE_HELICONE_CONTAINER" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+dashboard_url = os.environ["CALCIFORGE_HELICONE_DASHBOARD_URL"]
+jawn_url = os.environ["CALCIFORGE_HELICONE_JAWN_URL"]
+s3_url = os.environ["CALCIFORGE_HELICONE_S3_URL"]
+
+supervisor_path = Path("/etc/supervisor/conf.d/supervisord.conf")
+if supervisor_path.exists():
+    text = supervisor_path.read_text()
+    replacements = {
+        'NEXT_PUBLIC_HELICONE_JAWN_SERVICE="http://localhost:8585"': f'NEXT_PUBLIC_HELICONE_JAWN_SERVICE="{jawn_url}"',
+        'NEXT_PUBLIC_HELICONE_JAWN_SERVICE="http://127.0.0.1:8585"': f'NEXT_PUBLIC_HELICONE_JAWN_SERVICE="{jawn_url}"',
+        'S3_ENDPOINT="http://localhost:9080"': f'S3_ENDPOINT="{s3_url}"',
+        'S3_ENDPOINT="http://127.0.0.1:9080"': f'S3_ENDPOINT="{s3_url}"',
+        'BETTER_AUTH_URL="http://localhost:3000"': f'BETTER_AUTH_URL="{dashboard_url}"',
+        'NEXT_PUBLIC_APP_URL="http://localhost:3000"': f'NEXT_PUBLIC_APP_URL="{dashboard_url}"',
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    supervisor_path.write_text(text)
+
+for path in [Path("/app/web/public/__ENV.js"), Path("/app/node_modules/helicone/public/__ENV.js")]:
+    if not path.exists():
+        continue
+    raw = path.read_text().strip()
+    prefix = "window.__ENV = "
+    if not raw.startswith(prefix):
+        continue
+    body = raw[len(prefix):].strip()
+    if body.endswith(";"):
+        body = body[:-1]
+    env = json.loads(body)
+    env["NEXT_PUBLIC_APP_URL"] = dashboard_url
+    env["NEXT_PUBLIC_HELICONE_JAWN_SERVICE"] = jawn_url
+    env["NEXT_PUBLIC_BETTER_AUTH"] = "true"
+    env["S3_ENDPOINT"] = s3_url
+    path.write_text(prefix + json.dumps(env, separators=(",", ":")) + ";\n")
+PY
+
+    docker exec "$CALCIFORGE_HELICONE_CONTAINER" supervisorctl restart web jawn >/dev/null 2>&1 || true
+}
+
 ensure_helicone() {
     truthy "$CALCIFORGE_HELICONE_ENABLED" || return 0
     ensure_helicone_key
@@ -1082,6 +1146,7 @@ ensure_helicone() {
                 -e "SITE_URL=${dashboard_url}" \
                 -e "BETTER_AUTH_URL=${dashboard_url}" \
                 -e "BETTER_AUTH_SECRET=${better_auth_secret}" \
+                -e "NEXT_PUBLIC_BETTER_AUTH=true" \
                 -e "NEXT_PUBLIC_HELICONE_JAWN_SERVICE=${jawn_url}" \
                 -e "S3_ENDPOINT=${s3_url}" \
                 -p "${dashboard_bind}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}:3000" \
@@ -1094,6 +1159,7 @@ ensure_helicone() {
             dashboard_started=true
             ok "Helicone dashboard running at ${dashboard_url}"
             sleep 3
+            patch_helicone_dashboard_runtime_urls
             run_helicone_clickhouse_migrations
             seed_helicone_api_key
         else
