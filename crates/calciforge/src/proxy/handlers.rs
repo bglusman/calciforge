@@ -262,13 +262,15 @@ async fn try_provider(
     model: &str,
     req: &ChatCompletionRequest,
 ) -> anyhow::Result<ChatCompletionResponse> {
-    let mut gateway_req = req.clone();
-    gateway_req.model = model.to_string();
-
     // Check named providers first; fall back to default gateway.
-    let gateway = routing::find_provider(&state.providers, model)
-        .map(|e| &e.gateway)
+    let provider = routing::find_provider(&state.providers, model);
+    let gateway = provider
+        .map(|entry| &entry.gateway)
         .unwrap_or(&state.gateway);
+    let mut gateway_req = req.clone();
+    gateway_req.model = provider
+        .map(|entry| entry.upstream_model_name(model))
+        .unwrap_or_else(|| model.to_string());
 
     match gateway.chat_completion(gateway_req).await {
         Ok(response) => Ok(response),
@@ -975,6 +977,7 @@ mod tests {
                 patterns: vec!["qwen-test:small".to_string()],
                 gateway: provider_gateway_dyn,
                 on_switch: None,
+                strip_model_prefix: None,
             }],
             local_manager: None,
             voice: None,
@@ -1001,6 +1004,56 @@ mod tests {
         assert!(
             default_gateway.recorded_models().is_empty(),
             "configured provider gateway should handle the concrete routed model"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_route_can_strip_public_model_prefix_before_upstream_request() {
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let provider_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "opencode-go".to_string(),
+                patterns: vec!["opencode-go/kimi-k2.6".to_string()],
+                gateway: provider_gateway_dyn,
+                on_switch: None,
+                strip_model_prefix: Some("opencode-go/".to_string()),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "opencode-go/kimi-k2.6",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(
+            provider_gateway.recorded_models(),
+            vec!["kimi-k2.6"],
+            "provider gateway should receive upstream model ID after namespace stripping"
+        );
+        assert!(
+            default_gateway.recorded_models().is_empty(),
+            "provider route should not fall through to default gateway"
         );
     }
 
@@ -1392,6 +1445,7 @@ mod tests {
                 ],
                 gateway: provider_gateway,
                 on_switch: None,
+                strip_model_prefix: None,
             }],
             local_manager: None,
             voice: None,

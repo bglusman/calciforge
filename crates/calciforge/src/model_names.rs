@@ -262,6 +262,7 @@ version = 2
                     "openai/*".to_string(),
                     "claude-*".to_string(),
                 ],
+                strip_model_prefix: None,
                 timeout_seconds: None,
                 headers: Default::default(),
                 on_switch: None,

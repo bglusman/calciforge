@@ -95,6 +95,11 @@ CALCIFORGE_HELICONE_DASHBOARD_USER_EMAIL="${CALCIFORGE_HELICONE_DASHBOARD_USER_E
 CALCIFORGE_HELICONE_DASHBOARD_USER_NAME="${CALCIFORGE_HELICONE_DASHBOARD_USER_NAME:-}"
 CALCIFORGE_HELICONE_DASHBOARD_PASSWORD="${CALCIFORGE_HELICONE_DASHBOARD_PASSWORD:-}"
 CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE="${CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE:-}"
+CALCIFORGE_OPENCODE_API_KEY_FILE="${CALCIFORGE_OPENCODE_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/opencode-zen-key}"
+CALCIFORGE_OPENCODE_GO_ENABLED="${CALCIFORGE_OPENCODE_GO_ENABLED:-false}"
+CALCIFORGE_OPENCODE_GO_MODELS="${CALCIFORGE_OPENCODE_GO_MODELS:-kimi-k2.6,qwen3.6-plus,deepseek-v4-pro}"
+CALCIFORGE_OPENCODE_ZEN_ENABLED="${CALCIFORGE_OPENCODE_ZEN_ENABLED:-false}"
+CALCIFORGE_OPENCODE_ZEN_MODELS="${CALCIFORGE_OPENCODE_ZEN_MODELS:-qwen3.6-plus,kimi-k2.6,minimax-m2.7,big-pickle}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
@@ -2350,6 +2355,55 @@ path.write_text(text + ("\n" if not text.endswith("\n") else ""))
 PY
 }
 
+_ensure_opencode_provider() {
+    local config_path="$1" provider_id="$2" url="$3" public_prefix="$4" models_csv="$5" api_key_file="$6" timeout_seconds="${7:-300}"
+    if [[ ! -s "$api_key_file" ]]; then
+        warn "OpenCode provider '$provider_id' requested but API key file is missing or empty: $api_key_file"
+        return 0
+    fi
+    python3 - "$config_path" "$provider_id" "$url" "$public_prefix" "$models_csv" "$api_key_file" "$timeout_seconds" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+provider_id, url, public_prefix, models_csv, api_key_file, timeout_seconds = sys.argv[2:]
+models = [m.strip() for m in models_csv.split(",") if m.strip()]
+if not models:
+    raise SystemExit(0)
+
+def q(value):
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+public_models = [model if model.startswith(public_prefix) else public_prefix + model for model in models]
+models_toml = "[ " + ", ".join(f'"{q(model)}"' for model in public_models) + ",]"
+
+text = path.read_text()
+provider_re = re.compile(
+    r'(?ms)^\[\[proxy\.providers\]\]\n(?:(?!^\[).)*?^id\s*=\s*"'
+    + re.escape(provider_id)
+    + r'"\s*$.*?(?=^\[|\Z)'
+)
+provider_block = (
+    '[[proxy.providers]]\n'
+    f'id = "{q(provider_id)}"\n'
+    'backend_type = "http"\n'
+    f'url = "{q(url)}"\n'
+    f'api_key_file = "{q(api_key_file)}"\n'
+    f'models = {models_toml}\n'
+    f'strip_model_prefix = "{q(public_prefix)}"\n'
+    f'timeout_seconds = {int(timeout_seconds)}\n'
+)
+match = provider_re.search(text)
+if match:
+    text = text[:match.start()] + provider_block + text[match.end():].lstrip("\n")
+else:
+    text = text.rstrip() + "\n\n" + provider_block
+
+path.write_text(text + ("\n" if not text.endswith("\n") else ""))
+PY
+}
+
 _ensure_proxy_enabled() {
     local config_path="$1"
     python3 - "$config_path" <<'PY'
@@ -2397,6 +2451,28 @@ if truthy "$CALCIFORGE_HELICONE_ENABLED"; then
     if [[ "$CALCIFORGE_HELICONE_PROVIDER" == "ollama" ]]; then
         _ensure_helicone_ollama_provider "$ZC_CONFIG" || warn "Could not add Helicone Ollama provider entries in $ZC_CONFIG"
     fi
+fi
+
+if truthy "$CALCIFORGE_OPENCODE_GO_ENABLED"; then
+    _ensure_opencode_provider \
+        "$ZC_CONFIG" \
+        "opencode-go" \
+        "https://opencode.ai/zen/go/v1" \
+        "opencode-go/" \
+        "$CALCIFORGE_OPENCODE_GO_MODELS" \
+        "$CALCIFORGE_OPENCODE_API_KEY_FILE" \
+        300 || warn "Could not add OpenCode Go provider entries in $ZC_CONFIG"
+fi
+
+if truthy "$CALCIFORGE_OPENCODE_ZEN_ENABLED"; then
+    _ensure_opencode_provider \
+        "$ZC_CONFIG" \
+        "opencode-zen" \
+        "https://opencode.ai/zen/v1" \
+        "opencode/" \
+        "$CALCIFORGE_OPENCODE_ZEN_MODELS" \
+        "$CALCIFORGE_OPENCODE_API_KEY_FILE" \
+        300 || warn "Could not add OpenCode Zen provider entries in $ZC_CONFIG"
 fi
 
 if [[ "$PLATFORM" == "Darwin" ]]; then

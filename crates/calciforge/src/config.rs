@@ -882,6 +882,14 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub models: Vec<String>,
 
+    /// Optional public model prefix to strip before forwarding to the provider.
+    ///
+    /// This lets Calciforge expose namespaced selectors such as
+    /// `opencode-go/kimi-k2.6` while sending the upstream API's concrete model
+    /// ID `kimi-k2.6`.
+    #[serde(default)]
+    pub strip_model_prefix: Option<String>,
+
     /// Request timeout in seconds (overrides proxy-level default).
     #[serde(default)]
     pub timeout_seconds: Option<u64>,

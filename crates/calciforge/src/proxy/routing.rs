@@ -28,6 +28,8 @@ pub struct ProviderEntry {
     pub gateway: Arc<dyn GatewayBackend>,
     /// Shell script to run on `!model <id>` switch to any model of this provider.
     pub on_switch: Option<String>,
+    /// Optional public model prefix stripped before forwarding upstream.
+    pub strip_model_prefix: Option<String>,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -36,7 +38,23 @@ impl std::fmt::Debug for ProviderEntry {
             .field("id", &self.id)
             .field("patterns", &self.patterns)
             .field("on_switch", &self.on_switch)
+            .field("strip_model_prefix", &self.strip_model_prefix)
             .finish()
+    }
+}
+
+impl ProviderEntry {
+    pub fn upstream_model_name(&self, model: &str) -> String {
+        if let Some(prefix) = self
+            .strip_model_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+        {
+            if let Some(stripped) = model.strip_prefix(prefix) {
+                return stripped.to_string();
+            }
+        }
+        model.to_string()
     }
 }
 
@@ -71,6 +89,7 @@ pub fn build_provider_entries(
     // Build a map of provider_id → resolved gateway for efficient lookup.
     let mut provider_gateways: HashMap<String, Arc<dyn GatewayBackend>> = HashMap::new();
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_strip_prefix: HashMap<String, Option<String>> = HashMap::new();
 
     for p in &config.providers {
         if p.backend_type == "helicone" {
@@ -105,6 +124,7 @@ pub fn build_provider_entries(
             info!(id = %p.id, url = %p.url, models = ?p.models, "Helicone provider loaded");
             provider_gateways.insert(p.id.clone(), gw);
             provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+            provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
             continue;
         }
 
@@ -163,6 +183,7 @@ pub fn build_provider_entries(
         info!(id = %p.id, url = %p.url, models = ?p.models, "Provider loaded");
         provider_gateways.insert(p.id.clone(), gw);
         provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+        provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
     }
 
     let mut entries: Vec<ProviderEntry> = Vec::new();
@@ -175,6 +196,10 @@ pub fn build_provider_entries(
                 patterns: vec![route.pattern.clone()],
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&route.provider).cloned().flatten(),
+                strip_model_prefix: provider_strip_prefix
+                    .get(&route.provider)
+                    .cloned()
+                    .flatten(),
             });
         } else {
             anyhow::bail!(
@@ -196,11 +221,21 @@ pub fn build_provider_entries(
                 patterns: p.models.clone(),
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&p.id).cloned().flatten(),
+                strip_model_prefix: provider_strip_prefix.get(&p.id).cloned().flatten(),
             });
         }
     }
 
     Ok(entries)
+}
+
+fn normalized_strip_prefix(provider: &crate::config::ProxyProviderConfig) -> Option<String> {
+    provider
+        .strip_model_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_string)
 }
 
 fn resolve_provider_api_key(
@@ -239,6 +274,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             models: vec!["test-model".to_string()],
+            strip_model_prefix: None,
             timeout_seconds: None,
             headers: HashMap::new(),
             on_switch: None,
