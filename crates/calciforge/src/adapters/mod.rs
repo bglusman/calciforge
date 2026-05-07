@@ -942,7 +942,7 @@ mod tests {
         agent.kind = "openclaw-channel".to_string();
         assert!(
             !agent_supports_model_override(&agent),
-            "OpenClaw channel model changes should use native OpenClaw commands, not Calciforge synthetic model IDs"
+            "OpenClaw channel model changes should use native OpenClaw commands, not Calciforge gateway model selectors"
         );
 
         agent.kind = "openai-compat".to_string();

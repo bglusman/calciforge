@@ -116,13 +116,18 @@ pub fn build_provider_entries(
             }
             let api_key = resolve_provider_api_key(p)?;
             let timeout = p.timeout_seconds.unwrap_or(default_timeout);
+            let headers: Option<HashMap<String, String>> = if p.headers.is_empty() {
+                None
+            } else {
+                Some(p.headers.clone())
+            };
             let gw_cfg = GatewayConfig {
                 backend_type: GatewayType::Helicone,
                 base_url: Some(p.url.clone()),
                 api_key,
                 timeout_seconds: timeout,
                 extra_config: None,
-                headers: None,
+                headers,
                 retry_enabled: true,
                 max_retries: 3,
                 retry_base_delay_ms: 1000,

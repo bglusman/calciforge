@@ -271,17 +271,17 @@ impl DispatcherDefinition {
 impl ExecModelDefinition {
     pub fn from_config(cfg: &ExecModelConfig) -> Result<Self, String> {
         if cfg.id.trim().is_empty() {
-            return Err("exec model id must not be empty".to_string());
+            return Err("exec-backed model shim id must not be empty".to_string());
         }
         if cfg.context_window == 0 {
             return Err(format!(
-                "exec model '{}': context_window must be > 0",
+                "exec-backed model shim '{}': context_window must be > 0",
                 cfg.id
             ));
         }
         if cfg.command.trim().is_empty() {
             return Err(format!(
-                "exec model '{}': command must not be empty",
+                "exec-backed model shim '{}': command must not be empty",
                 cfg.id
             ));
         }
@@ -295,7 +295,7 @@ impl ExecModelDefinition {
     pub fn select_plan(&self, estimated_tokens: u32) -> Result<AlloyPlan, String> {
         if estimated_tokens > self.context_window {
             return Err(format!(
-                "exec model '{}': estimated request size {} tokens exceeds context window {}",
+                "exec-backed model shim '{}': estimated request size {} tokens exceeds context window {}",
                 self.id, estimated_tokens, self.context_window
             ));
         }
@@ -544,7 +544,7 @@ fn validate_constituent(alloy: &AlloyConfig, c: &AlloyConstituentConfig) -> Resu
     Ok(())
 }
 
-fn validate_synthetic_dag(
+fn validate_gateway_selector_graph(
     alloys: &HashMap<String, AlloyProvider>,
     cascades: &HashMap<String, CascadeDefinition>,
     dispatchers: &HashMap<String, DispatcherDefinition>,
@@ -741,7 +741,7 @@ impl AlloyManager {
             }
         }
 
-        validate_synthetic_dag(&alloys, &cascades, &dispatchers, &exec_models)?;
+        validate_gateway_selector_graph(&alloys, &cascades, &dispatchers, &exec_models)?;
 
         Ok(Self {
             alloys,

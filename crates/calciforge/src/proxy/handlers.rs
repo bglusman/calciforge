@@ -673,7 +673,7 @@ mod tests {
     };
     use crate::providers::alloy::AlloyManager;
     use crate::providers::ProviderRegistry;
-    use crate::proxy::backend::{BackendError, ModelInfo};
+    use crate::proxy::backend::{BackendError, ModelInfo as BackendModelInfo};
     use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
     use crate::proxy::openai::{ChatCompletionResponse, Choice, Usage};
     use crate::proxy::ProxyState;
@@ -763,7 +763,7 @@ mod tests {
             })
         }
 
-        async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
+        async fn list_models(&self) -> Result<Vec<BackendModelInfo>, BackendError> {
             Ok(Vec::new())
         }
 

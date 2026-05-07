@@ -575,7 +575,7 @@ def main() -> int:
             room_id,
             bot_user_id,
             "!model dispatcher-matrix",
-            "Activated synthetic model 'dispatcher-matrix'",
+            "Activated dispatcher 'dispatcher-matrix'",
         )
         send_and_expect(
             base_url,

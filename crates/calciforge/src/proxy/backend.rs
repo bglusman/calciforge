@@ -195,6 +195,7 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn SecretsBackend>,
                 router_name,
                 enable_caching: true,
                 cache_ttl_seconds: 300,
+                headers: std::collections::HashMap::new(),
             };
             let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
                 BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))

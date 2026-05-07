@@ -469,8 +469,8 @@ models = ["local/*", "qwen/*", "mlx/*"]
 pattern = "coding/default"
 provider = "anthropic"
 
-# Chat/API aliases shown by `!model`; aliases may target concrete or synthetic
-# model IDs.
+# Chat/API aliases shown by `!model`; aliases may target concrete models,
+# synthetic routing selectors, or exec-backed model shims.
 [[model_shortcuts]]
 alias = "sonnet"
 model = "anthropic/claude-sonnet-4.6"
@@ -554,7 +554,7 @@ provider-specific flags while Calciforge only sees a configured command,
 stdin prompt, stdout answer, timeout, and context-window declaration.
 The example wrappers are intentionally small because provider CLIs and
 terms change; operators should validate the installed CLI version and
-subscription terms before making an exec model part of their default
+subscription terms before making an exec-backed model shim part of their default
 route.
 
 Read the [agent adapter notes](agent-adapters.html) and
@@ -809,7 +809,7 @@ Solo-operator usable and actively hardening, multi-user team mode in
 progress. Mac-tested, Linux-ready (CI runs Ubuntu, daily-use includes
 macOS and a headless Linux service host). Treat new deployments as
 operator-reviewed until their channel credentials, fnox store, model
-gateway providers, and synthetic model routes pass smoke tests.
+gateway providers, and synthetic routing selectors pass smoke tests.
 
 The status summary above is the site-facing snapshot of what works today and
 what is still in flight. Public roadmap ideas live in

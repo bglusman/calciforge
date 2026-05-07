@@ -726,14 +726,42 @@ print(f'"{arg}"')
 PY
 }
 
+random_hex() {
+    local bytes="$1" label="${2:-random value}"
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex "$bytes"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$bytes" <<'PY'
+import secrets
+import sys
+
+print(secrets.token_hex(int(sys.argv[1])))
+PY
+        return 0
+    fi
+    die "openssl or python3 is required to generate ${label}"
+}
+
+docker_publish_bind() {
+    local bind="$1"
+    if [[ "$bind" == "::" ]]; then
+        printf '[::]'
+    elif [[ "$bind" == *:* && "$bind" != \[*\] ]]; then
+        printf '[%s]' "$bind"
+    else
+        printf '%s' "$bind"
+    fi
+}
+
 ensure_helicone_key() {
     mkdir -p "$(dirname "$CALCIFORGE_HELICONE_API_KEY_FILE")"
     if [[ -s "$CALCIFORGE_HELICONE_API_KEY_FILE" ]]; then
         chmod 600 "$CALCIFORGE_HELICONE_API_KEY_FILE" 2>/dev/null || true
         return 0
     fi
-    command -v openssl >/dev/null 2>&1 || die "openssl is required to generate the Helicone local API key"
-    ( umask 077; printf 'cfh_%s\n' "$(openssl rand -hex 24)" > "$CALCIFORGE_HELICONE_API_KEY_FILE" )
+    ( umask 077; printf 'cfh_%s\n' "$(random_hex 24 'Helicone local API key')" > "$CALCIFORGE_HELICONE_API_KEY_FILE" )
     chmod 600 "$CALCIFORGE_HELICONE_API_KEY_FILE"
 }
 
@@ -848,8 +876,9 @@ ensure_helicone() {
                 [[ -n "$ui_host" ]] || ui_host="127.0.0.1"
             fi
             dashboard_url="http://${ui_host}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}"
-            local better_auth_secret
-            better_auth_secret="$(openssl rand -hex 32)"
+            local better_auth_secret dashboard_bind
+            better_auth_secret="$(random_hex 32 'Helicone dashboard auth secret')"
+            dashboard_bind="$(docker_publish_bind "$CALCIFORGE_HELICONE_DASHBOARD_BIND")"
             docker rm -f "$CALCIFORGE_HELICONE_CONTAINER" >/dev/null 2>&1 || true
             docker run -d --name "$CALCIFORGE_HELICONE_CONTAINER" \
                 --restart unless-stopped \
@@ -860,7 +889,7 @@ ensure_helicone() {
                 -e "BETTER_AUTH_SECRET=${better_auth_secret}" \
                 -e "NEXT_PUBLIC_HELICONE_JAWN_SERVICE=http://127.0.0.1:8585" \
                 -e "S3_ENDPOINT=http://127.0.0.1:9080" \
-                -p "${CALCIFORGE_HELICONE_DASHBOARD_BIND}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}:3000" \
+                -p "${dashboard_bind}:${CALCIFORGE_HELICONE_DASHBOARD_PORT}:3000" \
                 -p "127.0.0.1:${CALCIFORGE_HELICONE_JAWN_PORT}:8585" \
                 -p "127.0.0.1:${CALCIFORGE_HELICONE_S3_PORT}:9080" \
                 -v calciforge-helicone-postgres:/var/lib/postgresql/data \
@@ -1212,8 +1241,7 @@ ensure_secret_token_file() {
         ok "$label token file already present → $path"
         return 0
     fi
-    command -v openssl >/dev/null 2>&1 || die "openssl is required to generate $label token"
-    ( umask 077; openssl rand -hex 32 > "$path" )
+    ( umask 077; random_hex 32 "$label token" > "$path" )
     chmod 600 "$path"
     ok "Generated $label token → $path"
 }

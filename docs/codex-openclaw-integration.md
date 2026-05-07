@@ -76,7 +76,7 @@ Do not wrap Codex CLI with generic `HTTP_PROXY`/`HTTPS_PROXY` unless you have
 validated that specific route. Codex uses streaming and browser/OAuth-backed
 control-plane calls; the current `security-proxy` does not inspect CONNECT
 tunnels and can break those flows. Use Calciforge's OpenAI-compatible gateway,
-exec models, explicit fetch/tool integration, or audited recipes for traffic
+exec-backed model shims, explicit fetch/tool integration, or audited recipes for traffic
 that needs scanning or secret substitution.
 
 Keep chat-facing Codex agents conservative. `read-only` is the safer
@@ -192,7 +192,7 @@ Calciforge's OpenAI-compatible model gateway can forward HTTP requests to
 OpenAI-compatible providers, or it can expose trusted local CLI wrappers as
 `[[exec_models]]`.
 
-Use an exec model when the subscription-owning CLI should remain a black
+Use an exec-backed model shim when the subscription-owning CLI should remain a black
 box and Calciforge only needs to render a prompt, invoke the process, and
 wrap the final text as a chat completion:
 

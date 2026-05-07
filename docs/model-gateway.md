@@ -14,7 +14,7 @@ Agents can also point at an OpenAI-compatible endpoint with
 targets. Do not use it as an OpenClaw agent adapter; OpenClaw agents should use
 `kind = "openclaw-channel"` so slash commands and agent identity stay native.
 Set `allow_model_override = true` only for OpenAI-compatible agents that should
-accept Calciforge `!model` selections and synthetic model IDs. Leave it unset
+accept Calciforge `!model` selections and gateway model selectors. Leave it unset
 for endpoints with their own restricted model namespace.
 
 From a user-experience perspective, keep model routes separate from agents.
@@ -38,7 +38,7 @@ or "chat routes" rather than as full agents in user-facing lists.
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
 | Exec-backed model shims | Working | `[[exec_models]]` exposes a local binary or wrapper script as a terminal model-gateway selector, useful for subscription-backed CLIs. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
-| Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage can be exposed either as a Calciforge agent path or via an exec model wrapper when a local CLI owns authentication. |
+| Codex/OpenClaw subscription paths | Working | Codex subscription/OAuth usage can be exposed either as a Calciforge agent path or via an exec-backed model shim when a local CLI owns authentication. |
 | External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected gateway engine and operator dashboard link after sender identity resolution. |
 | Helicone external gateway adapter | Working | `backend_type = "helicone"` forwards OpenAI-compatible requests to a Helicone AI Gateway while preserving Calciforge auth, routing, and command UX. |
 

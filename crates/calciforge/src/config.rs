@@ -67,7 +67,7 @@ pub struct CalciforgeConfig {
     #[serde(default)]
     pub dispatchers: Vec<DispatcherConfig>,
 
-    /// `[[exec_models]]` — executable-backed synthetic models.
+    /// `[[exec_models]]` — executable-backed model gateway shims.
     /// These expose subscription-authenticated CLIs such as `codex exec` or
     /// `claude -p` through the OpenAI-compatible model gateway without copying
     /// their OAuth/session credentials into provider API keys.
@@ -96,8 +96,9 @@ pub struct CalciforgeConfig {
 pub struct ModelShortcutConfig {
     /// Short alias name (e.g. "sonnet", "opus", "fast")
     pub alias: String,
-    /// Target model ID. This may be a concrete provider model or a synthetic
-    /// model ID such as an alloy, cascade, dispatcher, or exec model.
+    /// Target model ID. This may be a concrete provider model, a synthetic
+    /// routing selector such as an alloy, cascade, or dispatcher, or an
+    /// exec-backed model shim.
     pub model: String,
 }
 
@@ -171,10 +172,10 @@ pub struct DispatcherConfig {
     pub models: Vec<SyntheticModelConfig>,
 }
 
-/// Executable-backed synthetic model definition (`[[exec_models]]`).
+/// Executable-backed model gateway shim definition (`[[exec_models]]`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecModelConfig {
-    /// Synthetic model id requested by agents, such as `codex/gpt-5.5`.
+    /// Gateway model selector requested by agents, such as `codex/gpt-5.5`.
     pub id: String,
     /// Human-readable name.
     #[serde(default)]
@@ -741,8 +742,8 @@ pub struct ProxyAgentConfig {
 
     /// Allowed model patterns (supports wildcards like "kimi/*", "alloy/free-tier").
     /// Matches the requested/root model and, unless a block rule applies, can
-    /// authorize a synthetic model as a bundle. If empty and default_policy is
-    /// "allow_all", all models are allowed.
+    /// authorize a gateway model selector as a bundle. If empty and
+    /// default_policy is "allow_all", all models are allowed.
     #[serde(default)]
     pub allowed_models: Vec<String>,
 

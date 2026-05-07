@@ -337,7 +337,7 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
     for entry in &configured_model_ids {
         if let Some(previous_kind) = model_ids.insert(entry.id.as_str(), entry.kind) {
             result.add_error(format!(
-                "Ambiguous model selector '{}': configured as both a {} and a {}. Model selectors must be unique across synthetic models, exec-backed shims, local models, exact provider models, and exact model routes.",
+                "Ambiguous model selector '{}': configured as both a {} and a {}. Model selectors must be unique across synthetic routing selectors, exec-backed shims, local models, exact provider models, and exact model routes.",
                 entry.id,
                 previous_kind.label(),
                 entry.kind.label()
@@ -459,7 +459,7 @@ fn validate_alloys(config: &CalciforgeConfig, result: &mut ValidationResult) {
     }
 }
 
-/// Validate named cascades, dispatchers, and exec models.
+/// Validate named cascades, dispatchers, and exec-backed model shims.
 fn validate_synthetic_model_groups(config: &CalciforgeConfig, result: &mut ValidationResult) {
     for cascade in &config.cascades {
         if cascade.models.is_empty() {
