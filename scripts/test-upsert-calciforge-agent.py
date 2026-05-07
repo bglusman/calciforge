@@ -18,7 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "lib" / "upsert-calciforge-agent.py"
 
 
-def run_helper(config: pathlib.Path) -> None:
+def run_helper(config: pathlib.Path, endpoint: str = "http://127.0.0.1:19090") -> None:
     subprocess.run(
         [
             sys.executable,
@@ -26,7 +26,7 @@ def run_helper(config: pathlib.Path) -> None:
             str(config),
             "hermes",
             "hermes",
-            "http://127.0.0.1:19090",
+            endpoint,
             "300000",
             "hermes",
             "/tmp/fake-api-key",
@@ -149,11 +149,38 @@ endpoint = "http://old.example.invalid"
         assert text.count('endpoint = "http://127.0.0.1:19090"') == 1
 
 
+def test_replacement_values_with_backslashes_remain_valid_toml() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = pathlib.Path(tmpdir) / "config.toml"
+        config.write_text(
+            """
+[calciforge]
+version = 2
+
+[[agents]]
+id = "hermes"
+kind = "hermes"
+endpoint = "http://old.example.invalid"
+""".lstrip()
+        )
+
+        endpoint = r"http://127.0.0.1:19090/C:\\tmp\\agent"
+        run_helper(config, endpoint)
+
+        text = config.read_text()
+        assert_valid_toml(config)
+        assert 'endpoint = "http://old.example.invalid"' not in text
+        if tomllib is not None:
+            parsed = tomllib.loads(text)
+            assert parsed["agents"][0]["endpoint"] == endpoint
+
+
 def main() -> int:
     tests = [
         test_last_agent_does_not_rewrite_following_tables,
         test_nested_registry_table_prevents_inline_registry_collision,
         test_updating_first_agent_preserves_second_agent_and_routing,
+        test_replacement_values_with_backslashes_remain_valid_toml,
     ]
     for test in tests:
         test()

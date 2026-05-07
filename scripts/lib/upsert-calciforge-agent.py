@@ -103,7 +103,7 @@ def upsert_key(lines: list[str], key: str, value: str, overwrite: bool = True) -
             if overwrite:
                 lines[index] = re.sub(
                     rf"^(\s*{re.escape(key)}\s*=\s*).*$",
-                    rf"\g<1>{value}",
+                    lambda match: f"{match.group(1)}{value}",
                     line,
                 )
             return lines

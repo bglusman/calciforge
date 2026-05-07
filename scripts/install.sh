@@ -200,6 +200,7 @@ case "$PLATFORM" in
         ;;
 esac
 
+CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH_EXPLICIT="${CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH+x}"
 CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH="${CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH:-$BIN_DIR/calciforge-ollama-switch}"
 
 rotate_log_file() {
@@ -2252,11 +2253,12 @@ PY
 
 _ensure_helicone_ollama_provider() {
     local config_path="$1"
+    local on_switch="${2-$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH}"
     python3 - "$config_path" \
         "$CALCIFORGE_HELICONE_AI_GATEWAY_PORT" \
         "$CALCIFORGE_HELICONE_API_KEY_FILE" \
         "$CALCIFORGE_HELICONE_MODELS" \
-        "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH" <<'PY'
+        "$on_switch" <<'PY'
 import pathlib
 import re
 import json
@@ -2267,6 +2269,7 @@ port, api_key_file, models_csv, on_switch = sys.argv[2:]
 models = [m.strip() for m in models_csv.split(",") if m.strip()]
 if not models:
     raise SystemExit(0)
+on_switch_line = f'on_switch = {json.dumps(on_switch)}\n' if on_switch.strip() else ""
 
 text = path.read_text()
 
@@ -2295,7 +2298,7 @@ provider_block = (
     f'api_key_file = "{api_key_file}"\n'
     "models = []\n"
     'add_model_prefix = "ollama/"\n'
-    f'on_switch = {json.dumps(on_switch)}\n'
+    f"{on_switch_line}"
     "timeout_seconds = 900\n"
 )
 if provider_match:
@@ -2307,6 +2310,23 @@ else:
 
 path.write_text(text + ("\n" if not text.endswith("\n") else ""))
 PY
+}
+
+_helicone_ollama_on_switch_config_value() {
+    if [[ -n "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH_EXPLICIT" ]]; then
+        printf '%s' "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH"
+        return 0
+    fi
+    if [[ -x "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH" ]]; then
+        printf '%s' "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH"
+        return 0
+    fi
+    if [[ "$CONFIGURE_ONLY" != true ]]; then
+        printf '%s' "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH"
+        return 0
+    fi
+    warn "Configure-only mode: not writing Helicone Ollama on_switch because $CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH is not installed. Set CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH explicitly to use another hook." >&2
+    printf ''
 }
 
 _ensure_opencode_provider() {
@@ -2403,7 +2423,7 @@ fi
 if truthy "$CALCIFORGE_HELICONE_ENABLED"; then
     _ensure_proxy_gateway_settings "$ZC_CONFIG" || warn "Could not update [proxy] gateway settings in $ZC_CONFIG"
     if [[ "$CALCIFORGE_HELICONE_PROVIDER" == "ollama" ]]; then
-        _ensure_helicone_ollama_provider "$ZC_CONFIG" || warn "Could not add Helicone Ollama provider entries in $ZC_CONFIG"
+        _ensure_helicone_ollama_provider "$ZC_CONFIG" "$(_helicone_ollama_on_switch_config_value)" || warn "Could not add Helicone Ollama provider entries in $ZC_CONFIG"
     fi
 fi
 
