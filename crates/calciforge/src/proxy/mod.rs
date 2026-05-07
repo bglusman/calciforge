@@ -1,7 +1,8 @@
 //! Model Gateway
 //!
 //! OpenAI-compatible HTTP server with multi-provider routing, retries,
-//! graceful degradation, Traceloop observability, and alloy support.
+//! graceful degradation, optional external gateway adapters, and synthetic
+//! model routing.
 
 use std::net::SocketAddr;
 
@@ -19,7 +20,6 @@ use crate::config::{ExecModelConfig, ModelShortcutConfig, ProxyConfig};
 use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
 
-mod alloy_router;
 mod auth;
 mod backend;
 mod exec_gateway;
@@ -36,7 +36,7 @@ mod voice_handlers;
 #[cfg(feature = "helicone")]
 mod helicone_router;
 
-// Traceloop-inspired router
+// Experimental Traceloop-compatible router.
 #[cfg(feature = "traceloop")]
 mod traceloop;
 

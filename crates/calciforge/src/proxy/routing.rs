@@ -107,6 +107,36 @@ pub fn build_provider_entries(
             continue;
         }
 
+        if p.backend_type == "helicone" {
+            if p.url.trim().is_empty() {
+                anyhow::bail!(
+                    "provider '{}' with backend_type 'helicone' requires non-empty url",
+                    p.id
+                );
+            }
+            let api_key = resolve_provider_api_key(p)?;
+            let timeout = p.timeout_seconds.unwrap_or(default_timeout);
+            let gw_cfg = GatewayConfig {
+                backend_type: GatewayType::Helicone,
+                base_url: Some(p.url.clone()),
+                api_key,
+                timeout_seconds: timeout,
+                extra_config: None,
+                headers: None,
+                retry_enabled: true,
+                max_retries: 3,
+                retry_base_delay_ms: 1000,
+                retry_max_delay_ms: 10000,
+                ui_url: None,
+            };
+            let gw = gateway::create_gateway(gw_cfg, None)
+                .with_context(|| format!("creating Helicone gateway for provider '{}'", p.id))?;
+            info!(id = %p.id, url = %p.url, models = ?p.models, "Helicone provider loaded");
+            provider_gateways.insert(p.id.clone(), gw);
+            provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+            continue;
+        }
+
         if p.backend_type != "http" {
             anyhow::bail!(
                 "provider '{}' has unsupported backend_type '{}'",
@@ -121,24 +151,7 @@ pub fn build_provider_entries(
             );
         }
 
-        // Resolve API key (file takes precedence).
-        let api_key = if let Some(ref file) = p.api_key_file {
-            let raw = std::fs::read_to_string(file)
-                .with_context(|| format!("reading API key file for provider '{}'", p.id))?;
-            raw.trim().to_string()
-        } else {
-            p.api_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .unwrap_or_default()
-                .to_string()
-        };
-        let api_key = if api_key.is_empty() {
-            None
-        } else {
-            Some(api_key)
-        };
+        let api_key = resolve_provider_api_key(p)?;
 
         let timeout = p.timeout_seconds.unwrap_or(default_timeout);
         let headers: Option<HashMap<String, String>> = if p.headers.is_empty() {
@@ -250,6 +263,29 @@ pub fn build_provider_entries(
     Ok(entries)
 }
 
+fn resolve_provider_api_key(
+    provider: &crate::config::ProxyProviderConfig,
+) -> anyhow::Result<Option<String>> {
+    let api_key = if let Some(ref file) = provider.api_key_file {
+        let raw = std::fs::read_to_string(file)
+            .with_context(|| format!("reading API key file for provider '{}'", provider.id))?;
+        raw.trim().to_string()
+    } else {
+        provider
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +332,24 @@ mod tests {
 
         let entries = build_provider_entries(&config, &[], 30).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[cfg(feature = "helicone")]
+    #[test]
+    fn helicone_provider_uses_helicone_gateway_auth_path() {
+        let config = ProxyConfig {
+            providers: vec![provider(
+                "helicone-local",
+                "helicone",
+                "http://127.0.0.1:8787/ollama/v1",
+            )],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, &[], 30).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].patterns, vec!["test-model"]);
+        assert_eq!(entries[0].gateway.gateway_type(), GatewayType::Helicone);
     }
 
     #[test]

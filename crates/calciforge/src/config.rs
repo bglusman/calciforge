@@ -851,7 +851,8 @@ pub struct ProxyProviderConfig {
     pub id: String,
 
     /// Provider backend kind. "http" forwards to an OpenAI-compatible API;
-    /// "exec" runs a local authenticated CLI and wraps its output as a
+    /// "helicone" forwards through a Helicone AI Gateway with Helicone auth
+    /// headers; "exec" runs a local authenticated CLI and wraps its output as a
     /// chat-completion response.
     #[serde(default = "default_proxy_provider_backend")]
     pub backend_type: String,

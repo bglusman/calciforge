@@ -371,7 +371,6 @@ pub struct HttpBackend {
     headers: std::collections::HashMap<String, String>,
 }
 
-#[allow(dead_code)]
 impl HttpBackend {
     pub fn new(
         base_url: String,
@@ -404,21 +403,6 @@ impl HttpBackend {
             timeout_seconds,
             headers: headers.unwrap_or_default(),
         }
-    }
-
-    /// Create backend with OpenRouter configuration
-    pub fn openrouter(api_key: String) -> Self {
-        Self::new(
-            "https://openrouter.ai/api/v1".to_string(),
-            api_key,
-            120,
-            None,
-        )
-    }
-
-    /// Create backend with local OpenClaw gateway
-    pub fn openclaw_local(api_key: String) -> Self {
-        Self::new("http://127.0.0.1:18789/v1".to_string(), api_key, 300, None)
     }
 }
 

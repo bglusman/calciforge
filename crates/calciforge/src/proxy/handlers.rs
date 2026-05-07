@@ -139,7 +139,7 @@ pub async fn chat_completions(
         if !crate::proxy::auth::check_model_access_for_names(
             &state.config,
             agent_id,
-            &requested_model,
+            &resolved.root_model,
             concrete_model,
         ) {
             warn!(
@@ -1155,6 +1155,77 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {body}");
         assert_eq!(body["error"]["code"], "model_access_denied");
         assert!(recording_gateway.recorded_models().is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_allows_alias_to_synthetic_when_agent_allowed_root_model() {
+        let alloy_manager = AlloyManager::from_gateway_configs(
+            &[],
+            &[],
+            &[DispatcherConfig {
+                id: "local-cloud-balanced".to_string(),
+                name: Some("Local/cloud balanced".to_string()),
+                models: vec![SyntheticModelConfig {
+                    model: "local".to_string(),
+                    context_window: 60_000,
+                }],
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(alloy_manager),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                default_policy: ProxyAccessPolicy::AllowConfigured,
+                agents: vec![ProxyAgentConfig {
+                    id: "test-agent".to_string(),
+                    name: Some("Test Agent".to_string()),
+                    api_key: None,
+                    api_key_file: None,
+                    allowed_models: vec!["local-cloud-balanced".to_string()],
+                    blocked_models: Vec::new(),
+                    rate_limit_rpm: 0,
+                    rate_limit_tpm: 0,
+                }],
+                ..Default::default()
+            },
+            model_shortcuts: vec![
+                ModelShortcutConfig {
+                    alias: "balanced".to_string(),
+                    model: "local-cloud-balanced".to_string(),
+                },
+                ModelShortcutConfig {
+                    alias: "local".to_string(),
+                    model: "qwen-test:small".to_string(),
+                },
+            ],
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "balanced",
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-agent-id", HeaderValue::from_static("test-agent"));
+        let response = chat_completions(State(state), headers, Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(recording_gateway.recorded_models(), vec!["qwen-test:small"]);
     }
 
     #[tokio::test]

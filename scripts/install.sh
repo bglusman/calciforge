@@ -573,7 +573,27 @@ ask_install() {
 
 # ── install helpers ───────────────────────────────────────────────────────────
 require_brew() { command -v brew &>/dev/null || die "Homebrew not found — install from https://brew.sh"; }
-require_npm()  { command -v npm  &>/dev/null || die "npm not found — brew install node"; }
+require_npm()  {
+    if command -v npm &>/dev/null; then
+        return 0
+    fi
+    if [[ "$PLATFORM" == "Linux" && "$YES" == true ]]; then
+        local sudo_cmd=""
+        $IS_ROOT || sudo_cmd="sudo"
+        if command -v apt-get &>/dev/null; then
+            $sudo_cmd apt-get update -qq && $sudo_cmd apt-get install -y -qq nodejs npm
+        elif command -v dnf &>/dev/null; then
+            $sudo_cmd dnf install -y -q nodejs npm
+        fi
+    fi
+    if command -v npm &>/dev/null; then
+        return 0
+    fi
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        die "npm not found — install Node.js, for example with: brew install node"
+    fi
+    die "npm not found — install nodejs/npm, or rerun with --yes on apt/dnf systems"
+}
 
 fnox_release_asset() {
     local os arch
@@ -721,12 +741,16 @@ write_helicone_ai_gateway_config() {
     local config_path="$1"
     mkdir -p "$(dirname "$config_path")"
     python3 - "$config_path" "$CALCIFORGE_HELICONE_AI_GATEWAY_PORT" "$CALCIFORGE_HELICONE_JAWN_PORT" "$CALCIFORGE_HELICONE_API_KEY_FILE" "$CALCIFORGE_HELICONE_PROVIDER" "$CALCIFORGE_HELICONE_OLLAMA_BASE_URL" "$CALCIFORGE_HELICONE_MODELS" <<'PY'
+import json
 import pathlib
 import sys
 
 config_path, port, jawn_port, key_file, provider, ollama_url, models_csv = sys.argv[1:]
 models = [m.strip() for m in models_csv.split(",") if m.strip()]
 api_key = pathlib.Path(key_file).read_text().strip()
+
+def yq(value):
+    return json.dumps(str(value))
 
 lines = [
     "server:",
@@ -735,9 +759,9 @@ lines = [
     "",
     "helicone:",
     "  features: all",
-    f"  api-key: {api_key}",
-    f"  base-url: http://127.0.0.1:{jawn_port}",
-    f"  websocket-url: ws://127.0.0.1:{jawn_port}/ws/v1/router/control-plane",
+    f"  api-key: {yq(api_key)}",
+    f"  base-url: {yq(f'http://127.0.0.1:{jawn_port}')}",
+    f"  websocket-url: {yq(f'ws://127.0.0.1:{jawn_port}/ws/v1/router/control-plane')}",
     "",
     "providers:",
 ]
@@ -745,8 +769,8 @@ if provider == "ollama" and models:
     lines.extend([
         "  ollama:",
         "    models:",
-        *[f'      - "{model}"' for model in models],
-        f"    base-url: {ollama_url}",
+        *[f"      - {yq(model)}" for model in models],
+        f"    base-url: {yq(ollama_url)}",
         "",
         "routers:",
         "  calciforge:",
@@ -800,7 +824,7 @@ values ('\''00000000-0000-4000-8000-000000000003'\'', '\''00000000-0000-4000-800
 on conflict (id) do update set member = excluded.member, "user" = excluded."user", organization = excluded.organization, org_role = excluded.org_role;
 
 insert into public.helicone_api_keys (id, api_key_hash, api_key_name, user_id, organization_id, created_at)
-values (1000000001, :'\'key_hash\'', '\''Calciforge local gateway'\'', '\''00000000-0000-4000-8000-000000000001'\'', '\''00000000-0000-4000-8000-000000000002'\'', now())
+values (1000000001, :'key_hash', '\''Calciforge local gateway'\'', '\''00000000-0000-4000-8000-000000000001'\'', '\''00000000-0000-4000-8000-000000000002'\'', now())
 on conflict (id) do update set api_key_hash = excluded.api_key_hash, api_key_name = excluded.api_key_name, user_id = excluded.user_id, organization_id = excluded.organization_id;
 SQL
 ' || warn "Could not seed local Helicone API key; dashboard login/routing metadata may need manual setup"
@@ -1898,17 +1922,23 @@ for model in models:
         )
 
 provider_re = re.compile(
-    r'(?ms)^\[\[proxy\.providers\]\]\n(?:(?!^\[\[).)*?^id\s*=\s*"helicone-ollama"\s*$'
+    r'(?ms)^\[\[proxy\.providers\]\]\n(?:(?!^\[\[).)*?^id\s*=\s*"helicone-ollama"\s*$.*?(?=^\[\[|\Z)'
 )
-if not provider_re.search(text):
+provider_match = provider_re.search(text)
+provider_block = (
+    '[[proxy.providers]]\n'
+    'id = "helicone-ollama"\n'
+    'backend_type = "helicone"\n'
+    f'url = "http://127.0.0.1:{port}/ollama/v1"\n'
+    f'api_key_file = "{api_key_file}"\n'
+    "models = []\n"
+    "timeout_seconds = 900\n"
+)
+if provider_match:
+    text = text[:provider_match.start()] + provider_block + text[provider_match.end():].lstrip("\n")
+else:
     text = text.rstrip() + (
-        "\n\n[[proxy.providers]]\n"
-        'id = "helicone-ollama"\n'
-        'backend_type = "http"\n'
-        f'url = "http://127.0.0.1:{port}/ollama/v1"\n'
-        f'api_key_file = "{api_key_file}"\n'
-        "models = []\n"
-        "timeout_seconds = 900\n"
+        "\n\n" + provider_block
     )
 
 path.write_text(text + ("\n" if not text.endswith("\n") else ""))

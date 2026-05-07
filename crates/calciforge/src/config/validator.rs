@@ -338,6 +338,12 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
                 shortcut.alias
             ));
         }
+        if synthetic_model_ids.contains(&shortcut.alias) {
+            result.add_error(format!(
+                "Model shortcut alias '{}' conflicts with a configured synthetic model ID",
+                shortcut.alias
+            ));
+        }
     }
     for shortcut in &config.model_shortcuts {
         if let Err(e) = resolve_model_alias_chain(&config.model_shortcuts, &shortcut.alias) {
@@ -699,6 +705,39 @@ model = "local"
                 .any(|e| e.contains("model shortcut cycle")
                     && e.contains("local -> balanced -> local")),
             "error should identify the shortcut cycle; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn model_shortcut_alias_cannot_shadow_synthetic_model_id() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[dispatchers]]
+id = "balanced"
+
+[[dispatchers.models]]
+model = "qwen-test:small"
+context_window = 60000
+
+[[model_shortcuts]]
+alias = "balanced"
+model = "qwen-test:small"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "shortcut aliases must not silently shadow synthetic model IDs"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("balanced")
+                && e.contains("conflicts with a configured synthetic model ID")),
+            "error should identify the colliding alias and synthetic ID; errors: {:?}",
             result.errors
         );
     }
