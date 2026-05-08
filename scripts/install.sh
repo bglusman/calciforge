@@ -2684,6 +2684,52 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
 chmod 600 "$key"
 chmod 644 "$cert"
 REMOTE_MITM_CA
+            if [[ "$os" == "linux" ]] && truthy "$SECURITY_PROXY_TRUST_MITM_CA"; then
+                if ! ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- "$remote_mitm_ca_cert" <<'REMOTE_TRUST_MITM_CA'
+set -euo pipefail
+cert="$1"
+if [[ ! -s "$cert" ]]; then
+    echo "MITM CA not found: $cert" >&2
+    exit 30
+fi
+
+as_root() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@"
+    else
+        sudo -n "$@"
+    fi
+}
+
+if command -v apt-get >/dev/null 2>&1; then
+    anchor="/usr/local/share/ca-certificates"
+    bundle="/etc/ssl/certs/ca-certificates.crt"
+    refresh="update-ca-certificates"
+elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    anchor="/etc/pki/ca-trust/source/anchors"
+    bundle="/etc/pki/tls/certs/ca-bundle.crt"
+    refresh="update-ca-trust extract"
+elif command -v pacman >/dev/null 2>&1; then
+    anchor="/etc/ca-certificates/trust-source/anchors"
+    bundle="/etc/ssl/certs/ca-certificates.crt"
+    refresh="trust extract-compat || update-ca-trust extract"
+else
+    echo "unsupported Linux package manager for system CA trust" >&2
+    exit 31
+fi
+
+as_root mkdir -p "$anchor"
+as_root install -m 0644 "$cert" "$anchor/calciforge-ca.crt"
+as_root sh -c "$refresh"
+
+if [[ -s "$bundle" ]] && command -v openssl >/dev/null 2>&1; then
+    openssl verify -CAfile "$bundle" "$cert" >/dev/null
+fi
+REMOTE_TRUST_MITM_CA
+                then
+                    warn "Could not install Calciforge MITM CA into Linux system trust on $name; runtimes may need SSL_CERT_FILE/REQUESTS_CA_BUNDLE pointing at $remote_mitm_ca_cert"
+                fi
+            fi
         fi
         if [[ "$os" == "linux" ]]; then
             remote_log_dir="/var/log/calciforge"

@@ -10,6 +10,8 @@
 set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8888}"
+CHECK_SYSTEM_TRUST="${CHECK_SYSTEM_TRUST:-true}"
+SYSTEM_TRUST_URL="${SYSTEM_TRUST_URL:-https://example.com/}"
 if [[ -z "${CA_BUNDLE:-}" ]]; then
     service_ca=""
     if command -v systemctl >/dev/null 2>&1; then
@@ -39,6 +41,34 @@ if [[ ! -s "$CA_BUNDLE" ]]; then
 fi
 
 curl -fsS --max-time 5 "${PROXY_URL%/}/health" >/dev/null
+
+if [[ "$CHECK_SYSTEM_TRUST" != "0" && "$CHECK_SYSTEM_TRUST" != "false" && "$CHECK_SYSTEM_TRUST" != "FALSE" ]]; then
+    if ! curl -fsS -I --max-time 10 \
+        --proxy "$PROXY_URL" \
+        --noproxy "" \
+        --cacert "$CA_BUNDLE" \
+        "$SYSTEM_TRUST_URL" >/dev/null; then
+        cat >&2 <<EOF
+system trust preflight failed even with the active Calciforge CA bundle.
+Check proxy/network reachability for $SYSTEM_TRUST_URL before diagnosing host
+trust store drift.
+EOF
+        exit 3
+    fi
+
+    if ! curl -fsS -I --max-time 10 \
+        --proxy "$PROXY_URL" \
+        --noproxy "" \
+        "$SYSTEM_TRUST_URL" >/dev/null; then
+        cat >&2 <<EOF
+system trust does not accept the active Calciforge MITM CA.
+The service-specific CA bundle works via --cacert $CA_BUNDLE, but tools that
+use the host trust store will fail until the active CA is installed there.
+Set CHECK_SYSTEM_TRUST=false to skip this check for intentionally scoped trust.
+EOF
+        exit 3
+    fi
+fi
 
 status="$(
     curl -sS -L --max-time 30 \

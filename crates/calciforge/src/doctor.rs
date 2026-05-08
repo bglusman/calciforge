@@ -140,6 +140,7 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_secret_tooling(&mut report);
     check_scanner_config(&config, no_network, &mut report).await;
     check_proxy_environment(&mut report);
+    check_security_proxy_ca_trust(&mut report);
     check_install_node_metadata(no_network, &mut report).await;
     check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
     report_agent_protection_summary(&config, &mut report);
@@ -426,6 +427,110 @@ struct ProxyEnvironment {
 
 fn check_proxy_environment(report: &mut DoctorReport) {
     check_proxy_environment_in(proxy_environment_from_process(), report);
+}
+
+fn check_security_proxy_ca_trust(report: &mut DoctorReport) {
+    if !cfg!(target_os = "linux") {
+        report.ok("Linux system MITM CA trust check skipped on non-Linux host");
+        return;
+    }
+
+    let Some(ca_cert) = active_security_proxy_ca_cert() else {
+        report.ok("security-proxy CA trust check skipped; no active systemd CA env found");
+        return;
+    };
+    let ca_cert = PathBuf::from(ca_cert);
+    if !ca_cert.is_file() {
+        report.warn(format!(
+            "security-proxy CA trust check skipped; active CA file is missing: {}",
+            ca_cert.display()
+        ));
+        return;
+    }
+
+    let Some(bundle) = linux_system_ca_bundle_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+    else {
+        report.warn("security-proxy CA trust check skipped; no known Linux system CA bundle found");
+        return;
+    };
+
+    match verify_ca_cert_with_bundle(&ca_cert, &bundle) {
+        Ok(()) => report.ok(format!(
+            "Linux system trust accepts active security-proxy CA: {}",
+            ca_cert.display()
+        )),
+        Err(err) => report.warn(format!(
+            "Linux system trust does not accept active security-proxy CA {} via {}: {}. \
+             Re-run the installer or refresh the host trust store; tools that use system trust may reject MITM leaf certificates.",
+            ca_cert.display(),
+            bundle.display(),
+            err
+        )),
+    }
+}
+
+fn active_security_proxy_ca_cert() -> Option<String> {
+    std::env::var("SECURITY_PROXY_CA_CERT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let output = StdCommand::new("systemctl")
+                .args([
+                    "show",
+                    "calciforge-security-proxy.service",
+                    "-p",
+                    "Environment",
+                    "--value",
+                    "--no-pager",
+                ])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            environment_value(&stdout, "SECURITY_PROXY_CA_CERT")
+        })
+}
+
+fn environment_value(env_text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    env_text
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(&prefix).map(str::to_string))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn linux_system_ca_bundle_candidates() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/etc/ssl/certs/ca-certificates.crt"),
+        PathBuf::from("/etc/pki/tls/certs/ca-bundle.crt"),
+    ]
+}
+
+fn verify_ca_cert_with_bundle(ca_cert: &Path, bundle: &Path) -> std::result::Result<(), String> {
+    let output = StdCommand::new("openssl")
+        .arg("verify")
+        .arg("-CAfile")
+        .arg(bundle)
+        .arg(ca_cert)
+        .output()
+        .map_err(|err| format!("failed to run openssl verify: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stderr.is_empty() {
+        Err(stdout)
+    } else if stdout.is_empty() {
+        Err(stderr)
+    } else {
+        Err(format!("{stdout}; {stderr}"))
+    }
 }
 
 fn proxy_environment_from_process() -> ProxyEnvironment {
@@ -2159,6 +2264,67 @@ mod tests {
                 "http", "redacted", "redacted", "proxy.example:8080"
             )
         );
+    }
+
+    #[test]
+    fn environment_value_extracts_security_proxy_ca_path() {
+        let env = "SECURITY_PROXY_PORT=8888 SECURITY_PROXY_CA_CERT=/root/.config/calciforge/secrets/mitm-ca.pem SECURITY_PROXY_CA_KEY=/root/.config/calciforge/secrets/mitm-ca-key.pem";
+        assert_eq!(
+            environment_value(env, "SECURITY_PROXY_CA_CERT").as_deref(),
+            Some("/root/.config/calciforge/secrets/mitm-ca.pem")
+        );
+    }
+
+    #[test]
+    fn environment_value_ignores_empty_values() {
+        assert_eq!(
+            environment_value("SECURITY_PROXY_CA_CERT=", "SECURITY_PROXY_CA_CERT"),
+            None
+        );
+    }
+
+    #[test]
+    fn ca_bundle_verification_rejects_same_subject_stale_ca() {
+        if StdCommand::new("openssl").arg("version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let active_cert = temp.path().join("active-ca.pem");
+        let active_key = temp.path().join("active-ca-key.pem");
+        let stale_cert = temp.path().join("stale-ca.pem");
+        let stale_key = temp.path().join("stale-ca-key.pem");
+        generate_test_ca(&active_cert, &active_key);
+        generate_test_ca(&stale_cert, &stale_key);
+
+        assert!(verify_ca_cert_with_bundle(&active_cert, &active_cert).is_ok());
+        assert!(
+            verify_ca_cert_with_bundle(&active_cert, &stale_cert).is_err(),
+            "a stale same-subject CA must not validate the active MITM CA"
+        );
+    }
+
+    fn generate_test_ca(cert: &Path, key: &Path) {
+        let status = StdCommand::new("openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "1", "-nodes", "-keyout",
+            ])
+            .arg(key)
+            .arg("-out")
+            .arg(cert)
+            .args([
+                "-subj",
+                "/CN=Calciforge Local MITM CA",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run openssl");
+        assert!(status.success(), "openssl generated test CA");
     }
 
     #[test]
