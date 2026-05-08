@@ -2443,7 +2443,7 @@ if truthy "$CALCIFORGE_OPENCODE_ZEN_ENABLED"; then
         "$ZC_CONFIG" \
         "opencode-zen" \
         "https://opencode.ai/zen/v1" \
-        "opencode/" \
+        "opencode-zen/" \
         "$CALCIFORGE_OPENCODE_ZEN_MODELS" \
         "$CALCIFORGE_OPENCODE_API_KEY_FILE" \
         300 || warn "Could not add OpenCode Zen provider entries in $ZC_CONFIG"
