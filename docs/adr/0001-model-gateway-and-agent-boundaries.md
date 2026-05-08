@@ -39,7 +39,7 @@ flowchart TD
   User["Human channel"] --> Router["Calciforge channel/router"]
   Router --> Adapter["Agent adapter"]
   Adapter -->|"only when runtime is configured for it"| Gateway["Calciforge model gateway"]
-  Gateway --> Engine["Gateway engine: http, Helicone, or mock"]
+  Gateway --> Engine["Gateway engine: builtin HTTP, Helicone, external HTTP gateway, or mock"]
   Engine --> Provider["Model provider"]
 
   Adapter -->|"otherwise"| AgentEgress["Agent-owned model/tool egress"]
@@ -47,8 +47,15 @@ flowchart TD
 
 The root model gateway has a small supported backend set:
 
-- `http`: Calciforge directly forwards to an OpenAI-compatible upstream.
+- `http`: Calciforge's builtin HTTP upstream adapter. It is a minimal
+  compatibility path for OpenAI-compatible endpoints, not a mature external
+  gateway engine.
 - `helicone`: Calciforge forwards through a Helicone AI Gateway process.
+- External OpenAI-compatible gateway endpoints such as LiteLLM are currently
+  configured as provider routes with `backend_type = "http"` and
+  `credential_owner = "gateway"`. In that shape, the builtin HTTP adapter is
+  only the transport to the gateway process; the external gateway owns its
+  model/provider registry and upstream keys.
 - `mock`: deterministic local/test behavior.
 
 Experimental or stale root backends such as `embedded`, `library`, and

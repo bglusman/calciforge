@@ -793,7 +793,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 config: GatewayConfig {
-                    backend_type: GatewayType::Direct,
+                    backend_type: GatewayType::BuiltinHttp,
                     base_url: None,
                     api_key: None,
                     timeout_seconds: 30,
@@ -836,7 +836,7 @@ mod tests {
     #[async_trait]
     impl GatewayBackend for RecordingGateway {
         fn gateway_type(&self) -> GatewayType {
-            GatewayType::Direct
+            GatewayType::BuiltinHttp
         }
 
         async fn chat_completion(

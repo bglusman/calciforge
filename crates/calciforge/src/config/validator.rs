@@ -592,6 +592,19 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         ));
     }
 
+    if proxy.backend_type == "http" {
+        result.add_warning(
+            "Proxy backend_type='http' uses Calciforge's builtin HTTP upstream adapter. Use this as a compatibility or development path; prefer an external gateway engine such as Helicone or LiteLLM when gateway-owned provider routing, observability, or mature retry/key management are required."
+                .to_string(),
+        );
+    }
+    if proxy.backend_type == "mock" {
+        result.add_warning(
+            "Proxy backend_type='mock' returns deterministic local test responses and must not be used for a real agent deployment."
+                .to_string(),
+        );
+    }
+
     if proxy.backend_type == "helicone" {
         let backend_url = proxy.backend_url.trim();
         if backend_url.is_empty() {
@@ -624,6 +637,20 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
                 "Proxy provider '{}' backend_type '{}' is invalid. Use: http, helicone",
                 provider.id, other
             )),
+        }
+
+        if provider.backend_type == "http" {
+            match provider.credential_owner {
+                CredentialOwner::Gateway => result.add_warning(format!(
+                    "Proxy provider '{}' uses backend_type='http' with credential_owner='gateway'; treating the endpoint as an external OpenAI-compatible gateway such as LiteLLM. Upstream model/provider keys are expected to live in that gateway, not Calciforge.",
+                    provider.id
+                )),
+                CredentialOwner::Calciforge => result.add_warning(format!(
+                    "Proxy provider '{}' uses Calciforge's builtin HTTP upstream adapter. This is a minimal compatibility path, not an external gateway engine; Helicone/LiteLLM observability, provider registry, and gateway-owned retry/key behavior will not apply to this route.",
+                    provider.id
+                )),
+                CredentialOwner::None => {}
+            }
         }
 
         if provider
@@ -1134,6 +1161,80 @@ models = ["gateway/default"]
                     && w.contains("gateway endpoint")
             }),
             "warning should clarify api_key is gateway transport auth; warnings: {:?}",
+            result.warnings
+        );
+        assert!(
+            result.warnings.iter().any(|w| {
+                w.contains("managed-gateway")
+                    && w.contains("external OpenAI-compatible gateway")
+                    && w.contains("LiteLLM")
+            }),
+            "warning should distinguish gateway-owned HTTP endpoints from raw upstream providers; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn builtin_http_provider_warns_that_it_is_not_external_gateway_engine() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+backend_type = "helicone"
+backend_url = "http://127.0.0.1:8787/ai"
+
+[[proxy.providers]]
+id = "raw-upstream"
+backend_type = "http"
+url = "https://example.invalid/v1"
+models = ["raw/model"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "builtin HTTP providers remain supported but should be explicit; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.warnings.iter().any(|w| {
+                w.contains("raw-upstream")
+                    && w.contains("builtin HTTP upstream adapter")
+                    && w.contains("not an external gateway engine")
+            }),
+            "warning should prevent treating raw HTTP provider routes as equal to Helicone/LiteLLM; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn mock_proxy_backend_warns_for_real_deployments() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+backend_type = "mock"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "mock remains valid for smoke tests and local harnesses"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("backend_type='mock'") && w.contains("real agent deployment")),
+            "warning should keep mock out of production configs; warnings: {:?}",
             result.warnings
         );
     }

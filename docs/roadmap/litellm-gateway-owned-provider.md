@@ -9,8 +9,10 @@ Status: recipe/proof path.
 
 Calciforge does not need a LiteLLM-specific adapter to exercise the external
 gateway contract. LiteLLM's proxy is an OpenAI-compatible gateway process, so
-Calciforge can route to it with the existing `backend_type = "http"` provider
-path and mark the custody boundary with `credential_owner = "gateway"`.
+Calciforge can route to it with the existing builtin HTTP transport and mark
+the custody boundary with `credential_owner = "gateway"`. In this recipe,
+`backend_type = "http"` is only the transport from Calciforge to LiteLLM; it is
+not a raw upstream-provider route.
 
 In this shape, Calciforge owns channel identity, aliases, synthetic selectors,
 access policy, command UX, and security scanning. LiteLLM owns upstream provider
@@ -151,8 +153,8 @@ mode, then sends a request to Calciforge for `managed/default`.
 
 It proves:
 
-- Calciforge routes a namespaced model selector through the generic HTTP
-  provider path.
+- Calciforge routes a namespaced model selector through its builtin HTTP
+  transport to an external gateway-owned endpoint.
 - `credential_owner = "gateway"` can be used without a Helicone adapter.
 - Calciforge authenticates to LiteLLM with a gateway key, while LiteLLM holds
   the upstream provider key and upstream model mapping.

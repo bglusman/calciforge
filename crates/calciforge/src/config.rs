@@ -630,6 +630,10 @@ pub struct ProxyConfig {
 
     /// Root gateway backend type for proxy: "http", "helicone", or "mock".
     ///
+    /// "http" is Calciforge's minimal builtin OpenAI-compatible upstream
+    /// adapter. It is a compatibility path, not an external gateway engine
+    /// with its own provider registry or observability UI.
+    ///
     /// Provider-specific routes under `[[proxy.providers]]` have their own
     /// narrower `backend_type` surface.
     #[serde(default = "default_proxy_backend_type")]
@@ -973,10 +977,13 @@ pub struct ProxyProviderConfig {
     /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
     pub id: String,
 
-    /// Provider backend kind. "http" forwards to an OpenAI-compatible API;
-    /// "helicone" forwards through a Helicone AI Gateway with Helicone auth
-    /// headers. CLI-backed subscriptions are configured as `[[agents]]`, not
-    /// gateway providers.
+    /// Provider backend kind. "http" uses Calciforge's builtin
+    /// OpenAI-compatible HTTP transport. With `credential_owner = "gateway"`,
+    /// that endpoint is treated as an external OpenAI-compatible gateway such
+    /// as LiteLLM. With the default `credential_owner = "calciforge"`, it is a
+    /// raw upstream-provider compatibility path. "helicone" forwards through a
+    /// Helicone AI Gateway with Helicone auth headers. CLI-backed
+    /// subscriptions are configured as `[[agents]]`, not gateway providers.
     #[serde(default = "default_proxy_provider_backend")]
     pub backend_type: String,
 
