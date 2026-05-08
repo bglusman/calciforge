@@ -1,7 +1,7 @@
 //! GatewayBackend trait for abstracting different LLM gateway implementations.
 //!
 //! This module provides a unified interface for gateway engines. The shipped
-//! root gateway engines are Direct, Helicone, and Mock.
+//! root gateway engines are builtin HTTP, Helicone, and Mock.
 //!
 //! Each backend can be enabled via feature flags and selected via configuration.
 
@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use crate::config::GatewayRetryConfig;
 use crate::proxy::backend::{BackendError, ModelInfo, SecretsBackend};
-use crate::proxy::openai::{ChatCompletionRequest, ChatCompletionResponse};
-#[allow(unused_imports)]
-use tracing::{info, warn};
+use crate::proxy::openai::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, MessageContent, Usage,
+};
 
 /// High-level capability flags used to compare builtin and external gateway
 /// engines without committing Calciforge to one implementation.
@@ -69,7 +69,7 @@ pub struct GatewayConfig {
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
-            backend_type: GatewayType::Direct,
+            backend_type: GatewayType::BuiltinHttp,
             base_url: None,
             api_key: None,
             timeout_seconds: 30,
@@ -81,18 +81,13 @@ impl Default for GatewayConfig {
     }
 }
 
-// Removed with_retry helper for now - causing compilation issues
-
-// Removed RetryGatewayDyn for now - causing compilation issues
-// We'll implement retry properly later
-
 /// Type of gateway backend
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayType {
     /// Helicone AI Gateway (HTTP-based)
     Helicone,
-    /// Direct provider calls (no gateway)
-    Direct,
+    /// Calciforge's minimal builtin OpenAI-compatible HTTP upstream adapter.
+    BuiltinHttp,
     /// Mock gateway for testing
     Mock,
 }
@@ -103,7 +98,7 @@ impl std::str::FromStr for GatewayType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "helicone" => Ok(GatewayType::Helicone),
-            "direct" => Ok(GatewayType::Direct),
+            "http" | "builtin-http" | "builtin_http" | "direct" => Ok(GatewayType::BuiltinHttp),
             "mock" => Ok(GatewayType::Mock),
             _ => Err(format!("Unknown gateway type: {}", s)),
         }
@@ -114,7 +109,7 @@ impl std::fmt::Display for GatewayType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GatewayType::Helicone => write!(f, "helicone"),
-            GatewayType::Direct => write!(f, "direct"),
+            GatewayType::BuiltinHttp => write!(f, "builtin-http"),
             GatewayType::Mock => write!(f, "mock"),
         }
     }
@@ -124,7 +119,7 @@ impl GatewayType {
     pub fn display_name(self) -> &'static str {
         match self {
             GatewayType::Helicone => "Helicone AI Gateway",
-            GatewayType::Direct => "Calciforge builtin gateway",
+            GatewayType::BuiltinHttp => "Calciforge builtin HTTP upstream adapter",
             GatewayType::Mock => "Mock gateway",
         }
     }
@@ -139,7 +134,7 @@ impl GatewayType {
                 observability: true,
                 operator_ui: true,
             },
-            GatewayType::Direct => GatewayCapabilities {
+            GatewayType::BuiltinHttp => GatewayCapabilities {
                 openai_chat_completions: true,
                 model_listing: true,
                 tool_call_transcripts: false,
@@ -233,7 +228,6 @@ pub fn create_gateway(
             Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
 
-        #[cfg(test)]
         GatewayType::Mock => {
             let inner_gateway = Arc::new(MockGateway::new(config.clone()));
 
@@ -241,19 +235,16 @@ pub fn create_gateway(
             Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
         }
 
-        #[cfg(not(test))]
-        GatewayType::Mock => Err(BackendError::ConfigError(
-            "Mock gateway only available in test mode".to_string(),
-        )),
-
-        GatewayType::Direct => {
-            // Direct provider calls (no gateway)
+        GatewayType::BuiltinHttp => {
+            // Builtin HTTP upstream calls
             // This requires a backend to be passed in
             let backend = backend.ok_or_else(|| {
-                BackendError::ConfigError("Direct gateway requires a backend parameter".to_string())
+                BackendError::ConfigError(
+                    "Builtin HTTP gateway requires a backend parameter".to_string(),
+                )
             })?;
 
-            let inner_gateway = Arc::new(DirectGateway::new(config.clone(), backend));
+            let inner_gateway = Arc::new(BuiltinHttpGateway::new(config.clone(), backend));
 
             // Wrap with logging for debugging
             Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
@@ -504,34 +495,34 @@ fn retry_delay(policy: &GatewayRetryConfig, attempt: u32) -> Duration {
 }
 
 // ---------------------------------------------------------------------------
-// Direct Gateway Implementation (wraps existing SecretsBackend)
+// Builtin HTTP Gateway Implementation (wraps existing SecretsBackend)
 // ---------------------------------------------------------------------------
 
-/// Direct gateway that wraps an existing SecretsBackend
-pub struct DirectGateway {
+/// Builtin HTTP gateway that wraps an existing SecretsBackend
+pub struct BuiltinHttpGateway {
     config: GatewayConfig,
     backend: Arc<dyn SecretsBackend>,
 }
 
-impl Debug for DirectGateway {
+impl Debug for BuiltinHttpGateway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DirectGateway")
+        f.debug_struct("BuiltinHttpGateway")
             .field("config", &self.config)
             .field("backend_type", &self.backend.backend_type())
             .finish()
     }
 }
 
-impl DirectGateway {
+impl BuiltinHttpGateway {
     pub fn new(config: GatewayConfig, backend: Arc<dyn SecretsBackend>) -> Self {
         Self { config, backend }
     }
 }
 
 #[async_trait]
-impl GatewayBackend for DirectGateway {
+impl GatewayBackend for BuiltinHttpGateway {
     fn gateway_type(&self) -> GatewayType {
-        GatewayType::Direct
+        GatewayType::BuiltinHttp
     }
 
     async fn chat_completion(
@@ -554,23 +545,17 @@ impl GatewayBackend for DirectGateway {
 // Mock Gateway Implementation (for testing)
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
-use crate::proxy::openai::Usage;
-
-#[cfg(test)]
 #[derive(Debug)]
 pub struct MockGateway {
     config: GatewayConfig,
 }
 
-#[cfg(test)]
 impl MockGateway {
     pub fn new(config: GatewayConfig) -> Self {
         Self { config }
     }
 }
 
-#[cfg(test)]
 #[async_trait]
 impl GatewayBackend for MockGateway {
     fn gateway_type(&self) -> GatewayType {
@@ -586,8 +571,24 @@ impl GatewayBackend for MockGateway {
             id: "mock-id".to_string(),
             object: "chat.completion".to_string(),
             created: chrono::Utc::now().timestamp() as u64,
-            model: request.model,
-            choices: vec![],
+            model: request.model.clone(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text(format!(
+                        "Mock gateway response for model: {}",
+                        request.model
+                    ))),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
             usage: Usage {
                 prompt_tokens: 0,
                 completion_tokens: 0,
@@ -636,7 +637,15 @@ mod tests {
         );
         assert_eq!(
             "direct".parse::<GatewayType>().unwrap(),
-            GatewayType::Direct
+            GatewayType::BuiltinHttp
+        );
+        assert_eq!(
+            "http".parse::<GatewayType>().unwrap(),
+            GatewayType::BuiltinHttp
+        );
+        assert_eq!(
+            "builtin-http".parse::<GatewayType>().unwrap(),
+            GatewayType::BuiltinHttp
         );
         assert_eq!("mock".parse::<GatewayType>().unwrap(), GatewayType::Mock);
         assert!("unknown".parse::<GatewayType>().is_err());
@@ -645,7 +654,7 @@ mod tests {
     #[test]
     fn test_gateway_type_display() {
         assert_eq!(GatewayType::Helicone.to_string(), "helicone");
-        assert_eq!(GatewayType::Direct.to_string(), "direct");
+        assert_eq!(GatewayType::BuiltinHttp.to_string(), "builtin-http");
         assert_eq!(GatewayType::Mock.to_string(), "mock");
     }
 
@@ -666,6 +675,46 @@ mod tests {
 
         let gateway = MockGateway::new(config);
         assert_eq!(gateway.gateway_type(), GatewayType::Mock);
+    }
+
+    #[tokio::test]
+    async fn mock_gateway_returns_openai_compatible_chat_choice() {
+        let gateway = MockGateway::new(GatewayConfig {
+            backend_type: GatewayType::Mock,
+            ..Default::default()
+        });
+
+        let response = gateway
+            .chat_completion(ChatCompletionRequest {
+                model: "gpt-4".to_string(),
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("short".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                max_tokens: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.model, "gpt-4");
+        let choice = response
+            .choices
+            .first()
+            .expect("mock gateway should return an assistant choice");
+        assert_eq!(choice.message.role, "assistant");
+        let Some(MessageContent::Text(content)) = choice.message.content.as_ref() else {
+            panic!("mock gateway choice should contain text content");
+        };
+        assert!(
+            content.contains("gpt-4") && content.to_lowercase().contains("mock"),
+            "mock response content should identify the routed model: {content}"
+        );
     }
 
     #[test]
@@ -689,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_gateway_retries_only_configured_failure_kinds() {
+    fn builtin_http_gateway_retries_only_configured_failure_kinds() {
         let retry = GatewayRetryConfig {
             enabled: true,
             max_retries: 2,
@@ -704,19 +753,19 @@ mod tests {
             BackendError::http_status_error(reqwest::StatusCode::UNAUTHORIZED, "bad key");
 
         assert!(should_retry_locally(
-            GatewayType::Direct,
+            GatewayType::BuiltinHttp,
             &retry,
             &server_error,
             0
         ));
         assert!(!should_retry_locally(
-            GatewayType::Direct,
+            GatewayType::BuiltinHttp,
             &retry,
             &auth_error,
             0
         ));
         assert!(!should_retry_locally(
-            GatewayType::Direct,
+            GatewayType::BuiltinHttp,
             &retry,
             &server_error,
             2
@@ -743,7 +792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_gateway_forwards_complete_chat_request_options() {
+    async fn builtin_http_gateway_forwards_complete_chat_request_options() {
         use crate::proxy::backend::{create_backend, BackendConfig, BackendType};
         use crate::proxy::openai::{ChatMessage, Choice, MessageContent, Usage};
         use mockito::Matcher;
@@ -806,7 +855,7 @@ mod tests {
         .unwrap();
         let gateway = create_gateway(
             GatewayConfig {
-                backend_type: GatewayType::Direct,
+                backend_type: GatewayType::BuiltinHttp,
                 base_url: Some(format!("{}/v1", server.url())),
                 api_key: Some("provider-key".to_string()),
                 timeout_seconds: 30,

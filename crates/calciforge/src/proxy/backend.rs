@@ -1,8 +1,9 @@
 //! Unified backend interface for the model gateway
 //!
 //! Provides the runtime abstraction used by supported model-provider methods.
-//! The production root gateway surface is intentionally small: direct HTTP
-//! providers, Helicone's external HTTP gateway, and a mock backend for tests.
+//! The production root gateway surface is intentionally small: Calciforge's
+//! builtin OpenAI-compatible HTTP upstream adapter, Helicone's external HTTP
+//! gateway, and a mock backend for tests.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

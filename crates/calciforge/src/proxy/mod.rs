@@ -95,7 +95,8 @@ pub(crate) fn supported_root_gateway_backend_types() -> &'static [&'static str] 
 fn gateway_type_for_backend_type(backend_type: &str) -> gateway::GatewayType {
     match backend_type {
         "helicone" => gateway::GatewayType::Helicone,
-        _ => gateway::GatewayType::Direct,
+        "mock" => gateway::GatewayType::Mock,
+        _ => gateway::GatewayType::BuiltinHttp,
     }
 }
 
@@ -279,7 +280,11 @@ mod tests {
         );
         assert_eq!(
             gateway_type_for_backend_type("http"),
-            gateway::GatewayType::Direct
+            gateway::GatewayType::BuiltinHttp
+        );
+        assert_eq!(
+            gateway_type_for_backend_type("mock"),
+            gateway::GatewayType::Mock
         );
     }
 

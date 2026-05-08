@@ -587,9 +587,36 @@ fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorRepo
                 "model gateway provider routing loads: {} route entries",
                 entries.len()
             ));
+            report_model_gateway_provider_boundaries(proxy, report);
             check_model_gateway_route_graph(config, proxy, &entries, report);
         }
         Err(err) => report.error(format!("model gateway provider config invalid: {err}")),
+    }
+}
+
+fn report_model_gateway_provider_boundaries(
+    proxy: &crate::config::ProxyConfig,
+    report: &mut DoctorReport,
+) {
+    for provider in &proxy.providers {
+        if provider.backend_type != "http" {
+            continue;
+        }
+
+        match provider.credential_owner {
+            crate::config::CredentialOwner::Gateway => report.ok(format!(
+                "provider '{}' uses builtin HTTP transport to an external gateway-owned endpoint",
+                provider.id
+            )),
+            crate::config::CredentialOwner::Calciforge => report.warn(format!(
+                "provider '{}' uses Calciforge builtin HTTP upstream adapter; this route is not handled by an external gateway engine dashboard or provider registry",
+                provider.id
+            )),
+            crate::config::CredentialOwner::None => report.ok(format!(
+                "provider '{}' uses unauthenticated builtin HTTP transport",
+                provider.id
+            )),
+        }
     }
 }
 
@@ -2364,6 +2391,14 @@ mod tests {
                 && finding
                     .message
                     .contains("model gateway provider routing loads: 2 route entries")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding.message.contains("provider 'opencode-go'")
+                && finding.message.contains("builtin HTTP upstream adapter")
+                && finding
+                    .message
+                    .contains("not handled by an external gateway engine")
         }));
     }
 

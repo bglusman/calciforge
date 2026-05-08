@@ -1493,6 +1493,7 @@ provider_re = re.compile(
 provider_block = (
     '[[proxy.providers]]\n'
     f'id = "{q(provider_id)}"\n'
+    '# Builtin HTTP upstream adapter; requests do not appear in external gateway dashboards unless url points at one.\n'
     'backend_type = "http"\n'
     f'url = "{q(url)}"\n'
     f'api_key_file = "{q(api_key_file)}"\n'

@@ -452,6 +452,9 @@ backend_type = "http"
 backend_url = "https://api.openai.com/v1"
 backend_api_key_file = "/etc/calciforge/secrets/openai-key"
 
+# Builtin HTTP is a minimal compatibility path. For production, prefer an
+# external gateway engine such as Helicone or a gateway-owned LiteLLM route.
+
 [proxy.token_estimator]
 strategy = "auto"
 # tokenizer = "o200k_base" # force a tiktoken base for non-OpenAI model IDs

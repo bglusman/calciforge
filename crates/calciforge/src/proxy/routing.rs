@@ -214,7 +214,7 @@ pub fn build_provider_entries(
             .with_context(|| format!("creating backend for provider '{}'", p.id))?;
 
         let gw_cfg = GatewayConfig {
-            backend_type: GatewayType::Direct,
+            backend_type: GatewayType::BuiltinHttp,
             base_url: Some(p.url.clone()),
             api_key,
             timeout_seconds: timeout,
