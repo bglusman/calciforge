@@ -18,7 +18,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "lib" / "upsert-calciforge-agent.py"
 
 
-def run_helper(config: pathlib.Path, endpoint: str = "http://127.0.0.1:19090") -> None:
+def run_helper(
+    config: pathlib.Path,
+    endpoint: str = "http://127.0.0.1:19090",
+    api_key_file: str = "/tmp/fake-api-key",
+) -> None:
     subprocess.run(
         [
             sys.executable,
@@ -29,7 +33,7 @@ def run_helper(config: pathlib.Path, endpoint: str = "http://127.0.0.1:19090") -
             endpoint,
             "300000",
             "hermes",
-            "/tmp/fake-api-key",
+            api_key_file,
             "true",
             "opencode-go/kimi-k2.6",
         ],
@@ -175,12 +179,53 @@ endpoint = "http://old.example.invalid"
             assert parsed["agents"][0]["endpoint"] == endpoint
 
 
+def test_empty_api_key_file_is_unset_and_preserves_existing_value() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = pathlib.Path(tmpdir) / "config.toml"
+        config.write_text(
+            """
+[calciforge]
+version = 2
+""".lstrip()
+        )
+
+        run_helper(config, api_key_file="")
+
+        text = config.read_text()
+        assert_valid_toml(config)
+        assert 'api_key_file = ""' not in text
+        if tomllib is not None:
+            parsed = tomllib.loads(text)
+            assert "api_key_file" not in parsed["agents"][0]
+
+        config.write_text(
+            """
+[calciforge]
+version = 2
+
+[[agents]]
+id = "hermes"
+kind = "hermes"
+endpoint = "http://old.example.invalid"
+api_key_file = "/tmp/original-key"
+""".lstrip()
+        )
+
+        run_helper(config, api_key_file="")
+
+        text = config.read_text()
+        assert_valid_toml(config)
+        assert 'api_key_file = "/tmp/original-key"' in text
+        assert 'api_key_file = ""' not in text
+
+
 def main() -> int:
     tests = [
         test_last_agent_does_not_rewrite_following_tables,
         test_nested_registry_table_prevents_inline_registry_collision,
         test_updating_first_agent_preserves_second_agent_and_routing,
         test_replacement_values_with_backslashes_remain_valid_toml,
+        test_empty_api_key_file_is_unset_and_preserves_existing_value,
     ]
     for test in tests:
         test()
