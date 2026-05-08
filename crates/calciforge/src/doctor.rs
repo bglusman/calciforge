@@ -461,7 +461,10 @@ fn check_security_proxy_ca_trust(report: &mut DoctorReport) {
             "Linux system trust accepts active security-proxy CA: {}",
             ca_cert.display()
         )),
-        Err(err) => report.warn(format!(
+        Err(CaTrustVerifyError::OpenSslUnavailable(err)) => report.ok(format!(
+            "security-proxy CA trust check skipped; openssl is not available: {err}"
+        )),
+        Err(CaTrustVerifyError::VerificationFailed(err)) => report.warn(format!(
             "Linux system trust does not accept active security-proxy CA {} via {}: {}. \
              Re-run the installer or refresh the host trust store; tools that use system trust may reject MITM leaf certificates.",
             ca_cert.display(),
@@ -472,26 +475,62 @@ fn check_security_proxy_ca_trust(report: &mut DoctorReport) {
 }
 
 fn active_security_proxy_ca_cert() -> Option<String> {
-    std::env::var("SECURITY_PROXY_CA_CERT")
+    let process_env = std::env::var("SECURITY_PROXY_CA_CERT")
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.trim().is_empty());
+    let systemd_envs = active_security_proxy_systemd_envs();
+    active_security_proxy_ca_cert_from_values(
+        systemd_envs.iter().map(String::as_str),
+        process_env.as_deref(),
+    )
+}
+
+fn active_security_proxy_systemd_envs() -> Vec<String> {
+    let mut envs = Vec::new();
+    for args in [
+        &[
+            "--user",
+            "show",
+            "calciforge-security-proxy.service",
+            "-p",
+            "Environment",
+            "--value",
+            "--no-pager",
+        ][..],
+        &[
+            "show",
+            "calciforge-security-proxy.service",
+            "-p",
+            "Environment",
+            "--value",
+            "--no-pager",
+        ][..],
+    ] {
+        let Ok(output) = StdCommand::new("systemctl").args(args).output() else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !stdout.is_empty() {
+            envs.push(stdout);
+        }
+    }
+    envs
+}
+
+fn active_security_proxy_ca_cert_from_values<'a>(
+    systemd_envs: impl IntoIterator<Item = &'a str>,
+    process_env: Option<&str>,
+) -> Option<String> {
+    systemd_envs
+        .into_iter()
+        .find_map(|env| environment_value(env, "SECURITY_PROXY_CA_CERT"))
         .or_else(|| {
-            let output = StdCommand::new("systemctl")
-                .args([
-                    "show",
-                    "calciforge-security-proxy.service",
-                    "-p",
-                    "Environment",
-                    "--value",
-                    "--no-pager",
-                ])
-                .output()
-                .ok()?;
-            if !output.status.success() {
-                return None;
-            }
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            environment_value(&stdout, "SECURITY_PROXY_CA_CERT")
+            process_env
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty())
         })
 }
 
@@ -510,14 +549,28 @@ fn linux_system_ca_bundle_candidates() -> Vec<PathBuf> {
     ]
 }
 
-fn verify_ca_cert_with_bundle(ca_cert: &Path, bundle: &Path) -> std::result::Result<(), String> {
+#[derive(Debug, PartialEq, Eq)]
+enum CaTrustVerifyError {
+    OpenSslUnavailable(String),
+    VerificationFailed(String),
+}
+
+fn verify_ca_cert_with_bundle(
+    ca_cert: &Path,
+    bundle: &Path,
+) -> std::result::Result<(), CaTrustVerifyError> {
     let output = StdCommand::new("openssl")
         .arg("verify")
         .arg("-CAfile")
         .arg(bundle)
         .arg(ca_cert)
         .output()
-        .map_err(|err| format!("failed to run openssl verify: {err}"))?;
+        .map_err(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => CaTrustVerifyError::OpenSslUnavailable(err.to_string()),
+            _ => CaTrustVerifyError::VerificationFailed(format!(
+                "failed to run openssl verify: {err}"
+            )),
+        })?;
     if output.status.success() {
         return Ok(());
     }
@@ -525,11 +578,13 @@ fn verify_ca_cert_with_bundle(ca_cert: &Path, bundle: &Path) -> std::result::Res
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stderr.is_empty() {
-        Err(stdout)
+        Err(CaTrustVerifyError::VerificationFailed(stdout))
     } else if stdout.is_empty() {
-        Err(stderr)
+        Err(CaTrustVerifyError::VerificationFailed(stderr))
     } else {
-        Err(format!("{stdout}; {stderr}"))
+        Err(CaTrustVerifyError::VerificationFailed(format!(
+            "{stdout}; {stderr}"
+        )))
     }
 }
 
@@ -2280,6 +2335,33 @@ mod tests {
         assert_eq!(
             environment_value("SECURITY_PROXY_CA_CERT=", "SECURITY_PROXY_CA_CERT"),
             None
+        );
+    }
+
+    #[test]
+    fn active_security_proxy_ca_prefers_systemd_unit_over_process_env() {
+        let systemd_env =
+            "SECURITY_PROXY_PORT=8888 SECURITY_PROXY_CA_CERT=/etc/calciforge/active-ca.pem";
+
+        assert_eq!(
+            active_security_proxy_ca_cert_from_values(
+                [systemd_env].into_iter(),
+                Some("/tmp/stale-shell-ca.pem")
+            )
+            .as_deref(),
+            Some("/etc/calciforge/active-ca.pem")
+        );
+    }
+
+    #[test]
+    fn active_security_proxy_ca_falls_back_to_process_env() {
+        assert_eq!(
+            active_security_proxy_ca_cert_from_values(
+                ["SECURITY_PROXY_PORT=8888"].into_iter(),
+                Some("/tmp/shell-ca.pem")
+            )
+            .as_deref(),
+            Some("/tmp/shell-ca.pem")
         );
     }
 

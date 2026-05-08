@@ -12,18 +12,36 @@ set -euo pipefail
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8888}"
 CHECK_SYSTEM_TRUST="${CHECK_SYSTEM_TRUST:-true}"
 SYSTEM_TRUST_URL="${SYSTEM_TRUST_URL:-https://example.com/}"
-if [[ -z "${CA_BUNDLE:-}" ]]; then
-    service_ca=""
-    if command -v systemctl >/dev/null 2>&1; then
-        service_env="$(systemctl show calciforge-security-proxy -p Environment --value --no-pager 2>/dev/null || true)"
+
+is_falsy() {
+    case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+        0|false|no|off|n) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+systemd_security_proxy_ca() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local scope service_env service_ca
+    for scope in "--user" ""; do
+        service_env="$(
+            # shellcheck disable=SC2086
+            systemctl $scope show calciforge-security-proxy.service -p Environment --value --no-pager 2>/dev/null || true
+        )"
         if [[ -n "$service_env" ]]; then
-            service_ca="$(
-                printf '%s\n' "$service_env" \
-                    | tr ' ' '\n' \
-                    | awk -F= '$1 == "SECURITY_PROXY_CA_CERT" { print substr($0, index($0, "=") + 1); exit }'
-            )"
+            service_ca="$(printf '%s\n' "$service_env" \
+                | tr ' ' '\n' \
+                | awk -F= '$1 == "SECURITY_PROXY_CA_CERT" { print substr($0, index($0, "=") + 1); exit }')"
+            if [[ -n "$service_ca" ]]; then
+                printf '%s\n' "$service_ca"
+                return 0
+            fi
         fi
-    fi
+    done
+}
+
+if [[ -z "${CA_BUNDLE:-}" ]]; then
+    service_ca="$(systemd_security_proxy_ca)"
     CA_BUNDLE="${service_ca:-${HOME}/.config/calciforge/secrets/mitm-ca.pem}"
 fi
 CANARY_URL="${CANARY_URL:-https://ref.jock.pl/modern-web}"
@@ -42,7 +60,7 @@ fi
 
 curl -fsS --max-time 5 "${PROXY_URL%/}/health" >/dev/null
 
-if [[ "$CHECK_SYSTEM_TRUST" != "0" && "$CHECK_SYSTEM_TRUST" != "false" && "$CHECK_SYSTEM_TRUST" != "FALSE" ]]; then
+if ! is_falsy "$CHECK_SYSTEM_TRUST"; then
     if ! curl -fsS -I --max-time 10 \
         --proxy "$PROXY_URL" \
         --noproxy "" \

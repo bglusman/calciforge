@@ -31,7 +31,6 @@ SECURITY_PROXY_PORT="${SECURITY_PROXY_PORT:-8888}"
 SECURITY_PROXY_BIND="${SECURITY_PROXY_BIND:-127.0.0.1}"
 SECURITY_PROXY_URL="${SECURITY_PROXY_URL:-http://127.0.0.1:${SECURITY_PROXY_PORT}}"
 SECURITY_PROXY_NO_PROXY="${SECURITY_PROXY_NO_PROXY:-localhost,127.0.0.1,::1}"
-SECURITY_PROXY_MITM_ENABLED="${SECURITY_PROXY_MITM_ENABLED:-true}"
 SECURITY_PROXY_CA_CERT="${SECURITY_PROXY_CA_CERT:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca.pem}"
 SECURITY_PROXY_CA_KEY="${SECURITY_PROXY_CA_KEY:-$CALCIFORGE_CONFIG_HOME/secrets/mitm-ca-key.pem}"
 SECURITY_PROXY_TRUST_MITM_CA="${SECURITY_PROXY_TRUST_MITM_CA:-true}"
@@ -230,8 +229,6 @@ rotate_log_file() {
 }
 
 ensure_mitm_ca() {
-    truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
-
     if [[ -f "$SECURITY_PROXY_CA_CERT" && -f "$SECURITY_PROXY_CA_KEY" ]]; then
         chmod 600 "$SECURITY_PROXY_CA_KEY" 2>/dev/null || true
         ok "MITM CA already present → $SECURITY_PROXY_CA_CERT"
@@ -241,7 +238,7 @@ ensure_mitm_ca() {
         die "MITM CA is incomplete: expected both $SECURITY_PROXY_CA_CERT and $SECURITY_PROXY_CA_KEY"
     fi
     command -v openssl >/dev/null 2>&1 || \
-        die "openssl is required to generate the Calciforge MITM CA; set SECURITY_PROXY_MITM_ENABLED=false to skip"
+        die "openssl is required to generate the Calciforge MITM CA"
 
     mkdir -p "$(dirname "$SECURITY_PROXY_CA_CERT")" "$(dirname "$SECURITY_PROXY_CA_KEY")"
     ( umask 077
@@ -257,7 +254,6 @@ ensure_mitm_ca() {
 }
 
 trust_mitm_ca_if_supported() {
-    truthy "$SECURITY_PROXY_MITM_ENABLED" || return 0
     truthy "$SECURITY_PROXY_TRUST_MITM_CA" || {
         warn "Skipping macOS MITM CA trust (SECURITY_PROXY_TRUST_MITM_CA=false)"
         return 0
@@ -1186,7 +1182,6 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     <key>EnvironmentVariables</key><dict>
         <key>SECURITY_PROXY_PORT</key><string>${SECURITY_PROXY_PORT}</string>
         <key>SECURITY_PROXY_BIND</key><string>${SECURITY_PROXY_BIND}</string>
-        <key>SECURITY_PROXY_MITM_ENABLED</key><string>${SECURITY_PROXY_MITM_ENABLED}</string>
         <key>SECURITY_PROXY_CA_CERT</key><string>${SECURITY_PROXY_CA_CERT}</string>
         <key>SECURITY_PROXY_CA_KEY</key><string>${SECURITY_PROXY_CA_KEY}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
@@ -1214,7 +1209,6 @@ Type=simple
 ExecStart=${BIN_DIR}/security-proxy
 Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
 Environment=SECURITY_PROXY_BIND=${SECURITY_PROXY_BIND}
-Environment=SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}
 Environment=SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}
 Environment=SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}
 Environment=SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
@@ -2656,7 +2650,7 @@ REMOTE_CLASHD_CONFIG
         local remote_log_dir
         local remote_mitm_ca_cert="${config_dir}/mitm-ca.pem"
         local remote_mitm_ca_key="${config_dir}/mitm-ca-key.pem"
-        if [[ "$bin" == "security-proxy" ]] && truthy "$SECURITY_PROXY_MITM_ENABLED"; then
+        if [[ "$bin" == "security-proxy" ]]; then
             ssh "${ssh_opts[@]}" "$ssh_target" 'bash -s' -- "$remote_mitm_ca_cert" "$remote_mitm_ca_key" <<'REMOTE_MITM_CA'
 set -euo pipefail
 cert="$1"
@@ -2736,7 +2730,7 @@ REMOTE_TRUST_MITM_CA
             local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
-                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
             if [[ "$bin" == "calciforge" ]]; then
@@ -2786,7 +2780,6 @@ REMOTE_TRUST_MITM_CA
             if [[ "$bin" == "security-proxy" ]]; then
                 launchd_env+=(
                     "SECURITY_PROXY_BIND=${security_proxy_bind}"
-                    "SECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}"
                     "SECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}"
                     "SECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}"
                     "CALCIFORGE_CONFIG_HOME=${config_dir}"
@@ -2861,10 +2854,8 @@ agent_enabled dirac && (command -v dirac >/dev/null 2>&1 \
 echo ""
 echo "Optional external-agent proxy:"
 echo "  HTTP_PROXY=${SECURITY_PROXY_URL}"
-if truthy "$SECURITY_PROXY_MITM_ENABLED"; then
-    echo "  HTTPS_PROXY=${SECURITY_PROXY_URL}"
-    echo "  Calciforge MITM CA=${SECURITY_PROXY_CA_CERT}"
-fi
+echo "  HTTPS_PROXY=${SECURITY_PROXY_URL}"
+echo "  Calciforge MITM CA=${SECURITY_PROXY_CA_CERT}"
 echo "  NO_PROXY=${SECURITY_PROXY_NO_PROXY}"
 if [[ -n "$REMOTE_SCANNER_URL" ]]; then
     echo "  Remote scanner=${REMOTE_SCANNER_URL} (fail_closed=${REMOTE_SCANNER_FAIL_CLOSED})"
