@@ -32,10 +32,86 @@ fi
 grep -Eq '^[[:space:]]*/dist/?[[:space:]]*$' "$ROOT/.dockerignore"
 test -s "$ROOT/crates/calciforge-policy-plugin/dist/index.js"
 
-bash -n \
-    "$ROOT/scripts/install.sh" \
-    "$ROOT/scripts/lib/agent-runtime.sh" \
-    "$ROOT/scripts/lib/helicone.sh"
+installer_shell_files=("$ROOT/scripts/install.sh" "$ROOT"/scripts/lib/*.sh)
+for shell_file in "${installer_shell_files[@]}"; do
+    bash -n "$shell_file"
+done
+
+bash -s -- "$ROOT" <<'BASH'
+set -euo pipefail
+
+ROOT="$1"
+
+source "$ROOT/scripts/lib/common.sh"
+truthy yes
+! truthy false
+[[ "$(expand_home_path "~/calciforge")" == "$HOME/calciforge" ]] || {
+    echo "expand_home_path did not expand ~/ paths" >&2
+    exit 1
+}
+[[ "$(toml_basic_string $'a"b\tc')" == '"a\"b\tc"' ]] || {
+    echo "toml_basic_string did not escape quotes and tabs" >&2
+    exit 1
+}
+
+ask_install() { return 1; }
+CALCIFORGE_CONFIG_HOME="$HOME/.config/calciforge"
+CALCIFORGE_FNOX_DIR="$CALCIFORGE_CONFIG_HOME"
+CALCIFORGE_FNOX_PROVIDER_NAME="calciforge-local"
+CALCIFORGE_FNOX_PROVIDER_TYPE=""
+CALCIFORGE_FNOX_WARMUP=false
+CALCIFORGE_FNOX_AGE_RECIPIENT=""
+CONFIGURE_ONLY=false
+FNOX_AGE_KEY_FILE=""
+IS_ROOT=false
+PLATFORM=Linux
+source "$ROOT/scripts/lib/fnox.sh"
+[[ "$(default_fnox_provider_type)" == "age" ]] || {
+    echo "default fnox provider type on Linux should be age" >&2
+    exit 1
+}
+PLATFORM=Darwin
+[[ "$(default_fnox_provider_type)" == "keychain" ]] || {
+    echo "default fnox provider type on Darwin should be keychain" >&2
+    exit 1
+}
+CALCIFORGE_FNOX_PROVIDER_TYPE="custom"
+[[ "$(default_fnox_provider_type)" == "custom" ]] || {
+    echo "explicit fnox provider type should override platform default" >&2
+    exit 1
+}
+
+fake_bin="$(mktemp -d)"
+fake_home="$(mktemp -d)"
+trap 'rm -rf "$fake_bin" "$fake_home"' EXIT
+cat >"$fake_bin/brew" <<'SH'
+#!/usr/bin/env bash
+exit 7
+SH
+chmod +x "$fake_bin/brew"
+PATH="$fake_bin:/usr/bin:/bin"
+HOME="$fake_home"
+CALCIFORGE_CONFIG_HOME="$HOME/.config/calciforge"
+CALCIFORGE_FNOX_DIR="$CALCIFORGE_CONFIG_HOME"
+CALCIFORGE_FNOX_PROVIDER_TYPE=""
+CONFIGURE_ONLY=false
+PLATFORM=Darwin
+ask_install() { return 0; }
+set +e
+ensure_fnox >/dev/null 2>&1
+fnox_rc=$?
+case "$-" in
+    *e*)
+        echo "ensure_fnox must preserve disabled errexit when sourced" >&2
+        exit 1
+        ;;
+esac
+set -e
+[[ "$fnox_rc" -eq 1 ]] || {
+    echo "fake brew fallback should fail without enabling errexit" >&2
+    exit 1
+}
+BASH
 
 python3 - "$ROOT/scripts/install.sh" "$ROOT/docs/model-gateway.md" <<'PY'
 import pathlib
