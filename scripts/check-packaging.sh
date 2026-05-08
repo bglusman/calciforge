@@ -32,6 +32,11 @@ fi
 grep -Eq '^[[:space:]]*/dist/?[[:space:]]*$' "$ROOT/.dockerignore"
 test -s "$ROOT/crates/calciforge-policy-plugin/dist/index.js"
 
+bash -n \
+    "$ROOT/scripts/install.sh" \
+    "$ROOT/scripts/lib/agent-runtime.sh" \
+    "$ROOT/scripts/lib/helicone.sh"
+
 python3 - "$ROOT/scripts/install.sh" "$ROOT/docs/model-gateway.md" <<'PY'
 import pathlib
 import re

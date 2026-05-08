@@ -139,8 +139,9 @@ def managed_block(
         f"id = {q(agent_id)}",
         f"kind = {q(kind)}",
         f"endpoint = {q(endpoint)}",
-        f"api_key_file = {q(api_key_file)}",
     ]
+    if api_key_file.strip():
+        lines.append(f"api_key_file = {q(api_key_file)}")
     if model:
         lines.append(f"model = {q(model)}")
     lines.append(f"timeout_ms = {int(timeout_ms)}")
@@ -192,7 +193,8 @@ def upsert_agent(config_path: pathlib.Path, args: argparse.Namespace) -> str:
 
     top_lines = upsert_key(top_lines, "kind", q(args.kind))
     top_lines = upsert_key(top_lines, "endpoint", q(args.endpoint))
-    top_lines = upsert_key(top_lines, "api_key_file", q(args.api_key_file))
+    if args.api_key_file.strip():
+        top_lines = upsert_key(top_lines, "api_key_file", q(args.api_key_file))
     top_lines = upsert_key(top_lines, "timeout_ms", str(int(args.timeout_ms)))
     if args.model:
         top_lines = upsert_key(top_lines, "model", q(args.model), overwrite=False)
