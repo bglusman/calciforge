@@ -139,8 +139,10 @@ default and is the recommended starting point for direct provider routes. Set
 `credential_owner = "none"` for local unauthenticated providers.
 
 Provider routes can also set fixed upstream headers and OpenAI-compatible JSON
-body extensions. Headers are useful when the provider contract requires an
-honest client identity, partner identifier, or beta flag. `request_body` is for
+body extensions. Headers are intentionally operator-controlled: some providers
+require a client identity, partner identifier, beta flag, or compatibility
+header, and local deployments may need to reproduce the headers that make a
+subscription-backed workflow usable through Calciforge. `request_body` is for
 provider-specific request fields such as Kimi's `thinking` option. Calciforge
 also preserves unknown request fields sent by the caller, but configured
 `request_body` values win when the same key is present.
@@ -158,11 +160,12 @@ headers = { "User-Agent" = "kimi-cli/1.0" }
 thinking = { type = "disabled" }
 ```
 
-Do not use headers to pretend Calciforge is another commercial client. Some
-subscription providers allow OpenAI-compatible access only for approved coding
-agents and require the real tool identity to be preserved. In that case, prefer
-the provider's native CLI adapter, ACP adapter, or a documented per-agent route
-whose headers accurately describe the client that is making the request.
+Calciforge does not judge which provider headers an operator may set. Operators
+are responsible for choosing headers that match their provider account,
+subscription, and risk tolerance. When a provider offers a native CLI or ACP
+path, that route may still be operationally cleaner because it preserves the
+provider's expected request shape and session behavior without extra gateway
+translation.
 
 Helicone is the first external gateway adapter and the default batteries-included
 observability path we ship today. It gives operators a real request dashboard,
