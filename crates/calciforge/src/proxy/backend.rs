@@ -3,8 +3,6 @@
 //! Provides the runtime abstraction used by supported model-provider methods.
 //! The production root gateway surface is intentionally small: direct HTTP
 //! providers, Helicone's external HTTP gateway, and a mock backend for tests.
-//! Older embedded/library variants remain internal stubs until they are backed
-//! by real tests and config validation.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,19 +11,13 @@ use crate::sync::Arc;
 
 use crate::proxy::openai::{ChatCompletionResponse, MessageContent};
 
-// Helicone router (embedded library)
+// Helicone router (HTTP adapter)
 use super::helicone_router;
 
 /// Errors that can occur in backend operations
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum BackendError {
-    #[error("embedded backend execution failed: {0}")]
-    ExecutionFailed(String),
-
-    #[error("secrets backend not found or not executable")]
-    SecretsNotFound,
-
     #[error("HTTP request failed: {0}")]
     HttpError(String),
 
@@ -34,9 +26,6 @@ pub enum BackendError {
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
-
-    #[error("Backend not available: {0}")]
-    NotAvailable(String),
 }
 
 /// Unified backend trait for model-gateway providers.
@@ -63,10 +52,6 @@ pub trait SecretsBackend: Send + Sync {
 /// Backend types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendType {
-    /// Reserved for future subprocess-backed providers.
-    Embedded,
-    /// Reserved for future library-backed providers.
-    Library,
     /// HTTP to an OpenAI-compatible provider.
     Http,
     /// HTTP to Helicone AI Gateway
@@ -78,8 +63,6 @@ pub enum BackendType {
 impl std::fmt::Display for BackendType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendType::Embedded => write!(f, "embedded"),
-            BackendType::Library => write!(f, "library"),
             BackendType::Http => write!(f, "http"),
             BackendType::Helicone => write!(f, "helicone"),
             BackendType::Mock => write!(f, "mock"),
@@ -112,10 +95,6 @@ pub struct ModelInfo {
 pub struct BackendConfig {
     pub backend_type: BackendType,
 
-    // Embedded backend config
-    pub command: Option<String>,
-    pub args: Option<Vec<String>>,
-
     // HTTP backend config
     pub url: Option<String>,
     pub api_key: Option<String>,
@@ -126,20 +105,12 @@ pub struct BackendConfig {
     pub helicone_url: Option<String>,
     pub helicone_api_key: Option<String>,
     pub helicone_router_name: Option<String>,
-
-    // Library backend config
-    pub config_path: Option<String>,
 }
 
 impl Default for BackendConfig {
     fn default() -> Self {
         Self {
             backend_type: BackendType::Mock,
-            command: Some("secrets".to_string()),
-            args: Some(vec![
-                "--config".to_string(),
-                "~/.config/secrets.toml".to_string(),
-            ]),
             url: Some("http://localhost:8081".to_string()),
             api_key: None,
             timeout_seconds: Some(30),
@@ -147,7 +118,6 @@ impl Default for BackendConfig {
             helicone_url: Some("http://localhost:8080".to_string()),
             helicone_api_key: None,
             helicone_router_name: None,
-            config_path: Some("~/.config/secrets.toml".to_string()),
         }
     }
 }
@@ -155,19 +125,6 @@ impl Default for BackendConfig {
 /// Factory function to create backend based on config
 pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn SecretsBackend>, BackendError> {
     match config.backend_type {
-        BackendType::Embedded => {
-            let command = config.command.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing command for embedded backend".to_string())
-            })?;
-            let args = config.args.clone().unwrap_or_default();
-            Ok(Arc::new(EmbeddedBackend::new(command, args)))
-        }
-        BackendType::Library => {
-            let config_path = config.config_path.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing config_path for library backend".to_string())
-            })?;
-            Ok(Arc::new(LibraryBackend::new(config_path)))
-        }
         BackendType::Http => {
             let url = config.url.clone().ok_or_else(|| {
                 BackendError::ConfigError("Missing url for HTTP backend".to_string())
@@ -317,47 +274,6 @@ impl SecretsBackend for MockBackend {
 
     fn backend_type(&self) -> BackendType {
         BackendType::Mock
-    }
-}
-
-// Embedded backend implementation (spawns subprocess)
-#[allow(dead_code)]
-pub struct EmbeddedBackend {
-    command: String,
-    args: Vec<String>,
-}
-
-impl EmbeddedBackend {
-    pub fn new(command: String, args: Vec<String>) -> Self {
-        Self { command, args }
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretsBackend for EmbeddedBackend {
-    async fn chat_completion(
-        &self,
-        _model: String,
-        _messages: Vec<ChatMessage>,
-        _stream: bool,
-        _tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
-        _tool_choice: Option<crate::proxy::openai::ToolChoice>,
-    ) -> Result<ChatCompletionResponse, BackendError> {
-        // TODO: Implement subprocess-backed provider execution.
-        Err(BackendError::NotAvailable(
-            "Embedded backend not yet implemented".to_string(),
-        ))
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        // TODO: Implement subprocess-backed provider execution.
-        Err(BackendError::NotAvailable(
-            "Embedded backend not yet implemented".to_string(),
-        ))
-    }
-
-    fn backend_type(&self) -> BackendType {
-        BackendType::Embedded
     }
 }
 
@@ -561,46 +477,6 @@ impl SecretsBackend for HttpBackend {
 
     fn backend_type(&self) -> BackendType {
         BackendType::Http
-    }
-}
-
-// Library backend implementation
-#[allow(dead_code)]
-pub struct LibraryBackend {
-    config_path: String,
-}
-
-impl LibraryBackend {
-    pub fn new(config_path: String) -> Self {
-        Self { config_path }
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretsBackend for LibraryBackend {
-    async fn chat_completion(
-        &self,
-        _model: String,
-        _messages: Vec<ChatMessage>,
-        _stream: bool,
-        _tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
-        _tool_choice: Option<crate::proxy::openai::ToolChoice>,
-    ) -> Result<ChatCompletionResponse, BackendError> {
-        // TODO: Implement library-backed provider integration.
-        Err(BackendError::NotAvailable(
-            "Library backend not yet implemented".to_string(),
-        ))
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        // TODO: Implement library-backed provider integration.
-        Err(BackendError::NotAvailable(
-            "Library backend not yet implemented".to_string(),
-        ))
-    }
-
-    fn backend_type(&self) -> BackendType {
-        BackendType::Library
     }
 }
 

@@ -1665,32 +1665,30 @@ endpoint = "http://127.0.0.1:8642"
         );
     }
 
-    /// Given a proxy backend type that is only a stale spike or stub,
+    /// Given a proxy backend type outside the runtime allow-list,
     /// when validate_config runs,
-    /// then validation rejects it instead of presenting it as a supported
-    /// gateway engine.
+    /// then validation rejects it and reports the supported values.
     #[test]
-    fn unsupported_proxy_backend_types_are_rejected() {
-        for backend_type in ["embedded", "library", "traceloop"] {
-            let fixture = format!(
-                "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"{backend_type}\"\nbackend_url = \"https://api.example.com\"\n"
-            );
-            let config = parse(&fixture);
-            let result = validate_config(&config);
+    fn unsupported_proxy_backend_type_is_rejected_by_allowlist() {
+        let backend_type = "experimental-gateway";
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"{backend_type}\"\nbackend_url = \"https://api.example.com\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
 
-            assert!(
-                !result.is_valid(),
-                "{backend_type} must not validate as a supported proxy backend; errors: {:?}",
-                result.errors
-            );
-            assert!(
-                result.errors.iter().any(|e| {
-                    e.contains("backend_type") && e.contains(backend_type) && e.contains("http")
-                }),
-                "error should name unsupported backend and supported values; errors: {:?}",
-                result.errors
-            );
-        }
+        assert!(
+            !result.is_valid(),
+            "{backend_type} must not validate as a supported proxy backend; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("backend_type") && e.contains(backend_type) && e.contains("http")
+            }),
+            "error should name unsupported backend and supported values; errors: {:?}",
+            result.errors
+        );
     }
 
     /// Given a disabled proxy with a configured gateway UI link,

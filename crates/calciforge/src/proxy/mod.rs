@@ -35,10 +35,6 @@ mod voice_handlers;
 #[cfg(feature = "helicone")]
 mod helicone_router;
 
-// Experimental Traceloop-compatible router.
-#[cfg(feature = "traceloop")]
-mod traceloop;
-
 pub use openai::ChatCompletionRequest;
 pub use routing::ProviderEntry;
 
