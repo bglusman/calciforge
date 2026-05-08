@@ -628,8 +628,10 @@ pub struct ProxyConfig {
     #[serde(default = "default_proxy_default_policy")]
     pub default_policy: ProxyAccessPolicy,
 
-    /// Backend type for proxy: "mock", "http", "embedded", "library"
-    /// Default: "mock" (for testing)
+    /// Root gateway backend type for proxy: "http", "helicone", or "mock".
+    ///
+    /// Provider-specific routes under `[[proxy.providers]]` have their own
+    /// narrower `backend_type` surface.
     #[serde(default = "default_proxy_backend_type")]
     pub backend_type: String,
 

@@ -90,10 +90,15 @@ fn resolve_api_key(
     Ok(api_key.and_then(normalize_api_key))
 }
 
+const SUPPORTED_ROOT_GATEWAY_BACKEND_TYPES: &[&str] = &["http", "helicone", "mock"];
+
+pub(crate) fn supported_root_gateway_backend_types() -> &'static [&'static str] {
+    SUPPORTED_ROOT_GATEWAY_BACKEND_TYPES
+}
+
 fn gateway_type_for_backend_type(backend_type: &str) -> gateway::GatewayType {
     match backend_type {
         "helicone" => gateway::GatewayType::Helicone,
-        "traceloop" => gateway::GatewayType::Traceloop,
         _ => gateway::GatewayType::Direct,
     }
 }
@@ -158,16 +163,6 @@ pub async fn start_proxy_server(
             headers: config.headers.clone(),
             ..Default::default()
         },
-        "embedded" => backend::BackendConfig {
-            backend_type: backend::BackendType::Embedded,
-            headers: config.headers.clone(),
-            ..Default::default()
-        },
-        "library" => backend::BackendConfig {
-            backend_type: backend::BackendType::Library,
-            headers: config.headers.clone(),
-            ..Default::default()
-        },
         "helicone" => backend::BackendConfig {
             backend_type: backend::BackendType::Helicone,
             helicone_url: Some(config.backend_url.clone()),
@@ -176,15 +171,16 @@ pub async fn start_proxy_server(
             headers: config.headers.clone(),
             ..Default::default()
         },
-        "traceloop" => backend::BackendConfig {
-            backend_type: backend::BackendType::Mock, // Traceloop uses gateway, not backend
-            ..Default::default()
-        },
-        _ => backend::BackendConfig {
+        "mock" => backend::BackendConfig {
             backend_type: backend::BackendType::Mock,
             headers: config.headers.clone(),
             ..Default::default()
         },
+        other => anyhow::bail!(
+            "Unsupported proxy backend_type '{}'. Supported root gateway backends: {}",
+            other,
+            supported_root_gateway_backend_types().join(", ")
+        ),
     };
 
     info!(
@@ -266,6 +262,7 @@ pub async fn start_proxy_server(
 mod tests {
     use super::{
         backend_accepts_unlisted_models, gateway, gateway_type_for_backend_type, resolve_api_key,
+        supported_root_gateway_backend_types,
     };
 
     #[test]
@@ -282,14 +279,10 @@ mod tests {
     }
 
     #[test]
-    fn gateway_type_for_backend_type_preserves_external_engines() {
+    fn gateway_type_for_backend_type_preserves_supported_external_engines() {
         assert_eq!(
             gateway_type_for_backend_type("helicone"),
             gateway::GatewayType::Helicone
-        );
-        assert_eq!(
-            gateway_type_for_backend_type("traceloop"),
-            gateway::GatewayType::Traceloop
         );
         assert_eq!(
             gateway_type_for_backend_type("http"),
@@ -302,5 +295,13 @@ mod tests {
         assert!(backend_accepts_unlisted_models("helicone"));
         assert!(backend_accepts_unlisted_models("http"));
         assert!(!backend_accepts_unlisted_models("mock"));
+    }
+
+    #[test]
+    fn supported_root_backend_allowlist_is_small_and_explicit() {
+        assert_eq!(
+            supported_root_gateway_backend_types(),
+            ["http", "helicone", "mock"]
+        );
     }
 }

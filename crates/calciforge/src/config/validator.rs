@@ -578,15 +578,16 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         ));
     }
 
-    // Validate backend_type
-    match proxy.backend_type.as_str() {
-        "http" | "embedded" | "library" | "mock" | "helicone" | "traceloop" => {}
-        other => {
-            result.add_error(format!(
-                "Proxy backend_type '{}' is invalid. Use: http, embedded, library, mock, helicone, traceloop",
-                other
-            ));
-        }
+    // Validate backend_type against the same allowlist the runtime uses.
+    if !crate::proxy::supported_root_gateway_backend_types()
+        .iter()
+        .any(|backend_type| *backend_type == proxy.backend_type)
+    {
+        result.add_error(format!(
+            "Proxy backend_type '{}' is unsupported. Use one of: {}. CLI-backed agents and experimental external gateways must be configured outside the root model gateway until their adapters are production-ready.",
+            proxy.backend_type,
+            crate::proxy::supported_root_gateway_backend_types().join(", ")
+        ));
     }
 
     if proxy.backend_type == "helicone" {
@@ -1662,6 +1663,34 @@ endpoint = "http://127.0.0.1:8642"
             "error should name gateway_ui_url; errors: {:?}",
             result.errors
         );
+    }
+
+    /// Given a proxy backend type that is only a stale spike or stub,
+    /// when validate_config runs,
+    /// then validation rejects it instead of presenting it as a supported
+    /// gateway engine.
+    #[test]
+    fn unsupported_proxy_backend_types_are_rejected() {
+        for backend_type in ["embedded", "library", "traceloop"] {
+            let fixture = format!(
+                "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"{backend_type}\"\nbackend_url = \"https://api.example.com\"\n"
+            );
+            let config = parse(&fixture);
+            let result = validate_config(&config);
+
+            assert!(
+                !result.is_valid(),
+                "{backend_type} must not validate as a supported proxy backend; errors: {:?}",
+                result.errors
+            );
+            assert!(
+                result.errors.iter().any(|e| {
+                    e.contains("backend_type") && e.contains(backend_type) && e.contains("http")
+                }),
+                "error should name unsupported backend and supported values; errors: {:?}",
+                result.errors
+            );
+        }
     }
 
     /// Given a disabled proxy with a configured gateway UI link,

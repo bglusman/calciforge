@@ -1,10 +1,9 @@
 //! GatewayBackend trait for abstracting different LLM gateway implementations.
 //!
-//! This module provides a unified interface for different gateway backends:
-//! - Helicone (HTTP-based AI Gateway)
-//! - Traceloop (observability and routing)
-//! - Mock (for testing)
-//! - Direct (direct provider calls)
+//! This module provides a unified interface for gateway engines. The shipped
+//! root gateway engines are Direct, Helicone, and Mock. Other variants may
+//! exist as spike code behind feature flags, but they must not be accepted as
+//! production config until validation and compatibility tests prove the path.
 //!
 //! Each backend can be enabled via feature flags and selected via configuration.
 

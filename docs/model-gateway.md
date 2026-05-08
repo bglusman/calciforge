@@ -9,6 +9,10 @@ Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests across upstream providers, local models, aliases, and synthetic
 model choices.
 
+For the architecture boundary between channels, agents, the model gateway, the
+security proxy, and external gateway engines, see
+[ADR 0001: Model Gateway And Agent Boundaries](adr/0001-model-gateway-and-agent-boundaries.html).
+
 Agents can also point at an OpenAI-compatible endpoint with
 `kind = "openai-compat"`. Use that for plain model-gateway or model API
 targets. Do not use it as an OpenClaw agent adapter; OpenClaw agents should use
