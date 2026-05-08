@@ -107,7 +107,7 @@ pub async fn chat_completions(
     //  - It's a configured synthetic selector (alloy, cascade, dispatcher).
     let provider_matches = routing::find_provider(&state.providers, &req.model).is_some();
     let is_valid_model = provider_matches
-        || backend_accepts_unlisted_models(&state.config.backend_type)
+        || super::backend_accepts_unlisted_models(&state.config.backend_type)
         || state.alloy_manager.is_synthetic_model(&req.model)
         || KNOWN_MODELS.contains(&req.model.as_str());
 
@@ -187,10 +187,6 @@ pub async fn chat_completions(
             )
         }
     }
-}
-
-fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
-    matches!(backend_type, "http" | "helicone")
 }
 
 fn model_plan_error_response(error: &str) -> (&'static str, Option<&'static str>) {
@@ -887,13 +883,6 @@ mod tests {
         let headers = HeaderMap::new();
         let response = require_api_key(&config_with_key(Some("test-key")), &headers);
         assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[test]
-    fn helicone_backend_allows_gateway_authoritative_model_ids() {
-        assert!(backend_accepts_unlisted_models("helicone"));
-        assert!(backend_accepts_unlisted_models("http"));
-        assert!(!backend_accepts_unlisted_models("mock"));
     }
 
     #[test]
