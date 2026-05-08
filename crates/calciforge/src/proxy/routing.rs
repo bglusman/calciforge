@@ -231,7 +231,7 @@ pub fn build_provider_entries(
     for route in &config.model_routes {
         if let Some(gw) = provider_gateways.get(&route.provider) {
             entries.push(ProviderEntry {
-                id: format!("route:{}->{}", route.pattern, route.provider),
+                id: route.provider.clone(),
                 patterns: vec![route.pattern.clone()],
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&route.provider).cloned().flatten(),
@@ -322,7 +322,7 @@ fn resolve_provider_api_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProxyProviderConfig;
+    use crate::config::{ProxyModelRoute, ProxyProviderConfig};
 
     fn provider(id: &str, backend_type: &str, url: &str) -> ProxyProviderConfig {
         ProxyProviderConfig {
@@ -400,6 +400,50 @@ mod tests {
             entries[0].upstream_model_name("ollama/qwen3.6:27b"),
             "ollama/qwen3.6:27b",
             "already-qualified provider model IDs should not get double-prefixed"
+        );
+    }
+
+    #[test]
+    fn model_route_entry_preserves_real_provider_id_for_hooks() {
+        let config = ProxyConfig {
+            providers: vec![ProxyProviderConfig {
+                id: "helicone-ollama".to_string(),
+                backend_type: "helicone".to_string(),
+                url: "http://127.0.0.1:8787/ai".to_string(),
+                api_key: None,
+                api_key_file: None,
+                models: vec![],
+                strip_model_prefix: Some("local/".to_string()),
+                add_model_prefix: Some("ollama/".to_string()),
+                timeout_seconds: None,
+                headers: HashMap::new(),
+                on_switch: Some("/usr/local/bin/switch-model".to_string()),
+                command: None,
+                args: Vec::new(),
+                env: HashMap::new(),
+            }],
+            model_routes: vec![ProxyModelRoute {
+                pattern: "local/qwen3.6:27b".to_string(),
+                provider: "helicone-ollama".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, 30).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].id, "helicone-ollama",
+            "model_routes must preserve the real provider id for hook env/log keys"
+        );
+        assert_eq!(entries[0].patterns, vec!["local/qwen3.6:27b"]);
+        assert_eq!(
+            entries[0].on_switch.as_deref(),
+            Some("/usr/local/bin/switch-model")
+        );
+        assert_eq!(
+            entries[0].upstream_model_name("local/qwen3.6:27b"),
+            "ollama/qwen3.6:27b"
         );
     }
 

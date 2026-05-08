@@ -245,8 +245,10 @@ hook receives `CALCIFORGE_PROVIDER_ID`, `CALCIFORGE_MODEL_ID`,
 stores the selected model for the sender identity; provider hooks run
 synchronously before the next gateway request that uses that provider.
 Calciforge serializes switches per provider, applies the hook to dispatcher and
-cascade fallback attempts, and fails the request if the hook exits non-zero or
-times out.
+cascade fallback attempts, and fails that provider attempt if the hook exits
+non-zero or times out. Dispatchers, cascades, and alloys may still try later
+fallback constituents when their routing plan allows it; a direct request with
+no fallback fails the whole request.
 
 Provider `on_switch` hooks are different from `[local_models]` lifecycle hooks.
 Use `[local_models.mlx_lm.hooks]` when Calciforge owns a local `mlx_lm.server`
