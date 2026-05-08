@@ -38,10 +38,10 @@ pub fn extract_cn(cert: &CertificateDer<'_>) -> Result<String, IdentityError> {
             // Look for Common Name in the subject
             // CN OID is 2.5.4.3
             for attr in cert.subject.iter_attributes() {
-                if attr.attr_type().to_id_string() == "2.5.4.3" {
-                    if let Ok(cn) = attr.attr_value().as_str() {
-                        return Ok(cn.to_string());
-                    }
+                if attr.attr_type().to_id_string() == "2.5.4.3"
+                    && let Ok(cn) = attr.attr_value().as_str()
+                {
+                    return Ok(cn.to_string());
                 }
             }
             Err(IdentityError::MissingCN)

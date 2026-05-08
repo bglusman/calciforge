@@ -18,11 +18,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use tracing::info;
 
+use crate::AppState;
 use crate::adapters::{Adapter, ExecutionResult, HostOp, PolicyDecision};
 use crate::auth::ClientIdentity;
 use crate::error::AppError;
 use crate::zfs::{self, ZfsExecutor, ZfsOp};
-use crate::AppState;
 
 pub struct ZfsAdapter {
     executor: ZfsExecutor,

@@ -56,9 +56,9 @@ impl Default for AdapterRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppState;
     use crate::adapters::{Adapter, AppError, ExecutionResult, HostOp, PolicyDecision};
     use crate::auth::ClientIdentity;
-    use crate::AppState;
     use async_trait::async_trait;
 
     struct FooAdapter;

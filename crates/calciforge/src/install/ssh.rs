@@ -17,7 +17,7 @@
 //! single-quotes through.
 
 use crate::sync::Mutex;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,6 +125,15 @@ pub trait SshClient: Send + Sync {
         }
         Ok(())
     }
+
+    /// Copy a local file to the remote host.
+    fn copy_file(
+        &self,
+        host: &str,
+        key: Option<&Path>,
+        local_path: &Path,
+        remote_path: &str,
+    ) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +192,57 @@ impl SshClient for RealSshClient {
             exit_code,
             success,
         })
+    }
+
+    fn copy_file(
+        &self,
+        host: &str,
+        key: Option<&Path>,
+        local_path: &Path,
+        remote_path: &str,
+    ) -> Result<()> {
+        if is_local_host(host) {
+            let cmd = format!(
+                "mkdir -p $(dirname {}) && cp {} {}",
+                remote_path_shell(remote_path),
+                shell_quote(&local_path.display().to_string()),
+                remote_path_shell(remote_path)
+            );
+            let out = run_local_shell(&cmd)?;
+            if !out.success {
+                bail!("local copy_file failed: {}", out.stderr.trim());
+            }
+            return Ok(());
+        }
+
+        let mut cmd = Command::new("scp");
+        cmd.arg("-o")
+            .arg("StrictHostKeyChecking=accept-new")
+            .arg("-o")
+            .arg("ConnectTimeout=10")
+            .arg("-o")
+            .arg("BatchMode=yes");
+
+        if let Some(key_path) = key {
+            cmd.arg("-i").arg(key_path);
+        }
+
+        cmd.arg(local_path);
+        cmd.arg(format!("{host}:{remote_path}"));
+
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to spawn scp for host '{}'", host))?;
+
+        if !output.status.success() {
+            bail!(
+                "scp to {} failed: {}",
+                host,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -316,6 +376,21 @@ impl SshClient for MockSshClient {
         } else {
             Ok(responses.remove(0))
         }
+    }
+
+    fn copy_file(
+        &self,
+        host: &str,
+        key: Option<&Path>,
+        local_path: &Path,
+        remote_path: &str,
+    ) -> Result<()> {
+        self.calls.lock().unwrap().push(SshCall {
+            host: host.to_string(),
+            _key: key.map(PathBuf::from),
+            command: format!("COPY {} {}", local_path.display(), remote_path),
+        });
+        Ok(())
     }
 }
 
@@ -857,18 +932,22 @@ mod tests {
     fn verify_file_exists_present() {
         let client = MockSshClient::new();
         client.push_success("EXISTS\n");
-        assert!(client
-            .verify_file_exists("host", None, "/etc/file")
-            .unwrap());
+        assert!(
+            client
+                .verify_file_exists("host", None, "/etc/file")
+                .unwrap()
+        );
     }
 
     #[test]
     fn verify_file_exists_missing() {
         let client = MockSshClient::new();
         client.push_success("MISSING\n");
-        assert!(!client
-            .verify_file_exists("host", None, "/etc/file")
-            .unwrap());
+        assert!(
+            !client
+                .verify_file_exists("host", None, "/etc/file")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -994,8 +1073,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_shell_quote_semantic_eval(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
         use std::process::Command;
 
         // Generate arbitrary printable ASCII strings including metacharacters.

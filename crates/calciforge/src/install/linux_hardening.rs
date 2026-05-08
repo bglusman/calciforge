@@ -34,7 +34,7 @@
 //! service-discovery filtering, and block-page detection. Integration
 //! against systemctl is exercised via [`super::ssh::MockSshClient`].
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 // ---------------------------------------------------------------------------
 // Banner
@@ -294,11 +294,7 @@ pub fn detect_binary_path(exec_start: &str) -> Option<String> {
         }
     }
     let token: String = s.chars().take_while(|c| !c.is_whitespace()).collect();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
+    if token.is_empty() { None } else { Some(token) }
 }
 
 /// Render a full ExecStart-override drop-in body.
@@ -426,8 +422,7 @@ pub enum PackageManager {
 impl PackageManager {
     /// Shell snippet that probes the target for which package manager
     /// exists. Echoes one of `apt`/`dnf`/`yum`/`pacman`/`none`.
-    pub const PROBE_COMMAND: &'static str =
-        "if command -v apt-get >/dev/null 2>&1; then echo apt; \
+    pub const PROBE_COMMAND: &'static str = "if command -v apt-get >/dev/null 2>&1; then echo apt; \
          elif command -v dnf >/dev/null 2>&1; then echo dnf; \
          elif command -v yum >/dev/null 2>&1; then echo yum; \
          elif command -v pacman >/dev/null 2>&1; then echo pacman; \
@@ -579,13 +574,15 @@ mod tests {
     #[test]
     fn classify_extras_match_with_or_without_dot_service() {
         let extras = vec!["my-agent".into()];
-        assert!(classify_service(
-            "my-agent.service",
-            "Some agent",
-            "/usr/bin/my-agent",
-            &extras
-        )
-        .is_some());
+        assert!(
+            classify_service(
+                "my-agent.service",
+                "Some agent",
+                "/usr/bin/my-agent",
+                &extras
+            )
+            .is_some()
+        );
         let extras2 = vec!["my-agent.service".into()];
         assert!(classify_service("my-agent.service", "x", "/y", &extras2).is_some());
     }
@@ -680,8 +677,11 @@ mod tests {
         assert!(body.contains(
             "Environment=\"NODE_EXTRA_CA_CERTS=%h/.config/calciforge/secrets/mitm-ca.pem\""
         ));
-        assert!(body
-            .contains("Environment=\"SSL_CERT_FILE=%h/.config/calciforge/secrets/mitm-ca.pem\""));
+        assert!(
+            body.contains(
+                "Environment=\"SSL_CERT_FILE=%h/.config/calciforge/secrets/mitm-ca.pem\""
+            )
+        );
         assert!(body.contains(
             "Environment=\"REQUESTS_CA_BUNDLE=%h/.config/calciforge/secrets/mitm-ca.pem\""
         ));
@@ -731,12 +731,16 @@ mod tests {
 
     #[test]
     fn package_manager_install_nss_tools_apt_uses_libnss3_tools() {
-        assert!(PackageManager::Apt
-            .install_nss_tools()
-            .contains("libnss3-tools"));
-        assert!(PackageManager::Dnf
-            .install_nss_tools()
-            .contains("nss-tools"));
+        assert!(
+            PackageManager::Apt
+                .install_nss_tools()
+                .contains("libnss3-tools")
+        );
+        assert!(
+            PackageManager::Dnf
+                .install_nss_tools()
+                .contains("nss-tools")
+        );
     }
 
     #[test]

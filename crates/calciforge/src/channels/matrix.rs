@@ -26,7 +26,7 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{expand_tilde, CalciforgeConfig},
+    config::{CalciforgeConfig, expand_tilde},
     context::ContextStore,
     messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
@@ -139,10 +139,10 @@ fn cache_event_id(
     recent_lookup.insert(event_id.to_string());
     recent_order.push_back(event_id.to_string());
 
-    if recent_order.len() > MAX_RECENT_EVENT_IDS {
-        if let Some(evicted) = recent_order.pop_front() {
-            recent_lookup.remove(&evicted);
-        }
+    if recent_order.len() > MAX_RECENT_EVENT_IDS
+        && let Some(evicted) = recent_order.pop_front()
+    {
+        recent_lookup.remove(&evicted);
     }
 
     false
@@ -693,10 +693,10 @@ pub async fn run(
         // --- Process messages from joined rooms ---
         for (room_id, joined) in &sync.rooms.join {
             // If a target room is configured, skip other rooms
-            if let Some(ref tr) = target_room {
-                if room_id != tr {
-                    continue;
-                }
+            if let Some(ref tr) = target_room
+                && room_id != tr
+            {
+                continue;
             }
 
             for event in &joined.timeline.events {
@@ -1273,13 +1273,13 @@ mod tests {
     #[tokio::test]
     async fn send_matrix_outbound_message_uploads_and_sends_native_media() {
         use axum::{
+            Json, Router as AxumRouter,
             body::Bytes,
             extract::{Path, Query, State},
             http::HeaderMap,
             routing::{post, put},
-            Json, Router as AxumRouter,
         };
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
         use std::{collections::HashMap, net::SocketAddr};
         use tempfile::TempDir;
         use tokio::{net::TcpListener, sync::Mutex};
@@ -1388,12 +1388,12 @@ mod tests {
     #[tokio::test]
     async fn send_matrix_outbound_message_falls_back_when_media_upload_fails() {
         use axum::{
+            Json, Router as AxumRouter,
             extract::{Path, State},
             http::StatusCode,
             routing::{post, put},
-            Json, Router as AxumRouter,
         };
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
         use std::net::SocketAddr;
         use tempfile::TempDir;
         use tokio::{net::TcpListener, sync::Mutex};
@@ -1475,11 +1475,11 @@ mod tests {
     #[tokio::test]
     async fn send_matrix_outbound_message_renders_choice_text_fallback() {
         use axum::{
+            Json, Router as AxumRouter,
             extract::{Path, State},
             routing::put,
-            Json, Router as AxumRouter,
         };
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
         use std::net::SocketAddr;
         use tokio::{net::TcpListener, sync::Mutex};
 
@@ -1564,12 +1564,12 @@ mod tests {
             ContextConfig, Identity, RoutingRule,
         };
         use axum::{
+            Json, Router as AxumRouter,
             extract::{Path, Query, State},
             http::StatusCode,
             routing::{get, post, put},
-            Json, Router as AxumRouter,
         };
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
         use std::{
             collections::HashMap,
             io::Write,
@@ -1580,7 +1580,7 @@ mod tests {
         use tempfile::TempDir;
         use tokio::{
             net::TcpListener,
-            sync::{oneshot, Mutex},
+            sync::{Mutex, oneshot},
         };
 
         #[derive(Clone)]

@@ -23,11 +23,46 @@ The Compose file builds the shared `calciforge:local` image through the
 `calciforge` service before the first `up`; otherwise Compose may try to pull
 the sidecar image before the local image exists. The split build also avoids
 building the same Rust image three times with older `docker-compose` versions.
+The Dockerfile defaults to `CALCIFORGE_DOCKER_BUILD_JOBS=1` to avoid OOM kills on
+small staging hosts; increase it only on builders with enough RAM.
 
 The default Calciforge config points the model gateway at an OpenAI-compatible
 service on the host machine at `http://host.docker.internal:11434/v1`, which
 matches common Ollama-compatible local testing. Edit `config.example.toml` or set
 `CALCIFORGE_CONFIG` before using it for real traffic.
+
+When validating a fresh install on a staging host, first run the repository
+reset helper in dry-run mode from the repo root:
+
+```bash
+scripts/clean-install-reset.sh --include-docker --include-config
+scripts/clean-install-reset.sh --ssh root@calciforge-staging.example --include-docker
+```
+
+Add `--execute` only after the printed plan matches the host you intend to
+clean.
+
+Fnox state is intentionally not part of `--include-config`. Calciforge relies on
+fnox, but it may not be the only thing using the local vault, and the vault may
+contain unrelated sensitive data. Use `--include-fnox` only when the fnox config
+and vault are dedicated to this install.
+
+For a provider-free smoke test of this packaged Compose runtime, run from the
+repository root:
+
+```bash
+scripts/packaging-docker-smoke.sh
+```
+
+The smoke script adds `docker-compose.smoke.yml`, points Calciforge at
+`config.smoke.toml`, and verifies the three packaged services plus one mock chat
+completion.
+
+This smoke does not prove that a real agent has loaded Calciforge instructions
+or can use fnox-backed secrets. Run a separate staging test with
+`--agent-instructions-print`, `--agent-instructions-file PATH`, or
+`--agent-workspace PATH`, then verify the agent uses `{{secret:NAME}}` references
+rather than plaintext secrets.
 
 The security proxy mounts both `security-proxy.example.toml` and
 `agents.example.json`. The TOML file controls proxy behavior and MITM CA paths;

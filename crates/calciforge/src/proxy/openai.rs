@@ -124,11 +124,7 @@ impl MessageContent {
                     .filter(|p| p.r#type == "text")
                     .filter_map(|p| p.text.clone())
                     .collect();
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(text)
-                }
+                if text.is_empty() { None } else { Some(text) }
             }
         }
     }

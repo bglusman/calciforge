@@ -83,11 +83,11 @@ impl OutboundMessage {
                 rendered.push_str(" (");
                 rendered.push_str(&attachment.size_bytes.to_string());
                 rendered.push_str(" bytes)");
-                if let Some(caption) = &attachment.caption {
-                    if !caption.trim().is_empty() {
-                        rendered.push_str(" - ");
-                        rendered.push_str(caption.trim());
-                    }
+                if let Some(caption) = &attachment.caption
+                    && !caption.trim().is_empty()
+                {
+                    rendered.push_str(" - ");
+                    rendered.push_str(caption.trim());
                 }
             }
         }

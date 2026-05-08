@@ -65,10 +65,10 @@ pub fn denied_url_in_text(text: &str, denylist: &[String]) -> Option<String> {
         return None;
     }
     for url in extract_urls(text) {
-        if let Some(host) = url_host(&url) {
-            if host_matches_search_engine(&host, denylist) {
-                return Some(host);
-            }
+        if let Some(host) = url_host(&url)
+            && host_matches_search_engine(&host, denylist)
+        {
+            return Some(host);
         }
     }
     None
@@ -144,23 +144,22 @@ pub fn inspect_browsing_body(
     };
 
     // Always-search models — never strippable.
-    if let Some(model) = json.get("model").and_then(Value::as_str) {
-        if policy
+    if let Some(model) = json.get("model").and_then(Value::as_str)
+        && policy
             .forbidden_browsing_models
             .iter()
             .any(|p| model.starts_with(p.as_str()))
-        {
-            info!(
-                policy = "agent_web.forbid_provider_browsing",
-                dest_host = dest_host,
-                model = model,
-                decision = "block",
-                "blocked LLM request: model is an always-search variant"
-            );
-            return BrowsingDecision::Block {
-                reason: format!("model {model:?} performs built-in browsing"),
-            };
-        }
+    {
+        info!(
+            policy = "agent_web.forbid_provider_browsing",
+            dest_host = dest_host,
+            model = model,
+            decision = "block",
+            "blocked LLM request: model is an always-search variant"
+        );
+        return BrowsingDecision::Block {
+            reason: format!("model {model:?} performs built-in browsing"),
+        };
     }
 
     let mut stripped = Vec::new();
@@ -239,24 +238,23 @@ pub fn preflight_message_urls(body: &[u8], policy: &AgentWebPolicy) -> Option<St
         return None;
     }
 
-    if let Some(messages) = json.get("messages") {
-        if let Some(host) = denied_url_in_json_text(messages, denylist) {
-            return Some(host);
-        }
+    if let Some(messages) = json.get("messages")
+        && let Some(host) = denied_url_in_json_text(messages, denylist)
+    {
+        return Some(host);
     }
 
-    if let Some(input) = json.get("input") {
-        if let Some(host) = denied_url_in_json_text(input, denylist) {
-            return Some(host);
-        }
+    if let Some(input) = json.get("input")
+        && let Some(host) = denied_url_in_json_text(input, denylist)
+    {
+        return Some(host);
     }
 
-    if policy.preflight_tool_descriptions {
-        if let Some(tools) = json.get("tools") {
-            if let Some(host) = denied_tool_description_url(tools, denylist) {
-                return Some(host);
-            }
-        }
+    if policy.preflight_tool_descriptions
+        && let Some(tools) = json.get("tools")
+        && let Some(host) = denied_tool_description_url(tools, denylist)
+    {
+        return Some(host);
     }
 
     None
@@ -281,19 +279,18 @@ fn denied_tool_description_url(tools: &Value, denylist: &[String]) -> Option<Str
     };
 
     for tool in items {
-        if let Some(desc) = tool.get("description").and_then(Value::as_str) {
-            if let Some(host) = denied_url_in_text(desc, denylist) {
-                return Some(host);
-            }
+        if let Some(desc) = tool.get("description").and_then(Value::as_str)
+            && let Some(host) = denied_url_in_text(desc, denylist)
+        {
+            return Some(host);
         }
         if let Some(desc) = tool
             .get("function")
             .and_then(|f| f.get("description"))
             .and_then(Value::as_str)
+            && let Some(host) = denied_url_in_text(desc, denylist)
         {
-            if let Some(host) = denied_url_in_text(desc, denylist) {
-                return Some(host);
-            }
+            return Some(host);
         }
     }
     None
@@ -405,13 +402,12 @@ fn walk_and_strip(value: &mut Value, denylist: &[String], dropped: &mut Vec<Stri
                     .or_else(|| item.get("link"))
                     .or_else(|| item.get("href"))
                     .and_then(Value::as_str);
-                if let Some(url) = url {
-                    if let Some(host) = url_host(url) {
-                        if host_matches_search_engine(&host, denylist) {
-                            dropped.push(host);
-                            return false;
-                        }
-                    }
+                if let Some(url) = url
+                    && let Some(host) = url_host(url)
+                    && host_matches_search_engine(&host, denylist)
+                {
+                    dropped.push(host);
+                    return false;
                 }
                 true
             });

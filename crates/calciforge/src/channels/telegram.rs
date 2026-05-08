@@ -15,7 +15,7 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_telegram_sender},
     commands::CommandHandler,
-    config::{channel_allows_rich_ui, expand_tilde, CalciforgeConfig},
+    config::{CalciforgeConfig, channel_allows_rich_ui, expand_tilde},
     context::ContextStore,
     messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
@@ -965,12 +965,10 @@ async fn send_secret_reply(
     let response_len = reply.len();
     let start = std::time::Instant::now();
     let mut request = bot.send_message(chat_id, &reply);
-    if rich_ui {
-        if let Some(url) = first_http_url(&reply) {
-            let keyboard = InlineKeyboardMarkup::default()
-                .append_row(vec![InlineKeyboardButton::url("Open paste form", url)]);
-            request = request.reply_markup(keyboard);
-        }
+    if rich_ui && let Some(url) = first_http_url(&reply) {
+        let keyboard = InlineKeyboardMarkup::default()
+            .append_row(vec![InlineKeyboardButton::url("Open paste form", url)]);
+        request = request.reply_markup(keyboard);
     }
 
     match request.await {

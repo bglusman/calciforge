@@ -88,11 +88,11 @@ impl DigestStore {
     /// If the URL is not yet in the store this is a no-op (the override is only
     /// meaningful for a known digest).
     pub async fn mark_override(&mut self, url: &str, digest: &str) {
-        if let Some(entry) = self.entries.get_mut(url) {
-            if entry.sha256 == digest {
-                entry.override_approved = true;
-                self.flush().await;
-            }
+        if let Some(entry) = self.entries.get_mut(url)
+            && entry.sha256 == digest
+        {
+            entry.override_approved = true;
+            self.flush().await;
         }
     }
 
@@ -120,11 +120,11 @@ impl DigestStore {
                 return;
             }
         };
-        if let Some(parent) = self.path.parent() {
-            if let Err(e) = fs::create_dir_all(parent).await {
-                warn!("digest store: mkdir error: {e}");
-                return;
-            }
+        if let Some(parent) = self.path.parent()
+            && let Err(e) = fs::create_dir_all(parent).await
+        {
+            warn!("digest store: mkdir error: {e}");
+            return;
         }
         match fs::OpenOptions::new()
             .write(true)

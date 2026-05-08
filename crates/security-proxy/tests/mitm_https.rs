@@ -10,7 +10,7 @@ use http_body_util::BodyExt;
 use hudsucker::certificate_authority::{CertificateAuthority, RcgenAuthority};
 use hudsucker::hyper::body::Incoming;
 use hudsucker::hyper::service::service_fn;
-use hudsucker::hyper::{header, Method, Request, Response, StatusCode};
+use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
 use hudsucker::hyper_util::client::legacy::connect::HttpConnector;
 use hudsucker::hyper_util::rt::{TokioExecutor, TokioIo};
 use hudsucker::hyper_util::server::conn::auto;
@@ -20,7 +20,7 @@ use hudsucker::rcgen::{
 use hudsucker::rustls::{self, RootCertStore};
 use reqwest::tls::Certificate;
 use security_proxy::config::GatewayConfig;
-use security_proxy::mitm::{install_default_crypto_provider, CalciforgeMitmHandler};
+use security_proxy::mitm::{CalciforgeMitmHandler, install_default_crypto_provider};
 use security_proxy::proxy::SecurityProxy;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;

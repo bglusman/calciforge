@@ -9,7 +9,7 @@ pub mod mlx_lm;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tracing::{info, warn};
 
 use crate::config::{LocalModelDef, LocalModelsConfig};
@@ -95,18 +95,18 @@ impl LocalModelManager {
         }
 
         // 1. Pre-switch hook.
-        if let Some(ref script) = self.config.mlx_lm.hooks.pre_switch {
-            if !script.is_empty() {
-                run_hook(
-                    script,
-                    &[
-                        ("CALCIFORGE_PREV_MODEL_ID", prev_id),
-                        ("CALCIFORGE_PREV_MODEL_HF_ID", prev_hf),
-                        ("CALCIFORGE_MODEL_ID", target_id),
-                        ("CALCIFORGE_MODEL_HF_ID", &model_def.hf_id),
-                    ],
-                )?;
-            }
+        if let Some(ref script) = self.config.mlx_lm.hooks.pre_switch
+            && !script.is_empty()
+        {
+            run_hook(
+                script,
+                &[
+                    ("CALCIFORGE_PREV_MODEL_ID", prev_id),
+                    ("CALCIFORGE_PREV_MODEL_HF_ID", prev_hf),
+                    ("CALCIFORGE_MODEL_ID", target_id),
+                    ("CALCIFORGE_MODEL_HF_ID", &model_def.hf_id),
+                ],
+            )?;
         }
 
         // 2. Kill current server.
@@ -135,20 +135,19 @@ impl LocalModelManager {
         }
 
         // 4. Post-switch hook.
-        if let Some(ref script) = self.config.mlx_lm.hooks.post_switch {
-            if !script.is_empty() {
-                if let Err(e) = run_hook(
-                    script,
-                    &[
-                        ("CALCIFORGE_MODEL_ID", target_id),
-                        ("CALCIFORGE_MODEL_HF_ID", &model_def.hf_id),
-                        ("CALCIFORGE_PREV_MODEL_ID", prev_id),
-                    ],
-                ) {
-                    // Post-switch hook failure is non-fatal (model is already up).
-                    warn!(error = %e, "post_switch hook failed (model is running)");
-                }
-            }
+        if let Some(ref script) = self.config.mlx_lm.hooks.post_switch
+            && !script.is_empty()
+            && let Err(e) = run_hook(
+                script,
+                &[
+                    ("CALCIFORGE_MODEL_ID", target_id),
+                    ("CALCIFORGE_MODEL_HF_ID", &model_def.hf_id),
+                    ("CALCIFORGE_PREV_MODEL_ID", prev_id),
+                ],
+            )
+        {
+            // Post-switch hook failure is non-fatal (model is already up).
+            warn!(error = %e, "post_switch hook failed (model is running)");
         }
 
         // 5. Update state.

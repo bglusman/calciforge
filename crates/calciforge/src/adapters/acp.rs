@@ -40,7 +40,7 @@ use sacp::schema::{
 };
 use sacp::{ByteStreams, Component, JrConnectionCx};
 use sacp_tokio::AcpAgent;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, warn};
 
@@ -135,10 +135,10 @@ impl AcpAdapter {
         // Fast path: session already exists
         {
             let guard = self.session_tx.lock().await;
-            if let Some(tx) = guard.as_ref() {
-                if !tx.is_closed() {
-                    return Ok(tx.clone());
-                }
+            if let Some(tx) = guard.as_ref()
+                && !tx.is_closed()
+            {
+                return Ok(tx.clone());
             }
         }
 
@@ -148,10 +148,10 @@ impl AcpAdapter {
         // Double-check after acquiring init lock
         {
             let guard = self.session_tx.lock().await;
-            if let Some(tx) = guard.as_ref() {
-                if !tx.is_closed() {
-                    return Ok(tx.clone());
-                }
+            if let Some(tx) = guard.as_ref()
+                && !tx.is_closed()
+            {
+                return Ok(tx.clone());
             }
         }
 
@@ -302,10 +302,10 @@ async fn run_acp_client_session(
                         debug!(tool = %tc.title, "acp: agent tool call");
                     }
                     SessionUpdate::ToolCallUpdate(update) => {
-                        if let Some(status) = &update.fields.status {
-                            if *status == ToolCallStatus::Failed {
-                                warn!(tool_id = %update.id, "acp: tool call failed");
-                            }
+                        if let Some(status) = &update.fields.status
+                            && *status == ToolCallStatus::Failed
+                        {
+                            warn!(tool_id = %update.id, "acp: tool call failed");
                         }
                     }
                     _ => {}
@@ -476,12 +476,12 @@ mod tests {
     // In-process mock agent tests using SACP Channel::duplex()
     // -----------------------------------------------------------------------
 
+    use sacp::Channel;
     use sacp::role::AgentToClient;
     use sacp::schema::{
         ContentChunk, Implementation, InitializeResponse, NewSessionResponse, PromptResponse,
         SessionId, StopReason,
     };
-    use sacp::Channel;
 
     /// Spawn a mock ACP agent that echoes prompts back as responses.
     ///

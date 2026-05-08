@@ -42,15 +42,15 @@ mod tls;
 mod zfs;
 
 use adapters::{AdapterRegistry, HostOp, PolicyDecision};
-use approval::identity_plugin::{validate_approver_identity, PluginRequest};
-use approval::{signal::SignalWebhookPayload, ApprovalManager, ApprovalRequest};
+use approval::identity_plugin::{PluginRequest, validate_approver_identity};
+use approval::{ApprovalManager, ApprovalRequest, signal::SignalWebhookPayload};
 use audit::RotationStrategy;
 use audit::{AuditEvent, AuditLogger};
 use auth::{AgentRegistry, ClientIdentity};
 use config::{Config, ReloadableConfig};
 use error::AppError;
 use metrics::Metrics;
-use rate_limit::{rate_limit_response, RateLimiter};
+use rate_limit::{RateLimiter, rate_limit_response};
 use tls::IdentityExtractingAcceptor;
 use zfs::{ZfsEntry, ZfsExecutor, ZfsOp};
 
@@ -724,23 +724,23 @@ async fn warn_permissions(
 
     // Admin-only guard (mirrors list_all_pending logic)
     let config = state.config.get().await;
-    if let Some(ref pattern) = config.approval.admin_cn_pattern {
-        if !pattern.is_empty() {
-            let matches = if pattern.ends_with('*') {
-                identity.cn.starts_with(&pattern[..pattern.len() - 1])
-            } else {
-                identity.cn == *pattern
-            };
-            if !matches {
-                return (
-                    axum::http::StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({
-                        "error": "admin access required",
-                        "caller": identity.cn,
-                    })),
-                )
-                    .into_response();
-            }
+    if let Some(ref pattern) = config.approval.admin_cn_pattern
+        && !pattern.is_empty()
+    {
+        let matches = if pattern.ends_with('*') {
+            identity.cn.starts_with(&pattern[..pattern.len() - 1])
+        } else {
+            identity.cn == *pattern
+        };
+        if !matches {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "admin access required",
+                    "caller": identity.cn,
+                })),
+            )
+                .into_response();
         }
     }
 

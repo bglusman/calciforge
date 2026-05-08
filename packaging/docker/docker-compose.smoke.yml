@@ -1,0 +1,22 @@
+services:
+  mock-llm:
+    image: python:3.11-slim
+    command: ["sh", "-c", "pip install --no-cache-dir flask && python /app/mock-llm.py"]
+    volumes:
+      - ../../scripts/mock-llm.py:/app/mock-llm.py:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  calciforge:
+    depends_on:
+      mock-llm:
+        condition: service_healthy

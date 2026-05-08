@@ -1,7 +1,7 @@
 [package]
 name = "host-agent"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 description = "Calciforge Host-Agent — mTLS RPC server for ZFS/systemd/PCT delegation"
 license = "MIT"
 

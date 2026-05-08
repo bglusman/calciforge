@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 
 use anyhow::Context as _;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -17,8 +17,8 @@ use tracing::info;
 use crate::sync::Arc;
 
 use crate::config::{ModelShortcutConfig, ProxyConfig};
-use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
+use crate::providers::alloy::AlloyManager;
 
 mod auth;
 mod backend;
@@ -229,6 +229,12 @@ pub async fn start_proxy_server(
         .route("/gateway", get(handlers::gateway_info))
         .route("/gateway/ui", get(handlers::gateway_ui_redirect))
         .route("/control/local/switch", post(handlers::local_model_switch))
+        .route("/control/secrets/list", get(handlers::secret_list))
+        .route(
+            "/control/secrets/ref/:name",
+            get(handlers::secret_reference),
+        )
+        .route("/control/secrets/set", post(handlers::secret_set))
         // Voice passthrough — always registered; returns 501 when not configured.
         .route(
             "/v1/audio/transcriptions",

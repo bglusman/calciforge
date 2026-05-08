@@ -8,8 +8,8 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::adapters::{
-    agent_supports_model_override, agent_supports_native_commands, build_adapter, AdapterError,
-    DispatchContext,
+    AdapterError, DispatchContext, agent_supports_model_override, agent_supports_native_commands,
+    build_adapter,
 };
 use crate::config::{AgentConfig, CalciforgeConfig};
 use crate::context::is_native_agent_command;

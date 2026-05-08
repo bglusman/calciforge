@@ -216,10 +216,10 @@ impl AgentAdapter for OpenAiCompatAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::extract::Json;
     use axum::routing::post;
-    use axum::Router;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tokio::net::TcpListener;
 
     async fn spawn_chat_server() -> (String, tokio::task::JoinHandle<()>) {

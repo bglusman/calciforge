@@ -307,19 +307,25 @@ mod tests {
     fn remotely_configurable_only_zeroclaw_and_openclaw() {
         assert!(ClawKind::ZeroClawNative.is_remotely_configurable());
         assert!(ClawKind::OpenClawChannel.is_remotely_configurable());
-        assert!(!ClawKind::OpenAiCompat {
-            endpoint: "http://localhost".into()
-        }
-        .is_remotely_configurable());
-        assert!(!ClawKind::Webhook {
-            endpoint: "http://localhost/hook".into(),
-            format: WebhookFormat::Json,
-        }
-        .is_remotely_configurable());
-        assert!(!ClawKind::Cli {
-            command: "my-claw".into()
-        }
-        .is_remotely_configurable());
+        assert!(
+            !ClawKind::OpenAiCompat {
+                endpoint: "http://localhost".into()
+            }
+            .is_remotely_configurable()
+        );
+        assert!(
+            !ClawKind::Webhook {
+                endpoint: "http://localhost/hook".into(),
+                format: WebhookFormat::Json,
+            }
+            .is_remotely_configurable()
+        );
+        assert!(
+            !ClawKind::Cli {
+                command: "my-claw".into()
+            }
+            .is_remotely_configurable()
+        );
     }
 
     #[test]

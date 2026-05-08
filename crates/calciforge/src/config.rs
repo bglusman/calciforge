@@ -5,7 +5,7 @@
 //! `/etc/calciforge/config.toml` for system installs. Supports the full config
 //! schema as defined in the spec (Section 3).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1353,10 +1353,10 @@ pub fn calciforge_config_home(home_override: Option<&Path>) -> PathBuf {
 
 /// Expand a `~`-prefixed path using the home directory.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/") {
-        if let Some(home) = home::home_dir() {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = home::home_dir()
+    {
+        return home.join(stripped);
     }
     PathBuf::from(path)
 }

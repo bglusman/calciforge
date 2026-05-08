@@ -89,11 +89,11 @@ impl AuditLogger {
                 return;
             }
         };
-        if let Some(parent) = self.log_path.parent() {
-            if let Err(e) = fs::create_dir_all(parent).await {
-                warn!("adversary audit mkdir error: {e}");
-                return;
-            }
+        if let Some(parent) = self.log_path.parent()
+            && let Err(e) = fs::create_dir_all(parent).await
+        {
+            warn!("adversary audit mkdir error: {e}");
+            return;
         }
         match OpenOptions::new()
             .create(true)

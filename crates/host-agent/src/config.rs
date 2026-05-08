@@ -460,12 +460,11 @@ impl Config {
         }
 
         // Check pattern if present
-        if let Some(ref pattern) = rule.pattern {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if !re.is_match(target) {
-                    return false;
-                }
-            }
+        if let Some(ref pattern) = rule.pattern
+            && let Ok(re) = regex::Regex::new(pattern)
+            && !re.is_match(target)
+        {
+            return false;
         }
 
         // `always_ask = true` overrides Full autonomy bypass entirely (P-B4)
@@ -474,10 +473,11 @@ impl Config {
         }
 
         // Full-autonomy bypass: only if the agent explicitly opts in AND the rule allows it
-        if let Some(agent) = agent {
-            if agent.autonomy == AutonomyLevel::Full && agent.allow_full_autonomy_bypass {
-                return false;
-            }
+        if let Some(agent) = agent
+            && agent.autonomy == AutonomyLevel::Full
+            && agent.allow_full_autonomy_bypass
+        {
+            return false;
         }
 
         true

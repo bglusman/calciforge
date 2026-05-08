@@ -147,11 +147,11 @@ impl AgentAdapter for KimiCliAdapter {
                 .kill_on_drop(true)
                 .spawn()?;
 
-            if let Some(input) = stdin_message {
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin.write_all(input.as_bytes()).await?;
-                    let _ = stdin.shutdown().await;
-                }
+            if let Some(input) = stdin_message
+                && let Some(mut stdin) = child.stdin.take()
+            {
+                stdin.write_all(input.as_bytes()).await?;
+                let _ = stdin.shutdown().await;
             }
 
             child.wait_with_output().await

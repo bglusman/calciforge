@@ -96,7 +96,7 @@ pub trait PreReadHook: Send + Sync {
     /// Given the inbound message and a handle to the memory store,
     /// return zero or more memory chunks to inject into context.
     async fn evaluate(&self, message: &InboundMessage, store: &dyn MemoryStore)
-        -> Vec<MemoryChunk>;
+    -> Vec<MemoryChunk>;
 }
 
 // ---------------------------------------------------------------------------

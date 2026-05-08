@@ -72,5 +72,8 @@ class Calciforge < Formula
   test do
     system "#{bin}/calciforge", "--version"
     system "#{bin}/calciforge-secrets", "help"
+    %w[security-proxy clashd mcp-server paste-server].each do |binary|
+      assert_predicate bin/binary, :executable?
+    end
   end
 end

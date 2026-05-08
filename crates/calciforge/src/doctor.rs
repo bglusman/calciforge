@@ -12,7 +12,7 @@ use std::time::Duration;
 use adversary_detector::{
     AdversaryScanner, ScanContext, ScanVerdict, ScannerCheckConfig, ScannerConfig,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::net::{TcpStream, UdpSocket};
@@ -20,7 +20,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::adapters::agent_supports_model_override;
-use crate::agent_kinds::{parse_agent_kind, AgentKind};
+use crate::agent_kinds::{AgentKind, parse_agent_kind};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
 use crate::model_names::configured_first_class_model_ids;
 use crate::providers::alloy::AlloyManager;
@@ -2309,10 +2309,12 @@ mod tests {
             &mut report,
         );
 
-        assert!(!report
-            .findings
-            .iter()
-            .any(|finding| finding.message.contains("NO_PROXY does not include")));
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.message.contains("NO_PROXY does not include"))
+        );
     }
 
     #[test]
@@ -2742,9 +2744,11 @@ mod tests {
             &mut report,
         );
 
-        assert!(!report.findings.iter().any(|finding| finding
-            .message
-            .contains("doctor cannot verify their process proxy environment")));
+        assert!(!report.findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("doctor cannot verify their process proxy environment")
+        }));
     }
 
     #[test]

@@ -30,10 +30,10 @@ use std::sync::OnceLock;
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use crate::AppState;
 use crate::adapters::{Adapter, ExecutionResult, HostOp, PolicyDecision};
 use crate::auth::ClientIdentity;
 use crate::error::AppError;
-use crate::AppState;
 
 /// Regex for safe systemd service unit names.
 /// Allows: alphanumeric, underscore, hyphen, dot, @ — must end with a known suffix.
@@ -105,27 +105,24 @@ impl Adapter for SystemdAdapter {
         let operation_key = format!("systemd-{command}");
 
         // Check against configured rules for systemd operations
-        if let Some(rule) = config.find_rule(&operation_key) {
-            if rule.approval_required {
-                if rule.always_ask {
-                    return Ok(PolicyDecision::RequiresApproval {
-                        message: format!(
-                            "systemd-{command}/{service} always requires approval (always_ask=true)"
-                        ),
-                    });
-                }
-                // Pattern check
-                if let Some(ref pattern) = rule.pattern {
-                    if let Ok(re) = Regex::new(pattern) {
-                        if re.is_match(service) {
-                            return Ok(PolicyDecision::RequiresApproval {
-                                message: format!(
-                                    "systemd-{command}/{service} matches approval pattern"
-                                ),
-                            });
-                        }
-                    }
-                }
+        if let Some(rule) = config.find_rule(&operation_key)
+            && rule.approval_required
+        {
+            if rule.always_ask {
+                return Ok(PolicyDecision::RequiresApproval {
+                    message: format!(
+                        "systemd-{command}/{service} always requires approval (always_ask=true)"
+                    ),
+                });
+            }
+            // Pattern check
+            if let Some(ref pattern) = rule.pattern
+                && let Ok(re) = Regex::new(pattern)
+                && re.is_match(service)
+            {
+                return Ok(PolicyDecision::RequiresApproval {
+                    message: format!("systemd-{command}/{service} matches approval pattern"),
+                });
             }
         }
 

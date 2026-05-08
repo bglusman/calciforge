@@ -32,10 +32,52 @@ fi
 grep -Eq '^[[:space:]]*/dist/?[[:space:]]*$' "$ROOT/.dockerignore"
 test -s "$ROOT/crates/calciforge-policy-plugin/dist/index.js"
 
-installer_shell_files=("$ROOT/scripts/install.sh" "$ROOT"/scripts/lib/*.sh)
+expected_bins="$(grep -Ev '^[[:space:]]*(#|$)' "$ROOT/packaging/runtime-binaries.txt" | tr '\n' ' ')"
+for bin in $expected_bins; do
+    grep -q "dist-bin/$bin" "$ROOT/crates/calciforge/Dockerfile" || {
+        echo "Dockerfile does not copy runtime binary: $bin" >&2
+        exit 1
+    }
+    grep -q "$bin" "$ROOT/scripts/build-dist-archive.sh" || {
+        echo "build-dist-archive.sh does not package runtime binary: $bin" >&2
+        exit 1
+    }
+    grep -q "$bin" "$TMP/calciforge.rb" || {
+        echo "rendered Homebrew formula test does not mention runtime binary: $bin" >&2
+        exit 1
+    }
+done
+
+installer_shell_files=(
+    "$ROOT/scripts/install.sh"
+    "$ROOT/scripts/clean-install-reset.sh"
+    "$ROOT/scripts/packaging-docker-smoke.sh"
+    "$ROOT"/scripts/lib/*.sh
+)
 for shell_file in "${installer_shell_files[@]}"; do
     bash -n "$shell_file"
 done
+
+"$ROOT/scripts/clean-install-reset.sh" --help >/dev/null
+"$ROOT/scripts/clean-install-reset.sh" --ssh 2>"$TMP/reset-missing-ssh.err" && {
+    echo "clean-install-reset accepted --ssh without a host" >&2
+    exit 1
+}
+grep -q "missing value for --ssh" "$TMP/reset-missing-ssh.err"
+"$ROOT/scripts/clean-install-reset.sh" --not-a-real-flag 2>"$TMP/reset-bad-flag.err" && {
+    echo "clean-install-reset accepted an unknown flag" >&2
+    exit 1
+}
+grep -q "unknown option: --not-a-real-flag" "$TMP/reset-bad-flag.err"
+mkdir -p "$TMP/reset-home/.config/calciforge" "$TMP/reset-home/.config/fnox"
+HOME="$TMP/reset-home" "$ROOT/scripts/clean-install-reset.sh" --include-config >"$TMP/reset-dry-run.out"
+grep -q ".config/calciforge" "$TMP/reset-dry-run.out"
+if grep -q ".config/fnox" "$TMP/reset-dry-run.out"; then
+    echo "clean-install-reset must not remove fnox state unless --include-fnox is set" >&2
+    exit 1
+fi
+HOME="$TMP/reset-home" "$ROOT/scripts/clean-install-reset.sh" --include-config --include-fnox >"$TMP/reset-fnox.out"
+grep -q ".config/fnox" "$TMP/reset-fnox.out"
 
 bash -s -- "$ROOT" <<'BASH'
 set -euo pipefail
@@ -145,8 +187,16 @@ PY
 if command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$ROOT/packaging/docker/docker-compose.yml" config >/dev/null
+        docker compose \
+            -f "$ROOT/packaging/docker/docker-compose.yml" \
+            -f "$ROOT/packaging/docker/docker-compose.smoke.yml" \
+            config >/dev/null
     elif command -v docker-compose >/dev/null 2>&1; then
         docker-compose -f "$ROOT/packaging/docker/docker-compose.yml" config >/dev/null
+        docker-compose \
+            -f "$ROOT/packaging/docker/docker-compose.yml" \
+            -f "$ROOT/packaging/docker/docker-compose.smoke.yml" \
+            config >/dev/null
     else
         echo "docker found but compose plugin not found; skipping compose config check" >&2
     fi

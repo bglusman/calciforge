@@ -32,6 +32,7 @@
 pub mod cli;
 pub mod executor;
 pub mod health;
+pub mod instructions;
 pub mod json5;
 pub mod linux_hardening;
 pub mod migration_types;

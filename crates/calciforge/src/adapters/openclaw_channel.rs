@@ -20,7 +20,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -90,8 +90,7 @@ impl ReplyRouter {
             entry
         };
 
-        let tx = entry.tx.lock().await.take();
-        tx
+        entry.tx.lock().await.take()
     }
 
     pub async fn remove(&self, request_id: &str) {
@@ -1424,9 +1423,10 @@ mod tests {
             .await
             .expect_err("unauthenticated callback config should fail");
 
-        assert!(err
-            .to_string()
-            .contains("already registered with reply_auth_token"));
+        assert!(
+            err.to_string()
+                .contains("already registered with reply_auth_token")
+        );
     }
 
     #[tokio::test]

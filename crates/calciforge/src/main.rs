@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::sync::Arc;
 
@@ -96,6 +96,21 @@ enum CliCommand {
         /// Skip interactive confirmations.
         #[arg(long)]
         yes: bool,
+        /// Print Calciforge agent instruction guidance.
+        #[arg(long)]
+        agent_instructions_print: bool,
+        /// Create or update an explicit instruction file with Calciforge guidance.
+        #[arg(long)]
+        agent_instructions_file: Option<PathBuf>,
+        /// Create or update AGENTS.md in this workspace with Calciforge guidance.
+        #[arg(long)]
+        agent_workspace: Option<PathBuf>,
+        /// Base URL for central Calciforge secret-helper API used by managed agents.
+        #[arg(long)]
+        agent_helper_base_url: Option<String>,
+        /// Bearer token for the central Calciforge secret-helper API.
+        #[arg(long)]
+        agent_helper_api_key: Option<String>,
     },
 }
 
@@ -123,6 +138,11 @@ async fn main() -> Result<()> {
         dry_run,
         skip_backup,
         yes,
+        agent_instructions_print,
+        agent_instructions_file,
+        agent_workspace,
+        agent_helper_base_url,
+        agent_helper_api_key,
     }) = args.command
     {
         let install_args = install::cli::InstallArgs {
@@ -132,8 +152,14 @@ async fn main() -> Result<()> {
             dry_run,
             skip_backup,
             _yes: yes,
+            agent_instructions_print,
+            agent_instructions_file,
+            agent_workspace,
+            agent_helper_base_url,
+            agent_helper_api_key,
         };
         let target = install::cli::parse_install_target(&install_args)?;
+        handle_agent_instructions(&install_args)?;
         let summary = install::executor::run_install_with_deps(
             target,
             &install_args,
@@ -252,30 +278,29 @@ async fn main() -> Result<()> {
             security_config.scanner.checks = cfg.scanner_checks.clone();
         }
     }
-    if let Ok(url) = std::env::var("CALCIFORGE_REMOTE_SCANNER_URL") {
-        if !url.trim().is_empty() {
-            let fail_closed = std::env::var("CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED")
-                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(false);
-            if security_config.scanner.checks.is_empty() {
-                security_config.scanner.checks =
-                    adversary_detector::ScannerConfig::default_checks();
-            }
-            let already_configured = security_config.scanner.checks.iter().any(|check| {
-                matches!(
-                    check,
-                    adversary_detector::ScannerCheckConfig::RemoteHttp {
-                        url: configured,
-                        ..
-                    } if configured == &url
-                )
-            });
-            if !already_configured {
-                security_config
-                    .scanner
-                    .checks
-                    .push(adversary_detector::ScannerCheckConfig::RemoteHttp { url, fail_closed });
-            }
+    if let Ok(url) = std::env::var("CALCIFORGE_REMOTE_SCANNER_URL")
+        && !url.trim().is_empty()
+    {
+        let fail_closed = std::env::var("CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+        if security_config.scanner.checks.is_empty() {
+            security_config.scanner.checks = adversary_detector::ScannerConfig::default_checks();
+        }
+        let already_configured = security_config.scanner.checks.iter().any(|check| {
+            matches!(
+                check,
+                adversary_detector::ScannerCheckConfig::RemoteHttp {
+                    url: configured,
+                    ..
+                } if configured == &url
+            )
+        });
+        if !already_configured {
+            security_config
+                .scanner
+                .checks
+                .push(adversary_detector::ScannerCheckConfig::RemoteHttp { url, fail_closed });
         }
     }
     let scanner = AdversaryScanner::new(security_config.scanner.clone());
@@ -500,19 +525,19 @@ async fn main() -> Result<()> {
     let proxy_enabled = proxy_config.enabled;
 
     // Auto-load startup model in background (if configured).
-    if let Some(ref lm) = local_manager_early {
-        if let Some(ref start_id) = config.local_models.as_ref().and_then(|c| c.current.clone()) {
-            let id = start_id.clone();
-            let mgr = Arc::clone(lm);
-            tokio::spawn(async move {
-                let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
-                match result {
-                    Ok(Ok(loaded)) => info!(model = %loaded.id, "Auto-loaded startup local model"),
-                    Ok(Err(e)) => error!(error = %e, "Failed to auto-load startup local model"),
-                    Err(e) => error!(error = %e, "spawn_blocking panic auto-loading local model"),
-                }
-            });
-        }
+    if let Some(ref lm) = local_manager_early
+        && let Some(ref start_id) = config.local_models.as_ref().and_then(|c| c.current.clone())
+    {
+        let id = start_id.clone();
+        let mgr = Arc::clone(lm);
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
+            match result {
+                Ok(Ok(loaded)) => info!(model = %loaded.id, "Auto-loaded startup local model"),
+                Ok(Err(e)) => error!(error = %e, "Failed to auto-load startup local model"),
+                Err(e) => error!(error = %e, "spawn_blocking panic auto-loading local model"),
+            }
+        });
     }
 
     let local_manager = local_manager_early;
@@ -547,6 +572,49 @@ async fn main() -> Result<()> {
         mock_fut,
         proxy_fut
     )?;
+
+    Ok(())
+}
+
+fn handle_agent_instructions(args: &install::cli::InstallArgs) -> Result<()> {
+    use install::instructions::{
+        InstructionTarget, render_calciforge_instructions, write_instruction_file,
+    };
+
+    let mut targets = Vec::new();
+    if args.agent_instructions_print {
+        targets.push(InstructionTarget::Print);
+    }
+    if let Some(path) = &args.agent_instructions_file {
+        targets.push(InstructionTarget::File(path.clone()));
+    }
+    if let Some(path) = &args.agent_workspace {
+        targets.push(InstructionTarget::Workspace(path.clone()));
+    }
+
+    if targets.is_empty() {
+        println!(
+            "Agent instructions: not writing instruction files. Use \
+             --agent-instructions-print, --agent-instructions-file PATH, or \
+             --agent-workspace PATH so agents know how to use Calciforge secrets and APIs."
+        );
+        return Ok(());
+    }
+
+    for target in targets {
+        match target {
+            InstructionTarget::Print => {
+                println!("{}", render_calciforge_instructions());
+            }
+            other => {
+                let path = other
+                    .path()
+                    .expect("non-print instruction target should have a path");
+                let detail = write_instruction_file(&path, args.dry_run)?;
+                println!("Agent instructions: {detail}");
+            }
+        }
+    }
 
     Ok(())
 }

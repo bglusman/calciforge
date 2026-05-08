@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::Once;
 
 use adversary_detector::ScanContext;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use http_body_util::{BodyExt, Full};
 use hudsucker::certificate_authority::RcgenAuthority;
 use hudsucker::hyper::body::Bytes;
@@ -31,11 +31,11 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 use crate::agent_web::{
-    self, host_is_known_llm_api, host_matches_search_engine, BrowsingDecision,
-    SearchResponseDecision,
+    self, BrowsingDecision, SearchResponseDecision, host_is_known_llm_api,
+    host_matches_search_engine,
 };
 use crate::credentials::CredentialInjection;
-use crate::proxy::{self, redact_url_for_log, BodyMode, SecurityProxy};
+use crate::proxy::{self, BodyMode, SecurityProxy, redact_url_for_log};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
@@ -188,10 +188,24 @@ impl CalciforgeMitmHandler {
                  the gateway refuses to substitute secrets without a known destination.",
             ));
         }
+        let mut secret_metadata = None;
 
+        if target_url.contains("{{secret:") && url_dest_host.is_some() {
+            match SecurityProxy::load_secret_metadata(url_dest_host.as_deref().unwrap()) {
+                Ok(metadata) => secret_metadata = Some(metadata),
+                Err(err) => {
+                    warn!("BLOCKED: MITM URL substitution failed: {err}");
+                    return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                }
+            }
+        }
         let target_url = match self
             .state
-            .resolve_and_substitute(&target_url, url_dest_host.as_deref())
+            .resolve_and_substitute(
+                &target_url,
+                url_dest_host.as_deref(),
+                secret_metadata.as_ref(),
+            )
             .await
         {
             Ok(url) => url,
@@ -267,8 +281,13 @@ impl CalciforgeMitmHandler {
             }
         }
 
-        if let Err(err) =
-            substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
+        if let Err(err) = substitute_headers(
+            &self.state,
+            &mut parts.headers,
+            dest_host.as_deref(),
+            &mut secret_metadata,
+        )
+        .await
         {
             warn!("BLOCKED: MITM header substitution failed: {err}");
             return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
@@ -288,6 +307,7 @@ impl CalciforgeMitmHandler {
             body_bytes,
             content_type.as_deref(),
             dest_host.as_deref(),
+            &mut secret_metadata,
         )
         .await
         {
@@ -339,19 +359,21 @@ impl CalciforgeMitmHandler {
                 .as_deref()
                 .map(looks_like_json_content_type)
                 .unwrap_or(false);
-            if is_llm_api && looks_json && !body_bytes.is_empty() {
-                if let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy) {
-                    info!(
-                        policy = "agent_web.preflight_message_urls",
-                        dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
-                        denied_host = host.as_str(),
-                        decision = "block",
-                        "blocked LLM request: references forbidden URL"
-                    );
-                    return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                        "request references forbidden URL: {host}"
-                    )));
-                }
+            if is_llm_api
+                && looks_json
+                && !body_bytes.is_empty()
+                && let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy)
+            {
+                info!(
+                    policy = "agent_web.preflight_message_urls",
+                    dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
+                    denied_host = host.as_str(),
+                    decision = "block",
+                    "blocked LLM request: references forbidden URL"
+                );
+                return RequestOrResponse::Response(mitm_blocked_response(&format!(
+                    "request references forbidden URL: {host}"
+                )));
             }
         }
 
@@ -391,30 +413,26 @@ impl CalciforgeMitmHandler {
             }
         }
 
-        if self.state.config.inject_credentials {
-            if let Some(host) = dest_host.as_deref() {
-                let injections = self.state.credentials.injections_for_host(host).await;
-                for injection in injections {
-                    match injection {
-                        CredentialInjection::Header { name, value } => {
-                            if let (Ok(name), Ok(value)) = (
-                                header::HeaderName::try_from(name.as_str()),
-                                header::HeaderValue::try_from(value.as_str()),
-                            ) {
-                                parts.headers.insert(name, value);
-                            }
+        if self.state.config.inject_credentials
+            && let Some(host) = dest_host.as_deref()
+        {
+            let injections = self.state.credentials.injections_for_host(host).await;
+            for injection in injections {
+                match injection {
+                    CredentialInjection::Header { name, value } => {
+                        if let (Ok(name), Ok(value)) = (
+                            header::HeaderName::try_from(name.as_str()),
+                            header::HeaderValue::try_from(value.as_str()),
+                        ) {
+                            parts.headers.insert(name, value);
                         }
-                        CredentialInjection::QueryParam { name, value } => {
-                            if let Err(err) =
-                                append_query_param_to_uri(&mut parts.uri, &name, &value)
-                            {
-                                warn!(
-                                    "BLOCKED: MITM credential query-param injection failed: {err}"
-                                );
-                                return RequestOrResponse::Response(mitm_blocked_response(
-                                    "Request rejected",
-                                ));
-                            }
+                    }
+                    CredentialInjection::QueryParam { name, value } => {
+                        if let Err(err) = append_query_param_to_uri(&mut parts.uri, &name, &value) {
+                            warn!("BLOCKED: MITM credential query-param injection failed: {err}");
+                            return RequestOrResponse::Response(mitm_blocked_response(
+                                "Request rejected",
+                            ));
                         }
                     }
                 }
@@ -473,39 +491,39 @@ impl CalciforgeMitmHandler {
                 .unwrap_or_else(|| "<unknown>".to_owned());
 
             // Pass 1: prompt-injection scan on the (likely JSON) body.
-            if self.state.config.scan_inbound {
-                if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
-                    let verdict = self
-                        .state
-                        .scanner
-                        .scan(
-                            &redact_url_for_log(target_url),
-                            body_str,
-                            ScanContext::WebFetch,
-                        )
-                        .await;
-                    match verdict {
-                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                            warn!(
-                                policy = "agent_web.scan_search_responses",
-                                dest_host = %dest,
-                                reason = %reason,
-                                "blocked search response: prompt-injection content"
-                            );
-                            return mitm_blocked_response(&format!(
-                                "Search response blocked by prompt-injection scanner: {reason}"
-                            ));
-                        }
-                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                            info!(
-                                policy = "agent_web.scan_search_responses",
-                                dest_host = %dest,
-                                reason = %reason,
-                                "REVIEW search response from search API"
-                            );
-                        }
-                        adversary_detector::verdict::ScanVerdict::Clean => {}
+            if self.state.config.scan_inbound
+                && let Ok(body_str) = std::str::from_utf8(&body_bytes)
+            {
+                let verdict = self
+                    .state
+                    .scanner
+                    .scan(
+                        &redact_url_for_log(target_url),
+                        body_str,
+                        ScanContext::WebFetch,
+                    )
+                    .await;
+                match verdict {
+                    adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                        warn!(
+                            policy = "agent_web.scan_search_responses",
+                            dest_host = %dest,
+                            reason = %reason,
+                            "blocked search response: prompt-injection content"
+                        );
+                        return mitm_blocked_response(&format!(
+                            "Search response blocked by prompt-injection scanner: {reason}"
+                        ));
                     }
+                    adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                        info!(
+                            policy = "agent_web.scan_search_responses",
+                            dest_host = %dest,
+                            reason = %reason,
+                            "REVIEW search response from search API"
+                        );
+                    }
+                    adversary_detector::verdict::ScanVerdict::Clean => {}
                 }
             }
 
@@ -521,48 +539,49 @@ impl CalciforgeMitmHandler {
             body_bytes
         };
 
-        if self.state.config.scan_inbound && looks_like_scannable_content_type(&content_type) {
-            if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
-                // IronClaw leak detection (runs before adversary-detector scan)
-                #[cfg(feature = "ironclaw-safety")]
-                {
-                    if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
-                        warn!(
-                            "BLOCKED MITM response from {}: {}",
-                            redact_url_for_log(target_url),
-                            reason
-                        );
-                        return mitm_blocked_response(&reason);
-                    }
+        if self.state.config.scan_inbound
+            && looks_like_scannable_content_type(&content_type)
+            && let Ok(body_str) = std::str::from_utf8(&body_bytes)
+        {
+            // IronClaw leak detection (runs before adversary-detector scan)
+            #[cfg(feature = "ironclaw-safety")]
+            {
+                if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                    warn!(
+                        "BLOCKED MITM response from {}: {}",
+                        redact_url_for_log(target_url),
+                        reason
+                    );
+                    return mitm_blocked_response(&reason);
                 }
+            }
 
-                let verdict = self
-                    .state
-                    .scanner
-                    .scan(
-                        &redact_url_for_log(target_url),
-                        body_str,
-                        ScanContext::WebFetch,
-                    )
-                    .await;
-                match verdict {
-                    adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                        warn!(
-                            "BLOCKED MITM response from {}: {}",
-                            redact_url_for_log(target_url),
-                            reason
-                        );
-                        return mitm_blocked_response(&format!("Response blocked: {reason}"));
-                    }
-                    adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                        info!(
-                            "REVIEW MITM response from {}: {}",
-                            redact_url_for_log(target_url),
-                            reason
-                        );
-                    }
-                    adversary_detector::verdict::ScanVerdict::Clean => {}
+            let verdict = self
+                .state
+                .scanner
+                .scan(
+                    &redact_url_for_log(target_url),
+                    body_str,
+                    ScanContext::WebFetch,
+                )
+                .await;
+            match verdict {
+                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                    warn!(
+                        "BLOCKED MITM response from {}: {}",
+                        redact_url_for_log(target_url),
+                        reason
+                    );
+                    return mitm_blocked_response(&format!("Response blocked: {reason}"));
                 }
+                adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                    info!(
+                        "REVIEW MITM response from {}: {}",
+                        redact_url_for_log(target_url),
+                        reason
+                    );
+                }
+                adversary_detector::verdict::ScanVerdict::Clean => {}
             }
         }
 
@@ -621,6 +640,7 @@ async fn substitute_headers(
     state: &SecurityProxy,
     headers: &mut header::HeaderMap,
     dest_host: Option<&str>,
+    metadata: &mut Option<secrets_client::SecretMetadataStore>,
 ) -> Result<(), String> {
     let original: Vec<(header::HeaderName, header::HeaderValue)> = headers
         .iter()
@@ -636,7 +656,15 @@ async fn substitute_headers(
         let Ok(value_str) = value.to_str() else {
             continue;
         };
-        let substituted = state.resolve_and_substitute(value_str, dest_host).await?;
+        if value_str.contains("{{secret:")
+            && let Some(host) = dest_host
+            && metadata.is_none()
+        {
+            *metadata = Some(SecurityProxy::load_secret_metadata(host)?);
+        }
+        let substituted = state
+            .resolve_and_substitute(value_str, dest_host, metadata.as_ref())
+            .await?;
         let header_value = header::HeaderValue::try_from(substituted.as_str())
             .map_err(|err| format!("invalid substituted header value for {name}: {err}"))?;
         headers.insert(name, header_value);
@@ -651,6 +679,7 @@ async fn substitute_body(
     body_bytes: Bytes,
     content_type: Option<&str>,
     dest_host: Option<&str>,
+    metadata: &mut Option<secrets_client::SecretMetadataStore>,
 ) -> Result<Bytes, String> {
     if body_bytes.is_empty() {
         return Ok(body_bytes);
@@ -659,8 +688,14 @@ async fn substitute_body(
     match SecurityProxy::body_substitution_mode(content_type) {
         BodyMode::FullSubstitute => {
             let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+            if body_str.contains("{{secret:")
+                && let Some(host) = dest_host
+                && metadata.is_none()
+            {
+                *metadata = Some(SecurityProxy::load_secret_metadata(host)?);
+            }
             state
-                .resolve_and_substitute(&body_str, dest_host)
+                .resolve_and_substitute(&body_str, dest_host, metadata.as_ref())
                 .await
                 .map(|substituted| Bytes::from(substituted.into_bytes()))
         }

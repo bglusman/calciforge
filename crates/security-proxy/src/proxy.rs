@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
 use tracing::{error, info, warn};
@@ -34,8 +34,8 @@ use adversary_detector::{
 };
 
 use crate::agent_web::{
-    self, host_is_known_llm_api, host_matches_search_engine, BrowsingDecision,
-    SearchResponseDecision,
+    self, BrowsingDecision, SearchResponseDecision, host_is_known_llm_api,
+    host_matches_search_engine,
 };
 use crate::config::GatewayConfig;
 use crate::credentials::{CredentialInjection, CredentialInjector};
@@ -165,6 +165,7 @@ impl SecurityProxy {
             warn!("BLOCKED: URL contains secret ref but host is unparseable");
             return Ok(blocked_response("Request rejected"));
         }
+        let mut secret_metadata = None;
 
         // Substitute {{secret:NAME}} references in the URL before any
         // further processing. Rationale: the URL is built by the agent
@@ -173,8 +174,21 @@ impl SecurityProxy {
         // detect) and for the outbound request. Fail-closed on any
         // unresolvable ref OR destination-allowlist denial — see
         // docs/rfcs/agent-secret-gateway.md §3 + §11.1.
+        if target_url.contains("{{secret:") && url_dest_host.is_some() {
+            match Self::load_secret_metadata(url_dest_host.as_deref().unwrap()) {
+                Ok(metadata) => secret_metadata = Some(metadata),
+                Err(e) => {
+                    warn!("BLOCKED: URL substitution failed: {}", e);
+                    return Ok(blocked_response("Request rejected"));
+                }
+            }
+        }
         let target_url = match self
-            .resolve_and_substitute(&target_url, url_dest_host.as_deref())
+            .resolve_and_substitute(
+                &target_url,
+                url_dest_host.as_deref(),
+                secret_metadata.as_ref(),
+            )
             .await
         {
             Ok(url) => url,
@@ -249,7 +263,19 @@ impl SecurityProxy {
         let mut substituted_headers: Vec<(String, String)> =
             Vec::with_capacity(original_headers.len());
         for (k, v) in &original_headers {
-            match self.resolve_and_substitute(v, dest_host.as_deref()).await {
+            if v.contains("{{secret:") && dest_host.is_some() && secret_metadata.is_none() {
+                match Self::load_secret_metadata(dest_host.as_deref().unwrap()) {
+                    Ok(metadata) => secret_metadata = Some(metadata),
+                    Err(e) => {
+                        warn!("BLOCKED: header substitution failed: {}", e);
+                        return Ok(blocked_response("Request rejected"));
+                    }
+                }
+            }
+            match self
+                .resolve_and_substitute(v, dest_host.as_deref(), secret_metadata.as_ref())
+                .await
+            {
                 Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
                 Err(e) => {
                     warn!("BLOCKED: header substitution failed: {}", e);
@@ -287,8 +313,24 @@ impl SecurityProxy {
             match body_mode {
                 BodyMode::FullSubstitute => {
                     let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+                    if body_str.contains("{{secret:")
+                        && dest_host.is_some()
+                        && secret_metadata.is_none()
+                    {
+                        match Self::load_secret_metadata(dest_host.as_deref().unwrap()) {
+                            Ok(metadata) => secret_metadata = Some(metadata),
+                            Err(e) => {
+                                warn!("BLOCKED: body substitution failed: {}", e);
+                                return Ok(blocked_response("Request rejected"));
+                            }
+                        }
+                    }
                     match self
-                        .resolve_and_substitute(&body_str, dest_host.as_deref())
+                        .resolve_and_substitute(
+                            &body_str,
+                            dest_host.as_deref(),
+                            secret_metadata.as_ref(),
+                        )
                         .await
                     {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
@@ -366,19 +408,21 @@ impl SecurityProxy {
             let is_json = content_type
                 .map(crate::mitm::looks_like_json_content_type_pub)
                 .unwrap_or(false);
-            if is_llm_api && is_json && !body_bytes.is_empty() {
-                if let Some(host) = agent_web::preflight_message_urls(&body_bytes, &policy) {
-                    info!(
-                        policy = "agent_web.preflight_message_urls",
-                        dest_host = dest_host_str.unwrap_or("<unknown>"),
-                        denied_host = host.as_str(),
-                        decision = "block",
-                        "blocked LLM request: references forbidden URL"
-                    );
-                    return Ok(blocked_response(&format!(
-                        "request references forbidden URL: {host}"
-                    )));
-                }
+            if is_llm_api
+                && is_json
+                && !body_bytes.is_empty()
+                && let Some(host) = agent_web::preflight_message_urls(&body_bytes, &policy)
+            {
+                info!(
+                    policy = "agent_web.preflight_message_urls",
+                    dest_host = dest_host_str.unwrap_or("<unknown>"),
+                    denied_host = host.as_str(),
+                    decision = "block",
+                    "blocked LLM request: references forbidden URL"
+                );
+                return Ok(blocked_response(&format!(
+                    "request references forbidden URL: {host}"
+                )));
             }
         }
 
@@ -423,24 +467,23 @@ impl SecurityProxy {
         // startup. See research/planning/consolidation-findings.md finding #5.
         let mut injected_headers = vec![];
         let mut injected_query_params = vec![];
-        if self.config.inject_credentials {
-            if let Some(host) = reqwest::Url::parse(&target_url)
+        if self.config.inject_credentials
+            && let Some(host) = reqwest::Url::parse(&target_url)
                 .ok()
                 .and_then(|u| u.host_str().map(String::from))
-            {
-                if let Some(provider) = self.credentials.detect_provider_pub(&host) {
-                    // Populates cache from resolver if missing. Ignore the
-                    // bool — inject handles the still-absent case.
-                    let _ = self.credentials.ensure_cached(&provider).await;
-                }
-                for injection in self.credentials.injections_for_host(&host).await {
-                    match injection {
-                        CredentialInjection::Header { name, value } => {
-                            injected_headers.push((name, value));
-                        }
-                        CredentialInjection::QueryParam { name, value } => {
-                            injected_query_params.push((name, value));
-                        }
+        {
+            if let Some(provider) = self.credentials.detect_provider_pub(&host) {
+                // Populates cache from resolver if missing. Ignore the
+                // bool — inject handles the still-absent case.
+                let _ = self.credentials.ensure_cached(&provider).await;
+            }
+            for injection in self.credentials.injections_for_host(&host).await {
+                match injection {
+                    CredentialInjection::Header { name, value } => {
+                        injected_headers.push((name, value));
+                    }
+                    CredentialInjection::QueryParam { name, value } => {
+                        injected_query_params.push((name, value));
                     }
                 }
             }
@@ -490,39 +533,39 @@ impl SecurityProxy {
                 // before URL-denylist strip/block handling.
                 let resp_bytes = if host_is_search {
                     let dest = dest_host_str.unwrap_or("<unknown>");
-                    if self.config.scan_inbound {
-                        if let Ok(body_str) = std::str::from_utf8(&resp_bytes) {
-                            let verdict = self
-                                .scanner
-                                .scan(
-                                    &redact_url_for_log(&target_url),
-                                    body_str,
-                                    ScanContext::WebFetch,
-                                )
-                                .await;
-                            match &verdict {
-                                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                                    warn!(
-                                        policy = "agent_web.scan_search_responses",
-                                        dest_host = dest,
-                                        reason = %reason,
-                                        "blocked search response: prompt-injection content"
-                                    );
-                                    return Ok(blocked_response(&format!(
-                                        "Search response blocked by prompt-injection scanner: {}",
-                                        reason
-                                    )));
-                                }
-                                adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                                    info!(
-                                        policy = "agent_web.scan_search_responses",
-                                        dest_host = dest,
-                                        reason = %reason,
-                                        "REVIEW search response from search API"
-                                    );
-                                }
-                                adversary_detector::verdict::ScanVerdict::Clean => {}
+                    if self.config.scan_inbound
+                        && let Ok(body_str) = std::str::from_utf8(&resp_bytes)
+                    {
+                        let verdict = self
+                            .scanner
+                            .scan(
+                                &redact_url_for_log(&target_url),
+                                body_str,
+                                ScanContext::WebFetch,
+                            )
+                            .await;
+                        match &verdict {
+                            adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                                warn!(
+                                    policy = "agent_web.scan_search_responses",
+                                    dest_host = dest,
+                                    reason = %reason,
+                                    "blocked search response: prompt-injection content"
+                                );
+                                return Ok(blocked_response(&format!(
+                                    "Search response blocked by prompt-injection scanner: {}",
+                                    reason
+                                )));
                             }
+                            adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                                info!(
+                                    policy = "agent_web.scan_search_responses",
+                                    dest_host = dest,
+                                    reason = %reason,
+                                    "REVIEW search response from search API"
+                                );
+                            }
+                            adversary_detector::verdict::ScanVerdict::Clean => {}
                         }
                     }
                     match agent_web::scan_search_response(&resp_bytes, &policy, dest) {
@@ -541,37 +584,33 @@ impl SecurityProxy {
                 // snippets or prompt-injection text.
                 if self.config.scan_inbound
                     && crate::mitm::looks_like_scannable_content_type_pub(&content_type)
+                    && let Ok(body_str) = std::str::from_utf8(&resp_bytes)
                 {
-                    if let Ok(body_str) = std::str::from_utf8(&resp_bytes) {
-                        let verdict = self
-                            .scanner
-                            .scan(
-                                &redact_url_for_log(&target_url),
-                                body_str,
-                                ScanContext::WebFetch,
-                            )
-                            .await;
-                        match &verdict {
-                            adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                                warn!(
-                                    "BLOCKED response from {}: {}",
-                                    redact_url_for_log(&target_url),
-                                    reason
-                                );
-                                return Ok(blocked_response(&format!(
-                                    "Response blocked: {}",
-                                    reason
-                                )));
-                            }
-                            adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                                info!(
-                                    "REVIEW response from {}: {}",
-                                    redact_url_for_log(&target_url),
-                                    reason
-                                );
-                            }
-                            adversary_detector::verdict::ScanVerdict::Clean => {}
+                    let verdict = self
+                        .scanner
+                        .scan(
+                            &redact_url_for_log(&target_url),
+                            body_str,
+                            ScanContext::WebFetch,
+                        )
+                        .await;
+                    match &verdict {
+                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                            warn!(
+                                "BLOCKED response from {}: {}",
+                                redact_url_for_log(&target_url),
+                                reason
+                            );
+                            return Ok(blocked_response(&format!("Response blocked: {}", reason)));
                         }
+                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                            info!(
+                                "REVIEW response from {}: {}",
+                                redact_url_for_log(&target_url),
+                                reason
+                            );
+                        }
+                        adversary_detector::verdict::ScanVerdict::Clean => {}
                     }
                 }
 
@@ -665,6 +704,7 @@ impl SecurityProxy {
         &self,
         input: &str,
         dest_host: Option<&str>,
+        metadata: Option<&secrets_client::SecretMetadataStore>,
     ) -> Result<String, String> {
         let names = crate::substitution::find_refs(input).map_err(|e| e.to_string())?;
         if names.is_empty() {
@@ -678,8 +718,13 @@ impl SecurityProxy {
         //     a destination we don't trust.
         if let Some(host) = dest_host {
             let host_lower = host.to_lowercase();
+            let Some(metadata) = metadata else {
+                return Err(
+                    "secret metadata unavailable for destination-scoped substitution".to_string(),
+                );
+            };
             for name in &names {
-                if !self.is_destination_allowed(name, &host_lower) {
+                if !self.is_destination_allowed(name, &host_lower, metadata) {
                     tracing::warn!(
                         secret = %name,
                         destination_host = %host_lower,
@@ -719,22 +764,47 @@ impl SecurityProxy {
             .map_err(|e| e.to_string())
     }
 
+    pub(crate) fn load_secret_metadata(
+        host: &str,
+    ) -> Result<secrets_client::SecretMetadataStore, String> {
+        secrets_client::metadata::load_default_metadata().map_err(|error| {
+            tracing::warn!(
+                destination_host = %host.to_lowercase(),
+                error = %error,
+                "secret metadata unavailable; refusing destination-scoped substitution"
+            );
+            format!("secret metadata unavailable: {error}")
+        })
+    }
+
     /// True if the given secret name may be substituted into a request
-    /// going to `host`. See `secret_destination_allowlist` field doc on
-    /// `GatewayConfig` for the three behaviors (absent = unrestricted,
-    /// empty list = deny all, non-empty list = host must match a
-    /// pattern). Host matching reuses [`Self::host_matches_pattern`]
-    /// so the bypass-list and allowlist share semantics.
-    fn is_destination_allowed(&self, secret_name: &str, host: &str) -> bool {
-        let Some(patterns) = self.config.secret_destination_allowlist.get(secret_name) else {
-            // No entry → no restriction. Preserves pre-feature behavior.
-            return true;
-        };
+    /// going to `host`. Static TOML policy and dynamic paste/UI metadata
+    /// are both enforced. If both define a policy for the same secret,
+    /// the destination must satisfy both so user-facing metadata cannot
+    /// widen an administrator-pinned allowlist.
+    fn is_destination_allowed(
+        &self,
+        secret_name: &str,
+        host: &str,
+        metadata: &secrets_client::SecretMetadataStore,
+    ) -> bool {
+        let static_allowed = self
+            .config
+            .secret_destination_allowlist
+            .get(secret_name)
+            .is_none_or(|patterns| Self::destination_patterns_allow(patterns, host));
+        if !static_allowed {
+            return false;
+        }
+
+        metadata.secrets.get(secret_name).is_none_or(|metadata| {
+            metadata.allowed_destinations.is_empty()
+                || Self::destination_patterns_allow(&metadata.allowed_destinations, host)
+        })
+    }
+
+    fn destination_patterns_allow(patterns: &[String], host: &str) -> bool {
         if patterns.is_empty() {
-            // Explicit lock-down: present-with-empty-list means
-            // "this secret is configured to never substitute into
-            // any outbound request". Use to disable a secret for
-            // substitution without removing the storage entry.
             return false;
         }
         patterns
@@ -944,8 +1014,43 @@ pub(crate) fn blocked_response(reason: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use wiremock::matchers::{header as wm_header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests that mutate process-global environment hold
+            // ENV_MUTEX for the full guard lifetime, so no other test in
+            // this module can concurrently read or write this key.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: the guard is only used while ENV_MUTEX is held by the
+            // test, preserving the same serialization invariant as `set`.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     async fn test_proxy(config: GatewayConfig) -> Arc<SecurityProxy> {
         Arc::new(
@@ -1339,5 +1444,32 @@ mod tests {
         // Sanity: legitimate same-host bypasses still work.
         assert!(proxy.check_bypassed("http://localhost:8080/api"));
         assert!(proxy.check_bypassed("http://192.168.1.1/anything"));
+    }
+
+    #[test]
+    fn destination_metadata_restricts_secret_substitution() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let metadata_path = temp.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        secrets_client::metadata::set_allowed_destinations(
+            "API_KEY",
+            &["api.example.com".to_string()],
+        )
+        .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let proxy = rt.block_on(async {
+            SecurityProxy::new(
+                GatewayConfig::default(),
+                ScannerConfig::default(),
+                RateLimitConfig::default(),
+            )
+            .await
+        });
+
+        let metadata = secrets_client::metadata::load_metadata(&metadata_path).unwrap();
+        assert!(proxy.is_destination_allowed("API_KEY", "api.example.com", &metadata));
+        assert!(!proxy.is_destination_allowed("API_KEY", "attacker.example.com", &metadata));
     }
 }

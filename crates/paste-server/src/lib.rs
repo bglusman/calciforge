@@ -509,6 +509,7 @@ async fn get_bulk_form(
 struct BulkSubmitForm {
     label: Option<String>,
     dump: String,
+    allowed_destinations: Option<String>,
 }
 
 async fn post_bulk_submit(
@@ -548,6 +549,26 @@ async fn post_bulk_submit(
     };
 
     let allow_update = query.update.unwrap_or(0) != 0;
+    let allowed_destinations_submitted = form
+        .allowed_destinations
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let allowed_destinations = match secrets_client::metadata::parse_destinations(
+        form.allowed_destinations.as_deref().unwrap_or(""),
+    ) {
+        Ok(destinations) => destinations,
+        Err(error) => {
+            release_bulk_request(&state.requests, &token).await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(format!(
+                    "Invalid allowed destination list: {}",
+                    html_escape(&error.to_string())
+                )),
+            )
+                .into_response();
+        }
+    };
     // Pre-fetch the existing key set ONCE rather than calling fnox list
     // per-line. Failure to fetch is fatal — we'd rather refuse the whole
     // bulk than silently overwrite.
@@ -588,6 +609,20 @@ async fn post_bulk_submit(
                 }
                 match state.fnox.set(&key, &value).await {
                     Ok(()) => {
+                        if allowed_destinations_submitted
+                            && let Err(error) = secrets_client::metadata::set_allowed_destinations(
+                                &key,
+                                &allowed_destinations,
+                            )
+                        {
+                            results.push(BulkLineResult::StoreFailed {
+                                key,
+                                error: format!(
+                                    "value was written, but destination policy was not stored: {error}"
+                                ),
+                            });
+                            continue;
+                        }
                         let preview = state
                             .config
                             .preview_chars
@@ -755,6 +790,7 @@ struct UpdateQuery {
 #[derive(Deserialize)]
 struct SubmitForm {
     value: String,
+    allowed_destinations: Option<String>,
 }
 
 async fn get_form(
@@ -778,7 +814,28 @@ async fn get_form(
         )
             .into_response();
     }
-    Html(render_form(&req.name, &req.description, &token)).into_response()
+    let allowed_destinations = match current_allowed_destinations(&req.name) {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(
+                secret = %req.name,
+                error = %error,
+                "failed to load current destination policy for paste form"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to load current destination policy.".to_string()),
+            )
+                .into_response();
+        }
+    };
+    Html(render_form(
+        &req.name,
+        &req.description,
+        &token,
+        &allowed_destinations,
+    ))
+    .into_response()
 }
 
 async fn post_submit(
@@ -811,6 +868,22 @@ async fn post_submit(
         )
             .into_response();
     }
+    let allowed_destinations_submitted = form.allowed_destinations.is_some();
+    let allowed_destinations = match secrets_client::metadata::parse_destinations(
+        form.allowed_destinations.as_deref().unwrap_or(""),
+    ) {
+        Ok(destinations) => destinations,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(format!(
+                    "Invalid allowed destination list: {}",
+                    html_escape(&error.to_string())
+                )),
+            )
+                .into_response();
+        }
+    };
 
     let req = match claim_request(&state.requests, &token).await {
         Ok(req) => req,
@@ -849,6 +922,22 @@ async fn post_submit(
 
     match state.fnox.set(&req.name, &form.value).await {
         Ok(()) => {
+            if allowed_destinations_submitted
+                && let Err(error) = secrets_client::metadata::set_allowed_destinations(
+                    &req.name,
+                    &allowed_destinations,
+                )
+            {
+                release_request(&state.requests, &token).await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html(format!(
+                        "Secret value was stored, but failed to store destination policy: {}",
+                        html_escape(&error.to_string())
+                    )),
+                )
+                    .into_response();
+            }
             complete_request(&state.requests, &token).await;
             // Signal the spawning task that submission succeeded so the
             // CLI can exit immediately instead of sleeping until expiry.
@@ -1025,7 +1114,18 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn render_form(name: &str, description: &str, token: &str) -> String {
+fn current_allowed_destinations(
+    name: &str,
+) -> Result<String, secrets_client::metadata::MetadataError> {
+    let store = secrets_client::metadata::load_default_metadata()?;
+    Ok(store
+        .secrets
+        .get(name)
+        .map(|metadata| metadata.allowed_destinations.join(", "))
+        .unwrap_or_default())
+}
+
+fn render_form(name: &str, description: &str, token: &str, allowed_destinations: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Set {name}</title>
 <style>body {{font-family:system-ui,sans-serif;max-width:560px;margin:3rem auto;padding:0 1rem;color:#1a1a1a}}
@@ -1038,6 +1138,8 @@ button {{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-rad
 <form method="POST" action="/paste/{token}">
 <label>Value (will be stored, never displayed in full):</label>
 <input type="password" name="value" autofocus required>
+<label>Allowed destinations (optional, comma-separated hostnames):</label>
+<input type="text" name="allowed_destinations" value="{allowed_destinations}" placeholder="api.example.com, *.example.com" autocomplete="off">
 <button type="submit">Store</button>
 </form>
 <div class="warn">⚠ This URL is single-use and expires shortly. Close this tab after submission.</div>
@@ -1045,6 +1147,7 @@ button {{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-rad
         name = html_escape(name),
         description = html_escape(description),
         token = html_escape(token),
+        allowed_destinations = html_escape(allowed_destinations),
     )
 }
 
@@ -1092,6 +1195,8 @@ button {{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-rad
 NPM_TOKEN=npm_aBcD1234
 # this line is a comment, ignored
 export STRIPE_KEY=&quot;sk_live_with spaces&quot;"></textarea>
+<label>Allowed destinations for all stored secrets (optional, comma-separated hostnames):</label>
+<input type="text" name="allowed_destinations" placeholder="api.example.com, *.example.com" autocomplete="off">
 <button type="submit">Store all</button>
 </form>
 <div class="warn">⚠ This URL is single-use and expires shortly. The full dump is processed once and never displayed.</div>
@@ -1194,6 +1299,41 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::const_new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests that mutate process-global environment hold
+            // ENV_MUTEX for the full guard lifetime, so no other test in
+            // this module can concurrently read or write this key.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: the guard is only used while ENV_MUTEX is held by the
+            // test, preserving the same serialization invariant as `set`.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     fn fake_fnox(dir: &TempDir, script: &str) -> PathBuf {
         let path = dir.path().join("fnox");
@@ -1313,6 +1453,199 @@ mod tests {
         assert!(
             !body.contains("the-secret-value"),
             "confirmation must NOT contain the value: {body}"
+        );
+    }
+
+    /// Given the paste form includes allowed destinations,
+    /// when the user stores a new secret,
+    /// then Calciforge persists the destination policy beside the fnox value.
+    /// This is the user-facing path that makes documented per-secret
+    /// destination allowlists real instead of static config only.
+    #[tokio::test]
+    async fn single_secret_post_persists_destination_metadata() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        let bin = fake_fnox(
+            &dir,
+            r#"case "$1" in list) echo "" ;; set) exit 0 ;; *) exit 1 ;; esac"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+
+        let handle = spawn_request(
+            "TEST_KEY",
+            "Test description",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(&handle.url)
+            .form(&[
+                ("value", "the-secret-value"),
+                ("allowed_destinations", "API.EXAMPLE.com, *.example.net"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let store = secrets_client::metadata::load_metadata(&metadata_path).unwrap();
+        assert_eq!(
+            store
+                .secrets
+                .get("TEST_KEY")
+                .map(|metadata| metadata.allowed_destinations.as_slice()),
+            Some(["api.example.com".to_string(), "*.example.net".to_string()].as_slice())
+        );
+    }
+
+    /// Given a secret already has destination metadata,
+    /// when the operator opens a rotation paste form,
+    /// then the form is pre-filled so an unchanged submit preserves the
+    /// existing policy instead of accidentally clearing it.
+    #[tokio::test]
+    async fn single_secret_form_prefills_existing_destination_metadata() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        secrets_client::metadata::set_allowed_destinations(
+            "TEST_KEY",
+            &["api.example.com".to_string(), "*.example.net".to_string()],
+        )
+        .unwrap();
+        let bin = fake_fnox(
+            &dir,
+            r#"case "$1" in list) echo "TEST_KEY" ;; set) exit 0 ;; *) exit 1 ;; esac"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+
+        let handle = spawn_request(
+            "TEST_KEY",
+            "Test description",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .get(&handle.url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains(r#"name="allowed_destinations" value="api.example.com, *.example.net""#),
+            "form should preserve existing destination policy: {body}"
+        );
+    }
+
+    /// Given fnox rejects a submitted secret,
+    /// when the form includes destination metadata,
+    /// then Calciforge must not create a sidecar policy for a value that was
+    /// never stored in the vault.
+    #[tokio::test]
+    async fn single_secret_post_does_not_write_metadata_when_value_store_fails() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        let bin = fake_fnox(
+            &dir,
+            r#"case "$1" in list) echo "" ;; set) exit 42 ;; *) exit 1 ;; esac"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+        let handle = spawn_request(
+            "TEST_KEY",
+            "Test description",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(&handle.url)
+            .form(&[
+                ("value", "the-secret-value"),
+                ("allowed_destinations", "api.example.com"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 500);
+        assert!(
+            !metadata_path.exists(),
+            "metadata sidecar should not be created when fnox set fails"
+        );
+    }
+
+    /// Given a secret already has destination metadata,
+    /// when the user intentionally rotates it and submits an empty
+    /// allowed-destinations field,
+    /// then Calciforge clears the old policy instead of leaving stale
+    /// restrictions hidden in the sidecar metadata file.
+    #[tokio::test]
+    async fn single_secret_post_can_clear_destination_metadata() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        secrets_client::metadata::set_allowed_destinations(
+            "TEST_KEY",
+            &["old.example.com".to_string()],
+        )
+        .unwrap();
+
+        let bin = fake_fnox(
+            &dir,
+            r#"case "$1" in list) echo "TEST_KEY" ;; set) exit 0 ;; *) exit 1 ;; esac"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+        let handle = spawn_request(
+            "TEST_KEY",
+            "Test description",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(format!("{}?update=1", handle.url))
+            .form(&[("value", "rotated-value"), ("allowed_destinations", "")])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let store = secrets_client::metadata::load_metadata(&metadata_path).unwrap();
+        let metadata = store
+            .secrets
+            .get("TEST_KEY")
+            .expect("metadata entry should still exist after clearing destinations");
+        assert!(
+            metadata.allowed_destinations.is_empty(),
+            "blank form field should clear stale destination metadata"
         );
     }
 
@@ -1935,6 +2268,153 @@ INVALID_NO_EQUALS
         // Summary counts present
         assert!(body.contains("1</strong> stored"), "body: {body}");
         assert!(body.contains("1</strong> already-exists"), "body: {body}");
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn bulk_post_persists_destination_metadata_for_each_stored_key() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then exit 0; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+
+        let mut handle = spawn_bulk_request(
+            "onboarding-batch",
+            "test bulk",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(&handle.url)
+            .form(&[
+                ("dump", "FIRST=value1\nSECOND=value2\n"),
+                ("allowed_destinations", "api.example.com,*.example.net"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let store = secrets_client::metadata::load_metadata(&metadata_path).unwrap();
+        for key in ["FIRST", "SECOND"] {
+            assert_eq!(
+                store
+                    .secrets
+                    .get(key)
+                    .map(|metadata| metadata.allowed_destinations.as_slice()),
+                Some(["api.example.com".to_string(), "*.example.net".to_string()].as_slice()),
+                "bulk paste should persist destination metadata for {key}"
+            );
+        }
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn bulk_post_with_blank_destinations_preserves_existing_metadata() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        secrets_client::metadata::set_allowed_destinations(
+            "FIRST",
+            &["old.example.com".to_string()],
+        )
+        .unwrap();
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then echo "FIRST"; else cat > /dev/null; exit 0; fi"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+
+        let mut handle = spawn_bulk_request(
+            "onboarding-batch",
+            "test bulk",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(format!("{}?update=1", handle.url))
+            .form(&[("dump", "FIRST=rotated\n"), ("allowed_destinations", "")])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let store = secrets_client::metadata::load_metadata(&metadata_path).unwrap();
+        assert_eq!(
+            store
+                .secrets
+                .get("FIRST")
+                .map(|metadata| metadata.allowed_destinations.as_slice()),
+            Some(["old.example.com".to_string()].as_slice())
+        );
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn bulk_post_does_not_write_metadata_for_failed_value_store() {
+        let _lock = ENV_MUTEX.lock().await;
+        let dir = TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        let _env = EnvVarGuard::set("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        let bin = fake_fnox(
+            &dir,
+            r#"if [ "$1" = "list" ]; then exit 0; else cat > /dev/null; exit 42; fi"#,
+        );
+        let client = secrets_client::FnoxClient::with_binary(bin);
+
+        let mut handle = spawn_bulk_request(
+            "onboarding-batch",
+            "test bulk",
+            client,
+            PasteConfig {
+                require_localhost_origin: false,
+                ..PasteConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(&handle.url)
+            .form(&[
+                ("dump", "FIRST=value1\n"),
+                ("allowed_destinations", "api.example.com"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("failed"),
+            "body should report failed set: {body}"
+        );
+        assert!(
+            !metadata_path.exists(),
+            "metadata sidecar should not be created when bulk fnox set fails"
+        );
 
         handle.shutdown();
     }

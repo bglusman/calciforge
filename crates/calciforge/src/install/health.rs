@@ -8,7 +8,7 @@
 //! Cli-adapter claws have no network endpoint and skip health checks.
 
 use crate::sync::Mutex;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::time::Duration;
 
 use super::model::ClawKind;

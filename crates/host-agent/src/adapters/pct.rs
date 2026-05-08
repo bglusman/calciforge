@@ -29,10 +29,10 @@ use async_trait::async_trait;
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use crate::AppState;
 use crate::adapters::{Adapter, ExecutionResult, HostOp, PolicyDecision};
 use crate::auth::ClientIdentity;
 use crate::error::AppError;
-use crate::AppState;
 
 const PCT_BIN: &str = "/usr/sbin/pct";
 
@@ -102,12 +102,12 @@ impl Adapter for PctAdapter {
 
         // Policy check for start/stop/status
         let operation_key = format!("pct-{command}");
-        if let Some(rule) = config.find_rule(&operation_key) {
-            if rule.approval_required || rule.always_ask {
-                return Ok(PolicyDecision::RequiresApproval {
-                    message: format!("pct-{command}/{vmid} requires approval per policy"),
-                });
-            }
+        if let Some(rule) = config.find_rule(&operation_key)
+            && (rule.approval_required || rule.always_ask)
+        {
+            return Ok(PolicyDecision::RequiresApproval {
+                message: format!("pct-{command}/{vmid} requires approval per policy"),
+            });
         }
 
         // Default: start/stop require approval unless explicitly allowed

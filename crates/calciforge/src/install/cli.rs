@@ -17,7 +17,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::config::expand_tilde;
 
@@ -46,6 +46,16 @@ pub struct InstallArgs {
     pub skip_backup: bool,
     /// `--yes` — skip confirmations (for scripted use).
     pub _yes: bool,
+    /// Print agent instruction guidance for the operator to install manually.
+    pub agent_instructions_print: bool,
+    /// Explicit instruction file to create or patch with Calciforge guidance.
+    pub agent_instructions_file: Option<PathBuf>,
+    /// Workspace whose AGENTS.md should receive Calciforge guidance.
+    pub agent_workspace: Option<PathBuf>,
+    /// Central Calciforge secret-helper API base URL for managed agent hosts.
+    pub agent_helper_base_url: Option<String>,
+    /// Bearer token for the central Calciforge secret-helper API.
+    pub agent_helper_api_key: Option<String>,
 }
 
 impl InstallArgs {
@@ -838,8 +848,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_claw_spec_roundtrip(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Use sampled_from with pre-validated safe name strings to avoid
         // filter health check issues.  These cover a range of lengths, prefixes,
@@ -972,8 +982,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_install_target_never_panics(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Generate an arbitrary host string (may be complete garbage).
         let host = tc.draw(gs::text().max_size(100));
@@ -1019,8 +1029,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_claw_spec_missing_name_always_errors(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Generate random kv pairs using sampled_from for safe keys and values.
         // Keys are deliberately NOT "name" to test the missing-name error case.

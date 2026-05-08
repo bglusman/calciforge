@@ -3,17 +3,17 @@
 use crate::extract_host;
 
 use crate::verdict::{ScanContext, ScanVerdict};
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use starlark::{
     collections::SmallMap,
     environment::{Globals, GlobalsBuilder, Module},
     eval::Evaluator,
     starlark_module,
     syntax::{AstModule, Dialect},
-    values::{dict::Dict, Value as StarlarkValue},
+    values::{Value as StarlarkValue, dict::Dict},
 };
 use std::{
     collections::HashMap,
@@ -263,10 +263,10 @@ fn starlark_base64_decoded_regex_match(pattern: &str, content: &str) -> anyhow::
             continue;
         }
         for decoded in decode_base64_candidate(encoded) {
-            if let Ok(decoded) = String::from_utf8(decoded) {
-                if starlark_regex_match(pattern, &decoded)? {
-                    return Ok(true);
-                }
+            if let Ok(decoded) = String::from_utf8(decoded)
+                && starlark_regex_match(pattern, &decoded)?
+            {
+                return Ok(true);
             }
         }
     }
@@ -282,10 +282,10 @@ fn decode_base64_candidate(encoded: &str) -> Vec<Vec<u8>> {
 
     let mut decoded = Vec::with_capacity(2);
     for engine in [general_purpose::STANDARD, general_purpose::URL_SAFE] {
-        if let Ok(bytes) = engine.decode(&padded) {
-            if !decoded.contains(&bytes) {
-                decoded.push(bytes);
-            }
+        if let Ok(bytes) = engine.decode(&padded)
+            && !decoded.contains(&bytes)
+        {
+            decoded.push(bytes);
         }
     }
     decoded
@@ -691,10 +691,10 @@ fn json_to_starlark<'v>(
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/") {
-        if let Some(home) = home::home_dir() {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = home::home_dir()
+    {
+        return home.join(stripped);
     }
     PathBuf::from(path)
 }
@@ -1269,8 +1269,7 @@ def scan(input):
         );
 
         // Content with injection phrase + discussion context - should downgrade Unsafe to Review
-        let content2 =
-            "In this security audit, we tested whether 'ignore previous instructions' triggers \
+        let content2 = "In this security audit, we tested whether 'ignore previous instructions' triggers \
              a prompt injection. The attack used zero-width characters to hide the payload. \
              Our analysis found that LLM guardrails can be bypassed through these techniques. \
              The vulnerability affects multiple AI systems including chatbots and assistants.";

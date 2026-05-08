@@ -14,7 +14,7 @@
 //! "whatsapp"`.
 
 use crate::sync::Arc;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracing::{debug, info, warn};
 use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
 use zeroclaw_channels::whatsapp_web::WhatsAppWebChannel as ZclWhatsAppWebChannel;
@@ -22,7 +22,7 @@ use zeroclaw_channels::whatsapp_web::WhatsAppWebChannel as ZclWhatsAppWebChannel
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{expand_tilde, CalciforgeConfig, ChannelConfig},
+    config::{CalciforgeConfig, ChannelConfig, expand_tilde},
     context::ContextStore,
     messages::OutboundMessage,
     router::Router,
@@ -834,8 +834,8 @@ mod tests {
     };
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use tokio::sync::mpsc;
     use tokio::sync::Notify;
+    use tokio::sync::mpsc;
 
     struct MockChannel {
         sent: StdMutex<Vec<SendMessage>>,

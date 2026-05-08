@@ -767,9 +767,12 @@ PYEOF
 }
 
 configure_openclaw_model_gateway() {
-    local patch_json patch_stderr
+    local patch_json patch_stderr openclaw_config_file
+    openclaw_config_file="$(openclaw config file 2>/dev/null || true)"
+    openclaw_config_file="${openclaw_config_file:-$HOME/.openclaw/openclaw.json}"
     patch_stderr="$(mktemp)"
     if ! patch_json="$(python3 - "$ZC_CONFIG" \
+        "$openclaw_config_file" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_ENDPOINT" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER" \
         "$CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL" \
@@ -789,7 +792,8 @@ except ModuleNotFoundError:
         tomllib = None
 
 config_path = pathlib.Path(sys.argv[1]).expanduser()
-endpoint, provider, model, context, max_tokens, inline_key, key_file = sys.argv[2:10]
+openclaw_config_path = pathlib.Path(sys.argv[2]).expanduser()
+endpoint, provider, model, context, max_tokens, inline_key, key_file = sys.argv[3:11]
 provider = provider.strip() or "calciforge"
 model = model.strip() or "qwen3.6:27b"
 model_id = model.split("/", 1)[1] if model.startswith(f"{provider}/") else model
@@ -875,10 +879,46 @@ if api_key is None:
         "in Calciforge config, or CALCIFORGE_OPENCLAW_MODEL_GATEWAY_API_KEY(_FILE)."
     )
 
+def existing_provider_models(path, provider):
+    if not path.exists():
+        return []
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    models = (
+        config.get("models", {})
+        .get("providers", {})
+        .get(provider, {})
+        .get("models", [])
+    )
+    return models if isinstance(models, list) else []
+
+managed_model = {
+    "id": model_id,
+    "name": f"Calciforge {model_id}",
+    "api": "openai-completions",
+    "contextWindow": context_tokens,
+    "maxTokens": max_output_tokens,
+    "input": ["text"],
+    "cost": {"input": 0, "output": 0},
+}
+provider_models = []
+for existing in existing_provider_models(openclaw_config_path, provider):
+    if not isinstance(existing, dict):
+        continue
+    existing_id = existing.get("id")
+    if not isinstance(existing_id, str) or not existing_id:
+        continue
+    if existing_id == model_id:
+        continue
+    provider_models.append(existing)
+provider_models.append(managed_model)
+
 print(json.dumps({
     "agents": {
         "defaults": {
-            "agentRuntime": {"id": "pi", "fallback": "pi"},
+            "agentRuntime": {"id": "pi"},
             "model": {"primary": f"{provider}/{model_id}"},
             "models": {f"{provider}/{model_id}": {}},
         }
@@ -893,15 +933,7 @@ print(json.dumps({
                 "contextWindow": context_tokens,
                 "maxTokens": max_output_tokens,
                 "request": {"allowPrivateNetwork": True},
-                "models": [{
-                    "id": model_id,
-                    "name": f"Calciforge {model_id}",
-                    "api": "openai-completions",
-                    "contextWindow": context_tokens,
-                    "maxTokens": max_output_tokens,
-                    "input": ["text"],
-                    "cost": {"input": 0, "output": 0},
-                }],
+                "models": provider_models,
             }
         },
     },
@@ -917,7 +949,18 @@ PYEOF
     fi
     rm -f "$patch_stderr"
 
-    printf '%s\n' "$patch_json" | openclaw config patch --stdin >/dev/null
+    local patch_output
+    if ! patch_output="$(printf '%s\n' "$patch_json" | openclaw config patch --stdin 2>&1 >/dev/null)"; then
+        warn "$patch_output"
+        return 1
+    fi
+    if [[ "$patch_output" == *"Error:"* ]]; then
+        warn "$patch_output"
+        return 1
+    fi
+    if [[ -n "$patch_output" ]]; then
+        warn "$patch_output"
+    fi
     ok "openclaw default model routed through Calciforge model gateway (${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_PROVIDER}/${CALCIFORGE_OPENCLAW_MODEL_GATEWAY_MODEL})"
     openclaw gateway restart --json >/dev/null 2>&1 || \
         warn "openclaw gateway restart failed after model gateway patch; restart it manually before testing"
@@ -2296,6 +2339,16 @@ PYEOF
         ok "  [$name] support binary $bin deployed"
     }
 
+    services_include() {
+        local needle="$1" services_csv="$2"
+        local item
+        IFS=',' read -ra _calciforge_services <<< "$services_csv"
+        for item in "${_calciforge_services[@]}"; do
+            [[ "${item//[[:space:]]/}" == "$needle" ]] && return 0
+        done
+        return 1
+    }
+
     # ── systemd unit generator ────────────────────────────────────────────────
     systemd_unit() {
         local bin="$1" install_dir="$2" env_pairs="$3"
@@ -2821,11 +2874,18 @@ PYEOF
         echo "  Node: $name ($user@$host, $arch, $os)"
         validate_security_proxy_bind "$security_proxy_bind" "security_proxy_bind for node $name"
         preflight_node "$name" "$host" "$user" "$ssh_key" "$os" "$services" "$install_dir" "$config_dir"
-        ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" "$config_dir" || \
-            warn "  [$name] fnox not ready — secret resolution may fail on that node"
-        deploy_binary_only "$name" "$host" "$user" "$ssh_key" "$arch" \
-            "calciforge-secrets" "$install_dir" || \
-            warn "  [$name] calciforge-secrets not deployed — CLI secret discovery may fail on that node"
+        if services_include "calciforge" "$services"; then
+            ensure_remote_fnox "$name" "${user}@${host}" "$ssh_key" "$config_dir" || \
+                warn "  [$name] fnox not ready — central secret resolution may fail on that Calciforge node"
+            deploy_binary_only "$name" "$host" "$user" "$ssh_key" "$arch" \
+                "calciforge-secrets" "$install_dir" || \
+                warn "  [$name] calciforge-secrets not deployed on Calciforge node"
+        else
+            warn "  [$name] not deploying fnox/calciforge-secrets: this node does not run calciforge and must not become a second secret store"
+            if services_include "security-proxy" "$services"; then
+                warn "  [$name] security-proxy secret substitution requires co-location with the central store or future central-secret-backend wiring"
+            fi
+        fi
         IFS=',' read -ra svc_list <<< "$services"
         for svc in "${svc_list[@]}"; do
             deploy_service "$name" "$host" "$user" "$ssh_key" "$arch" "$os" \

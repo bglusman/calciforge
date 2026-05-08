@@ -9,9 +9,9 @@
 //! so the async caller stays unblocked. The mutex is only held within the
 //! blocking closures, never across an `.await`.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -387,7 +387,7 @@ impl PersistentContextStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     fn fresh_db_path(dir: &TempDir) -> std::path::PathBuf {
         dir.path().join("ctx.db")

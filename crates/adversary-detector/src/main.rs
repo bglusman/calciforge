@@ -1,9 +1,9 @@
 use adversary_detector::{AdversaryScanner, ScanContext, ScanVerdict, ScannerConfig};
 use axum::{
+    Router,
     extract::Json,
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 use serde::Deserialize;
 use serde_json::json;
