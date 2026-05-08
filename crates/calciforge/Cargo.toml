@@ -10,12 +10,11 @@ name = "calciforge"
 path = "src/main.rs"
 
 [features]
-default = ["helicone", "traceloop"]
+default = ["helicone"]
 channel-matrix = []
 hegel = ["dep:hegeltest"]
 persistent-context = ["dep:rusqlite"]
 helicone = []
-traceloop = []
 tiktoken-estimator = ["dep:tiktoken-rs"]
 test = []
 

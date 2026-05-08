@@ -16,6 +16,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
+    config::GatewayRetryConfig,
     proxy::backend::{BackendError, BackendType, ModelInfo, SecretsBackend},
     proxy::openai::{
         ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolChoice, ToolDefinition,
@@ -39,6 +40,9 @@ pub struct HeliconeRouterConfig {
     /// Custom headers forwarded to the Helicone AI Gateway.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Gateway retry policy. Mapped to Helicone retry headers when enabled.
+    #[serde(default)]
+    pub retry: GatewayRetryConfig,
 }
 
 impl Default for HeliconeRouterConfig {
@@ -51,6 +55,7 @@ impl Default for HeliconeRouterConfig {
             enable_caching: false,
             cache_ttl_seconds: 300,
             headers: HashMap::new(),
+            retry: GatewayRetryConfig::default(),
         }
     }
 }
@@ -145,6 +150,44 @@ impl HeliconeRouter {
             })?;
             headers.insert(header_name, header_value);
         }
+        if self.config.retry.enabled {
+            headers.insert(
+                HeaderName::from_static("helicone-retry-enabled"),
+                HeaderValue::from_static("true"),
+            );
+            headers.insert(
+                HeaderName::from_static("helicone-retry-num"),
+                HeaderValue::from_str(&self.config.retry.max_retries.to_string()).map_err(|e| {
+                    BackendError::ConfigError(format!("Invalid Helicone retry count: {e}"))
+                })?,
+            );
+            headers.insert(
+                HeaderName::from_static("helicone-retry-min-timeout"),
+                HeaderValue::from_str(&self.config.retry.min_timeout_ms.to_string()).map_err(
+                    |e| {
+                        BackendError::ConfigError(format!(
+                            "Invalid Helicone retry minimum timeout: {e}"
+                        ))
+                    },
+                )?,
+            );
+            headers.insert(
+                HeaderName::from_static("helicone-retry-max-timeout"),
+                HeaderValue::from_str(&self.config.retry.max_timeout_ms.to_string()).map_err(
+                    |e| {
+                        BackendError::ConfigError(format!(
+                            "Invalid Helicone retry maximum timeout: {e}"
+                        ))
+                    },
+                )?,
+            );
+            headers.insert(
+                HeaderName::from_static("helicone-retry-factor"),
+                HeaderValue::from_str(&self.config.retry.factor.to_string()).map_err(|e| {
+                    BackendError::ConfigError(format!("Invalid Helicone retry factor: {e}"))
+                })?,
+            );
+        }
         let bearer =
             HeaderValue::from_str(&format!("Bearer {}", self.config.api_key)).map_err(|e| {
                 BackendError::ConfigError(format!("Invalid Helicone API key for auth header: {e}"))
@@ -161,10 +204,13 @@ impl HeliconeRouter {
             .send()
             .await
             .map_err(|e| {
-                BackendError::HttpError(format!(
-                    "Helicone request to {} for model '{}' failed: {}",
-                    url_for_error, model_for_error, e
-                ))
+                BackendError::transport(
+                    format!(
+                        "Helicone request to {} for model '{}' failed: {}",
+                        url_for_error, model_for_error, e
+                    ),
+                    e.is_timeout(),
+                )
             })?;
 
         if !response.status().is_success() {
@@ -173,12 +219,15 @@ impl HeliconeRouter {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(format!(
-                "Helicone gateway returned {} for model '{}': {}",
+            return Err(BackendError::http_status_error(
                 status,
-                model_for_error,
-                truncate_error_body(error_text.trim())
-            )));
+                format!(
+                    "Helicone gateway returned {} for model '{}': {}",
+                    status,
+                    model_for_error,
+                    truncate_error_body(error_text.trim())
+                ),
+            ));
         }
 
         let completion_response: ChatCompletionResponse = response.json().await.map_err(|e| {
@@ -298,6 +347,13 @@ impl SecretsBackend for HeliconeRouter {
             .await
     }
 
+    async fn chat_completion_request(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        HeliconeRouter::chat_completion_request(self, request).await
+    }
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         self.list_models().await
     }
@@ -326,6 +382,7 @@ mod tests {
             enable_caching: false,
             cache_ttl_seconds: 300,
             headers: HashMap::new(),
+            retry: GatewayRetryConfig::default(),
         }
     }
 
@@ -503,6 +560,77 @@ mod tests {
             .insert("authorization".to_string(), "Bearer wrong".to_string());
         cfg.headers
             .insert("helicone-auth".to_string(), "Bearer wrong".to_string());
+        let router = HeliconeRouter::new(cfg).unwrap();
+        router
+            .chat_completion(
+                "openai/gpt-4o-mini".to_string(),
+                vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("hello".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn chat_completion_maps_retry_config_to_helicone_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let response = ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "openai/gpt-4o-mini".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text("ok".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+            system_fingerprint: None,
+        };
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("helicone-retry-enabled", "true")
+            .match_header("helicone-retry-num", "4")
+            .match_header("helicone-retry-min-timeout", "250")
+            .match_header("helicone-retry-max-timeout", "3000")
+            .match_header("helicone-retry-factor", "3")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response).unwrap())
+            .create_async()
+            .await;
+
+        let mut cfg = config(format!("{}/v1/", server.url()));
+        cfg.retry.enabled = true;
+        cfg.retry.max_retries = 4;
+        cfg.retry.min_timeout_ms = 250;
+        cfg.retry.max_timeout_ms = 3000;
+        cfg.retry.factor = 3;
         let router = HeliconeRouter::new(cfg).unwrap();
         router
             .chat_completion(

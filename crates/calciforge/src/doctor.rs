@@ -2349,6 +2349,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         }];
         proxy.model_routes = vec![ProxyModelRoute {
             pattern: "opencode-go/kimi-k2.6".to_string(),
@@ -2394,6 +2395,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         }];
         proxy.model_routes.clear();
         let mut report = DoctorReport::default();

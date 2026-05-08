@@ -1,17 +1,16 @@
 //! GatewayBackend trait for abstracting different LLM gateway implementations.
 //!
 //! This module provides a unified interface for gateway engines. The shipped
-//! root gateway engines are Direct, Helicone, and Mock. Other variants may
-//! exist as spike code behind feature flags, but they must not be accepted as
-//! production config until validation and compatibility tests prove the path.
+//! root gateway engines are Direct, Helicone, and Mock.
 //!
 //! Each backend can be enabled via feature flags and selected via configuration.
 
 use async_trait::async_trait;
-use backon::Retryable;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::config::GatewayRetryConfig;
 use crate::proxy::backend::{BackendError, ModelInfo, SecretsBackend};
 use crate::proxy::openai::{ChatCompletionRequest, ChatCompletionResponse};
 #[allow(unused_imports)]
@@ -44,10 +43,13 @@ pub struct GatewayConfig {
     /// Type of gateway backend
     pub backend_type: GatewayType,
     /// Base URL for the gateway (if applicable)
+    #[allow(dead_code)]
     pub base_url: Option<String>,
     /// API key for the gateway (if applicable)
+    #[allow(dead_code)]
     pub api_key: Option<String>,
     /// Timeout in seconds
+    #[allow(dead_code)]
     pub timeout_seconds: u64,
     /// Additional configuration as JSON
     #[allow(dead_code)]
@@ -57,21 +59,8 @@ pub struct GatewayConfig {
     #[allow(dead_code)]
     pub headers: Option<std::collections::HashMap<String, String>>,
 
-    /// Enable retry logic (default: true)
-    #[allow(dead_code)]
-    pub retry_enabled: bool,
-
-    /// Maximum number of retries (default: 3)
-    #[allow(dead_code)]
-    pub max_retries: u32,
-
-    /// Base delay between retries in milliseconds (default: 1000)
-    #[allow(dead_code)]
-    pub retry_base_delay_ms: u64,
-
-    /// Maximum delay between retries in milliseconds (default: 10000)
-    #[allow(dead_code)]
-    pub retry_max_delay_ms: u64,
+    /// Retry policy for each concrete gateway attempt.
+    pub retry: GatewayRetryConfig,
 
     /// Optional operator UI or dashboard URL for this gateway engine.
     pub ui_url: Option<String>,
@@ -86,10 +75,7 @@ impl Default for GatewayConfig {
             timeout_seconds: 30,
             extra_config: None,
             headers: None,
-            retry_enabled: true,
-            max_retries: 3,
-            retry_base_delay_ms: 1000,
-            retry_max_delay_ms: 10000,
+            retry: GatewayRetryConfig::default(),
             ui_url: None,
         }
     }
@@ -105,8 +91,6 @@ impl Default for GatewayConfig {
 pub enum GatewayType {
     /// Helicone AI Gateway (HTTP-based)
     Helicone,
-    /// Traceloop observability gateway
-    Traceloop,
     /// Direct provider calls (no gateway)
     Direct,
     /// Mock gateway for testing
@@ -119,7 +103,6 @@ impl std::str::FromStr for GatewayType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "helicone" => Ok(GatewayType::Helicone),
-            "traceloop" => Ok(GatewayType::Traceloop),
             "direct" => Ok(GatewayType::Direct),
             "mock" => Ok(GatewayType::Mock),
             _ => Err(format!("Unknown gateway type: {}", s)),
@@ -131,7 +114,6 @@ impl std::fmt::Display for GatewayType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GatewayType::Helicone => write!(f, "helicone"),
-            GatewayType::Traceloop => write!(f, "traceloop"),
             GatewayType::Direct => write!(f, "direct"),
             GatewayType::Mock => write!(f, "mock"),
         }
@@ -142,7 +124,6 @@ impl GatewayType {
     pub fn display_name(self) -> &'static str {
         match self {
             GatewayType::Helicone => "Helicone AI Gateway",
-            GatewayType::Traceloop => "Traceloop Hub",
             GatewayType::Direct => "Calciforge builtin gateway",
             GatewayType::Mock => "Mock gateway",
         }
@@ -157,14 +138,6 @@ impl GatewayType {
                 config_validation: false,
                 observability: true,
                 operator_ui: true,
-            },
-            GatewayType::Traceloop => GatewayCapabilities {
-                openai_chat_completions: true,
-                model_listing: false,
-                tool_call_transcripts: false,
-                config_validation: false,
-                observability: true,
-                operator_ui: false,
             },
             GatewayType::Direct => GatewayCapabilities {
                 openai_chat_completions: true,
@@ -244,6 +217,7 @@ pub fn create_gateway(
                 enable_caching: false,
                 cache_ttl_seconds: 300,
                 headers: config.headers.clone().unwrap_or_default(),
+                retry: config.retry.clone(),
             };
 
             let router = HeliconeRouter::new(helicone_config).map_err(|e| {
@@ -251,33 +225,6 @@ pub fn create_gateway(
             })?;
 
             let inner_gateway = Arc::new(HeliconeGateway {
-                config: config.clone(),
-                router,
-            });
-
-            // Wrap with logging for debugging
-            Ok(Arc::new(LoggingGateway::new(config, inner_gateway)))
-        }
-
-        #[cfg(feature = "traceloop")]
-        GatewayType::Traceloop => {
-            use crate::proxy::traceloop::{ProviderConfig, ProviderType, TraceloopRouter};
-
-            // Create provider configurations from config
-            // Use the actual API key and URL from config
-            let providers = vec![ProviderConfig {
-                id: "kimi".to_string(),
-                r#type: ProviderType::Kimi,
-                api_key: config.api_key.clone().unwrap_or_default(),
-                base_url: config.base_url.clone(),
-                default_model: "kimi-for-coding".to_string(),
-            }];
-
-            let router = TraceloopRouter::new(providers).map_err(|e| {
-                BackendError::ConfigError(format!("Failed to create Traceloop router: {}", e))
-            })?;
-
-            let inner_gateway = Arc::new(TraceloopGateway {
                 config: config.clone(),
                 router,
             });
@@ -315,11 +262,6 @@ pub fn create_gateway(
         #[cfg(not(feature = "helicone"))]
         GatewayType::Helicone => Err(BackendError::ConfigError(
             "Helicone feature not enabled".to_string(),
-        )),
-
-        #[cfg(not(feature = "traceloop"))]
-        GatewayType::Traceloop => Err(BackendError::ConfigError(
-            "Traceloop feature not enabled".to_string(),
         )),
     }
 }
@@ -409,53 +351,39 @@ impl GatewayBackend for LoggingGateway {
 
         let start = std::time::Instant::now();
 
-        // Apply retry logic
-        let inner = self.inner.clone();
-        let request_clone = request.clone();
-
-        // Simple retry logic using backon
-        let operation = || async {
-            let result = inner.chat_completion(request_clone.clone()).await;
-
-            // Check if we should retry
-            match &result {
-                Ok(_) => {
+        let mut attempt = 0_u32;
+        let mut result = loop {
+            let result = self.inner.chat_completion(request.clone()).await;
+            match result {
+                Ok(response) => {
                     info!("Request succeeded");
-                    result
+                    break Ok(response);
                 }
-                Err(e) => {
-                    // Retry on HTTP errors (5xx) and rate limits (429)
-                    let error_str = e.to_string();
-                    let should_retry = error_str.contains("500")
-                        || error_str.contains("502")
-                        || error_str.contains("503")
-                        || error_str.contains("504")
-                        || error_str.contains("429")
-                        || error_str.contains("timeout")
-                        || error_str.contains("network");
-
-                    if should_retry {
-                        warn!("Retryable error: {}", e);
-                    } else {
-                        warn!("Non-retryable error: {}", e);
+                Err(error) => {
+                    let failure_kind = error.failure_kind();
+                    let should_retry = should_retry_locally(
+                        self.inner.gateway_type(),
+                        &self.config.retry,
+                        &error,
+                        attempt,
+                    );
+                    warn!(
+                        error = %error,
+                        ?failure_kind,
+                        attempt = attempt + 1,
+                        max_retries = self.config.retry.max_retries,
+                        should_retry,
+                        "Gateway request failed"
+                    );
+                    if !should_retry {
+                        break Err(error);
                     }
-
-                    result
+                    let delay = retry_delay(&self.config.retry, attempt);
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
                 }
             }
         };
-
-        // Exponential backoff: 1s, 2s, 4s, 8s with jitter
-        let mut result = operation
-            .retry(
-                &backon::ExponentialBuilder::default()
-                    .with_min_delay(std::time::Duration::from_secs(1))
-                    .with_max_delay(std::time::Duration::from_secs(8))
-                    .with_max_times(3)
-                    .with_factor(2.0)
-                    .with_jitter(),
-            )
-            .await;
 
         let duration = start.elapsed();
 
@@ -544,6 +472,37 @@ impl GatewayBackend for LoggingGateway {
     }
 }
 
+fn should_retry_locally(
+    gateway_type: GatewayType,
+    policy: &GatewayRetryConfig,
+    error: &BackendError,
+    attempt: u32,
+) -> bool {
+    if gateway_type == GatewayType::Helicone {
+        // Helicone retry policy is passed to the gateway engine as request
+        // headers. Retrying again here would multiply attempts and costs.
+        return false;
+    }
+
+    policy.enabled
+        && attempt < policy.max_retries
+        && policy.retry_on.contains(&error.failure_kind())
+}
+
+fn retry_delay(policy: &GatewayRetryConfig, attempt: u32) -> Duration {
+    let factor = policy.factor.max(1) as u128;
+    let multiplier = factor.saturating_pow(attempt);
+    let base_delay = (policy.min_timeout_ms as u128)
+        .saturating_mul(multiplier)
+        .min(policy.max_timeout_ms as u128);
+    let jitter_percent = rand::random_range(80_u128..=120_u128);
+    let delay = base_delay
+        .saturating_mul(jitter_percent)
+        .saturating_div(100)
+        .min(policy.max_timeout_ms as u128);
+    Duration::from_millis(delay as u64)
+}
+
 // ---------------------------------------------------------------------------
 // Direct Gateway Implementation (wraps existing SecretsBackend)
 // ---------------------------------------------------------------------------
@@ -579,65 +538,11 @@ impl GatewayBackend for DirectGateway {
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        // Extract parameters to pass to the underlying backend
-        // Note: Backend uses the old parameter-based API
-        self.backend
-            .chat_completion(
-                request.model,
-                request.messages,
-                request.stream.unwrap_or(false),
-                request.tools,
-                request.tool_choice,
-            )
-            .await
+        self.backend.chat_completion_request(request).await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         self.backend.list_models().await
-    }
-
-    fn config(&self) -> &GatewayConfig {
-        &self.config
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Traceloop Gateway Implementation
-// ---------------------------------------------------------------------------
-
-// Traceloop Gateway Implementation
-#[cfg(feature = "traceloop")]
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct TraceloopGateway {
-    config: GatewayConfig,
-    router: crate::proxy::traceloop::TraceloopRouter,
-}
-
-#[cfg(feature = "traceloop")]
-#[async_trait]
-impl GatewayBackend for TraceloopGateway {
-    fn gateway_type(&self) -> GatewayType {
-        GatewayType::Traceloop
-    }
-
-    async fn chat_completion(
-        &self,
-        request: ChatCompletionRequest,
-    ) -> Result<ChatCompletionResponse, BackendError> {
-        self.router
-            .chat_completion(
-                request.model,
-                request.messages,
-                request.stream.unwrap_or(false),
-                request.tools,
-                request.tool_choice,
-            )
-            .await
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        self.router.list_models().await
     }
 
     fn config(&self) -> &GatewayConfig {
@@ -730,10 +635,6 @@ mod tests {
             GatewayType::Helicone
         );
         assert_eq!(
-            "traceloop".parse::<GatewayType>().unwrap(),
-            GatewayType::Traceloop
-        );
-        assert_eq!(
             "direct".parse::<GatewayType>().unwrap(),
             GatewayType::Direct
         );
@@ -744,7 +645,6 @@ mod tests {
     #[test]
     fn test_gateway_type_display() {
         assert_eq!(GatewayType::Helicone.to_string(), "helicone");
-        assert_eq!(GatewayType::Traceloop.to_string(), "traceloop");
         assert_eq!(GatewayType::Direct.to_string(), "direct");
         assert_eq!(GatewayType::Mock.to_string(), "mock");
     }
@@ -760,10 +660,7 @@ mod tests {
             timeout_seconds: 30,
             extra_config: None,
             headers: None,
-            retry_enabled: true,
-            max_retries: 3,
-            retry_base_delay_ms: 1000,
-            retry_max_delay_ms: 10000,
+            retry: GatewayRetryConfig::default(),
             ui_url: None,
         };
 
@@ -789,6 +686,153 @@ mod tests {
         assert!(!info.capabilities.model_listing);
         assert!(!info.capabilities.tool_call_transcripts);
         assert!(!info.capabilities.config_validation);
+    }
+
+    #[test]
+    fn direct_gateway_retries_only_configured_failure_kinds() {
+        let retry = GatewayRetryConfig {
+            enabled: true,
+            max_retries: 2,
+            min_timeout_ms: 1,
+            max_timeout_ms: 10,
+            factor: 2,
+            retry_on: vec![crate::config::GatewayFailureKind::ServerError],
+        };
+        let server_error =
+            BackendError::http_status_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, "down");
+        let auth_error =
+            BackendError::http_status_error(reqwest::StatusCode::UNAUTHORIZED, "bad key");
+
+        assert!(should_retry_locally(
+            GatewayType::Direct,
+            &retry,
+            &server_error,
+            0
+        ));
+        assert!(!should_retry_locally(
+            GatewayType::Direct,
+            &retry,
+            &auth_error,
+            0
+        ));
+        assert!(!should_retry_locally(
+            GatewayType::Direct,
+            &retry,
+            &server_error,
+            2
+        ));
+    }
+
+    #[test]
+    fn helicone_retry_policy_is_not_applied_twice_locally() {
+        let retry = GatewayRetryConfig {
+            enabled: true,
+            max_retries: 2,
+            min_timeout_ms: 1,
+            max_timeout_ms: 10,
+            factor: 2,
+            retry_on: vec![crate::config::GatewayFailureKind::ServerError],
+        };
+        let server_error =
+            BackendError::http_status_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, "down");
+
+        assert!(
+            !should_retry_locally(GatewayType::Helicone, &retry, &server_error, 0),
+            "Helicone receives retry headers, so Calciforge must not multiply attempts locally"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_gateway_forwards_complete_chat_request_options() {
+        use crate::proxy::backend::{create_backend, BackendConfig, BackendType};
+        use crate::proxy::openai::{ChatMessage, Choice, MessageContent, Usage};
+        use mockito::Matcher;
+        use std::collections::HashMap;
+
+        let mut server = mockito::Server::new_async().await;
+        let response = ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "kimi-for-coding".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text("ok".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+            system_fingerprint: None,
+        };
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("x-client-family", "kimi-cli")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "kimi-for-coding",
+                "max_tokens": 16,
+                "temperature": 0.5,
+                "thinking": {"type": "enabled"},
+                "stream": false,
+                "messages": [{"role": "user", "content": "hello"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response).unwrap())
+            .create_async()
+            .await;
+
+        let mut headers = HashMap::new();
+        headers.insert("x-client-family".to_string(), "kimi-cli".to_string());
+        let backend = create_backend(&BackendConfig {
+            backend_type: BackendType::Http,
+            url: Some(format!("{}/v1", server.url())),
+            api_key: Some("provider-key".to_string()),
+            timeout_seconds: Some(30),
+            headers: Some(headers.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let gateway = create_gateway(
+            GatewayConfig {
+                backend_type: GatewayType::Direct,
+                base_url: Some(format!("{}/v1", server.url())),
+                api_key: Some("provider-key".to_string()),
+                timeout_seconds: 30,
+                headers: Some(headers),
+                ..Default::default()
+            },
+            Some(backend),
+        )
+        .unwrap();
+
+        let result = gateway
+            .chat_completion(
+                serde_json::from_value(serde_json::json!({
+                    "model": "kimi-for-coding",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 16,
+                    "temperature": 0.5,
+                    "thinking": {"type": "enabled"}
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.model, "kimi/kimi-for-coding");
+        mock.assert_async().await;
     }
 
     #[cfg(feature = "helicone")]

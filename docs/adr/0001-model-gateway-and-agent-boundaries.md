@@ -93,8 +93,9 @@ This also narrows supported configuration. Configs that used
 
 1. Keep root gateway backend validation and runtime startup on the same
    allowlist.
-2. Move remaining stale gateway spike code behind clearly named experimental
-   modules or remove it.
+2. Remove stale gateway spike code from the production build; future gateway
+   experiments must return behind explicit experimental modules with their own
+   adapter contract and tests.
 3. Extend `doctor` and chat-visible agent details with per-agent coverage:
    model gateway, security proxy, model override, session, artifacts, and native
    commands.
@@ -103,3 +104,11 @@ This also narrows supported configuration. Configs that used
 5. Add production-path tests for the boundaries:
    channel to model-gateway-backed `openai-compat`, channel to native agent,
    and channel to subprocess agent with explicit security-proxy/env coverage.
+
+## Follow-Through
+
+2026-05-08: The production code path now exposes only the shared root gateway
+allowlist (`http`, `helicone`, and `mock`). The old Traceloop feature module and
+unimplemented embedded/library backend stubs were removed so validation,
+runtime startup, and selectable gateway engine types cannot drift apart around
+unsupported names.

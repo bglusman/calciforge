@@ -3,40 +3,81 @@
 //! Provides the runtime abstraction used by supported model-provider methods.
 //! The production root gateway surface is intentionally small: direct HTTP
 //! providers, Helicone's external HTTP gateway, and a mock backend for tests.
-//! Older embedded/library variants remain internal stubs until they are backed
-//! by real tests and config validation.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::sync::Arc;
 
+use crate::config::GatewayFailureKind;
 use crate::proxy::openai::{ChatCompletionResponse, MessageContent};
 
-// Helicone router (embedded library)
+// Helicone router (HTTP adapter)
+#[cfg(feature = "helicone")]
 use super::helicone_router;
 
 /// Errors that can occur in backend operations
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum BackendError {
-    #[error("embedded backend execution failed: {0}")]
-    ExecutionFailed(String),
-
-    #[error("secrets backend not found or not executable")]
-    SecretsNotFound,
-
-    #[error("HTTP request failed: {0}")]
-    HttpError(String),
+    #[error("HTTP request failed: {message}")]
+    HttpError {
+        message: String,
+        kind: GatewayFailureKind,
+        status: Option<u16>,
+    },
 
     #[error("Invalid response from backend: {0}")]
     InvalidResponse(String),
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
+}
 
-    #[error("Backend not available: {0}")]
-    NotAvailable(String),
+impl BackendError {
+    pub fn failure_kind(&self) -> GatewayFailureKind {
+        match self {
+            Self::HttpError { kind, .. } => *kind,
+            Self::InvalidResponse(_) => GatewayFailureKind::InvalidResponse,
+            Self::ConfigError(_) => GatewayFailureKind::Misconfigured,
+        }
+    }
+
+    pub fn transport(message: impl Into<String>, is_timeout: bool) -> Self {
+        Self::HttpError {
+            message: message.into(),
+            kind: if is_timeout {
+                GatewayFailureKind::Timeout
+            } else {
+                GatewayFailureKind::Network
+            },
+            status: None,
+        }
+    }
+
+    pub fn http_status_error(status: reqwest::StatusCode, message: impl Into<String>) -> Self {
+        Self::HttpError {
+            message: message.into(),
+            kind: failure_kind_for_status(status.as_u16()),
+            status: Some(status.as_u16()),
+        }
+    }
+}
+
+pub fn failure_kind_for_status(status: u16) -> GatewayFailureKind {
+    match status {
+        400 => GatewayFailureKind::BadRequest,
+        401 => GatewayFailureKind::AuthFailed,
+        403 => GatewayFailureKind::Forbidden,
+        404 => GatewayFailureKind::ModelNotFound,
+        408 => GatewayFailureKind::Timeout,
+        413 | 422 => GatewayFailureKind::ContextExceeded,
+        429 => GatewayFailureKind::RateLimited,
+        500 | 502 | 503 | 504 => GatewayFailureKind::ServerError,
+        _ if (400..500).contains(&status) => GatewayFailureKind::BadRequest,
+        _ if (500..600).contains(&status) => GatewayFailureKind::ServerError,
+        _ => GatewayFailureKind::Unknown,
+    }
 }
 
 /// Unified backend trait for model-gateway providers.
@@ -53,6 +94,25 @@ pub trait SecretsBackend: Send + Sync {
         tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError>;
 
+    /// Execute a complete OpenAI-compatible chat completion request.
+    ///
+    /// Implementations should override this when they can preserve request
+    /// fields beyond the legacy parameter list, including provider-specific
+    /// extension fields captured by `ChatCompletionRequest::extra_body`.
+    async fn chat_completion_request(
+        &self,
+        request: crate::proxy::openai::ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        self.chat_completion(
+            request.model,
+            request.messages,
+            request.stream.unwrap_or(false),
+            request.tools,
+            request.tool_choice,
+        )
+        .await
+    }
+
     /// List available models
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError>;
 
@@ -63,10 +123,6 @@ pub trait SecretsBackend: Send + Sync {
 /// Backend types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendType {
-    /// Reserved for future subprocess-backed providers.
-    Embedded,
-    /// Reserved for future library-backed providers.
-    Library,
     /// HTTP to an OpenAI-compatible provider.
     Http,
     /// HTTP to Helicone AI Gateway
@@ -78,8 +134,6 @@ pub enum BackendType {
 impl std::fmt::Display for BackendType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendType::Embedded => write!(f, "embedded"),
-            BackendType::Library => write!(f, "library"),
             BackendType::Http => write!(f, "http"),
             BackendType::Helicone => write!(f, "helicone"),
             BackendType::Mock => write!(f, "mock"),
@@ -112,10 +166,6 @@ pub struct ModelInfo {
 pub struct BackendConfig {
     pub backend_type: BackendType,
 
-    // Embedded backend config
-    pub command: Option<String>,
-    pub args: Option<Vec<String>>,
-
     // HTTP backend config
     pub url: Option<String>,
     pub api_key: Option<String>,
@@ -126,20 +176,12 @@ pub struct BackendConfig {
     pub helicone_url: Option<String>,
     pub helicone_api_key: Option<String>,
     pub helicone_router_name: Option<String>,
-
-    // Library backend config
-    pub config_path: Option<String>,
 }
 
 impl Default for BackendConfig {
     fn default() -> Self {
         Self {
             backend_type: BackendType::Mock,
-            command: Some("secrets".to_string()),
-            args: Some(vec![
-                "--config".to_string(),
-                "~/.config/secrets.toml".to_string(),
-            ]),
             url: Some("http://localhost:8081".to_string()),
             api_key: None,
             timeout_seconds: Some(30),
@@ -147,7 +189,6 @@ impl Default for BackendConfig {
             helicone_url: Some("http://localhost:8080".to_string()),
             helicone_api_key: None,
             helicone_router_name: None,
-            config_path: Some("~/.config/secrets.toml".to_string()),
         }
     }
 }
@@ -155,19 +196,6 @@ impl Default for BackendConfig {
 /// Factory function to create backend based on config
 pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn SecretsBackend>, BackendError> {
     match config.backend_type {
-        BackendType::Embedded => {
-            let command = config.command.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing command for embedded backend".to_string())
-            })?;
-            let args = config.args.clone().unwrap_or_default();
-            Ok(Arc::new(EmbeddedBackend::new(command, args)))
-        }
-        BackendType::Library => {
-            let config_path = config.config_path.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing config_path for library backend".to_string())
-            })?;
-            Ok(Arc::new(LibraryBackend::new(config_path)))
-        }
         BackendType::Http => {
             let url = config.url.clone().ok_or_else(|| {
                 BackendError::ConfigError("Missing url for HTTP backend".to_string())
@@ -177,32 +205,48 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn SecretsBackend>,
             let headers = config.headers.clone();
             Ok(Arc::new(HttpBackend::new(url, api_key, timeout, headers)))
         }
-        BackendType::Helicone => {
-            let url = config.helicone_url.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string())
-            })?;
-            let api_key = config.helicone_api_key.clone().unwrap_or_default();
-            let timeout = config.timeout_seconds.unwrap_or(120);
-            let router_name = config
-                .helicone_router_name
-                .clone()
-                .unwrap_or_else(|| "helicone".to_string());
-            let helicone_config = helicone_router::HeliconeRouterConfig {
-                base_url: url,
-                api_key,
-                timeout_seconds: timeout,
-                router_name,
-                enable_caching: true,
-                cache_ttl_seconds: 300,
-                headers: std::collections::HashMap::new(),
-            };
-            let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
-                BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
-            })?;
-            Ok(Arc::new(router))
-        }
+        BackendType::Helicone => create_helicone_backend(config),
         BackendType::Mock => Ok(Arc::new(MockBackend::new())),
     }
+}
+
+#[cfg(feature = "helicone")]
+fn create_helicone_backend(
+    config: &BackendConfig,
+) -> Result<Arc<dyn SecretsBackend>, BackendError> {
+    let url = config.helicone_url.clone().ok_or_else(|| {
+        BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string())
+    })?;
+    let api_key = config.helicone_api_key.clone().unwrap_or_default();
+    let timeout = config.timeout_seconds.unwrap_or(120);
+    let router_name = config
+        .helicone_router_name
+        .clone()
+        .unwrap_or_else(|| "helicone".to_string());
+    let helicone_config = helicone_router::HeliconeRouterConfig {
+        base_url: url,
+        api_key,
+        timeout_seconds: timeout,
+        router_name,
+        enable_caching: true,
+        cache_ttl_seconds: 300,
+        headers: std::collections::HashMap::new(),
+        retry: crate::config::GatewayRetryConfig::default(),
+    };
+    let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
+        BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
+    })?;
+    Ok(Arc::new(router))
+}
+
+#[cfg(not(feature = "helicone"))]
+fn create_helicone_backend(
+    _config: &BackendConfig,
+) -> Result<Arc<dyn SecretsBackend>, BackendError> {
+    Err(BackendError::ConfigError(
+        "Helicone backend selected but calciforge was built without the helicone feature"
+            .to_string(),
+    ))
 }
 
 // Mock backend implementation
@@ -320,47 +364,6 @@ impl SecretsBackend for MockBackend {
     }
 }
 
-// Embedded backend implementation (spawns subprocess)
-#[allow(dead_code)]
-pub struct EmbeddedBackend {
-    command: String,
-    args: Vec<String>,
-}
-
-impl EmbeddedBackend {
-    pub fn new(command: String, args: Vec<String>) -> Self {
-        Self { command, args }
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretsBackend for EmbeddedBackend {
-    async fn chat_completion(
-        &self,
-        _model: String,
-        _messages: Vec<ChatMessage>,
-        _stream: bool,
-        _tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
-        _tool_choice: Option<crate::proxy::openai::ToolChoice>,
-    ) -> Result<ChatCompletionResponse, BackendError> {
-        // TODO: Implement subprocess-backed provider execution.
-        Err(BackendError::NotAvailable(
-            "Embedded backend not yet implemented".to_string(),
-        ))
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        // TODO: Implement subprocess-backed provider execution.
-        Err(BackendError::NotAvailable(
-            "Embedded backend not yet implemented".to_string(),
-        ))
-    }
-
-    fn backend_type(&self) -> BackendType {
-        BackendType::Embedded
-    }
-}
-
 // HTTP backend implementation - calls OpenAI-compatible API endpoints
 #[allow(dead_code)]
 pub struct HttpBackend {
@@ -404,6 +407,61 @@ impl HttpBackend {
             headers: headers.unwrap_or_default(),
         }
     }
+
+    async fn send_chat_completion_request(
+        &self,
+        mut request: crate::proxy::openai::ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        let url = format!("{}/chat/completions", self.base_url);
+
+        // Force non-streaming until this backend grows SSE support.
+        request.stream = Some(false);
+
+        let model = request.model.clone();
+        let mut request_body = serde_json::to_value(&request).map_err(|e| {
+            BackendError::InvalidResponse(format!("Failed to serialize request: {e}"))
+        })?;
+        apply_kimi_compat(&self.base_url, &model, &mut request_body);
+
+        let mut request_builder = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json");
+
+        if !self.api_key.is_empty() {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        for (key, value) in &self.headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        let response = request_builder
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| {
+                BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(BackendError::http_status_error(
+                status,
+                format!("API error {}: {}", status, error_text),
+            ));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse response: {}", e)))
+    }
 }
 
 fn is_kimi_backend(base_url: &str) -> bool {
@@ -439,68 +497,22 @@ impl SecretsBackend for HttpBackend {
         tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
         tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        let url = format!("{}/chat/completions", self.base_url);
+        self.send_chat_completion_request(crate::proxy::openai::ChatCompletionRequest {
+            model,
+            messages,
+            stream: Some(stream),
+            tools,
+            tool_choice,
+            ..Default::default()
+        })
+        .await
+    }
 
-        // Force non-streaming - streaming responses require SSE parsing
-        let _ = stream; // Acknowledge parameter but don't use it for now
-
-        // Build request body with optional tools
-        let mut request_body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "stream": false,
-        });
-        apply_kimi_compat(&self.base_url, &model, &mut request_body);
-
-        // Add tools if present
-        if let Some(tools) = tools {
-            request_body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
-        }
-
-        // Add tool_choice if present
-        if let Some(tool_choice) = tool_choice {
-            request_body["tool_choice"] =
-                serde_json::to_value(tool_choice).unwrap_or(serde_json::Value::Null);
-        }
-
-        let mut request_builder = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json");
-
-        if !self.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        // Add custom headers from config
-        for (key, value) in &self.headers {
-            request_builder = request_builder.header(key, value);
-        }
-
-        let response = request_builder
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(format!(
-                "API error {}: {}",
-                status, error_text
-            )));
-        }
-
-        let completion: ChatCompletionResponse = response.json().await.map_err(|e| {
-            BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
-        })?;
-
-        Ok(completion)
+    async fn chat_completion_request(
+        &self,
+        request: crate::proxy::openai::ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        self.send_chat_completion_request(request).await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
@@ -510,10 +522,9 @@ impl SecretsBackend for HttpBackend {
         if !self.api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", self.api_key));
         }
-        let response = req
-            .send()
-            .await
-            .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
+        let response = req.send().await.map_err(|e| {
+            BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -521,10 +532,10 @@ impl SecretsBackend for HttpBackend {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(format!(
-                "API error {}: {}",
-                status, error_text
-            )));
+            return Err(BackendError::http_status_error(
+                status,
+                format!("API error {}: {}", status, error_text),
+            ));
         }
 
         // Parse OpenAI-compatible models response
@@ -561,46 +572,6 @@ impl SecretsBackend for HttpBackend {
 
     fn backend_type(&self) -> BackendType {
         BackendType::Http
-    }
-}
-
-// Library backend implementation
-#[allow(dead_code)]
-pub struct LibraryBackend {
-    config_path: String,
-}
-
-impl LibraryBackend {
-    pub fn new(config_path: String) -> Self {
-        Self { config_path }
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretsBackend for LibraryBackend {
-    async fn chat_completion(
-        &self,
-        _model: String,
-        _messages: Vec<ChatMessage>,
-        _stream: bool,
-        _tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
-        _tool_choice: Option<crate::proxy::openai::ToolChoice>,
-    ) -> Result<ChatCompletionResponse, BackendError> {
-        // TODO: Implement library-backed provider integration.
-        Err(BackendError::NotAvailable(
-            "Library backend not yet implemented".to_string(),
-        ))
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
-        // TODO: Implement library-backed provider integration.
-        Err(BackendError::NotAvailable(
-            "Library backend not yet implemented".to_string(),
-        ))
-    }
-
-    fn backend_type(&self) -> BackendType {
-        BackendType::Library
     }
 }
 

@@ -68,6 +68,15 @@ pub struct ChatCompletionRequest {
     /// Tool choice (optional)
     #[serde(default)]
     pub tool_choice: Option<ToolChoice>,
+
+    /// Provider-specific OpenAI-compatible request extensions.
+    ///
+    /// Calciforge must preserve unknown fields such as Kimi's `thinking`,
+    /// OpenAI reasoning knobs, or gateway-specific options when routing through
+    /// the model gateway. Known fields remain first-class above; everything
+    /// else round-trips here.
+    #[serde(default, flatten)]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Content of a message - can be a simple string or an array of content parts
@@ -360,5 +369,70 @@ impl ChatCompletionRequest {
     /// Check if this request should use streaming
     pub fn should_stream(&self) -> bool {
         self.stream.unwrap_or(false)
+    }
+}
+
+pub(crate) fn is_reserved_chat_completion_field(key: &str) -> bool {
+    matches!(
+        key,
+        "model"
+            | "messages"
+            | "max_tokens"
+            | "temperature"
+            | "top_p"
+            | "n"
+            | "stream"
+            | "stop"
+            | "presence_penalty"
+            | "frequency_penalty"
+            | "logit_bias"
+            | "user"
+            | "response_format"
+            | "tools"
+            | "tool_choice"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_completion_request_preserves_provider_specific_fields() {
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-for-coding",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            req.extra_body.get("thinking"),
+            Some(&serde_json::json!({"type": "enabled"}))
+        );
+        assert_eq!(
+            req.extra_body.get("reasoning_effort"),
+            Some(&serde_json::json!("high"))
+        );
+
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            serialized.get("thinking"),
+            Some(&serde_json::json!({"type": "enabled"}))
+        );
+        assert_eq!(
+            serialized.get("reasoning_effort"),
+            Some(&serde_json::json!("high"))
+        );
+    }
+
+    #[test]
+    fn reserved_chat_completion_fields_are_not_provider_extensions() {
+        assert!(is_reserved_chat_completion_field("model"));
+        assert!(is_reserved_chat_completion_field("messages"));
+        assert!(is_reserved_chat_completion_field("tool_choice"));
+        assert!(!is_reserved_chat_completion_field("thinking"));
+        assert!(!is_reserved_chat_completion_field("reasoning_effort"));
     }
 }

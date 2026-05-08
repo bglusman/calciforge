@@ -3450,6 +3450,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         });
         let h = CommandHandler::new(Arc::new(config));
         h.handle_switch("!switch gateway", "brian");
@@ -3509,6 +3510,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         });
         let config = Arc::new(config);
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
@@ -3552,6 +3554,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         });
         let h = CommandHandler::new(Arc::new(config));
         h.handle_switch("!switch gateway", "brian");

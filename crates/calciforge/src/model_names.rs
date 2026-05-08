@@ -270,6 +270,7 @@ version = 2
                 command: None,
                 args: Vec::new(),
                 env: Default::default(),
+                ..Default::default()
             }],
             model_routes: vec![ProxyModelRoute {
                 pattern: "coding/default".to_string(),

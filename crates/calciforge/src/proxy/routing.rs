@@ -10,11 +10,12 @@ use std::collections::HashMap;
 use anyhow::Context as _;
 use tracing::info;
 
-use crate::config::ProxyConfig;
+use crate::config::{GatewayFailureKind, ProxyConfig};
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
 use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
+use super::openai::is_reserved_chat_completion_field;
 
 /// Per-provider model switch state shared by routes that point to the same provider.
 #[derive(Debug, Default)]
@@ -46,6 +47,11 @@ pub struct ProviderEntry {
     pub strip_model_prefix: Option<String>,
     /// Optional provider model prefix added before forwarding upstream.
     pub add_model_prefix: Option<String>,
+    /// Failure classes that may advance synthetic fallback from this provider.
+    pub fallback_on: Vec<GatewayFailureKind>,
+    /// Provider-specific OpenAI-compatible extension fields to merge into the
+    /// upstream request body.
+    pub request_body: serde_json::Map<String, serde_json::Value>,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -56,6 +62,11 @@ impl std::fmt::Debug for ProviderEntry {
             .field("on_switch", &self.on_switch)
             .field("strip_model_prefix", &self.strip_model_prefix)
             .field("add_model_prefix", &self.add_model_prefix)
+            .field("fallback_on", &self.fallback_on)
+            .field(
+                "request_body_keys",
+                &self.request_body.keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -123,9 +134,12 @@ pub fn build_provider_entries(
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_strip_prefix: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_add_prefix: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_request_body: HashMap<String, serde_json::Map<String, serde_json::Value>> =
+        HashMap::new();
     let mut provider_switch_state: HashMap<String, Arc<ProviderSwitchState>> = HashMap::new();
 
     for p in &config.providers {
+        validate_request_body_extensions(p)?;
         provider_switch_state
             .entry(p.id.clone())
             .or_insert_with(|| Arc::new(ProviderSwitchState::default()));
@@ -150,10 +164,7 @@ pub fn build_provider_entries(
                 timeout_seconds: timeout,
                 extra_config: None,
                 headers,
-                retry_enabled: true,
-                max_retries: 3,
-                retry_base_delay_ms: 1000,
-                retry_max_delay_ms: 10000,
+                retry: p.retry.clone().unwrap_or_else(|| config.retry.clone()),
                 ui_url: None,
             };
             let gw = gateway::create_gateway(gw_cfg, None)
@@ -163,6 +174,7 @@ pub fn build_provider_entries(
             provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
             provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
             provider_add_prefix.insert(p.id.clone(), normalized_add_prefix(p));
+            provider_request_body.insert(p.id.clone(), request_body_map(p));
             continue;
         }
 
@@ -208,10 +220,7 @@ pub fn build_provider_entries(
             timeout_seconds: timeout,
             extra_config: None,
             headers,
-            retry_enabled: true,
-            max_retries: 3,
-            retry_base_delay_ms: 1000,
-            retry_max_delay_ms: 10000,
+            retry: p.retry.clone().unwrap_or_else(|| config.retry.clone()),
             ui_url: None,
         };
 
@@ -223,6 +232,7 @@ pub fn build_provider_entries(
         provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
         provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
         provider_add_prefix.insert(p.id.clone(), normalized_add_prefix(p));
+        provider_request_body.insert(p.id.clone(), request_body_map(p));
     }
 
     let mut entries: Vec<ProviderEntry> = Vec::new();
@@ -244,6 +254,16 @@ pub fn build_provider_entries(
                     .cloned()
                     .flatten(),
                 add_model_prefix: provider_add_prefix.get(&route.provider).cloned().flatten(),
+                fallback_on: config
+                    .providers
+                    .iter()
+                    .find(|p| p.id == route.provider)
+                    .map(|p| provider_fallback_on(config, p))
+                    .unwrap_or_else(|| config.fallback_on.clone()),
+                request_body: provider_request_body
+                    .get(&route.provider)
+                    .cloned()
+                    .unwrap_or_default(),
             });
         } else {
             anyhow::bail!(
@@ -271,11 +291,26 @@ pub fn build_provider_entries(
                     .unwrap_or_else(|| Arc::new(ProviderSwitchState::default())),
                 strip_model_prefix: provider_strip_prefix.get(&p.id).cloned().flatten(),
                 add_model_prefix: provider_add_prefix.get(&p.id).cloned().flatten(),
+                fallback_on: provider_fallback_on(config, p),
+                request_body: provider_request_body
+                    .get(&p.id)
+                    .cloned()
+                    .unwrap_or_default(),
             });
         }
     }
 
     Ok(entries)
+}
+
+fn provider_fallback_on(
+    config: &ProxyConfig,
+    provider: &crate::config::ProxyProviderConfig,
+) -> Vec<GatewayFailureKind> {
+    provider
+        .fallback_on
+        .clone()
+        .unwrap_or_else(|| config.fallback_on.clone())
 }
 
 fn normalized_strip_prefix(provider: &crate::config::ProxyProviderConfig) -> Option<String> {
@@ -294,6 +329,38 @@ fn normalized_add_prefix(provider: &crate::config::ProxyProviderConfig) -> Optio
         .map(str::trim)
         .filter(|prefix| !prefix.is_empty())
         .map(str::to_string)
+}
+
+fn request_body_map(
+    provider: &crate::config::ProxyProviderConfig,
+) -> serde_json::Map<String, serde_json::Value> {
+    provider
+        .request_body
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn validate_request_body_extensions(
+    provider: &crate::config::ProxyProviderConfig,
+) -> anyhow::Result<()> {
+    let mut reserved: Vec<&str> = provider
+        .request_body
+        .keys()
+        .map(String::as_str)
+        .filter(|key| is_reserved_chat_completion_field(key))
+        .collect();
+    reserved.sort_unstable();
+
+    if !reserved.is_empty() {
+        anyhow::bail!(
+            "provider '{}' request_body may only contain provider extension fields; reserved OpenAI fields are not allowed: {}",
+            provider.id,
+            reserved.join(", ")
+        );
+    }
+
+    Ok(())
 }
 
 fn resolve_provider_api_key(
@@ -340,6 +407,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         }
     }
 
@@ -386,6 +454,7 @@ mod tests {
                 command: None,
                 args: Vec::new(),
                 env: HashMap::new(),
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -400,6 +469,29 @@ mod tests {
             entries[0].upstream_model_name("ollama/qwen3.6:27b"),
             "ollama/qwen3.6:27b",
             "already-qualified provider model IDs should not get double-prefixed"
+        );
+    }
+
+    #[test]
+    fn provider_request_body_rejects_reserved_openai_fields() {
+        let mut p = provider("bad-request-body", "http", "https://example.invalid/v1");
+        p.request_body
+            .insert("model".to_string(), serde_json::json!("other-model"));
+        p.request_body.insert(
+            "thinking".to_string(),
+            serde_json::json!({ "type": "disabled" }),
+        );
+        let config = ProxyConfig {
+            providers: vec![p],
+            ..Default::default()
+        };
+
+        let err = build_provider_entries(&config, 30).unwrap_err();
+        assert!(err.to_string().contains("reserved OpenAI fields"), "{err}");
+        assert!(err.to_string().contains("model"), "{err}");
+        assert!(
+            !err.to_string().contains("thinking"),
+            "provider extension fields should remain allowed: {err}"
         );
     }
 
@@ -421,6 +513,7 @@ mod tests {
                 command: None,
                 args: Vec::new(),
                 env: HashMap::new(),
+                ..Default::default()
             }],
             model_routes: vec![ProxyModelRoute {
                 pattern: "local/qwen3.6:27b".to_string(),

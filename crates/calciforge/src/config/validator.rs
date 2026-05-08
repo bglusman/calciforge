@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use url::Url;
 
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
-use crate::config::CalciforgeConfig;
+use crate::config::{CalciforgeConfig, CredentialOwner, GatewayRetryConfig};
 use crate::model_names::{
     configured_agent_selectors, configured_first_class_model_ids, resolve_model_alias_chain,
 };
@@ -560,6 +560,8 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         return;
     }
 
+    validate_gateway_retry_config("Proxy retry", &proxy.retry, result);
+
     // Validate bind address format
     if let Err(e) = proxy.bind.parse::<std::net::SocketAddr>() {
         result.add_error(format!(
@@ -656,6 +658,78 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
                 ));
             }
         }
+
+        if let Some(retry) = provider.retry.as_ref() {
+            validate_gateway_retry_config(
+                &format!("Proxy provider '{}' retry", provider.id),
+                retry,
+                result,
+            );
+        }
+
+        match provider.credential_owner {
+            CredentialOwner::Calciforge => {}
+            CredentialOwner::Gateway => {
+                if provider
+                    .api_key
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|key| !key.is_empty())
+                    || provider.api_key_file.is_some()
+                {
+                    result.add_warning(format!(
+                        "Proxy provider '{}' has credential_owner='gateway'; api_key/api_key_file authenticate Calciforge to the gateway endpoint, not to the upstream model provider",
+                        provider.id
+                    ));
+                }
+            }
+            CredentialOwner::None => {
+                if provider
+                    .api_key
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|key| !key.is_empty())
+                    || provider.api_key_file.is_some()
+                {
+                    result.add_warning(format!(
+                        "Proxy provider '{}' has credential_owner='none' but also configures api_key/api_key_file",
+                        provider.id
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn validate_gateway_retry_config(
+    label: &str,
+    retry: &GatewayRetryConfig,
+    result: &mut ValidationResult,
+) {
+    if retry.min_timeout_ms == 0 {
+        result.add_error(format!("{label} min_timeout_ms cannot be zero"));
+    }
+    if retry.max_timeout_ms == 0 {
+        result.add_error(format!("{label} max_timeout_ms cannot be zero"));
+    }
+    if retry.min_timeout_ms > retry.max_timeout_ms {
+        result.add_error(format!(
+            "{label} min_timeout_ms ({}) cannot exceed max_timeout_ms ({})",
+            retry.min_timeout_ms, retry.max_timeout_ms
+        ));
+    }
+    if retry.factor == 0 {
+        result.add_error(format!("{label} factor cannot be zero"));
+    }
+    if retry.enabled && retry.max_retries == 0 {
+        result.add_warning(format!(
+            "{label} is enabled but max_retries=0; requests will not actually be retried"
+        ));
+    }
+    if retry.enabled && retry.retry_on.is_empty() {
+        result.add_warning(format!(
+            "{label} is enabled but retry_on is empty; requests will not actually be retried"
+        ));
     }
 }
 
@@ -985,6 +1059,116 @@ strip_model_prefix = "opencode-go/"
                 .iter()
                 .any(|w| w.contains("strips model prefix")),
             "warning should identify useless strip_model_prefix; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn gateway_retry_config_rejects_invalid_backoff_bounds() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[proxy.retry]
+enabled = true
+min_timeout_ms = 2000
+max_timeout_ms = 1000
+factor = 0
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "invalid retry timing should fail validation before runtime"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("min_timeout_ms") && e.contains("max_timeout_ms")),
+            "error should identify inverted retry bounds; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| e.contains("factor")),
+            "error should reject zero retry factor; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn gateway_owned_provider_key_is_endpoint_auth_warning_not_error() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "managed-gateway"
+backend_type = "http"
+url = "http://127.0.0.1:4000/v1"
+credential_owner = "gateway"
+api_key = "sk-local-gateway-client"
+models = ["gateway/default"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "gateway-owned provider keys should be a supported config shape; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.warnings.iter().any(|w| {
+                w.contains("managed-gateway")
+                    && w.contains("credential_owner='gateway'")
+                    && w.contains("gateway endpoint")
+            }),
+            "warning should clarify api_key is gateway transport auth; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn credential_owner_none_warns_when_key_is_configured() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "local"
+backend_type = "http"
+url = "http://127.0.0.1:11434/v1"
+credential_owner = "none"
+api_key = "unexpected"
+models = ["ollama/qwen3.6:27b"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "credential_owner='none' with a key is suspicious but not necessarily fatal"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("credential_owner='none'")),
+            "warning should identify key custody mismatch; warnings: {:?}",
             result.warnings
         );
     }
@@ -1665,32 +1849,30 @@ endpoint = "http://127.0.0.1:8642"
         );
     }
 
-    /// Given a proxy backend type that is only a stale spike or stub,
+    /// Given a proxy backend type outside the runtime allow-list,
     /// when validate_config runs,
-    /// then validation rejects it instead of presenting it as a supported
-    /// gateway engine.
+    /// then validation rejects it and reports the supported values.
     #[test]
-    fn unsupported_proxy_backend_types_are_rejected() {
-        for backend_type in ["embedded", "library", "traceloop"] {
-            let fixture = format!(
-                "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"{backend_type}\"\nbackend_url = \"https://api.example.com\"\n"
-            );
-            let config = parse(&fixture);
-            let result = validate_config(&config);
+    fn unsupported_proxy_backend_type_is_rejected_by_allowlist() {
+        let backend_type = "experimental-gateway";
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"{backend_type}\"\nbackend_url = \"https://api.example.com\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
 
-            assert!(
-                !result.is_valid(),
-                "{backend_type} must not validate as a supported proxy backend; errors: {:?}",
-                result.errors
-            );
-            assert!(
-                result.errors.iter().any(|e| {
-                    e.contains("backend_type") && e.contains(backend_type) && e.contains("http")
-                }),
-                "error should name unsupported backend and supported values; errors: {:?}",
-                result.errors
-            );
-        }
+        assert!(
+            !result.is_valid(),
+            "{backend_type} must not validate as a supported proxy backend; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("backend_type") && e.contains(backend_type) && e.contains("http")
+            }),
+            "error should name unsupported backend and supported values; errors: {:?}",
+            result.errors
+        );
     }
 
     /// Given a disabled proxy with a configured gateway UI link,

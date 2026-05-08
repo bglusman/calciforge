@@ -35,10 +35,6 @@ mod voice_handlers;
 #[cfg(feature = "helicone")]
 mod helicone_router;
 
-// Experimental Traceloop-compatible router.
-#[cfg(feature = "traceloop")]
-mod traceloop;
-
 pub use openai::ChatCompletionRequest;
 pub use routing::ProviderEntry;
 
@@ -202,10 +198,7 @@ pub async fn start_proxy_server(
         timeout_seconds: config.timeout_seconds,
         extra_config: None,
         headers: config.headers.clone(),
-        retry_enabled: true,
-        max_retries: 3,
-        retry_base_delay_ms: 1000,
-        retry_max_delay_ms: 10000,
+        retry: config.retry.clone(),
         ui_url: config.gateway_ui_url.clone(),
     };
 
