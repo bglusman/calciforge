@@ -138,6 +138,32 @@ provider keys from fnox, key files, or inline local config. This remains the
 default and is the recommended starting point for direct provider routes. Set
 `credential_owner = "none"` for local unauthenticated providers.
 
+Provider routes can also set fixed upstream headers and OpenAI-compatible JSON
+body extensions. Headers are useful when the provider contract requires an
+honest client identity, partner identifier, or beta flag. `request_body` is for
+provider-specific request fields such as Kimi's `thinking` option. Calciforge
+also preserves unknown request fields sent by the caller, but configured
+`request_body` values win when the same key is present.
+
+```toml
+[[proxy.providers]]
+id = "kimi-coding"
+backend_type = "http"
+url = "https://api.kimi.com/coding/v1"
+api_key_file = "/etc/calciforge/secrets/kimi-coding-key"
+models = ["kimi-for-coding"]
+headers = { "User-Agent" = "kimi-cli/1.0" }
+
+[proxy.providers.request_body]
+thinking = { type = "disabled" }
+```
+
+Do not use headers to pretend Calciforge is another commercial client. Some
+subscription providers allow OpenAI-compatible access only for approved coding
+agents and require the real tool identity to be preserved. In that case, prefer
+the provider's native CLI adapter, ACP adapter, or a documented per-agent route
+whose headers accurately describe the client that is making the request.
+
 Helicone is the first external gateway adapter and the default batteries-included
 observability path we ship today. It gives operators a real request dashboard,
 provider routing surface, and persisted gateway logs, while Calciforge remains
@@ -400,6 +426,13 @@ Calciforge, keep Zen separate with a distinct prefix such as
 unprefixed model ID in both cases. Calciforge providers therefore support
 `strip_model_prefix` so user-facing selectors remain namespaced while upstream
 requests send the provider's concrete model ID.
+
+Calciforge's model gateway currently speaks the OpenAI-compatible
+`/v1/chat/completions` request shape. Use OpenCode Go models that are exposed on
+that shape, such as Kimi and Qwen. Models that require Anthropic-compatible
+`/v1/messages` are not direct gateway providers yet; route them through a CLI,
+ACP adapter, LiteLLM, or another gateway that converts OpenAI-compatible
+requests to Anthropic-compatible upstream calls.
 
 ```toml
 [[proxy.providers]]

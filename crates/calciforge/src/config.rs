@@ -1031,6 +1031,15 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
 
+    /// Provider-specific JSON fields merged into every chat completion request
+    /// after model prefix rewriting and before sending upstream.
+    ///
+    /// Use this for OpenAI-compatible extension fields such as
+    /// `thinking = { type = "disabled" }`. These values override same-named
+    /// fields sent by the caller.
+    #[serde(default)]
+    pub request_body: HashMap<String, serde_json::Value>,
+
     /// Provider-specific retry override. Inherits `[proxy.retry]` when unset.
     #[serde(default)]
     pub retry: Option<GatewayRetryConfig>,
@@ -1075,6 +1084,7 @@ impl Default for ProxyProviderConfig {
             add_model_prefix: None,
             timeout_seconds: None,
             headers: HashMap::new(),
+            request_body: HashMap::new(),
             retry: None,
             fallback_on: None,
             on_switch: None,

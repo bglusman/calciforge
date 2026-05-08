@@ -285,6 +285,7 @@ async fn try_provider(
         .unwrap_or_else(|| model.to_string());
 
     if let Some(provider) = provider {
+        gateway_req.extra_body.extend(provider.request_body.clone());
         ensure_provider_model_ready(provider, model, &gateway_req.model)
             .await
             .map_err(|e| BackendError::ConfigError(e.to_string()))?;
@@ -823,6 +824,13 @@ mod tests {
                 .map(|request| request.model.clone())
                 .collect()
         }
+
+        fn recorded_requests(&self) -> Vec<ChatCompletionRequest> {
+            self.requests
+                .lock()
+                .expect("recording gateway mutex poisoned")
+                .clone()
+        }
     }
 
     #[async_trait]
@@ -984,6 +992,7 @@ mod tests {
                 strip_model_prefix: None,
                 add_model_prefix: None,
                 fallback_on: Vec::new(),
+                request_body: serde_json::Map::new(),
             }],
             local_manager: None,
             voice: None,
@@ -1244,6 +1253,7 @@ mod tests {
                 strip_model_prefix: None,
                 add_model_prefix: None,
                 fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
             }],
             local_manager: None,
             voice: None,
@@ -1297,6 +1307,7 @@ mod tests {
                 strip_model_prefix: Some("opencode-go/".to_string()),
                 add_model_prefix: None,
                 fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
             }],
             local_manager: None,
             voice: None,
@@ -1323,6 +1334,63 @@ mod tests {
         assert!(
             default_gateway.recorded_models().is_empty(),
             "provider route should not fall through to default gateway"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_route_merges_configured_request_body_fields() {
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let provider_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "http".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "kimi-coding".to_string(),
+                patterns: vec!["kimi-for-coding".to_string()],
+                gateway: provider_gateway_dyn,
+                on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
+                strip_model_prefix: None,
+                add_model_prefix: None,
+                fallback_on: ProxyConfig::default().fallback_on,
+                request_body: [(
+                    "thinking".to_string(),
+                    serde_json::json!({ "type": "disabled" }),
+                )]
+                .into_iter()
+                .collect(),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-for-coding",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "thinking": {"type": "enabled"}
+        }))
+        .unwrap();
+        let response = chat_completions(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        let requests = provider_gateway.recorded_requests();
+        assert_eq!(
+            requests[0].extra_body.get("thinking"),
+            Some(&serde_json::json!({ "type": "disabled" })),
+            "provider request_body must be the operator-controlled override"
         );
     }
 
@@ -1356,6 +1424,7 @@ mod tests {
                 strip_model_prefix: Some("local/".to_string()),
                 add_model_prefix: Some("ollama/".to_string()),
                 fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
             }],
             local_manager: None,
             voice: None,
@@ -1408,6 +1477,7 @@ mod tests {
                 strip_model_prefix: None,
                 add_model_prefix: Some("ollama/".to_string()),
                 fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
             }],
             local_manager: None,
             voice: None,
@@ -1828,6 +1898,7 @@ mod tests {
                 strip_model_prefix: None,
                 add_model_prefix: None,
                 fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
             }],
             local_manager: None,
             voice: None,

@@ -538,17 +538,7 @@ impl GatewayBackend for DirectGateway {
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        // Extract parameters to pass to the underlying backend
-        // Note: Backend uses the old parameter-based API
-        self.backend
-            .chat_completion(
-                request.model,
-                request.messages,
-                request.stream.unwrap_or(false),
-                request.tools,
-                request.tool_choice,
-            )
-            .await
+        self.backend.chat_completion_request(request).await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
@@ -750,6 +740,99 @@ mod tests {
             !should_retry_locally(GatewayType::Helicone, &retry, &server_error, 0),
             "Helicone receives retry headers, so Calciforge must not multiply attempts locally"
         );
+    }
+
+    #[tokio::test]
+    async fn direct_gateway_forwards_complete_chat_request_options() {
+        use crate::proxy::backend::{create_backend, BackendConfig, BackendType};
+        use crate::proxy::openai::{ChatMessage, Choice, MessageContent, Usage};
+        use mockito::Matcher;
+        use std::collections::HashMap;
+
+        let mut server = mockito::Server::new_async().await;
+        let response = ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "kimi-for-coding".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text("ok".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+            system_fingerprint: None,
+        };
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("x-client-family", "kimi-cli")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "kimi-for-coding",
+                "max_tokens": 16,
+                "temperature": 0.5,
+                "thinking": {"type": "enabled"},
+                "stream": false,
+                "messages": [{"role": "user", "content": "hello"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response).unwrap())
+            .create_async()
+            .await;
+
+        let mut headers = HashMap::new();
+        headers.insert("x-client-family".to_string(), "kimi-cli".to_string());
+        let backend = create_backend(&BackendConfig {
+            backend_type: BackendType::Http,
+            url: Some(format!("{}/v1", server.url())),
+            api_key: Some("provider-key".to_string()),
+            timeout_seconds: Some(30),
+            headers: Some(headers.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let gateway = create_gateway(
+            GatewayConfig {
+                backend_type: GatewayType::Direct,
+                base_url: Some(format!("{}/v1", server.url())),
+                api_key: Some("provider-key".to_string()),
+                timeout_seconds: 30,
+                headers: Some(headers),
+                ..Default::default()
+            },
+            Some(backend),
+        )
+        .unwrap();
+
+        let result = gateway
+            .chat_completion(
+                serde_json::from_value(serde_json::json!({
+                    "model": "kimi-for-coding",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 16,
+                    "temperature": 0.5,
+                    "thinking": {"type": "enabled"}
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.model, "kimi/kimi-for-coding");
+        mock.assert_async().await;
     }
 
     #[cfg(feature = "helicone")]

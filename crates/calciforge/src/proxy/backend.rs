@@ -94,6 +94,25 @@ pub trait SecretsBackend: Send + Sync {
         tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError>;
 
+    /// Execute a complete OpenAI-compatible chat completion request.
+    ///
+    /// Implementations should override this when they can preserve request
+    /// fields beyond the legacy parameter list, including provider-specific
+    /// extension fields captured by `ChatCompletionRequest::extra_body`.
+    async fn chat_completion_request(
+        &self,
+        request: crate::proxy::openai::ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        self.chat_completion(
+            request.model,
+            request.messages,
+            request.stream.unwrap_or(false),
+            request.tools,
+            request.tool_choice,
+        )
+        .await
+    }
+
     /// List available models
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError>;
 
@@ -388,6 +407,61 @@ impl HttpBackend {
             headers: headers.unwrap_or_default(),
         }
     }
+
+    async fn send_chat_completion_request(
+        &self,
+        mut request: crate::proxy::openai::ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        let url = format!("{}/chat/completions", self.base_url);
+
+        // Force non-streaming until this backend grows SSE support.
+        request.stream = Some(false);
+
+        let model = request.model.clone();
+        let mut request_body = serde_json::to_value(&request).map_err(|e| {
+            BackendError::InvalidResponse(format!("Failed to serialize request: {e}"))
+        })?;
+        apply_kimi_compat(&self.base_url, &model, &mut request_body);
+
+        let mut request_builder = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json");
+
+        if !self.api_key.is_empty() {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        for (key, value) in &self.headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        let response = request_builder
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| {
+                BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(BackendError::http_status_error(
+                status,
+                format!("API error {}: {}", status, error_text),
+            ));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse response: {}", e)))
+    }
 }
 
 fn is_kimi_backend(base_url: &str) -> bool {
@@ -423,70 +497,22 @@ impl SecretsBackend for HttpBackend {
         tools: Option<Vec<crate::proxy::openai::ToolDefinition>>,
         tool_choice: Option<crate::proxy::openai::ToolChoice>,
     ) -> Result<ChatCompletionResponse, BackendError> {
-        let url = format!("{}/chat/completions", self.base_url);
+        self.send_chat_completion_request(crate::proxy::openai::ChatCompletionRequest {
+            model,
+            messages,
+            stream: Some(stream),
+            tools,
+            tool_choice,
+            ..Default::default()
+        })
+        .await
+    }
 
-        // Force non-streaming - streaming responses require SSE parsing
-        let _ = stream; // Acknowledge parameter but don't use it for now
-
-        // Build request body with optional tools
-        let mut request_body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "stream": false,
-        });
-        apply_kimi_compat(&self.base_url, &model, &mut request_body);
-
-        // Add tools if present
-        if let Some(tools) = tools {
-            request_body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
-        }
-
-        // Add tool_choice if present
-        if let Some(tool_choice) = tool_choice {
-            request_body["tool_choice"] =
-                serde_json::to_value(tool_choice).unwrap_or(serde_json::Value::Null);
-        }
-
-        let mut request_builder = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json");
-
-        if !self.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        // Add custom headers from config
-        for (key, value) in &self.headers {
-            request_builder = request_builder.header(key, value);
-        }
-
-        let response = request_builder
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| {
-                BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::http_status_error(
-                status,
-                format!("API error {}: {}", status, error_text),
-            ));
-        }
-
-        let completion: ChatCompletionResponse = response.json().await.map_err(|e| {
-            BackendError::InvalidResponse(format!("Failed to parse response: {}", e))
-        })?;
-
-        Ok(completion)
+    async fn chat_completion_request(
+        &self,
+        request: crate::proxy::openai::ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        self.send_chat_completion_request(request).await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {

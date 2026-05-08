@@ -347,6 +347,13 @@ impl SecretsBackend for HeliconeRouter {
             .await
     }
 
+    async fn chat_completion_request(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, BackendError> {
+        HeliconeRouter::chat_completion_request(self, request).await
+    }
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         self.list_models().await
     }
