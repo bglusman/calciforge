@@ -10,18 +10,38 @@
 set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8888}"
-if [[ -z "${CA_BUNDLE:-}" ]]; then
-    service_ca=""
-    if command -v systemctl >/dev/null 2>&1; then
-        service_env="$(systemctl show calciforge-security-proxy -p Environment --value --no-pager 2>/dev/null || true)"
+CHECK_SYSTEM_TRUST="${CHECK_SYSTEM_TRUST:-true}"
+SYSTEM_TRUST_URL="${SYSTEM_TRUST_URL:-https://example.com/}"
+
+is_falsy() {
+    case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+        0|false|no|off|n) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+systemd_security_proxy_ca() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local scope service_env service_ca
+    for scope in "--user" ""; do
+        service_env="$(
+            # shellcheck disable=SC2086
+            systemctl $scope show calciforge-security-proxy.service -p Environment --value --no-pager 2>/dev/null || true
+        )"
         if [[ -n "$service_env" ]]; then
-            service_ca="$(
-                printf '%s\n' "$service_env" \
-                    | tr ' ' '\n' \
-                    | awk -F= '$1 == "SECURITY_PROXY_CA_CERT" { print substr($0, index($0, "=") + 1); exit }'
-            )"
+            service_ca="$(printf '%s\n' "$service_env" \
+                | tr ' ' '\n' \
+                | awk -F= '$1 == "SECURITY_PROXY_CA_CERT" { print substr($0, index($0, "=") + 1); exit }')"
+            if [[ -n "$service_ca" ]]; then
+                printf '%s\n' "$service_ca"
+                return 0
+            fi
         fi
-    fi
+    done
+}
+
+if [[ -z "${CA_BUNDLE:-}" ]]; then
+    service_ca="$(systemd_security_proxy_ca)"
     CA_BUNDLE="${service_ca:-${HOME}/.config/calciforge/secrets/mitm-ca.pem}"
 fi
 CANARY_URL="${CANARY_URL:-https://ref.jock.pl/modern-web}"
@@ -39,6 +59,34 @@ if [[ ! -s "$CA_BUNDLE" ]]; then
 fi
 
 curl -fsS --max-time 5 "${PROXY_URL%/}/health" >/dev/null
+
+if ! is_falsy "$CHECK_SYSTEM_TRUST"; then
+    if ! curl -fsS -I --max-time 10 \
+        --proxy "$PROXY_URL" \
+        --noproxy "" \
+        --cacert "$CA_BUNDLE" \
+        "$SYSTEM_TRUST_URL" >/dev/null; then
+        cat >&2 <<EOF
+system trust preflight failed even with the active Calciforge CA bundle.
+Check proxy/network reachability for $SYSTEM_TRUST_URL before diagnosing host
+trust store drift.
+EOF
+        exit 3
+    fi
+
+    if ! curl -fsS -I --max-time 10 \
+        --proxy "$PROXY_URL" \
+        --noproxy "" \
+        "$SYSTEM_TRUST_URL" >/dev/null; then
+        cat >&2 <<EOF
+system trust does not accept the active Calciforge MITM CA.
+The service-specific CA bundle works via --cacert $CA_BUNDLE, but tools that
+use the host trust store will fail until the active CA is installed there.
+Set CHECK_SYSTEM_TRUST=false to skip this check for intentionally scoped trust.
+EOF
+        exit 3
+    fi
+fi
 
 status="$(
     curl -sS -L --max-time 30 \

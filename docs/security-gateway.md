@@ -64,14 +64,13 @@ network restrictions when the LAN is not fully trusted.
 
 Ambient `HTTPS_PROXY` is not a complete protection story unless it points at a
 Calciforge MITM listener and the client trusts the Calciforge CA. Standard
-HTTPS proxying uses CONNECT tunnels; without MITM, the proxy can only see the
-destination host and encrypted bytes. With
-`SECURITY_PROXY_MITM_ENABLED=true`, `security-proxy` uses hudsucker to
-terminate CONNECT traffic, mint per-host certificates from the configured CA,
-and run the existing request/response substitution and scanner pipeline over
-the decrypted HTTP messages. Prefer Calciforge-owned model gateway routes,
-explicit fetch/tool integration, or audited recipe wrappers for runtimes that
-cannot use the MITM trust setup.
+HTTPS proxying uses CONNECT tunnels; without MITM, a proxy can only see the
+destination host and encrypted bytes. Current `security-proxy` is MITM-only:
+it uses hudsucker to terminate CONNECT traffic, mint per-host certificates from
+the configured CA, and run the existing request/response substitution and
+scanner pipeline over the decrypted HTTP messages. Prefer Calciforge-owned
+model gateway routes, explicit fetch/tool integration, or audited recipe
+wrappers for runtimes that cannot use the MITM trust setup.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
@@ -135,7 +134,6 @@ make every runtime trust that CA.
 To run the binary manually, use:
 
 ```sh
-SECURITY_PROXY_MITM_ENABLED=true \
 SECURITY_PROXY_CA_CERT=/etc/calciforge/mitm-ca.pem \
 SECURITY_PROXY_CA_KEY=/etc/calciforge/mitm-ca-key.pem \
 SECURITY_PROXY_PORT=8888 \

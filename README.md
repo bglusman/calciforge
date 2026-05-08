@@ -119,11 +119,9 @@ Do not treat ambient `HTTPS_PROXY` as a security boundary unless it points at
 Calciforge's MITM listener and the agent runtime trusts the Calciforge CA. The
 installer enables the experimental hudsucker-backed listener and generates a
 persistent local CA by default; manual deployments can set
-`SECURITY_PROXY_MITM_ENABLED=true`, `SECURITY_PROXY_CA_CERT=...`, and
-`SECURITY_PROXY_CA_KEY=...`. Otherwise HTTPS clients use opaque CONNECT
-tunnels. Use a Calciforge-owned model gateway, fetch/tool path, audited recipe,
-or tested MITM proxy setup when HTTPS content needs scanning or secret
-substitution.
+`SECURITY_PROXY_CA_CERT=...` and `SECURITY_PROXY_CA_KEY=...`. Use a
+Calciforge-owned model gateway, fetch/tool path, audited recipe, or tested MITM
+proxy setup when HTTPS content needs scanning or secret substitution.
 
 ## Tiny Config Sketch
 
