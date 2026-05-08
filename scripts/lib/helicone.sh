@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Helicone install and repair helpers for the Calciforge unified installer.
+# scripts/lib/helicone.sh — Helicone install and repair helpers.
 #
-# This file is sourced by scripts/install.sh. It relies on the installer for
-# platform detection, logging helpers, service helpers, and configured
-# CALCIFORGE_HELICONE_* environment defaults.
+# Ownership:
+#   Local Helicone AI Gateway and optional dashboard/container bootstrap.
+#
+# Required globals:
+#   CALCIFORGE_CONFIG_HOME
+#   CALCIFORGE_GATEWAY_UI_URL
+#   CALCIFORGE_HELICONE_* defaults
+#   HOME, IS_ROOT, LOG_DIR, PLATFORM, PLIST_DIR, SYSTEMCTL, ZC_LOG_DIR
+#
+# Required functions from common.sh / install.sh:
+#   die, enable_restart_service, load_launch_agent, ok, random_hex,
+#   require_npm, truthy, warn.
 
 [[ -n "${_CALCIFORGE_HELICONE_LIB_LOADED:-}" ]] && return 0
 _CALCIFORGE_HELICONE_LIB_LOADED=1

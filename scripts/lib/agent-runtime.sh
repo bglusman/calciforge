@@ -18,6 +18,9 @@
 #   WANTED_BY_TARGET — "multi-user.target" or "default.target"
 #   ZC_CONFIG      — path to calciforge config.toml
 #
+# Required functions from common.sh / install.sh:
+#   load_launch_agent, enable_restart_service, ok, warn.
+#
 # Optional globals:
 #   YES            — "true" for non-interactive mode
 
