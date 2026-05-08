@@ -23,6 +23,8 @@ use crate::adapters::agent_supports_model_override;
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
 use crate::model_names::configured_first_class_model_ids;
+use crate::providers::alloy::AlloyManager;
+use crate::proxy::model_resolver::ModelResolver;
 use crate::proxy::routing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -580,12 +582,76 @@ fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorRepo
     ));
 
     match routing::build_provider_entries(proxy, proxy.timeout_seconds) {
-        Ok(entries) => report.ok(format!(
-            "model gateway provider routing loads: {} route entries",
-            entries.len()
-        )),
+        Ok(entries) => {
+            report.ok(format!(
+                "model gateway provider routing loads: {} route entries",
+                entries.len()
+            ));
+            check_model_gateway_route_graph(config, proxy, &entries, report);
+        }
         Err(err) => report.error(format!("model gateway provider config invalid: {err}")),
     }
+}
+
+fn check_model_gateway_route_graph(
+    config: &CalciforgeConfig,
+    proxy: &crate::config::ProxyConfig,
+    entries: &[routing::ProviderEntry],
+    report: &mut DoctorReport,
+) {
+    let alloy_manager = match AlloyManager::from_gateway_configs(
+        &config.alloys,
+        &config.cascades,
+        &config.dispatchers,
+    ) {
+        Ok(manager) => manager,
+        Err(err) => {
+            report.error(format!(
+                "model gateway synthetic route graph invalid: {err}"
+            ));
+            return;
+        }
+    };
+    let resolver = ModelResolver::new(&config.model_shortcuts, &alloy_manager);
+    let mut selectors: Vec<_> = gateway_model_selector_ids(config).into_iter().collect();
+    selectors.sort();
+
+    let mut explicit_routes = 0usize;
+    let mut default_routes = 0usize;
+    for selector in &selectors {
+        let resolved = match resolver.plan_for_model(selector, 0) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                report.error(format!(
+                    "model gateway selector '{selector}' cannot resolve route graph: {err}"
+                ));
+                continue;
+            }
+        };
+
+        for concrete_model in &resolved.plan.ordered_models {
+            if routing::find_provider(entries, concrete_model).is_some() {
+                explicit_routes += 1;
+            } else {
+                default_routes += 1;
+                if !entries.is_empty()
+                    && crate::proxy::backend_accepts_unlisted_models(&proxy.backend_type)
+                {
+                    report.warn(format!(
+                        "model gateway selector '{selector}' resolves concrete model '{concrete_model}' through the default {} gateway, not an explicit provider route; add [[proxy.model_routes]] or a provider model pattern if it needs provider-specific API keys, prefixes, or on_switch hooks",
+                        proxy.backend_type
+                    ));
+                }
+            }
+        }
+    }
+
+    report.ok(format!(
+        "model gateway route graph resolves {} selector(s): {} explicit provider route(s), {} default gateway fallback route(s)",
+        selectors.len(),
+        explicit_routes,
+        default_routes
+    ));
 }
 
 fn report_agent_protection_summary(config: &CalciforgeConfig, report: &mut DoctorReport) {
@@ -2297,6 +2363,56 @@ mod tests {
                 && finding
                     .message
                     .contains("model gateway provider routing loads: 2 route entries")
+        }));
+    }
+
+    #[test]
+    fn model_gateway_route_graph_warns_when_selector_falls_through_default_gateway() {
+        let mut config = base_config();
+        config.dispatchers = vec![crate::config::DispatcherConfig {
+            id: "balanced".to_string(),
+            name: None,
+            models: vec![SyntheticModelConfig {
+                model: "qwen3.6:27b".to_string(),
+                context_window: 128_000,
+            }],
+        }];
+        let proxy = config.proxy.as_mut().expect("proxy");
+        proxy.backend_type = "helicone".to_string();
+        proxy.providers = vec![ProxyProviderConfig {
+            id: "helicone-ollama".to_string(),
+            backend_type: "helicone".to_string(),
+            url: "http://127.0.0.1:8787/ai".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["other-local-model".to_string()],
+            strip_model_prefix: None,
+            add_model_prefix: Some("ollama/".to_string()),
+            timeout_seconds: Some(900),
+            headers: HashMap::new(),
+            on_switch: Some("/usr/local/bin/calciforge-ollama-switch".to_string()),
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        }];
+        proxy.model_routes.clear();
+        let mut report = DoctorReport::default();
+
+        check_model_gateway_config(&config, &mut report);
+
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.severity == Severity::Warn
+                    && finding.message.contains("selector 'balanced'")
+                    && finding.message.contains("concrete model 'qwen3.6:27b'")
+                    && finding.message.contains("default helicone gateway")
+            }),
+            "doctor should warn when a synthetic selector will bypass explicit provider prefixes/hooks; findings: {:?}",
+            report.findings
+        );
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding.message.contains("1 default gateway fallback route")
         }));
     }
 

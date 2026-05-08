@@ -69,7 +69,11 @@ state whether each agent is using the model gateway, whether `!model` overrides
 are enabled, and whether security-proxy coverage is configured or unknown. It
 also validates configured provider routes and referenced provider key files, and
 reports stale persisted `!model` overrides that no longer point at a configured
-gateway selector.
+gateway selector. Doctor also resolves the configured model route graph for
+alloys, cascades, dispatchers, exact routes, and shortcuts. When a selector
+falls through to the default gateway instead of an explicit provider route, it
+warns because that path bypasses provider-specific prefixes, API keys, and
+`on_switch` hooks.
 
 ## What Exists Today
 

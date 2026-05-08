@@ -24,7 +24,7 @@ mod auth;
 mod backend;
 mod gateway;
 mod handlers;
-mod model_resolver;
+pub(crate) mod model_resolver;
 mod openai;
 pub(crate) mod routing;
 mod streaming;
@@ -96,6 +96,12 @@ fn gateway_type_for_backend_type(backend_type: &str) -> gateway::GatewayType {
         "traceloop" => gateway::GatewayType::Traceloop,
         _ => gateway::GatewayType::Direct,
     }
+}
+
+/// Return true when the configured root gateway is authoritative for model IDs
+/// that are not enumerated in Calciforge provider routes.
+pub(crate) fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
+    matches!(backend_type, "http" | "helicone")
 }
 
 /// Resolve all per-agent proxy API key files into in-memory keys before the
@@ -258,7 +264,9 @@ pub async fn start_proxy_server(
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway, gateway_type_for_backend_type, resolve_api_key};
+    use super::{
+        backend_accepts_unlisted_models, gateway, gateway_type_for_backend_type, resolve_api_key,
+    };
 
     #[test]
     fn resolve_api_key_ignores_empty_inline_key() {
@@ -287,5 +295,12 @@ mod tests {
             gateway_type_for_backend_type("http"),
             gateway::GatewayType::Direct
         );
+    }
+
+    #[test]
+    fn unlisted_model_acceptance_is_shared_for_runtime_and_doctor() {
+        assert!(backend_accepts_unlisted_models("helicone"));
+        assert!(backend_accepts_unlisted_models("http"));
+        assert!(!backend_accepts_unlisted_models("mock"));
     }
 }
