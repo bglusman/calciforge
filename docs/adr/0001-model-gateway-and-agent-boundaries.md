@@ -52,7 +52,7 @@ The root model gateway has a small supported backend set:
 - `mock`: deterministic local/test behavior.
 
 Experimental or stale root backends such as `embedded`, `library`, and
-`traceloop` are not supported production config. They can return later only
+`traceloop` are not supported in production config. They can return later only
 after they have a real adapter contract, validation, integration tests, and docs.
 Subprocess-backed subscription tools such as Codex, Claude, Kimi, Dirac, and
 artifact recipes are agents, not gateway models.
