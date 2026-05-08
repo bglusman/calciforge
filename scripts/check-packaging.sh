@@ -80,6 +80,37 @@ CALCIFORGE_FNOX_PROVIDER_TYPE="custom"
     echo "explicit fnox provider type should override platform default" >&2
     exit 1
 }
+
+fake_bin="$(mktemp -d)"
+fake_home="$(mktemp -d)"
+trap 'rm -rf "$fake_bin" "$fake_home"' EXIT
+cat >"$fake_bin/brew" <<'SH'
+#!/usr/bin/env bash
+exit 7
+SH
+chmod +x "$fake_bin/brew"
+PATH="$fake_bin:/usr/bin:/bin"
+HOME="$fake_home"
+CALCIFORGE_CONFIG_HOME="$HOME/.config/calciforge"
+CALCIFORGE_FNOX_DIR="$CALCIFORGE_CONFIG_HOME"
+CALCIFORGE_FNOX_PROVIDER_TYPE=""
+CONFIGURE_ONLY=false
+PLATFORM=Darwin
+ask_install() { return 0; }
+set +e
+ensure_fnox >/dev/null 2>&1
+fnox_rc=$?
+case "$-" in
+    *e*)
+        echo "ensure_fnox must preserve disabled errexit when sourced" >&2
+        exit 1
+        ;;
+esac
+set -e
+[[ "$fnox_rc" -eq 1 ]] || {
+    echo "fake brew fallback should fail without enabling errexit" >&2
+    exit 1
+}
 BASH
 
 python3 - "$ROOT/scripts/install.sh" "$ROOT/docs/model-gateway.md" <<'PY'

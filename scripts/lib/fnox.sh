@@ -106,10 +106,11 @@ ensure_fnox() {
             echo "  Installing fnox..."
             # Use PIPESTATUS to catch brew's real exit code — `| tail -3`
             # would otherwise bury a failure behind a successful `tail`.
+            local shell_flags="$-"
             set +e
             brew install fnox 2>&1 | tail -3
             local brew_rc=${PIPESTATUS[0]}
-            set -e
+            case "$shell_flags" in *e*) set -e ;; *) set +e ;; esac
             if [[ $brew_rc -eq 0 ]]; then
                 ok "fnox installed"
                 ensure_fnox_config
@@ -139,10 +140,11 @@ ensure_fnox() {
         echo "  Installing fnox via cargo..."
         # Same pattern as above — the grep|tail pipeline masks
         # `cargo install`'s exit code otherwise.
+        local shell_flags="$-"
         set +e
         "$cargo_bin" install fnox 2>&1 | grep -E "Installing|Installed|error" | tail -3
         local cargo_rc=${PIPESTATUS[0]}
-        set -e
+        case "$shell_flags" in *e*) set -e ;; *) set +e ;; esac
         if [[ $cargo_rc -eq 0 ]]; then
             ok "fnox installed"
             ensure_fnox_config
