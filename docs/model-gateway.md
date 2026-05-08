@@ -105,6 +105,39 @@ provider forwarding. External engines can add operator-facing dashboards or
 provider management without changing how channels and agents talk to
 Calciforge.
 
+Calciforge intentionally treats external gateway model IDs as opaque when the
+external gateway owns provider configuration. Helicone and LiteLLM both support
+gateway-side provider/key/model registries; Calciforge should not duplicate that
+registry when the operator has chosen that shape. In Calciforge config, set
+`credential_owner = "gateway"` on the provider route. The provider's
+`api_key`/`api_key_file`, if present, then authenticates Calciforge to the
+gateway process; it is not the upstream OpenAI, Anthropic, Ollama, or other
+provider key.
+
+```toml
+[[proxy.providers]]
+id = "managed-gateway"
+backend_type = "http"
+url = "http://127.0.0.1:4000/v1"
+credential_owner = "gateway"
+api_key_file = "/etc/calciforge/secrets/managed-gateway-client-key"
+models = ["managed/*"]
+```
+
+With this pattern, `managed/default`, `managed/cheap`, or `managed/coding`
+are Calciforge-visible selectors but gateway-owned model names. Calciforge
+still owns aliases, synthetic selectors, access policy, sender identity,
+security scanning, and command UX. The external gateway owns upstream provider
+API keys, provider-specific model IDs, load balancing, and any dashboard-native
+model registry. Use multiple Calciforge providers pointing at the same gateway
+URL when different public prefixes need different `strip_model_prefix` or
+`add_model_prefix` translations.
+
+Set `credential_owner = "calciforge"` when Calciforge should resolve upstream
+provider keys from fnox, key files, or inline local config. This remains the
+default and is the recommended starting point for direct provider routes. Set
+`credential_owner = "none"` for local unauthenticated providers.
+
 Helicone is the first external gateway adapter and the default batteries-included
 observability path we ship today. It gives operators a real request dashboard,
 provider routing surface, and persisted gateway logs, while Calciforge remains
@@ -145,6 +178,62 @@ backend_url = "http://127.0.0.1:8787/ai"
 backend_api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
 gateway_ui_url = "http://127.0.0.1:3300"
 ```
+
+### Retry and Fallback Policy
+
+There are two distinct failure-handling layers:
+
+- `[proxy.retry]` retries one concrete provider/gateway attempt.
+- `[proxy].fallback_on` controls whether a synthetic selector may advance from
+  one planned model to the next model.
+
+Do not treat these as interchangeable. Retry is for transient failures on the
+same target. Fallback changes the target and may change quality, cost,
+latency, context window, or data residency.
+
+```toml
+[proxy]
+fallback_on = [
+  "timeout",
+  "network",
+  "rate_limited",
+  "server_error",
+  "context_exceeded",
+]
+
+[proxy.retry]
+enabled = true
+max_retries = 2
+min_timeout_ms = 500
+max_timeout_ms = 8000
+factor = 2
+retry_on = ["timeout", "network", "rate_limited", "server_error"]
+```
+
+Provider routes can override both:
+
+```toml
+[[proxy.providers]]
+id = "local-ollama"
+url = "http://127.0.0.1:11434/v1"
+credential_owner = "none"
+models = ["ollama/*"]
+fallback_on = [] # never fall through from this provider
+
+[proxy.providers.retry]
+enabled = false
+```
+
+The default fallback policy deliberately does not advance on `auth_failed`,
+`forbidden`, `model_not_found`, `bad_request`, `misconfigured`, or
+`invalid_response`. Those failures usually mean the route, credentials, or
+request shape is wrong. Letting a dispatcher silently continue would hide the
+configuration bug and make gateway logs misleading.
+
+For Helicone providers, Calciforge maps retry settings to Helicone retry
+headers, because retry is an engine feature there. Calciforge does not then
+retry the same Helicone request locally; that would multiply attempts and
+costs. For direct HTTP providers, Calciforge applies the retry policy itself.
 
 For a LAN-visible local dashboard during install:
 

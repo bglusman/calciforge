@@ -679,6 +679,84 @@ pub struct ProxyConfig {
     /// Optional voice pipeline passthrough (`[proxy.voice]`).
     #[serde(default)]
     pub voice: Option<crate::voice::VoiceConfig>,
+
+    /// Gateway attempt retry policy for a single concrete model/provider
+    /// attempt. Synthetic fallback remains a separate policy.
+    #[serde(default)]
+    pub retry: GatewayRetryConfig,
+
+    /// Failure classes that may advance an alloy/cascade/dispatcher to its
+    /// next configured model. Defaults avoid hiding auth, bad request, and
+    /// misconfiguration problems.
+    #[serde(default = "default_gateway_fallback_on")]
+    pub fallback_on: Vec<GatewayFailureKind>,
+}
+
+/// Stable failure classes used by gateway retry and synthetic fallback policy.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayFailureKind {
+    Timeout,
+    Network,
+    RateLimited,
+    ServerError,
+    ContextExceeded,
+    AuthFailed,
+    Forbidden,
+    ModelNotFound,
+    BadRequest,
+    Misconfigured,
+    InvalidResponse,
+    Unknown,
+}
+
+/// Gateway retry policy for a single concrete model/provider attempt.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct GatewayRetryConfig {
+    /// Enables Calciforge/provider-engine retries for each concrete attempt.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of retry attempts after the first request.
+    #[serde(default = "default_gateway_retry_max_retries")]
+    pub max_retries: u32,
+    /// Initial retry delay in milliseconds.
+    #[serde(default = "default_gateway_retry_min_timeout_ms")]
+    pub min_timeout_ms: u64,
+    /// Maximum retry delay in milliseconds.
+    #[serde(default = "default_gateway_retry_max_timeout_ms")]
+    pub max_timeout_ms: u64,
+    /// Exponential backoff factor.
+    #[serde(default = "default_gateway_retry_factor")]
+    pub factor: u32,
+    /// Failure classes eligible for retry.
+    #[serde(default = "default_gateway_retry_on")]
+    pub retry_on: Vec<GatewayFailureKind>,
+}
+
+impl Default for GatewayRetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_retries: default_gateway_retry_max_retries(),
+            min_timeout_ms: default_gateway_retry_min_timeout_ms(),
+            max_timeout_ms: default_gateway_retry_max_timeout_ms(),
+            factor: default_gateway_retry_factor(),
+            retry_on: default_gateway_retry_on(),
+        }
+    }
+}
+
+/// Declares where provider credentials are expected to live for a provider.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialOwner {
+    /// Calciforge resolves provider credentials from fnox/key files/config.
+    #[default]
+    Calciforge,
+    /// The external gateway owns provider keys, for example Helicone BYOK.
+    Gateway,
+    /// No provider API key is required, typically local models.
+    None,
 }
 
 /// Token estimation strategy for context-window routing.
@@ -804,6 +882,8 @@ impl Default for ProxyConfig {
             model_routes: Vec::new(),
             token_estimator: TokenEstimatorConfig::default(),
             voice: None,
+            retry: GatewayRetryConfig::default(),
+            fallback_on: default_gateway_fallback_on(),
         }
     }
 }
@@ -834,6 +914,41 @@ fn default_token_estimator_bytes_per_token() -> f32 {
 
 fn default_token_estimator_safety_margin() -> f32 {
     1.10
+}
+
+fn default_gateway_retry_max_retries() -> u32 {
+    2
+}
+
+fn default_gateway_retry_min_timeout_ms() -> u64 {
+    500
+}
+
+fn default_gateway_retry_max_timeout_ms() -> u64 {
+    8000
+}
+
+fn default_gateway_retry_factor() -> u32 {
+    2
+}
+
+fn default_gateway_retry_on() -> Vec<GatewayFailureKind> {
+    vec![
+        GatewayFailureKind::Timeout,
+        GatewayFailureKind::Network,
+        GatewayFailureKind::RateLimited,
+        GatewayFailureKind::ServerError,
+    ]
+}
+
+fn default_gateway_fallback_on() -> Vec<GatewayFailureKind> {
+    vec![
+        GatewayFailureKind::Timeout,
+        GatewayFailureKind::Network,
+        GatewayFailureKind::RateLimited,
+        GatewayFailureKind::ServerError,
+        GatewayFailureKind::ContextExceeded,
+    ]
 }
 
 fn default_proxy_default_policy() -> ProxyAccessPolicy {
@@ -878,6 +993,14 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
 
+    /// Declares where upstream provider credentials are expected to live.
+    ///
+    /// This is intentionally separate from transport auth used to talk to an
+    /// external gateway process. The current `api_key` fields still authenticate
+    /// Calciforge to the configured endpoint when needed.
+    #[serde(default)]
+    pub credential_owner: CredentialOwner,
+
     /// Model name patterns this provider handles.
     /// Supports exact matches and glob prefix (`kimi/*`).
     /// The default backend is used when no provider matches.
@@ -908,6 +1031,16 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
 
+    /// Provider-specific retry override. Inherits `[proxy.retry]` when unset.
+    #[serde(default)]
+    pub retry: Option<GatewayRetryConfig>,
+
+    /// Provider-specific synthetic fallback classes. Inherits
+    /// `[proxy].fallback_on` when unset. Set to `[]` to disable fallback from
+    /// models routed through this provider.
+    #[serde(default)]
+    pub fallback_on: Option<Vec<GatewayFailureKind>>,
+
     /// Shell script path to run before a gateway request switches to a model
     /// served by this provider. Env: CALCIFORGE_PROVIDER_ID,
     /// CALCIFORGE_MODEL_ID, CALCIFORGE_UPSTREAM_MODEL_ID, and
@@ -926,6 +1059,30 @@ pub struct ProxyProviderConfig {
     /// Deprecated compatibility field. CLI-backed subscriptions are agents.
     #[serde(default)]
     pub env: HashMap<String, String>,
+}
+
+impl Default for ProxyProviderConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            backend_type: default_proxy_provider_backend(),
+            url: String::new(),
+            api_key: None,
+            api_key_file: None,
+            credential_owner: CredentialOwner::default(),
+            models: Vec::new(),
+            strip_model_prefix: None,
+            add_model_prefix: None,
+            timeout_seconds: None,
+            headers: HashMap::new(),
+            retry: None,
+            fallback_on: None,
+            on_switch: None,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        }
+    }
 }
 
 fn default_proxy_provider_backend() -> String {

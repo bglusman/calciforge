@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use anyhow::Context as _;
 use tracing::info;
 
-use crate::config::ProxyConfig;
+use crate::config::{GatewayFailureKind, ProxyConfig};
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
@@ -46,6 +46,8 @@ pub struct ProviderEntry {
     pub strip_model_prefix: Option<String>,
     /// Optional provider model prefix added before forwarding upstream.
     pub add_model_prefix: Option<String>,
+    /// Failure classes that may advance synthetic fallback from this provider.
+    pub fallback_on: Vec<GatewayFailureKind>,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -56,6 +58,7 @@ impl std::fmt::Debug for ProviderEntry {
             .field("on_switch", &self.on_switch)
             .field("strip_model_prefix", &self.strip_model_prefix)
             .field("add_model_prefix", &self.add_model_prefix)
+            .field("fallback_on", &self.fallback_on)
             .finish()
     }
 }
@@ -150,10 +153,7 @@ pub fn build_provider_entries(
                 timeout_seconds: timeout,
                 extra_config: None,
                 headers,
-                retry_enabled: true,
-                max_retries: 3,
-                retry_base_delay_ms: 1000,
-                retry_max_delay_ms: 10000,
+                retry: p.retry.clone().unwrap_or_else(|| config.retry.clone()),
                 ui_url: None,
             };
             let gw = gateway::create_gateway(gw_cfg, None)
@@ -208,10 +208,7 @@ pub fn build_provider_entries(
             timeout_seconds: timeout,
             extra_config: None,
             headers,
-            retry_enabled: true,
-            max_retries: 3,
-            retry_base_delay_ms: 1000,
-            retry_max_delay_ms: 10000,
+            retry: p.retry.clone().unwrap_or_else(|| config.retry.clone()),
             ui_url: None,
         };
 
@@ -244,6 +241,12 @@ pub fn build_provider_entries(
                     .cloned()
                     .flatten(),
                 add_model_prefix: provider_add_prefix.get(&route.provider).cloned().flatten(),
+                fallback_on: config
+                    .providers
+                    .iter()
+                    .find(|p| p.id == route.provider)
+                    .map(|p| provider_fallback_on(config, p))
+                    .unwrap_or_else(|| config.fallback_on.clone()),
             });
         } else {
             anyhow::bail!(
@@ -271,11 +274,22 @@ pub fn build_provider_entries(
                     .unwrap_or_else(|| Arc::new(ProviderSwitchState::default())),
                 strip_model_prefix: provider_strip_prefix.get(&p.id).cloned().flatten(),
                 add_model_prefix: provider_add_prefix.get(&p.id).cloned().flatten(),
+                fallback_on: provider_fallback_on(config, p),
             });
         }
     }
 
     Ok(entries)
+}
+
+fn provider_fallback_on(
+    config: &ProxyConfig,
+    provider: &crate::config::ProxyProviderConfig,
+) -> Vec<GatewayFailureKind> {
+    provider
+        .fallback_on
+        .clone()
+        .unwrap_or_else(|| config.fallback_on.clone())
 }
 
 fn normalized_strip_prefix(provider: &crate::config::ProxyProviderConfig) -> Option<String> {
@@ -340,6 +354,7 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            ..Default::default()
         }
     }
 
@@ -386,6 +401,7 @@ mod tests {
                 command: None,
                 args: Vec::new(),
                 env: HashMap::new(),
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -421,6 +437,7 @@ mod tests {
                 command: None,
                 args: Vec::new(),
                 env: HashMap::new(),
+                ..Default::default()
             }],
             model_routes: vec![ProxyModelRoute {
                 pattern: "local/qwen3.6:27b".to_string(),

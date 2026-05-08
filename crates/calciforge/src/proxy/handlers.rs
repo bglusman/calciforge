@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::ProxyConfig;
 use crate::model_names::is_exact_model_pattern;
+use crate::proxy::backend::BackendError;
 use crate::proxy::{
     model_resolver::ModelResolver,
     openai::{
@@ -241,12 +242,25 @@ async fn route_with_fallback(
                 return Ok(response);
             }
             Err(e) => {
-                warn!(model = %model, error = %e, "Provider failed, trying fallback");
+                let failure_kind = e.failure_kind();
+                let fallback_on = fallback_policy_for_model(state, model);
+                let can_fallback =
+                    idx + 1 < plan.ordered_models.len() && fallback_on.contains(&failure_kind);
+                warn!(
+                    model = %model,
+                    error = %e,
+                    ?failure_kind,
+                    can_fallback,
+                    "Provider failed"
+                );
                 // Update attempt to failure
                 state
                     .alloy_manager
                     .record_attempt(&plan.alloy_id, model, false);
-                last_error = Some(e);
+                last_error = Some(anyhow::anyhow!("Gateway error: {}", e));
+                if !can_fallback {
+                    break;
+                }
             }
         }
     }
@@ -259,7 +273,7 @@ async fn try_provider(
     state: &ProxyState,
     model: &str,
     req: &ChatCompletionRequest,
-) -> anyhow::Result<ChatCompletionResponse> {
+) -> Result<ChatCompletionResponse, BackendError> {
     // Check named providers first; fall back to default gateway.
     let provider = routing::find_provider(&state.providers, model);
     let gateway = provider
@@ -271,15 +285,21 @@ async fn try_provider(
         .unwrap_or_else(|| model.to_string());
 
     if let Some(provider) = provider {
-        ensure_provider_model_ready(provider, model, &gateway_req.model).await?;
+        ensure_provider_model_ready(provider, model, &gateway_req.model)
+            .await
+            .map_err(|e| BackendError::ConfigError(e.to_string()))?;
     }
 
-    match gateway.chat_completion(gateway_req).await {
-        Ok(response) => Ok(response),
-        Err(e) => {
-            anyhow::bail!("Gateway error: {}", e);
-        }
-    }
+    gateway.chat_completion(gateway_req).await
+}
+
+fn fallback_policy_for_model(
+    state: &ProxyState,
+    model: &str,
+) -> Vec<crate::config::GatewayFailureKind> {
+    routing::find_provider(&state.providers, model)
+        .map(|entry| entry.fallback_on.clone())
+        .unwrap_or_else(|| state.config.fallback_on.clone())
 }
 
 async fn ensure_provider_model_ready(
@@ -758,12 +778,14 @@ mod tests {
     use axum::body::to_bytes;
     use axum::http::HeaderValue;
     use serde_json::Value;
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     #[derive(Debug)]
     struct RecordingGateway {
         config: GatewayConfig,
         requests: Mutex<Vec<ChatCompletionRequest>>,
+        failures: Mutex<VecDeque<BackendError>>,
     }
 
     impl RecordingGateway {
@@ -776,14 +798,21 @@ mod tests {
                     timeout_seconds: 30,
                     extra_config: None,
                     headers: None,
-                    retry_enabled: false,
-                    max_retries: 0,
-                    retry_base_delay_ms: 0,
-                    retry_max_delay_ms: 0,
+                    retry: crate::config::GatewayRetryConfig::default(),
                     ui_url: None,
                 },
                 requests: Mutex::new(Vec::new()),
+                failures: Mutex::new(VecDeque::new()),
             }
+        }
+
+        fn with_failures(failures: Vec<BackendError>) -> Self {
+            let gateway = Self::new();
+            *gateway
+                .failures
+                .lock()
+                .expect("recording gateway mutex poisoned") = failures.into();
+            gateway
         }
 
         fn recorded_models(&self) -> Vec<String> {
@@ -811,6 +840,14 @@ mod tests {
                 .lock()
                 .expect("recording gateway mutex poisoned")
                 .push(request);
+            if let Some(error) = self
+                .failures
+                .lock()
+                .expect("recording gateway mutex poisoned")
+                .pop_front()
+            {
+                return Err(error);
+            }
             Ok(ChatCompletionResponse {
                 id: "chatcmpl-test".to_string(),
                 object: "chat.completion".to_string(),
@@ -853,6 +890,153 @@ mod tests {
             api_key: key.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    fn gateway_state(gateway: Arc<dyn GatewayBackend>, config: ProxyConfig) -> ProxyState {
+        ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config,
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: Vec::new(),
+            local_manager: None,
+            voice: None,
+        }
+    }
+
+    fn request_for_model(model: &str) -> ChatCompletionRequest {
+        serde_json::from_value(serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Hi"}]
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn synthetic_fallback_stops_on_auth_failure_by_default() {
+        let recording_gateway = Arc::new(RecordingGateway::with_failures(vec![
+            BackendError::http_status_error(
+                reqwest::StatusCode::UNAUTHORIZED,
+                "upstream unauthorized",
+            ),
+        ]));
+        let state = gateway_state(recording_gateway.clone(), ProxyConfig::default());
+        let plan = crate::providers::alloy::AlloyPlan {
+            alloy_id: "auth-stop".to_string(),
+            alloy_name: "auth-stop".to_string(),
+            ordered_models: vec!["bad-auth".to_string(), "fallback".to_string()],
+        };
+
+        let result = route_with_fallback(&state, &plan, &request_for_model("auth-stop")).await;
+
+        assert!(result.is_err(), "auth failures must not silently fallback");
+        assert_eq!(recording_gateway.recorded_models(), vec!["bad-auth"]);
+    }
+
+    #[tokio::test]
+    async fn synthetic_fallback_advances_on_retryable_server_failure() {
+        let recording_gateway = Arc::new(RecordingGateway::with_failures(vec![
+            BackendError::http_status_error(
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily unavailable",
+            ),
+        ]));
+        let state = gateway_state(recording_gateway.clone(), ProxyConfig::default());
+        let plan = crate::providers::alloy::AlloyPlan {
+            alloy_id: "server-fallback".to_string(),
+            alloy_name: "server-fallback".to_string(),
+            ordered_models: vec!["unavailable".to_string(), "fallback".to_string()],
+        };
+
+        let result = route_with_fallback(&state, &plan, &request_for_model("server-fallback"))
+            .await
+            .expect("server errors should permit fallback by default");
+
+        assert_eq!(result.model, "fallback");
+        assert_eq!(
+            recording_gateway.recorded_models(),
+            vec!["unavailable", "fallback"]
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_fallback_policy_can_disable_synthetic_fallback() {
+        let provider_gateway = Arc::new(RecordingGateway::with_failures(vec![
+            BackendError::http_status_error(
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily unavailable",
+            ),
+        ]));
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig::default(),
+            model_shortcuts: Vec::new(),
+            gateway: default_gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "no-fallback".to_string(),
+                patterns: vec!["*".to_string()],
+                gateway: provider_gateway.clone(),
+                on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
+                strip_model_prefix: None,
+                add_model_prefix: None,
+                fallback_on: Vec::new(),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+        let plan = crate::providers::alloy::AlloyPlan {
+            alloy_id: "server-no-fallback".to_string(),
+            alloy_name: "server-no-fallback".to_string(),
+            ordered_models: vec!["unavailable".to_string(), "fallback".to_string()],
+        };
+
+        let result =
+            route_with_fallback(&state, &plan, &request_for_model("server-no-fallback")).await;
+
+        assert!(
+            result.is_err(),
+            "empty provider fallback policy should make retryable failures fatal for that provider"
+        );
+        assert_eq!(provider_gateway.recorded_models(), vec!["unavailable"]);
+    }
+
+    #[tokio::test]
+    async fn global_fallback_policy_can_disable_default_gateway_fallback() {
+        let recording_gateway = Arc::new(RecordingGateway::with_failures(vec![
+            BackendError::http_status_error(
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily unavailable",
+            ),
+        ]));
+        let state = gateway_state(
+            recording_gateway.clone(),
+            ProxyConfig {
+                fallback_on: Vec::new(),
+                ..Default::default()
+            },
+        );
+        let plan = crate::providers::alloy::AlloyPlan {
+            alloy_id: "server-no-global-fallback".to_string(),
+            alloy_name: "server-no-global-fallback".to_string(),
+            ordered_models: vec!["unavailable".to_string(), "fallback".to_string()],
+        };
+
+        let result = route_with_fallback(
+            &state,
+            &plan,
+            &request_for_model("server-no-global-fallback"),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "empty global fallback policy should make retryable failures fatal on the default gateway"
+        );
+        assert_eq!(recording_gateway.recorded_models(), vec!["unavailable"]);
     }
 
     #[test]
@@ -1059,6 +1243,7 @@ mod tests {
                 switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: None,
                 add_model_prefix: None,
+                fallback_on: ProxyConfig::default().fallback_on,
             }],
             local_manager: None,
             voice: None,
@@ -1111,6 +1296,7 @@ mod tests {
                 switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: Some("opencode-go/".to_string()),
                 add_model_prefix: None,
+                fallback_on: ProxyConfig::default().fallback_on,
             }],
             local_manager: None,
             voice: None,
@@ -1169,6 +1355,7 @@ mod tests {
                 switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: Some("local/".to_string()),
                 add_model_prefix: Some("ollama/".to_string()),
+                fallback_on: ProxyConfig::default().fallback_on,
             }],
             local_manager: None,
             voice: None,
@@ -1220,6 +1407,7 @@ mod tests {
                 switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: None,
                 add_model_prefix: Some("ollama/".to_string()),
+                fallback_on: ProxyConfig::default().fallback_on,
             }],
             local_manager: None,
             voice: None,
@@ -1639,6 +1827,7 @@ mod tests {
                 switch_state: Arc::new(routing::ProviderSwitchState::default()),
                 strip_model_prefix: None,
                 add_model_prefix: None,
+                fallback_on: ProxyConfig::default().fallback_on,
             }],
             local_manager: None,
             voice: None,

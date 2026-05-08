@@ -642,6 +642,7 @@ mod tests {
                 command: None,
                 args: Vec::new(),
                 env: HashMap::new(),
+                ..Default::default()
             }],
             ..Default::default()
         });

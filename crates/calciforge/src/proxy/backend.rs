@@ -9,23 +9,75 @@ use thiserror::Error;
 
 use crate::sync::Arc;
 
+use crate::config::GatewayFailureKind;
 use crate::proxy::openai::{ChatCompletionResponse, MessageContent};
 
 // Helicone router (HTTP adapter)
+#[cfg(feature = "helicone")]
 use super::helicone_router;
 
 /// Errors that can occur in backend operations
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum BackendError {
-    #[error("HTTP request failed: {0}")]
-    HttpError(String),
+    #[error("HTTP request failed: {message}")]
+    HttpError {
+        message: String,
+        kind: GatewayFailureKind,
+        status: Option<u16>,
+    },
 
     #[error("Invalid response from backend: {0}")]
     InvalidResponse(String),
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
+}
+
+impl BackendError {
+    pub fn failure_kind(&self) -> GatewayFailureKind {
+        match self {
+            Self::HttpError { kind, .. } => *kind,
+            Self::InvalidResponse(_) => GatewayFailureKind::InvalidResponse,
+            Self::ConfigError(_) => GatewayFailureKind::Misconfigured,
+        }
+    }
+
+    pub fn transport(message: impl Into<String>, is_timeout: bool) -> Self {
+        Self::HttpError {
+            message: message.into(),
+            kind: if is_timeout {
+                GatewayFailureKind::Timeout
+            } else {
+                GatewayFailureKind::Network
+            },
+            status: None,
+        }
+    }
+
+    pub fn http_status_error(status: reqwest::StatusCode, message: impl Into<String>) -> Self {
+        Self::HttpError {
+            message: message.into(),
+            kind: failure_kind_for_status(status.as_u16()),
+            status: Some(status.as_u16()),
+        }
+    }
+}
+
+pub fn failure_kind_for_status(status: u16) -> GatewayFailureKind {
+    match status {
+        400 => GatewayFailureKind::BadRequest,
+        401 => GatewayFailureKind::AuthFailed,
+        403 => GatewayFailureKind::Forbidden,
+        404 => GatewayFailureKind::ModelNotFound,
+        408 => GatewayFailureKind::Timeout,
+        413 | 422 => GatewayFailureKind::ContextExceeded,
+        429 => GatewayFailureKind::RateLimited,
+        500 | 502 | 503 | 504 => GatewayFailureKind::ServerError,
+        _ if (400..500).contains(&status) => GatewayFailureKind::BadRequest,
+        _ if (500..600).contains(&status) => GatewayFailureKind::ServerError,
+        _ => GatewayFailureKind::Unknown,
+    }
 }
 
 /// Unified backend trait for model-gateway providers.
@@ -134,32 +186,48 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn SecretsBackend>,
             let headers = config.headers.clone();
             Ok(Arc::new(HttpBackend::new(url, api_key, timeout, headers)))
         }
-        BackendType::Helicone => {
-            let url = config.helicone_url.clone().ok_or_else(|| {
-                BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string())
-            })?;
-            let api_key = config.helicone_api_key.clone().unwrap_or_default();
-            let timeout = config.timeout_seconds.unwrap_or(120);
-            let router_name = config
-                .helicone_router_name
-                .clone()
-                .unwrap_or_else(|| "helicone".to_string());
-            let helicone_config = helicone_router::HeliconeRouterConfig {
-                base_url: url,
-                api_key,
-                timeout_seconds: timeout,
-                router_name,
-                enable_caching: true,
-                cache_ttl_seconds: 300,
-                headers: std::collections::HashMap::new(),
-            };
-            let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
-                BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
-            })?;
-            Ok(Arc::new(router))
-        }
+        BackendType::Helicone => create_helicone_backend(config),
         BackendType::Mock => Ok(Arc::new(MockBackend::new())),
     }
+}
+
+#[cfg(feature = "helicone")]
+fn create_helicone_backend(
+    config: &BackendConfig,
+) -> Result<Arc<dyn SecretsBackend>, BackendError> {
+    let url = config.helicone_url.clone().ok_or_else(|| {
+        BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string())
+    })?;
+    let api_key = config.helicone_api_key.clone().unwrap_or_default();
+    let timeout = config.timeout_seconds.unwrap_or(120);
+    let router_name = config
+        .helicone_router_name
+        .clone()
+        .unwrap_or_else(|| "helicone".to_string());
+    let helicone_config = helicone_router::HeliconeRouterConfig {
+        base_url: url,
+        api_key,
+        timeout_seconds: timeout,
+        router_name,
+        enable_caching: true,
+        cache_ttl_seconds: 300,
+        headers: std::collections::HashMap::new(),
+        retry: crate::config::GatewayRetryConfig::default(),
+    };
+    let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
+        BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
+    })?;
+    Ok(Arc::new(router))
+}
+
+#[cfg(not(feature = "helicone"))]
+fn create_helicone_backend(
+    _config: &BackendConfig,
+) -> Result<Arc<dyn SecretsBackend>, BackendError> {
+    Err(BackendError::ConfigError(
+        "Helicone backend selected but calciforge was built without the helicone feature"
+            .to_string(),
+    ))
 }
 
 // Mock backend implementation
@@ -398,7 +466,9 @@ impl SecretsBackend for HttpBackend {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
+            .map_err(|e| {
+                BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -406,10 +476,10 @@ impl SecretsBackend for HttpBackend {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(format!(
-                "API error {}: {}",
-                status, error_text
-            )));
+            return Err(BackendError::http_status_error(
+                status,
+                format!("API error {}: {}", status, error_text),
+            ));
         }
 
         let completion: ChatCompletionResponse = response.json().await.map_err(|e| {
@@ -426,10 +496,9 @@ impl SecretsBackend for HttpBackend {
         if !self.api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", self.api_key));
         }
-        let response = req
-            .send()
-            .await
-            .map_err(|e| BackendError::HttpError(format!("Request failed: {}", e)))?;
+        let response = req.send().await.map_err(|e| {
+            BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -437,10 +506,10 @@ impl SecretsBackend for HttpBackend {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(BackendError::HttpError(format!(
-                "API error {}: {}",
-                status, error_text
-            )));
+            return Err(BackendError::http_status_error(
+                status,
+                format!("API error {}: {}", status, error_text),
+            ));
         }
 
         // Parse OpenAI-compatible models response

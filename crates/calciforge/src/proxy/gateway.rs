@@ -6,10 +6,11 @@
 //! Each backend can be enabled via feature flags and selected via configuration.
 
 use async_trait::async_trait;
-use backon::Retryable;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::config::GatewayRetryConfig;
 use crate::proxy::backend::{BackendError, ModelInfo, SecretsBackend};
 use crate::proxy::openai::{ChatCompletionRequest, ChatCompletionResponse};
 #[allow(unused_imports)]
@@ -42,10 +43,13 @@ pub struct GatewayConfig {
     /// Type of gateway backend
     pub backend_type: GatewayType,
     /// Base URL for the gateway (if applicable)
+    #[allow(dead_code)]
     pub base_url: Option<String>,
     /// API key for the gateway (if applicable)
+    #[allow(dead_code)]
     pub api_key: Option<String>,
     /// Timeout in seconds
+    #[allow(dead_code)]
     pub timeout_seconds: u64,
     /// Additional configuration as JSON
     #[allow(dead_code)]
@@ -55,21 +59,8 @@ pub struct GatewayConfig {
     #[allow(dead_code)]
     pub headers: Option<std::collections::HashMap<String, String>>,
 
-    /// Enable retry logic (default: true)
-    #[allow(dead_code)]
-    pub retry_enabled: bool,
-
-    /// Maximum number of retries (default: 3)
-    #[allow(dead_code)]
-    pub max_retries: u32,
-
-    /// Base delay between retries in milliseconds (default: 1000)
-    #[allow(dead_code)]
-    pub retry_base_delay_ms: u64,
-
-    /// Maximum delay between retries in milliseconds (default: 10000)
-    #[allow(dead_code)]
-    pub retry_max_delay_ms: u64,
+    /// Retry policy for each concrete gateway attempt.
+    pub retry: GatewayRetryConfig,
 
     /// Optional operator UI or dashboard URL for this gateway engine.
     pub ui_url: Option<String>,
@@ -84,10 +75,7 @@ impl Default for GatewayConfig {
             timeout_seconds: 30,
             extra_config: None,
             headers: None,
-            retry_enabled: true,
-            max_retries: 3,
-            retry_base_delay_ms: 1000,
-            retry_max_delay_ms: 10000,
+            retry: GatewayRetryConfig::default(),
             ui_url: None,
         }
     }
@@ -229,6 +217,7 @@ pub fn create_gateway(
                 enable_caching: false,
                 cache_ttl_seconds: 300,
                 headers: config.headers.clone().unwrap_or_default(),
+                retry: config.retry.clone(),
             };
 
             let router = HeliconeRouter::new(helicone_config).map_err(|e| {
@@ -362,53 +351,39 @@ impl GatewayBackend for LoggingGateway {
 
         let start = std::time::Instant::now();
 
-        // Apply retry logic
-        let inner = self.inner.clone();
-        let request_clone = request.clone();
-
-        // Simple retry logic using backon
-        let operation = || async {
-            let result = inner.chat_completion(request_clone.clone()).await;
-
-            // Check if we should retry
-            match &result {
-                Ok(_) => {
+        let mut attempt = 0_u32;
+        let mut result = loop {
+            let result = self.inner.chat_completion(request.clone()).await;
+            match result {
+                Ok(response) => {
                     info!("Request succeeded");
-                    result
+                    break Ok(response);
                 }
-                Err(e) => {
-                    // Retry on HTTP errors (5xx) and rate limits (429)
-                    let error_str = e.to_string();
-                    let should_retry = error_str.contains("500")
-                        || error_str.contains("502")
-                        || error_str.contains("503")
-                        || error_str.contains("504")
-                        || error_str.contains("429")
-                        || error_str.contains("timeout")
-                        || error_str.contains("network");
-
-                    if should_retry {
-                        warn!("Retryable error: {}", e);
-                    } else {
-                        warn!("Non-retryable error: {}", e);
+                Err(error) => {
+                    let failure_kind = error.failure_kind();
+                    let should_retry = should_retry_locally(
+                        self.inner.gateway_type(),
+                        &self.config.retry,
+                        &error,
+                        attempt,
+                    );
+                    warn!(
+                        error = %error,
+                        ?failure_kind,
+                        attempt = attempt + 1,
+                        max_retries = self.config.retry.max_retries,
+                        should_retry,
+                        "Gateway request failed"
+                    );
+                    if !should_retry {
+                        break Err(error);
                     }
-
-                    result
+                    let delay = retry_delay(&self.config.retry, attempt);
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
                 }
             }
         };
-
-        // Exponential backoff: 1s, 2s, 4s, 8s with jitter
-        let mut result = operation
-            .retry(
-                &backon::ExponentialBuilder::default()
-                    .with_min_delay(std::time::Duration::from_secs(1))
-                    .with_max_delay(std::time::Duration::from_secs(8))
-                    .with_max_times(3)
-                    .with_factor(2.0)
-                    .with_jitter(),
-            )
-            .await;
 
         let duration = start.elapsed();
 
@@ -495,6 +470,37 @@ impl GatewayBackend for LoggingGateway {
     fn engine_info(&self) -> GatewayEngineInfo {
         self.inner.engine_info()
     }
+}
+
+fn should_retry_locally(
+    gateway_type: GatewayType,
+    policy: &GatewayRetryConfig,
+    error: &BackendError,
+    attempt: u32,
+) -> bool {
+    if gateway_type == GatewayType::Helicone {
+        // Helicone retry policy is passed to the gateway engine as request
+        // headers. Retrying again here would multiply attempts and costs.
+        return false;
+    }
+
+    policy.enabled
+        && attempt < policy.max_retries
+        && policy.retry_on.contains(&error.failure_kind())
+}
+
+fn retry_delay(policy: &GatewayRetryConfig, attempt: u32) -> Duration {
+    let factor = policy.factor.max(1) as u128;
+    let multiplier = factor.saturating_pow(attempt);
+    let base_delay = (policy.min_timeout_ms as u128)
+        .saturating_mul(multiplier)
+        .min(policy.max_timeout_ms as u128);
+    let jitter_percent = rand::random_range(80_u128..=120_u128);
+    let delay = base_delay
+        .saturating_mul(jitter_percent)
+        .saturating_div(100)
+        .min(policy.max_timeout_ms as u128);
+    Duration::from_millis(delay as u64)
 }
 
 // ---------------------------------------------------------------------------
@@ -664,10 +670,7 @@ mod tests {
             timeout_seconds: 30,
             extra_config: None,
             headers: None,
-            retry_enabled: true,
-            max_retries: 3,
-            retry_base_delay_ms: 1000,
-            retry_max_delay_ms: 10000,
+            retry: GatewayRetryConfig::default(),
             ui_url: None,
         };
 
@@ -693,6 +696,60 @@ mod tests {
         assert!(!info.capabilities.model_listing);
         assert!(!info.capabilities.tool_call_transcripts);
         assert!(!info.capabilities.config_validation);
+    }
+
+    #[test]
+    fn direct_gateway_retries_only_configured_failure_kinds() {
+        let retry = GatewayRetryConfig {
+            enabled: true,
+            max_retries: 2,
+            min_timeout_ms: 1,
+            max_timeout_ms: 10,
+            factor: 2,
+            retry_on: vec![crate::config::GatewayFailureKind::ServerError],
+        };
+        let server_error =
+            BackendError::http_status_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, "down");
+        let auth_error =
+            BackendError::http_status_error(reqwest::StatusCode::UNAUTHORIZED, "bad key");
+
+        assert!(should_retry_locally(
+            GatewayType::Direct,
+            &retry,
+            &server_error,
+            0
+        ));
+        assert!(!should_retry_locally(
+            GatewayType::Direct,
+            &retry,
+            &auth_error,
+            0
+        ));
+        assert!(!should_retry_locally(
+            GatewayType::Direct,
+            &retry,
+            &server_error,
+            2
+        ));
+    }
+
+    #[test]
+    fn helicone_retry_policy_is_not_applied_twice_locally() {
+        let retry = GatewayRetryConfig {
+            enabled: true,
+            max_retries: 2,
+            min_timeout_ms: 1,
+            max_timeout_ms: 10,
+            factor: 2,
+            retry_on: vec![crate::config::GatewayFailureKind::ServerError],
+        };
+        let server_error =
+            BackendError::http_status_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, "down");
+
+        assert!(
+            !should_retry_locally(GatewayType::Helicone, &retry, &server_error, 0),
+            "Helicone receives retry headers, so Calciforge must not multiply attempts locally"
+        );
     }
 
     #[cfg(feature = "helicone")]
