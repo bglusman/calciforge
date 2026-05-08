@@ -175,8 +175,11 @@ test coverage.
 - Mobile users on cellular — LAN paste links are not enough; this needs
   a separate "remote paste" path with an authenticated reverse proxy or
   short-lived tunnel. `CALCIFORGE_PASTE_PUBLIC_BASE_URL` gives the
-  service a stable URL to print once that proxy exists, but the proxy
-  itself is out of scope for the current MVP.
+  service a stable URL to print once that proxy exists. Because the
+  current paste server is one-shot and ephemeral, reverse-proxy setups
+  should also set `CALCIFORGE_PASTE_BIND` to a fixed port. A persistent
+  paste service would be cleaner for multiple concurrent paste sessions,
+  but is out of scope for the current MVP.
 - Multi-tenant — the form has no auth beyond the URL token because
   it is intended for localhost/LAN use. If we ever go remote, add an HTTP
   basic-auth or stronger auth layer in front.

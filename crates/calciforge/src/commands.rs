@@ -1997,8 +1997,8 @@ impl CommandHandler {
     /// 1. If the ID matches a gateway model selector → activate it.
     /// 2. If the ID matches a local model in `[local_models]` → trigger a switch
     ///    (async background task, returns immediately with status message).
-    /// 3. If a `[[proxy.providers]]` entry has an `on_switch` hook for this model
-    ///    → run the hook script in the background.
+    /// 3. If the ID matches a `[[proxy.providers]]` concrete model → activate it.
+    ///    Provider `on_switch` hooks run synchronously at gateway request time.
     /// 4. Otherwise → show an error with available options.
     pub fn handle_model(&self, text: &str, identity_id: &str) -> String {
         let trimmed = text.trim();
@@ -2046,7 +2046,7 @@ impl CommandHandler {
         };
         if !agent_supports_model_override(active_agent) {
             return format!(
-                "⚠️ Active agent '{}' ({}) does not consume Calciforge model overrides.\n\nSwitch to a gateway-backed agent or configure that agent's native model setting instead.",
+                "⚠️ Active agent '{}' ({}) does not consume Calciforge model overrides.\n\nUse an agent explicitly configured with allow_model_override = true, or configure this agent's native model setting instead. Only enable that flag for agents wired to Calciforge's model gateway or known to accept these model IDs.",
                 active_agent.id, active_agent.kind
             );
         }
@@ -2129,7 +2129,7 @@ impl CommandHandler {
             }
         }
 
-        // 3. Provider on_switch hook.
+        // 3. Provider-backed concrete model.
         if let Some(ref proxy_cfg) = self.config.proxy {
             for provider in &proxy_cfg.providers {
                 let model_matches = provider
@@ -2140,40 +2140,8 @@ impl CommandHandler {
                     self.set_active_model_for_identity(identity_id, model_id);
                     if let Some(ref hook_script) = provider.on_switch {
                         if !hook_script.is_empty() {
-                            let script = hook_script.clone();
-                            let model_id_owned = model_id.to_string();
-                            let model_id_log = model_id.to_string();
-                            let provider_id = provider.id.clone();
-                            tokio::spawn(async move {
-                                let result = tokio::task::spawn_blocking(move || {
-                                    std::process::Command::new("sh")
-                                        .arg("-c")
-                                        .arg(&script)
-                                        .env("CALCIFORGE_MODEL_ID", &model_id_owned)
-                                        .output()
-                                })
-                                .await;
-                                match result {
-                                    Ok(Ok(out)) if out.status.success() => {
-                                        tracing::info!(provider = %provider_id, model = %model_id_log, "on_switch hook completed");
-                                    }
-                                    Ok(Ok(out)) => {
-                                        tracing::warn!(
-                                            provider = %provider_id,
-                                            stderr = %String::from_utf8_lossy(&out.stderr),
-                                            "on_switch hook failed"
-                                        );
-                                    }
-                                    Ok(Err(e)) => {
-                                        tracing::warn!(error = %e, "on_switch hook spawn error");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(error = %e, "on_switch hook panic");
-                                    }
-                                }
-                            });
                             return format!(
-                                "🔄 Activated model '{}'{} for your identity; running on_switch hook (provider: {}).",
+                                "✅ Activated model '{}'{} for your identity (provider: {}). Its on_switch hook will run before the next gateway request that uses this provider.",
                                 model_id,
                                 shortcut_note.as_deref().unwrap_or(""),
                                 provider.id
@@ -3474,6 +3442,8 @@ mod tests {
             api_key: None,
             api_key_file: None,
             models: vec!["openai/gpt-5.5".to_string()],
+            strip_model_prefix: None,
+            add_model_prefix: None,
             timeout_seconds: None,
             headers: HashMap::new(),
             on_switch: None,
@@ -3531,6 +3501,8 @@ mod tests {
             api_key: None,
             api_key_file: None,
             models: vec!["openai/gpt-5.5".to_string()],
+            strip_model_prefix: None,
+            add_model_prefix: None,
             timeout_seconds: None,
             headers: HashMap::new(),
             on_switch: None,
@@ -3558,6 +3530,42 @@ mod tests {
             restored.active_model_for_identity("brian").as_deref(),
             Some("openai/gpt-5.5"),
             "non-synthetic provider model overrides must not be discarded when the synthetic manager initializes"
+        );
+    }
+
+    #[test]
+    fn provider_model_activation_with_on_switch_waits_for_gateway_request() {
+        let mut config = make_config();
+        let proxy = config.proxy.get_or_insert_with(Default::default);
+        proxy.providers.push(crate::config::ProxyProviderConfig {
+            id: "helicone-ollama".to_string(),
+            backend_type: "helicone".to_string(),
+            url: "http://127.0.0.1:1/ai".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["qwen3.6:27b".to_string()],
+            strip_model_prefix: None,
+            add_model_prefix: Some("ollama/".to_string()),
+            timeout_seconds: None,
+            headers: HashMap::new(),
+            on_switch: Some("exit 99".to_string()),
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        });
+        let h = CommandHandler::new(Arc::new(config));
+        h.handle_switch("!switch gateway", "brian");
+
+        let reply = h.handle_model("!model use qwen3.6:27b", "brian");
+
+        assert!(reply.contains("Activated model"), "{reply}");
+        assert!(
+            reply.contains("before the next gateway request"),
+            "reply should explain that provider hooks run request-time, not command-time: {reply}"
+        );
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("qwen3.6:27b")
         );
     }
 

@@ -16,6 +16,18 @@ use crate::sync::Arc;
 use super::backend::{BackendConfig, BackendType};
 use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
 
+/// Per-provider model switch state shared by routes that point to the same provider.
+#[derive(Debug, Default)]
+pub struct ProviderSwitchState {
+    current_model: tokio::sync::Mutex<Option<String>>,
+}
+
+impl ProviderSwitchState {
+    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Option<String>> {
+        self.current_model.lock().await
+    }
+}
+
 /// A resolved provider entry: a set of model-name patterns and a ready gateway.
 #[derive(Clone)]
 pub struct ProviderEntry {
@@ -26,8 +38,14 @@ pub struct ProviderEntry {
     pub patterns: Vec<String>,
     /// Gateway to use for matching requests.
     pub gateway: Arc<dyn GatewayBackend>,
-    /// Shell script to run on `!model <id>` switch to any model of this provider.
+    /// Shell script to run before a gateway request switches to any model of this provider.
     pub on_switch: Option<String>,
+    /// Shared state for serializing provider model swaps before gateway requests.
+    pub switch_state: Arc<ProviderSwitchState>,
+    /// Optional public model prefix stripped before forwarding upstream.
+    pub strip_model_prefix: Option<String>,
+    /// Optional provider model prefix added before forwarding upstream.
+    pub add_model_prefix: Option<String>,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -36,7 +54,39 @@ impl std::fmt::Debug for ProviderEntry {
             .field("id", &self.id)
             .field("patterns", &self.patterns)
             .field("on_switch", &self.on_switch)
+            .field("strip_model_prefix", &self.strip_model_prefix)
+            .field("add_model_prefix", &self.add_model_prefix)
             .finish()
+    }
+}
+
+impl ProviderEntry {
+    pub fn upstream_model_name(&self, model: &str) -> String {
+        let mut upstream = if let Some(prefix) = self
+            .strip_model_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+        {
+            if let Some(stripped) = model.strip_prefix(prefix) {
+                stripped.to_string()
+            } else {
+                model.to_string()
+            }
+        } else {
+            model.to_string()
+        };
+
+        if let Some(prefix) = self
+            .add_model_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+        {
+            if !upstream.starts_with(prefix) {
+                upstream = format!("{prefix}{upstream}");
+            }
+        }
+
+        upstream
     }
 }
 
@@ -71,8 +121,14 @@ pub fn build_provider_entries(
     // Build a map of provider_id → resolved gateway for efficient lookup.
     let mut provider_gateways: HashMap<String, Arc<dyn GatewayBackend>> = HashMap::new();
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_strip_prefix: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_add_prefix: HashMap<String, Option<String>> = HashMap::new();
+    let mut provider_switch_state: HashMap<String, Arc<ProviderSwitchState>> = HashMap::new();
 
     for p in &config.providers {
+        provider_switch_state
+            .entry(p.id.clone())
+            .or_insert_with(|| Arc::new(ProviderSwitchState::default()));
         if p.backend_type == "helicone" {
             if p.url.trim().is_empty() {
                 anyhow::bail!(
@@ -105,6 +161,8 @@ pub fn build_provider_entries(
             info!(id = %p.id, url = %p.url, models = ?p.models, "Helicone provider loaded");
             provider_gateways.insert(p.id.clone(), gw);
             provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+            provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
+            provider_add_prefix.insert(p.id.clone(), normalized_add_prefix(p));
             continue;
         }
 
@@ -163,6 +221,8 @@ pub fn build_provider_entries(
         info!(id = %p.id, url = %p.url, models = ?p.models, "Provider loaded");
         provider_gateways.insert(p.id.clone(), gw);
         provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
+        provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
+        provider_add_prefix.insert(p.id.clone(), normalized_add_prefix(p));
     }
 
     let mut entries: Vec<ProviderEntry> = Vec::new();
@@ -171,10 +231,19 @@ pub fn build_provider_entries(
     for route in &config.model_routes {
         if let Some(gw) = provider_gateways.get(&route.provider) {
             entries.push(ProviderEntry {
-                id: format!("route:{}->{}", route.pattern, route.provider),
+                id: route.provider.clone(),
                 patterns: vec![route.pattern.clone()],
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&route.provider).cloned().flatten(),
+                switch_state: provider_switch_state
+                    .get(&route.provider)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(ProviderSwitchState::default())),
+                strip_model_prefix: provider_strip_prefix
+                    .get(&route.provider)
+                    .cloned()
+                    .flatten(),
+                add_model_prefix: provider_add_prefix.get(&route.provider).cloned().flatten(),
             });
         } else {
             anyhow::bail!(
@@ -196,11 +265,35 @@ pub fn build_provider_entries(
                 patterns: p.models.clone(),
                 gateway: Arc::clone(gw),
                 on_switch: provider_on_switch.get(&p.id).cloned().flatten(),
+                switch_state: provider_switch_state
+                    .get(&p.id)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(ProviderSwitchState::default())),
+                strip_model_prefix: provider_strip_prefix.get(&p.id).cloned().flatten(),
+                add_model_prefix: provider_add_prefix.get(&p.id).cloned().flatten(),
             });
         }
     }
 
     Ok(entries)
+}
+
+fn normalized_strip_prefix(provider: &crate::config::ProxyProviderConfig) -> Option<String> {
+    provider
+        .strip_model_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_string)
+}
+
+fn normalized_add_prefix(provider: &crate::config::ProxyProviderConfig) -> Option<String> {
+    provider
+        .add_model_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_string)
 }
 
 fn resolve_provider_api_key(
@@ -229,7 +322,7 @@ fn resolve_provider_api_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProxyProviderConfig;
+    use crate::config::{ProxyModelRoute, ProxyProviderConfig};
 
     fn provider(id: &str, backend_type: &str, url: &str) -> ProxyProviderConfig {
         ProxyProviderConfig {
@@ -239,6 +332,8 @@ mod tests {
             api_key: None,
             api_key_file: None,
             models: vec!["test-model".to_string()],
+            strip_model_prefix: None,
+            add_model_prefix: None,
             timeout_seconds: None,
             headers: HashMap::new(),
             on_switch: None,
@@ -270,6 +365,85 @@ mod tests {
         assert!(
             err.to_string().contains("configured as [[agents]]"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn upstream_model_name_can_strip_public_prefix_and_add_provider_prefix() {
+        let config = ProxyConfig {
+            providers: vec![ProxyProviderConfig {
+                id: "helicone-ollama".to_string(),
+                backend_type: "helicone".to_string(),
+                url: "http://127.0.0.1:8787/ai".to_string(),
+                api_key: None,
+                api_key_file: None,
+                models: vec!["local/qwen3.6:27b".to_string()],
+                strip_model_prefix: Some("local/".to_string()),
+                add_model_prefix: Some("ollama/".to_string()),
+                timeout_seconds: None,
+                headers: HashMap::new(),
+                on_switch: None,
+                command: None,
+                args: Vec::new(),
+                env: HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, 30).unwrap();
+
+        assert_eq!(
+            entries[0].upstream_model_name("local/qwen3.6:27b"),
+            "ollama/qwen3.6:27b"
+        );
+        assert_eq!(
+            entries[0].upstream_model_name("ollama/qwen3.6:27b"),
+            "ollama/qwen3.6:27b",
+            "already-qualified provider model IDs should not get double-prefixed"
+        );
+    }
+
+    #[test]
+    fn model_route_entry_preserves_real_provider_id_for_hooks() {
+        let config = ProxyConfig {
+            providers: vec![ProxyProviderConfig {
+                id: "helicone-ollama".to_string(),
+                backend_type: "helicone".to_string(),
+                url: "http://127.0.0.1:8787/ai".to_string(),
+                api_key: None,
+                api_key_file: None,
+                models: vec![],
+                strip_model_prefix: Some("local/".to_string()),
+                add_model_prefix: Some("ollama/".to_string()),
+                timeout_seconds: None,
+                headers: HashMap::new(),
+                on_switch: Some("/usr/local/bin/switch-model".to_string()),
+                command: None,
+                args: Vec::new(),
+                env: HashMap::new(),
+            }],
+            model_routes: vec![ProxyModelRoute {
+                pattern: "local/qwen3.6:27b".to_string(),
+                provider: "helicone-ollama".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, 30).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].id, "helicone-ollama",
+            "model_routes must preserve the real provider id for hook env/log keys"
+        );
+        assert_eq!(entries[0].patterns, vec!["local/qwen3.6:27b"]);
+        assert_eq!(
+            entries[0].on_switch.as_deref(),
+            Some("/usr/local/bin/switch-model")
+        );
+        assert_eq!(
+            entries[0].upstream_model_name("local/qwen3.6:27b"),
+            "ollama/qwen3.6:27b"
         );
     }
 

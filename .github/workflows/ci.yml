@@ -30,6 +30,9 @@ jobs:
       - name: Check packaging templates
         run: bash scripts/check-packaging.sh
 
+      - name: Check installer config helpers
+        run: python3 scripts/test-upsert-calciforge-agent.py
+
   # ─────────────────────────────────────────────────────────────────────────────
   # Check formatting and linting
   # ─────────────────────────────────────────────────────────────────────────────

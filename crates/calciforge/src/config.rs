@@ -882,6 +882,22 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub models: Vec<String>,
 
+    /// Optional public model prefix to strip before forwarding to the provider.
+    ///
+    /// This lets Calciforge expose namespaced selectors such as
+    /// `opencode-go/kimi-k2.6` while sending the upstream API's concrete model
+    /// ID `kimi-k2.6`.
+    #[serde(default)]
+    pub strip_model_prefix: Option<String>,
+
+    /// Optional upstream model prefix to add after `strip_model_prefix`.
+    ///
+    /// Helicone AI Gateway routes require provider-qualified model IDs such as
+    /// `ollama/qwen3.6:27b` even when Calciforge exposes the simpler local
+    /// selector `qwen3.6:27b`.
+    #[serde(default)]
+    pub add_model_prefix: Option<String>,
+
     /// Request timeout in seconds (overrides proxy-level default).
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
@@ -890,8 +906,9 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
 
-    /// Shell script path to run when `!model <id>` switches to any model
-    /// served by this provider. Env: CALCIFORGE_MODEL_ID, CALCIFORGE_MODEL_HF_ID,
+    /// Shell script path to run before a gateway request switches to a model
+    /// served by this provider. Env: CALCIFORGE_PROVIDER_ID,
+    /// CALCIFORGE_MODEL_ID, CALCIFORGE_UPSTREAM_MODEL_ID, and
     /// CALCIFORGE_PREV_MODEL_ID.
     #[serde(default)]
     pub on_switch: Option<String>,
@@ -1116,29 +1133,27 @@ pub fn load_config_from(path: &PathBuf) -> Result<CalciforgeConfig> {
 
 /// Returns the preferred config file path.
 ///
-/// Prefer the XDG-style user config for local/dev runs, but fall back to the
-/// legacy user path and then the system path so diagnostic commands still work
-/// on older/manual installs.
+/// Prefer the XDG-style user config for local/dev runs, then fall back to the
+/// system path used by root/service installs.
 pub fn config_path() -> Result<PathBuf> {
     let home = home::home_dir().context("could not determine home directory")?;
     let config_home = calciforge_config_home(Some(&home));
 
-    let user_config = config_home.join("config.toml");
-    if user_config.exists() {
-        return Ok(user_config);
+    let candidates = config_path_candidates(&config_home);
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
     }
 
-    let legacy_user_config = home.join(".calciforge").join("config.toml");
-    if legacy_user_config.exists() {
-        return Ok(legacy_user_config);
-    }
+    Ok(candidates[0].clone())
+}
 
-    let system_config = PathBuf::from("/etc/calciforge/config.toml");
-    if system_config.exists() {
-        return Ok(system_config);
-    }
-
-    Ok(user_config)
+fn config_path_candidates(config_home: &Path) -> [PathBuf; 2] {
+    [
+        config_home.join("config.toml"),
+        PathBuf::from("/etc/calciforge/config.toml"),
+    ]
 }
 
 /// Return Calciforge's user config/state directory.
@@ -1497,6 +1512,26 @@ ui_mode = "text"
         let p = expand_tilde("~/.config/calciforge/secrets/telegram-token");
         assert!(p.to_string_lossy().contains(".config/calciforge"));
         assert!(!p.to_string_lossy().starts_with('~'));
+    }
+
+    #[test]
+    fn config_path_candidates_do_not_include_legacy_dot_calciforge() {
+        let home = PathBuf::from("/home/alice");
+        let candidates = config_path_candidates(&home.join(".config").join("calciforge"));
+
+        assert_eq!(
+            candidates,
+            [
+                PathBuf::from("/home/alice/.config/calciforge/config.toml"),
+                PathBuf::from("/etc/calciforge/config.toml"),
+            ]
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|path| !path.to_string_lossy().contains("/.calciforge/")),
+            "legacy dot-config path must not be a default config candidate: {candidates:?}"
+        );
     }
 
     #[test]

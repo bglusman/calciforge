@@ -217,7 +217,10 @@ impl AgentAdapter for OpenClawNativeAdapter {
             session_key = ?session_key,
             "openclaw-native dispatch"
         );
-        debug!(msg = %ctx.message, "outbound message");
+        debug!(
+            message_bytes = ctx.message.len(),
+            "openclaw-native outbound message"
+        );
 
         let body = HooksAgentRequest {
             message: ctx.message,
@@ -283,7 +286,6 @@ impl AgentAdapter for OpenClawNativeAdapter {
         };
 
         info!(len = reply.len(), "openclaw-native: response received");
-        debug!(response = %reply, "agent response");
 
         Ok(reply)
     }

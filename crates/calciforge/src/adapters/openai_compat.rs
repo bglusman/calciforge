@@ -177,7 +177,11 @@ impl AgentAdapter for OpenAiCompatAdapter {
         })?;
 
         if !status.is_success() {
-            warn!(status = %status, body = %body_text, "openai-compat error response");
+            warn!(
+                status = %status,
+                body_len = body_text.len(),
+                "openai-compat error response"
+            );
             return Err(AdapterError::Protocol(format!(
                 "HTTP {status}: {body_text}"
             )));

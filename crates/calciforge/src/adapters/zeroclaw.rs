@@ -87,7 +87,7 @@ impl AgentAdapter for ZeroClawAdapter {
         };
 
         info!(endpoint = %url, "zeroclaw dispatch");
-        debug!(msg = %msg, "outbound message");
+        debug!(message_bytes = msg.len(), "zeroclaw outbound message");
 
         let resp = self
             .client
@@ -108,7 +108,11 @@ impl AgentAdapter for ZeroClawAdapter {
         let status = resp.status();
         if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!(status = %status, body = %body_text, "zeroclaw returned error status");
+            warn!(
+                status = %status,
+                body_len = body_text.len(),
+                "zeroclaw returned error status"
+            );
             return Err(AdapterError::Protocol(format!(
                 "HTTP {}: {}",
                 status, body_text
@@ -124,7 +128,10 @@ impl AgentAdapter for ZeroClawAdapter {
         } else {
             info!("zeroclaw: received response");
         }
-        debug!(response = %webhook_resp.response, "zeroclaw response");
+        debug!(
+            response_len = webhook_resp.response.len(),
+            "zeroclaw response"
+        );
 
         Ok(webhook_resp.response)
     }

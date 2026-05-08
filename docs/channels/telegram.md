@@ -74,8 +74,8 @@ aliases = [
 
 [[routing]]
 identity = "operator"
-default_agent = "librarian"
-allowed_agents = ["librarian"]
+default_agent = "primary-agent"
+allowed_agents = ["primary-agent"]
 ```
 
 Messages from Telegram user IDs not listed in any identity's aliases are silently dropped.

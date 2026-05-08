@@ -322,7 +322,10 @@ Direct `paste-server` CLI use binds to localhost by default. For a
 stable LAN hostname/IP, set `CALCIFORGE_PASTE_PUBLIC_HOST` on the
 Calciforge service. For a reverse-proxy or tunnel URL, set
 `CALCIFORGE_PASTE_PUBLIC_BASE_URL` and terminate authentication at that
-proxy. Do not expose the paste server directly to the open internet.
+proxy. Reverse proxies also need a stable listener, so set
+`CALCIFORGE_PASTE_BIND`, for example `127.0.0.1:58083` for same-host
+proxies or `0.0.0.0:58083` for a trusted LAN proxy. Do not expose the
+paste server directly to the open internet.
 
 Calciforge treats externally reachable URLs as operator-owned configuration.
 For local web surfaces, keep binds conservative and set the advertised URL to
@@ -343,7 +346,10 @@ On Linux, it creates a local `age` provider with a dedicated Ed25519 key at
 preconfigure fnox globally or set `CALCIFORGE_FNOX_PROVIDER_NAME`,
 `CALCIFORGE_FNOX_PROVIDER_TYPE`, `CALCIFORGE_FNOX_AGE_RECIPIENT`, or
 `FNOX_AGE_KEY_FILE` before running the installer. Protect the generated age
-key like any other local decrypt key.
+key like any other local decrypt key. The installer warms the fnox write path
+with a temporary secret by default so macOS Keychain or provider approval
+prompts happen during setup instead of the first chat-driven paste. Set
+`CALCIFORGE_FNOX_WARMUP=false` to skip that preflight.
 
 ### Outbound traffic gating
 
@@ -460,9 +466,12 @@ models = ["claude-*", "anthropic/*"]
 timeout_seconds = 120
 
 [[proxy.providers]]
-id = "local-mlx"
+id = "local-ollama"
 url = "http://127.0.0.1:11434/v1"
-models = ["local/*", "qwen/*", "mlx/*"]
+models = ["local/*", "qwen/*", "ollama/*"]
+# Optional request-time hook for single-resident local runtimes such as large
+# Ollama models. Calciforge runs it before forwarding to this provider.
+on_switch = "/usr/local/bin/calciforge-ollama-switch"
 
 # Explicit routes take precedence over provider pattern lists.
 [[proxy.model_routes]]
@@ -758,7 +767,8 @@ The installer runs `calciforge doctor --no-network` after local service
 installation when a config file exists. `doctor` validates the config,
 checks referenced secret files without printing values, catches stale
 active-agent/model state, warns when an agent appears to point back into
-the local model gateway by accident, warns if the Calciforge daemon has
+the local model gateway by accident, validates model-gateway provider routing
+and referenced provider key files, warns if the Calciforge daemon has
 ambient proxy env, checks explicit subprocess-agent proxy env,
 warns about externally managed agent daemons whose proxy environment is
 unverified, validates configured scanner policy files and rule syntax,

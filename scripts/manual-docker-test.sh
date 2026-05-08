@@ -157,7 +157,7 @@ run_check "security-proxy blocks injection" bash -c '
 '
 
 run_check "doctor no-network" compose_cmd -f "$COMPOSE_FILE" exec -T calciforge \
-    calciforge --config /root/.calciforge/config.toml doctor --no-network
+    calciforge --config /root/.config/calciforge/config.toml doctor --no-network
 
 if [ "${CALCIFORGE_AGENT_RECIPE_SMOKE:-0}" = "1" ]; then
     run_check "agent recipe smoke" "$ROOT/scripts/agent-recipe-smoke.sh"

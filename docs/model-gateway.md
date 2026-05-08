@@ -23,12 +23,60 @@ artifacts. Model routes are just chat/model endpoints. They can be useful for a
 simple chatbot lane or dispatcher testing, but they should be shown as "models"
 or "chat routes" rather than as full agents in user-facing lists.
 
+## Traffic Boundaries
+
+The intended protected model path is:
+
+```mermaid
+flowchart TD
+  User["User channel"] --> Calciforge["Calciforge router"]
+  Calciforge --> Agent["Agent adapter"]
+  Agent --> Gateway["Calciforge model gateway"]
+  Gateway --> Policy["policy, secret, and adversary checks"]
+  Policy --> ExternalGateway["Helicone or another gateway engine"]
+  ExternalGateway --> Provider["Model provider"]
+```
+
+That path is real only when the selected adapter sends model requests to
+Calciforge's own `[proxy]` endpoint. An `openai-compat` agent whose `endpoint`
+points at the local Calciforge proxy does this. OpenClaw, Hermes, IronClaw,
+ACP/ACPX, Codex CLI, Claude CLI, Kimi CLI, opencode CLI, and recipe
+subprocesses are agent adapters; they do not automatically put their internal
+provider or tool traffic through the model gateway.
+
+Those adapters can still be useful, but their protection and observability
+depend on runtime-specific wiring:
+
+```mermaid
+flowchart TD
+  User["User channel"] --> Calciforge["Calciforge router"]
+  Calciforge --> GatewayAgent["openai-compat agent to Calciforge proxy"]
+  GatewayAgent --> Gateway["Calciforge model gateway"]
+  Gateway --> Helicone["Helicone / provider routes"]
+
+  Calciforge --> NativeAgent["OpenClaw / Hermes / IronClaw"]
+  NativeAgent --> NativeEgress["agent-owned model and tool egress"]
+
+  Calciforge --> CliAgent["Codex / Claude / opencode / Kimi CLI"]
+  CliAgent --> CliEgress["CLI-owned model and tool egress"]
+
+  Calciforge --> Recipe["artifact-cli recipe"]
+  Recipe --> RecipeEgress["recipe-defined egress"]
+```
+
+Run `calciforge doctor` after config changes. Its per-agent coverage lines
+state whether each agent is using the model gateway, whether `!model` overrides
+are enabled, and whether security-proxy coverage is configured or unknown. It
+also validates configured provider routes and referenced provider key files, and
+reports stale persisted `!model` overrides that no longer point at a configured
+gateway selector.
+
 ## What Exists Today
 
 | Feature | Status | Notes |
 |---|---:|---|
 | OpenAI-compatible `/v1/chat/completions` proxy | Working | Local endpoint forwards to configured providers. |
-| Provider pattern routing | Working | `[[proxy.providers]]` model globs map model names to upstream APIs. |
+| Provider pattern routing | Working | `[[proxy.providers]]` model globs map model names to upstream APIs. Provider `on_switch` hooks can prepare single-resident local runtimes before a request. |
 | Explicit model routes | Working | `[[proxy.model_routes]]` overrides provider pattern matching. |
 | Model shortcuts | Working | `[[model_shortcuts]]` gives users short aliases such as `sonnet`. |
 | Local model switching | Working | `[local_models]` manages local `mlx_lm.server` targets. |
@@ -168,9 +216,45 @@ links use `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for reverse proxies or tunnels and
 `CALCIFORGE_PASTE_PUBLIC_HOST` for a stable LAN/Tailscale host.
 
 The Helicone gateway is currently strongest for providers that Helicone knows
-how to route directly, such as Ollama via `/ollama/v1`. Arbitrary
+how to route directly, such as Ollama via the `/ai` router with
+provider-qualified model IDs. Keep user-facing local selectors such as
+`qwen3.6:27b` in Calciforge, then set `add_model_prefix = "ollama/"` on the
+Helicone provider so upstream requests send `ollama/qwen3.6:27b`. Arbitrary
 OpenAI-compatible providers may still be configured as direct Calciforge
 providers until their Helicone provider/converter support is validated.
+
+Large local Ollama models usually cannot stay resident together. For Ollama
+providers, configure `on_switch` so Calciforge unloads any other resident model
+before it forwards the next provider request:
+
+```toml
+[[proxy.providers]]
+id = "helicone-ollama"
+backend_type = "helicone"
+url = "http://127.0.0.1:8787/ai"
+api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
+models = []
+add_model_prefix = "ollama/"
+on_switch = "/usr/local/bin/calciforge-ollama-switch"
+timeout_seconds = 900
+```
+
+The installer writes `calciforge-ollama-switch` when Helicone is enabled. The
+hook receives `CALCIFORGE_PROVIDER_ID`, `CALCIFORGE_MODEL_ID`,
+`CALCIFORGE_UPSTREAM_MODEL_ID`, and `CALCIFORGE_PREV_MODEL_ID`. `!model` only
+stores the selected model for the sender identity; provider hooks run
+synchronously before the next gateway request that uses that provider.
+Calciforge serializes switches per provider, applies the hook to dispatcher and
+cascade fallback attempts, and fails that provider attempt if the hook exits
+non-zero or times out. Dispatchers, cascades, and alloys may still try later
+fallback constituents when their routing plan allows it; a direct request with
+no fallback fails the whole request.
+
+Provider `on_switch` hooks are different from `[local_models]` lifecycle hooks.
+Use `[local_models.mlx_lm.hooks]` when Calciforge owns a local `mlx_lm.server`
+process. Use `[[proxy.providers]].on_switch` when an external runtime such as
+Ollama owns model residency and Calciforge only needs to prepare that runtime
+before forwarding an OpenAI-compatible request.
 
 `!gateway` is handled only after a channel resolves the sender identity. It can
 include internal bind addresses or dashboard URLs, so room-based channels and
@@ -187,6 +271,68 @@ That script starts a local Helicone-shaped gateway, starts Calciforge in
 `--proxy-only` mode, checks `/gateway` metadata and `/gateway/ui`, and sends a
 real `/v1/chat/completions` request through Calciforge to prove the adapter
 forwards the expected auth headers, path, and model.
+
+## OpenCode Go and Zen
+
+OpenCode exposes two related gateway surfaces that share account/API-key
+management but should be configured as different Calciforge providers:
+
+- **OpenCode Go**: subscription-backed open coding models at
+  `https://opencode.ai/zen/go/v1/chat/completions`. Prefer this for default
+  Calciforge dispatchers when a Go subscription is available.
+- **OpenCode Zen**: pay-as-you-go curated models at
+  `https://opencode.ai/zen/v1/...`. Do not default to this unless the operator
+  explicitly opts in; it draws from Zen balance/credits.
+
+OpenCode's own config names models as `opencode-go/<model-id>` for Go and
+`opencode/<model-id>` for Zen. The OpenAI-compatible endpoint expects the
+unprefixed model ID. Calciforge providers therefore support
+`strip_model_prefix` so user-facing selectors remain namespaced while upstream
+requests send the provider's concrete model ID.
+
+```toml
+[[proxy.providers]]
+id = "opencode-go"
+backend_type = "http"
+url = "https://opencode.ai/zen/go/v1"
+api_key_file = "/etc/calciforge/secrets/opencode-api-key"
+models = [
+  "opencode-go/kimi-k2.6",
+  "opencode-go/qwen3.6-plus",
+  "opencode-go/deepseek-v4-pro",
+]
+strip_model_prefix = "opencode-go/"
+timeout_seconds = 300
+
+[[proxy.providers]]
+id = "opencode-zen"
+backend_type = "http"
+url = "https://opencode.ai/zen/v1"
+api_key_file = "/etc/calciforge/secrets/opencode-api-key"
+models = [
+  "opencode/qwen3.6-plus",
+  "opencode/kimi-k2.6",
+  "opencode/minimax-m2.7",
+]
+strip_model_prefix = "opencode/"
+timeout_seconds = 300
+```
+
+The installer can add these direct Calciforge provider routes when explicitly
+enabled:
+
+```bash
+CALCIFORGE_OPENCODE_API_KEY_FILE=/etc/calciforge/secrets/opencode-api-key \
+CALCIFORGE_OPENCODE_GO_ENABLED=true \
+CALCIFORGE_OPENCODE_GO_MODELS=kimi-k2.6,qwen3.6-plus,deepseek-v4-pro \
+bash scripts/install.sh --yes
+```
+
+This routes requests through Calciforge's model gateway. It does not guarantee
+that Helicone sees the same requests unless the provider is configured through a
+Helicone AI Gateway route as well. Treat that as a separate gateway-engine
+integration task rather than silently assuming direct provider traffic appears
+in Helicone dashboards.
 
 ## Model Selection
 

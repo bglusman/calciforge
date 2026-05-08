@@ -234,11 +234,6 @@ deploy_host() {
         echo "  Config already exists — not overwriting"
     fi
 
-    # Install systemd service
-    # Note: calciforge reads config from ~/.calciforge/config.toml
-    # We symlink /etc/calciforge/config.toml to the expected location
-    run_on "$host" "mkdir -p /root/.calciforge && ln -sf $CONFIG_DIR/config.toml /root/.calciforge/config.toml"
-
     run_on "$host" "cat > /etc/systemd/system/calciforge.service << 'EOF'
 [Unit]
 Description=Calciforge Gateway
@@ -246,7 +241,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/bin/calciforge
+ExecStart=$INSTALL_DIR/bin/calciforge --config $CONFIG_DIR/config.toml
 Environment=RUST_LOG=calciforge=info
 Restart=always
 RestartSec=5

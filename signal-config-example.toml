@@ -1,6 +1,6 @@
 # Signal Channel Configuration Example for Calciforge
 #
-# Add this to your ~/.calciforge/config.toml to enable Signal support.
+# Add this to your ~/.config/calciforge/config.toml to enable Signal support.
 # Signal uses the same webhook receiver pattern as WhatsApp.
 
 [[channels]]

@@ -133,8 +133,8 @@ aliases = [
 
 [[routing]]
 identity = "operator"
-default_agent = "librarian"
-allowed_agents = ["librarian"]
+default_agent = "primary-agent"
+allowed_agents = ["primary-agent"]
 ```
 
 Phone numbers in `allowed_numbers` that don't match any identity alias are

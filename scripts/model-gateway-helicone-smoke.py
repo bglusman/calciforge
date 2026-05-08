@@ -121,7 +121,7 @@ class HeliconeMockHandler(BaseHTTPRequestHandler):
             }
         )
 
-        if self.path not in ("/v1/chat/completions", "/ollama/v1/chat/completions"):
+        if self.path not in ("/v1/chat/completions", "/ai/chat/completions"):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"wrong path")
@@ -174,9 +174,10 @@ timeout_seconds = 10
 [[proxy.providers]]
 id = "helicone-local"
 backend_type = "helicone"
-url = "http://127.0.0.1:{upstream_port}/ollama/v1"
+url = "http://127.0.0.1:{upstream_port}/ai"
 api_key = "provider-helicone-key"
 models = []
+add_model_prefix = "ollama/"
 timeout_seconds = 10
 
 [[proxy.model_routes]]
@@ -321,7 +322,7 @@ def main() -> int:
                 )
 
             seen = HeliconeMockHandler.seen.get(timeout=5)
-            if seen["path"] != "/ollama/v1/chat/completions":
+            if seen["path"] != "/ai/chat/completions":
                 raise AssertionError(f"wrong named provider upstream path: {seen}")
             if seen["authorization"] != "Bearer provider-helicone-key":
                 raise AssertionError(
@@ -331,7 +332,7 @@ def main() -> int:
                 raise AssertionError(
                     "Calciforge did not forward named-provider Helicone-Auth"
                 )
-            if seen["body"].get("model") != "provider-test":
+            if seen["body"].get("model") != "ollama/provider-test":
                 raise AssertionError(f"wrong named provider upstream model: {seen}")
 
             print("Helicone gateway smoke passed")

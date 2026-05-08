@@ -260,8 +260,18 @@ impl AgentAdapter for CodexCliAdapter {
         let (args, stdin_message, capture) =
             self.build_args(ctx.message, ctx.model_override, ctx.session, &output_path)?;
 
-        info!(command = %self.command, args = ?args, "codex-cli dispatch");
-        debug!(msg = %ctx.message, "codex-cli outbound message");
+        info!(
+            command = %self.command,
+            arg_count = args.len(),
+            stdin_prompt = stdin_message.is_some(),
+            has_model = ctx.model_override.is_some() || self.model.is_some(),
+            has_session = ctx.session.is_some(),
+            "codex-cli dispatch"
+        );
+        debug!(
+            message_bytes = ctx.message.len(),
+            "codex-cli outbound message"
+        );
 
         let mut cmd = Command::new(&self.command);
         cmd.args(&args)

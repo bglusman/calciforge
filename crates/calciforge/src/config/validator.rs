@@ -622,6 +622,39 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
                 provider.id, other
             )),
         }
+
+        if provider
+            .strip_model_prefix
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(str::is_empty)
+        {
+            result.add_error(format!(
+                "Proxy provider '{}' strip_model_prefix cannot be empty",
+                provider.id
+            ));
+        }
+
+        if let Some(prefix) = provider
+            .strip_model_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|prefix| !prefix.is_empty())
+        {
+            let has_prefixed_model = provider.models.iter().any(|model| {
+                model == "*"
+                    || model.starts_with(prefix)
+                    || model
+                        .strip_suffix("/*")
+                        .is_some_and(|model_prefix| prefix.starts_with(model_prefix))
+            });
+            if !has_prefixed_model {
+                result.add_warning(format!(
+                    "Proxy provider '{}' strips model prefix '{}' but none of its models use that prefix",
+                    provider.id, prefix
+                ));
+            }
+        }
     }
 }
 
@@ -884,6 +917,74 @@ model = "kimi-cli"
             }),
             "error should identify the colliding alias and provider model ID; errors: {:?}",
             result.errors
+        );
+    }
+
+    #[test]
+    fn provider_strip_model_prefix_must_not_be_empty() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "opencode-go"
+backend_type = "http"
+url = "https://opencode.ai/zen/go/v1"
+models = ["opencode-go/kimi-k2.6"]
+strip_model_prefix = " "
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "empty strip_model_prefix should fail validation"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("strip_model_prefix cannot be empty")),
+            "error should mention strip_model_prefix; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn provider_strip_model_prefix_warns_when_no_models_use_it() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "opencode-go"
+backend_type = "http"
+url = "https://opencode.ai/zen/go/v1"
+models = ["kimi-k2.6"]
+strip_model_prefix = "opencode-go/"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "mismatched strip prefix should warn, not block unrelated direct models"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("strips model prefix")),
+            "warning should identify useless strip_model_prefix; warnings: {:?}",
+            result.warnings
         );
     }
 

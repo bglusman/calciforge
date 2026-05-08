@@ -86,7 +86,13 @@ impl AgentAdapter for ClaudeCliAdapter {
         ctx: DispatchContext<'_>,
     ) -> Result<String, AdapterError> {
         let args = self.build_args(ctx.model_override, ctx.session);
-        info!(command = %self.command, args = ?args, "claude-cli dispatch");
+        info!(
+            command = %self.command,
+            arg_count = args.len(),
+            has_model = ctx.model_override.is_some() || self.model.is_some(),
+            has_session = ctx.session.is_some(),
+            "claude-cli dispatch"
+        );
         debug!(
             message_bytes = ctx.message.len(),
             "claude-cli outbound message"

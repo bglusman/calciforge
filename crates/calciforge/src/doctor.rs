@@ -19,9 +19,11 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
+use crate::adapters::agent_supports_model_override;
 use crate::agent_kinds::{parse_agent_kind, AgentKind};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
 use crate::model_names::configured_first_class_model_ids;
+use crate::proxy::routing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
@@ -132,11 +134,13 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     ));
 
     check_secret_files(&config, &mut report);
+    check_model_gateway_config(&config, &mut report);
     check_secret_tooling(&mut report);
     check_scanner_config(&config, no_network, &mut report).await;
     check_proxy_environment(&mut report);
     check_install_node_metadata(no_network, &mut report).await;
     check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
+    report_agent_protection_summary(&config, &mut report);
     check_agent_wiring(&config, no_network, &mut report).await;
     check_persisted_state(&config, &mut report);
 
@@ -560,6 +564,103 @@ fn check_agent_proxy_coverage(
         report.warn(format!(
             "{external_count} externally managed HTTP/native agent endpoint(s) configured; doctor cannot verify their process proxy environment"
         ));
+    }
+}
+
+fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorReport) {
+    let Some(proxy) = config.proxy.as_ref().filter(|proxy| proxy.enabled) else {
+        report.ok("model gateway disabled");
+        return;
+    };
+
+    let first_class_models = configured_first_class_model_ids(config);
+    report.ok(format!(
+        "model gateway selectors configured: {}",
+        first_class_models.len()
+    ));
+
+    match routing::build_provider_entries(proxy, proxy.timeout_seconds) {
+        Ok(entries) => report.ok(format!(
+            "model gateway provider routing loads: {} route entries",
+            entries.len()
+        )),
+        Err(err) => report.error(format!("model gateway provider config invalid: {err}")),
+    }
+}
+
+fn report_agent_protection_summary(config: &CalciforgeConfig, report: &mut DoctorReport) {
+    let proxy = config.proxy.as_ref().filter(|proxy| proxy.enabled);
+    let proxy_bind = proxy.map(|proxy| proxy.bind.as_str());
+    let gateway_engine = proxy
+        .map(|proxy| proxy.backend_type.as_str())
+        .unwrap_or("disabled");
+
+    for agent in &config.agents {
+        let model_gateway = agent_model_gateway_coverage(agent, proxy_bind, gateway_engine);
+        let model_override = if agent_supports_model_override(agent) {
+            "enabled"
+        } else if agent.allow_model_override == Some(false) {
+            "disabled explicitly"
+        } else {
+            "disabled"
+        };
+        let security_proxy = agent_security_proxy_coverage(agent, proxy_bind);
+
+        report.ok(format!(
+            "agent '{}' coverage: model_gateway={}, model_override={}, security_proxy={}",
+            agent.id, model_gateway, model_override, security_proxy
+        ));
+    }
+}
+
+fn agent_model_gateway_coverage(
+    agent: &AgentConfig,
+    proxy_bind: Option<&str>,
+    gateway_engine: &str,
+) -> String {
+    match parse_agent_kind(&agent.kind) {
+        Some(AgentKind::OpenAiCompat)
+            if proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind)) =>
+        {
+            format!("yes via Calciforge proxy ({gateway_engine})")
+        }
+        Some(AgentKind::OpenAiCompat) => {
+            "no; openai-compat points at an external model endpoint".to_string()
+        }
+        Some(kind) if kind.is_subprocess_agent() => {
+            "no; subprocess agent manages its own model/provider calls".to_string()
+        }
+        Some(kind) if kind.is_http_agent() => {
+            "no; downstream HTTP agent manages its own model/provider calls".to_string()
+        }
+        Some(_) => "no; adapter does not use the model gateway".to_string(),
+        None => "unknown; unrecognized adapter kind".to_string(),
+    }
+}
+
+fn agent_security_proxy_coverage(agent: &AgentConfig, proxy_bind: Option<&str>) -> &'static str {
+    match parse_agent_kind(&agent.kind) {
+        Some(AgentKind::OpenAiCompat)
+            if proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind)) =>
+        {
+            "gateway-owned provider path; not ambient MITM"
+        }
+        Some(kind) if kind.is_subprocess_agent() => {
+            if has_complete_agent_proxy_env(agent) {
+                "explicit proxy env configured; verify this runtime honors it"
+            } else if has_incomplete_agent_proxy_env(agent) {
+                "partial proxy env configured"
+            } else if clears_agent_proxy_env(agent) {
+                "explicitly clears proxy env"
+            } else {
+                "not configured for subprocess"
+            }
+        }
+        Some(kind) if kind.is_http_agent() => {
+            "unknown; downstream daemon process is outside Calciforge"
+        }
+        Some(_) => "not applicable",
+        None => "unknown",
     }
 }
 
@@ -1462,7 +1563,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use crate::config::{
-        CalciforgeHeader, ProxyConfig, RoutingRule, SecuritySectionConfig, SyntheticModelConfig,
+        CalciforgeHeader, ProxyConfig, ProxyModelRoute, ProxyProviderConfig, RoutingRule,
+        SecuritySectionConfig, SyntheticModelConfig,
     };
 
     fn base_config() -> CalciforgeConfig {
@@ -1671,6 +1773,63 @@ mod tests {
             finding.severity == Severity::Error
                 && finding.message.contains("OpenClaw")
                 && finding.message.contains("openclaw-channel")
+        }));
+    }
+
+    #[test]
+    fn agent_protection_summary_marks_local_gateway_agents() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "gateway".to_string(),
+            kind: "openai-compat".to_string(),
+            endpoint: "http://127.0.0.1:18083".to_string(),
+            api_key: Some("test-token".to_string()),
+            model: Some("balanced".to_string()),
+            allow_model_override: Some(true),
+            ..Default::default()
+        }];
+        config.proxy = Some(ProxyConfig {
+            enabled: true,
+            bind: "0.0.0.0:18083".to_string(),
+            backend_type: "helicone".to_string(),
+            ..Default::default()
+        });
+        let mut report = DoctorReport::default();
+
+        report_agent_protection_summary(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding.message.contains("agent 'gateway' coverage")
+                && finding
+                    .message
+                    .contains("model_gateway=yes via Calciforge proxy (helicone)")
+                && finding.message.contains("model_override=enabled")
+        }));
+    }
+
+    #[test]
+    fn agent_protection_summary_marks_subprocess_bypass() {
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "opencode".to_string(),
+            kind: "acpx".to_string(),
+            command: Some("opencode".to_string()),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        report_agent_protection_summary(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding.message.contains("agent 'opencode' coverage")
+                && finding.message.contains(
+                    "model_gateway=no; subprocess agent manages its own model/provider calls",
+                )
+                && finding
+                    .message
+                    .contains("security_proxy=not configured for subprocess")
         }));
     }
 
@@ -2081,6 +2240,63 @@ mod tests {
                 && finding
                     .message
                     .contains("doctor cannot verify their process proxy environment")
+        }));
+    }
+
+    #[test]
+    fn model_gateway_config_reports_unknown_route_provider() {
+        let mut config = base_config();
+        let proxy = config.proxy.as_mut().expect("proxy");
+        proxy.model_routes = vec![ProxyModelRoute {
+            pattern: "opencode-go/kimi-k2.6".to_string(),
+            provider: "opencode-go".to_string(),
+        }];
+        proxy.providers.clear();
+        let mut report = DoctorReport::default();
+
+        check_model_gateway_config(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding
+                    .message
+                    .contains("references unknown provider 'opencode-go'")
+        }));
+    }
+
+    #[test]
+    fn model_gateway_config_loads_configured_provider_routes() {
+        let mut config = base_config();
+        let proxy = config.proxy.as_mut().expect("proxy");
+        proxy.providers = vec![ProxyProviderConfig {
+            id: "opencode-go".to_string(),
+            backend_type: "http".to_string(),
+            url: "https://opencode.example/v1".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["opencode-go/*".to_string()],
+            strip_model_prefix: Some("opencode-go/".to_string()),
+            add_model_prefix: None,
+            timeout_seconds: Some(60),
+            headers: HashMap::new(),
+            on_switch: None,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+        }];
+        proxy.model_routes = vec![ProxyModelRoute {
+            pattern: "opencode-go/kimi-k2.6".to_string(),
+            provider: "opencode-go".to_string(),
+        }];
+        let mut report = DoctorReport::default();
+
+        check_model_gateway_config(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding
+                    .message
+                    .contains("model gateway provider routing loads: 2 route entries")
         }));
     }
 

@@ -102,7 +102,7 @@ ls -la /usr/local/sbin/pct-create-wrapper \
 
 ```bash
 # With your mTLS client cert:
-curl -sk --cert /etc/clash/certs/librarian-bundle.pem \
+curl -sk --cert /etc/clash/certs/agent1-bundle.pem \
     https://localhost:18443/admin/warn-permissions | jq .
 ```
 
@@ -209,7 +209,7 @@ The host-agent exposes two ways to see sudoers warnings:
 ### 6.1 `/admin/warn-permissions` (API)
 
 ```bash
-curl -sk --cert /etc/clash/certs/librarian-bundle.pem \
+curl -sk --cert /etc/clash/certs/agent1-bundle.pem \
     https://localhost:18443/admin/warn-permissions
 ```
 
@@ -279,7 +279,7 @@ sudo install -o root -g root -m 0644 \
 
 # 4. Verify
 sudo logrotate --debug /etc/logrotate.d/clash-host-agent
-curl -sk --cert /etc/clash/certs/librarian-bundle.pem \
+curl -sk --cert /etc/clash/certs/agent1-bundle.pem \
     https://localhost:18443/admin/warn-permissions | jq .risky_entries
 ```
 

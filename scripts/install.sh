@@ -95,11 +95,29 @@ CALCIFORGE_HELICONE_DASHBOARD_USER_EMAIL="${CALCIFORGE_HELICONE_DASHBOARD_USER_E
 CALCIFORGE_HELICONE_DASHBOARD_USER_NAME="${CALCIFORGE_HELICONE_DASHBOARD_USER_NAME:-}"
 CALCIFORGE_HELICONE_DASHBOARD_PASSWORD="${CALCIFORGE_HELICONE_DASHBOARD_PASSWORD:-}"
 CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE="${CALCIFORGE_HELICONE_DASHBOARD_PASSWORD_FILE:-}"
+CALCIFORGE_OPENCODE_API_KEY_FILE="${CALCIFORGE_OPENCODE_API_KEY_FILE:-}"
+if [[ -z "$CALCIFORGE_OPENCODE_API_KEY_FILE" ]]; then
+    if [[ -s "$CALCIFORGE_CONFIG_HOME/secrets/opencode-api-key" ]]; then
+        CALCIFORGE_OPENCODE_API_KEY_FILE="$CALCIFORGE_CONFIG_HOME/secrets/opencode-api-key"
+    else
+        # Backward-compatible fallback for installs created before Go/Zen were
+        # documented as shared-key providers.
+        CALCIFORGE_OPENCODE_API_KEY_FILE="$CALCIFORGE_CONFIG_HOME/secrets/opencode-zen-key"
+    fi
+fi
+CALCIFORGE_OPENCODE_GO_ENABLED="${CALCIFORGE_OPENCODE_GO_ENABLED:-false}"
+CALCIFORGE_OPENCODE_GO_MODELS="${CALCIFORGE_OPENCODE_GO_MODELS:-kimi-k2.6,qwen3.6-plus,deepseek-v4-pro}"
+CALCIFORGE_OPENCODE_ZEN_ENABLED="${CALCIFORGE_OPENCODE_ZEN_ENABLED:-false}"
+CALCIFORGE_OPENCODE_ZEN_MODELS="${CALCIFORGE_OPENCODE_ZEN_MODELS:-qwen3.6-plus,kimi-k2.6,minimax-m2.7,big-pickle}"
 CALCIFORGE_FNOX_PROVIDER_NAME="${CALCIFORGE_FNOX_PROVIDER_NAME:-calciforge-local}"
 CALCIFORGE_FNOX_PROVIDER_TYPE="${CALCIFORGE_FNOX_PROVIDER_TYPE:-}"
 CALCIFORGE_FNOX_DIR="${CALCIFORGE_FNOX_DIR:-$CALCIFORGE_CONFIG_HOME}"
+CALCIFORGE_FNOX_WARMUP="${CALCIFORGE_FNOX_WARMUP:-true}"
 FNOX_AGE_KEY_FILE="${FNOX_AGE_KEY_FILE:-${CALCIFORGE_FNOX_AGE_KEY_FILE:-}}"
 CALCIFORGE_FNOX_AGE_RECIPIENT="${CALCIFORGE_FNOX_AGE_RECIPIENT:-}"
+CALCIFORGE_PASTE_BIND="${CALCIFORGE_PASTE_BIND:-}"
+CALCIFORGE_PASTE_PUBLIC_BASE_URL="${CALCIFORGE_PASTE_PUBLIC_BASE_URL:-}"
+CALCIFORGE_PASTE_PUBLIC_HOST="${CALCIFORGE_PASTE_PUBLIC_HOST:-}"
 REMOTE_SCANNER_ENABLED="${CALCIFORGE_REMOTE_SCANNER_ENABLED:-${REMOTE_SCANNER_ENABLED:-0}}"
 REMOTE_SCANNER_PORT="${REMOTE_SCANNER_PORT:-9801}"
 REMOTE_SCANNER_URL=""
@@ -181,6 +199,9 @@ case "$PLATFORM" in
         exit 1
         ;;
 esac
+
+CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH_EXPLICIT="${CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH+x}"
+CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH="${CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH:-$BIN_DIR/calciforge-ollama-switch}"
 
 rotate_log_file() {
     local file="$1" max_bytes="${2:-$LOG_MAX_BYTES}" backups="${3:-$LOG_BACKUPS}"
@@ -1411,11 +1432,39 @@ ensure_fnox_age_provider() {
     return 1
 }
 
+warm_fnox_provider() {
+    truthy "$CALCIFORGE_FNOX_WARMUP" || return 0
+
+    local key value err_file
+    key="CALCIFORGE_INSTALL_PRECHECK"
+    value="calciforge-install-preflight-$(date +%s)-$$"
+    err_file="$(mktemp)"
+
+    echo "  Warming fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' with a temporary secret..."
+    if ! (cd "$CALCIFORGE_FNOX_DIR" && printf '%s' "$value" | fnox set "$key" >/dev/null 2>"$err_file"); then
+        warn "fnox provider warmup failed; first secret write may still ask for local approval"
+        sed 's/^/  fnox: /' "$err_file" | tail -5
+        rm -f "$err_file"
+        return 0
+    fi
+
+    if ! (cd "$CALCIFORGE_FNOX_DIR" && fnox remove "$key" >/dev/null 2>"$err_file"); then
+        warn "fnox provider warmup stored temporary secret '$key' but could not remove it; remove it manually with: fnox remove $key"
+        sed 's/^/  fnox: /' "$err_file" | tail -5
+        rm -f "$err_file"
+        return 0
+    fi
+
+    rm -f "$err_file"
+    ok "fnox provider write path warmed"
+}
+
 ensure_fnox_provider() {
     local count provider_type err_file
     count="$(fnox_provider_count)"
     if [[ "$count" -gt 0 ]]; then
         ok "fnox provider configured"
+        warm_fnox_provider
         return 0
     fi
 
@@ -1426,8 +1475,11 @@ ensure_fnox_provider() {
     fi
 
     if [[ "$provider_type" == "age" ]]; then
-        ensure_fnox_age_provider
-        return $?
+        if ensure_fnox_age_provider; then
+            warm_fnox_provider
+            return 0
+        fi
+        return 1
     fi
 
     err_file="$(mktemp)"
@@ -1436,6 +1488,7 @@ ensure_fnox_provider() {
         if fnox provider test "$CALCIFORGE_FNOX_PROVIDER_NAME" >/dev/null 2>"$err_file"; then
             rm -f "$err_file"
             ok "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' ready"
+            warm_fnox_provider
             return 0
         fi
         warn "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' was added but did not pass its connection test"
@@ -1573,6 +1626,16 @@ with path.open("a", encoding="utf-8") as fh:
     fh.write(block)
 print(f"added calciforge agent {agent_id!r} to {path}")
 PYEOF
+}
+
+ensure_calciforge_agent_config() {
+    local agent_id="$1" kind="$2" endpoint="$3" timeout_ms="$4" aliases_csv="$5" api_key_file="$6"
+    local allow_model_override="${7:-false}" model="${8:-}"
+
+    mkdir -p "$(dirname "$ZC_CONFIG")"
+    python3 "$REPO_ROOT/scripts/lib/upsert-calciforge-agent.py" \
+        "$ZC_CONFIG" "$agent_id" "$kind" "$endpoint" "$timeout_ms" \
+        "$aliases_csv" "$api_key_file" "$allow_model_override" "$model"
 }
 
 configure_openclaw_model_gateway() {
@@ -1801,6 +1864,14 @@ if [[ "$CONFIGURE_ONLY" != true ]]; then
         }
         ok "Installed $bin → $BIN_DIR/$bin"
     done
+    if [[ -f "$REPO_ROOT/scripts/ollama-model-switch.sh" ]]; then
+        install -m 755 "$REPO_ROOT/scripts/ollama-model-switch.sh" "$BIN_DIR/calciforge-ollama-switch" 2>/dev/null || {
+            rm -f "$BIN_DIR/calciforge-ollama-switch" 2>/dev/null
+            cp "$REPO_ROOT/scripts/ollama-model-switch.sh" "$BIN_DIR/calciforge-ollama-switch"
+            chmod +x "$BIN_DIR/calciforge-ollama-switch"
+        }
+        ok "Installed calciforge-ollama-switch → $BIN_DIR/calciforge-ollama-switch"
+    fi
 
     [[ ":$PATH:" != *":$BIN_DIR:"* ]] && \
         warn "$BIN_DIR not in PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\""
@@ -2182,19 +2253,23 @@ PY
 
 _ensure_helicone_ollama_provider() {
     local config_path="$1"
+    local on_switch="${2-$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH}"
     python3 - "$config_path" \
         "$CALCIFORGE_HELICONE_AI_GATEWAY_PORT" \
         "$CALCIFORGE_HELICONE_API_KEY_FILE" \
-        "$CALCIFORGE_HELICONE_MODELS" <<'PY'
+        "$CALCIFORGE_HELICONE_MODELS" \
+        "$on_switch" <<'PY'
 import pathlib
 import re
+import json
 import sys
 
 path = pathlib.Path(sys.argv[1])
-port, api_key_file, models_csv = sys.argv[2:]
+port, api_key_file, models_csv, on_switch = sys.argv[2:]
 models = [m.strip() for m in models_csv.split(",") if m.strip()]
 if not models:
     raise SystemExit(0)
+on_switch_line = f'on_switch = {json.dumps(on_switch)}\n' if on_switch.strip() else ""
 
 text = path.read_text()
 
@@ -2219,9 +2294,11 @@ provider_block = (
     '[[proxy.providers]]\n'
     'id = "helicone-ollama"\n'
     'backend_type = "helicone"\n'
-    f'url = "http://127.0.0.1:{port}/ollama/v1"\n'
+    f'url = "http://127.0.0.1:{port}/ai"\n'
     f'api_key_file = "{api_key_file}"\n'
     "models = []\n"
+    'add_model_prefix = "ollama/"\n'
+    f"{on_switch_line}"
     "timeout_seconds = 900\n"
 )
 if provider_match:
@@ -2230,6 +2307,72 @@ else:
     text = text.rstrip() + (
         "\n\n" + provider_block
     )
+
+path.write_text(text + ("\n" if not text.endswith("\n") else ""))
+PY
+}
+
+_helicone_ollama_on_switch_config_value() {
+    if [[ -n "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH_EXPLICIT" ]]; then
+        printf '%s' "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH"
+        return 0
+    fi
+    if [[ -x "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH" ]]; then
+        printf '%s' "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH"
+        return 0
+    fi
+    if [[ "$CONFIGURE_ONLY" != true ]]; then
+        printf '%s' "$CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH"
+        return 0
+    fi
+    warn "Configure-only mode: not writing Helicone Ollama on_switch because $CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH is not installed. Set CALCIFORGE_HELICONE_OLLAMA_ON_SWITCH explicitly to use another hook." >&2
+    printf ''
+}
+
+_ensure_opencode_provider() {
+    local config_path="$1" provider_id="$2" url="$3" public_prefix="$4" models_csv="$5" api_key_file="$6" timeout_seconds="${7:-300}"
+    if [[ ! -s "$api_key_file" ]]; then
+        warn "OpenCode provider '$provider_id' requested but API key file is missing or empty: $api_key_file"
+        return 0
+    fi
+    python3 - "$config_path" "$provider_id" "$url" "$public_prefix" "$models_csv" "$api_key_file" "$timeout_seconds" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+provider_id, url, public_prefix, models_csv, api_key_file, timeout_seconds = sys.argv[2:]
+models = [m.strip() for m in models_csv.split(",") if m.strip()]
+if not models:
+    raise SystemExit(0)
+
+def q(value):
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+public_models = [model if model.startswith(public_prefix) else public_prefix + model for model in models]
+models_toml = "[ " + ", ".join(f'"{q(model)}"' for model in public_models) + ",]"
+
+text = path.read_text()
+provider_re = re.compile(
+    r'(?ms)^\[\[proxy\.providers\]\]\n(?:(?!^\[).)*?^id\s*=\s*"'
+    + re.escape(provider_id)
+    + r'"\s*$.*?(?=^\[|\Z)'
+)
+provider_block = (
+    '[[proxy.providers]]\n'
+    f'id = "{q(provider_id)}"\n'
+    'backend_type = "http"\n'
+    f'url = "{q(url)}"\n'
+    f'api_key_file = "{q(api_key_file)}"\n'
+    f'models = {models_toml}\n'
+    f'strip_model_prefix = "{q(public_prefix)}"\n'
+    f'timeout_seconds = {int(timeout_seconds)}\n'
+)
+match = provider_re.search(text)
+if match:
+    text = text[:match.start()] + provider_block + text[match.end():].lstrip("\n")
+else:
+    text = text.rstrip() + "\n\n" + provider_block
 
 path.write_text(text + ("\n" if not text.endswith("\n") else ""))
 PY
@@ -2280,9 +2423,60 @@ fi
 if truthy "$CALCIFORGE_HELICONE_ENABLED"; then
     _ensure_proxy_gateway_settings "$ZC_CONFIG" || warn "Could not update [proxy] gateway settings in $ZC_CONFIG"
     if [[ "$CALCIFORGE_HELICONE_PROVIDER" == "ollama" ]]; then
-        _ensure_helicone_ollama_provider "$ZC_CONFIG" || warn "Could not add Helicone Ollama provider entries in $ZC_CONFIG"
+        _ensure_helicone_ollama_provider "$ZC_CONFIG" "$(_helicone_ollama_on_switch_config_value)" || warn "Could not add Helicone Ollama provider entries in $ZC_CONFIG"
     fi
 fi
+
+if truthy "$CALCIFORGE_OPENCODE_GO_ENABLED"; then
+    _ensure_opencode_provider \
+        "$ZC_CONFIG" \
+        "opencode-go" \
+        "https://opencode.ai/zen/go/v1" \
+        "opencode-go/" \
+        "$CALCIFORGE_OPENCODE_GO_MODELS" \
+        "$CALCIFORGE_OPENCODE_API_KEY_FILE" \
+        300 || warn "Could not add OpenCode Go provider entries in $ZC_CONFIG"
+fi
+
+if truthy "$CALCIFORGE_OPENCODE_ZEN_ENABLED"; then
+    _ensure_opencode_provider \
+        "$ZC_CONFIG" \
+        "opencode-zen" \
+        "https://opencode.ai/zen/v1" \
+        "opencode/" \
+        "$CALCIFORGE_OPENCODE_ZEN_MODELS" \
+        "$CALCIFORGE_OPENCODE_API_KEY_FILE" \
+        300 || warn "Could not add OpenCode Zen provider entries in $ZC_CONFIG"
+fi
+
+_xml_escape() {
+    python3 - "$1" <<'PY'
+import html
+import sys
+print(html.escape(sys.argv[1], quote=True), end="")
+PY
+}
+
+_calciforge_launchd_optional_env() {
+    local key value
+    for key in CALCIFORGE_PASTE_BIND CALCIFORGE_PASTE_PUBLIC_BASE_URL CALCIFORGE_PASTE_PUBLIC_HOST; do
+        value="${!key:-}"
+        [[ -n "$value" ]] || continue
+        printf '        <key>%s</key><string>%s</string>\n' "$(_xml_escape "$key")" "$(_xml_escape "$value")"
+    done
+}
+
+_calciforge_systemd_optional_env() {
+    local key value
+    for key in CALCIFORGE_PASTE_BIND CALCIFORGE_PASTE_PUBLIC_BASE_URL CALCIFORGE_PASTE_PUBLIC_HOST; do
+        value="${!key:-}"
+        [[ -n "$value" ]] || continue
+        printf 'Environment=%s=%s\n' "$key" "$value"
+    done
+}
+
+CALCIFORGE_LAUNCHD_OPTIONAL_ENV="$(_calciforge_launchd_optional_env)"
+CALCIFORGE_SYSTEMD_OPTIONAL_ENV="$(_calciforge_systemd_optional_env)"
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
     ZC_PLIST="$PLIST_DIR/com.calciforge.calciforge.plist"
@@ -2304,6 +2498,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>FNOX_AGE_KEY_FILE</key><string>${FNOX_AGE_KEY_FILE}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
+${CALCIFORGE_LAUNCHD_OPTIONAL_ENV}
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
     <key>RunAtLoad</key><true/>
@@ -2331,6 +2526,7 @@ Environment=CALCIFORGE_FNOX_DIR=${CALCIFORGE_FNOX_DIR}
 Environment=FNOX_AGE_KEY_FILE=${FNOX_AGE_KEY_FILE}
 Environment=CALCIFORGE_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
 Environment=CALCIFORGE_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
+${CALCIFORGE_SYSTEMD_OPTIONAL_ENV}
 Environment=PATH=${SERVICE_PATH}
 Restart=always
 RestartSec=30
@@ -2638,7 +2834,7 @@ ENVEOF
         fi
 
         ensure_calciforge_agent_config "ironclaw" "ironclaw" \
-            "$CALCIFORGE_IRONCLAW_ENDPOINT" 300000 "iron" "$secret_file"
+            "$CALCIFORGE_IRONCLAW_ENDPOINT" 300000 "iron" "$secret_file" false "$gateway_model"
     fi
 fi
 
@@ -2811,7 +3007,7 @@ ENVEOF
 
         # Register in Calciforge config
         ensure_calciforge_agent_config "hermes" "hermes" \
-            "$CALCIFORGE_HERMES_ENDPOINT" 600000 "h,nous" "$hermes_api_key_file"
+            "$CALCIFORGE_HERMES_ENDPOINT" 600000 "h,nous" "$hermes_api_key_file" true "$gateway_model"
     fi
 fi
 
@@ -3365,6 +3561,11 @@ REMOTE_MITM_CA
                 security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_MITM_ENABLED=${SECURITY_PROXY_MITM_ENABLED}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
+            if [[ "$bin" == "calciforge" ]]; then
+                [[ -z "$CALCIFORGE_PASTE_BIND" ]] || env_pairs="${env_pairs}\nCALCIFORGE_PASTE_BIND=${CALCIFORGE_PASTE_BIND}"
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_BASE_URL" ]] || env_pairs="${env_pairs}\nCALCIFORGE_PASTE_PUBLIC_BASE_URL=${CALCIFORGE_PASTE_PUBLIC_BASE_URL}"
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_HOST" ]] || env_pairs="${env_pairs}\nCALCIFORGE_PASTE_PUBLIC_HOST=${CALCIFORGE_PASTE_PUBLIC_HOST}"
+            fi
             exec_args=""
             if [[ "$bin" == "calciforge" ]]; then
                 exec_args=" --config ${config_dir}/config.toml"
@@ -3400,6 +3601,9 @@ REMOTE_MITM_CA
                     "CALCIFORGE_FNOX_DIR=${config_dir}"
                     "FNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519"
                 )
+                [[ -z "$CALCIFORGE_PASTE_BIND" ]] || launchd_env+=("CALCIFORGE_PASTE_BIND=${CALCIFORGE_PASTE_BIND}")
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_BASE_URL" ]] || launchd_env+=("CALCIFORGE_PASTE_PUBLIC_BASE_URL=${CALCIFORGE_PASTE_PUBLIC_BASE_URL}")
+                [[ -z "$CALCIFORGE_PASTE_PUBLIC_HOST" ]] || launchd_env+=("CALCIFORGE_PASTE_PUBLIC_HOST=${CALCIFORGE_PASTE_PUBLIC_HOST}")
             fi
             if [[ "$bin" == "security-proxy" ]]; then
                 launchd_env+=(
