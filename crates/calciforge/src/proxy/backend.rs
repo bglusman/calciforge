@@ -1,11 +1,10 @@
 //! Unified backend interface for the model gateway
 //!
-//! Provides a trait-based abstraction for different model-provider methods:
-//! - Embedded (reserved for future in-process or subprocess backends)
-//! - Library (reserved for future in-process provider libraries)
-//! - HTTP (OpenAI-compatible HTTP providers)
-//! - Helicone (HTTP to Helicone AI Gateway)
-//! - Mock (for testing)
+//! Provides the runtime abstraction used by supported model-provider methods.
+//! The production root gateway surface is intentionally small: direct HTTP
+//! providers, Helicone's external HTTP gateway, and a mock backend for tests.
+//! Older embedded/library variants remain internal stubs until they are backed
+//! by real tests and config validation.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
