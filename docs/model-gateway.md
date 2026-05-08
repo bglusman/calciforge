@@ -276,6 +276,19 @@ That script starts a local Helicone-shaped gateway, starts Calciforge in
 real `/v1/chat/completions` request through Calciforge to prove the adapter
 forwards the expected auth headers, path, and model.
 
+For a live deployment smoke against configured provider routes, run:
+
+```bash
+scripts/model-gateway-provider-smoke.sh \
+  --base-url http://127.0.0.1:18083 \
+  --api-key-file ~/.config/calciforge/secrets/proxy-api-key \
+  opencode-go/qwen3.6-plus
+```
+
+That script sends requests through Calciforge's gateway endpoint and fails if
+any listed model cannot return the exact expected response. Use it for operator
+validation after adding provider API-key files, model prefixes, or route blocks.
+
 ## OpenCode Go and Zen
 
 OpenCode exposes two related gateway surfaces that share account/API-key
@@ -288,9 +301,10 @@ management but should be configured as different Calciforge providers:
   `https://opencode.ai/zen/v1/...`. Do not default to this unless the operator
   explicitly opts in; it draws from Zen balance/credits.
 
-OpenCode's own config names models as `opencode-go/<model-id>` for Go and
-`opencode/<model-id>` for Zen. The OpenAI-compatible endpoint expects the
-unprefixed model ID. Calciforge providers therefore support
+OpenCode's own config names models as `opencode-go/<model-id>` for Go. In
+Calciforge, keep Zen separate with a distinct prefix such as
+`opencode-zen/<model-id>`. The OpenAI-compatible endpoint expects the
+unprefixed model ID in both cases. Calciforge providers therefore support
 `strip_model_prefix` so user-facing selectors remain namespaced while upstream
 requests send the provider's concrete model ID.
 
@@ -314,11 +328,11 @@ backend_type = "http"
 url = "https://opencode.ai/zen/v1"
 api_key_file = "/etc/calciforge/secrets/opencode-api-key"
 models = [
-  "opencode/qwen3.6-plus",
-  "opencode/kimi-k2.6",
-  "opencode/minimax-m2.7",
+  "opencode-zen/qwen3.6-plus",
+  "opencode-zen/kimi-k2.6",
+  "opencode-zen/minimax-m2.7",
 ]
-strip_model_prefix = "opencode/"
+strip_model_prefix = "opencode-zen/"
 timeout_seconds = 300
 ```
 
