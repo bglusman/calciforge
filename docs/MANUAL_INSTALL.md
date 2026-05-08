@@ -3,79 +3,96 @@ layout: default
 title: Manual Installation
 ---
 
-# Manual Installation Guide (Fallback)
+# Manual Installation Guide
 
-If the automated `install-security-stack.sh` fails, follow these steps manually on each target host.
+Prefer the unified installer whenever possible:
+
+```bash
+cd ~/projects/calciforge
+bash scripts/install.sh --yes
+```
+
+Use this page only when you need to inspect or reproduce the service layout by
+hand. The older `install-security-stack.sh` flow has been removed because it
+targeted the retired `security-gateway` binary; current installs use
+`calciforge`, `security-proxy`, and `clashd`.
 
 ## Prerequisites
 
-- Root SSH access to target host
-- Rust toolchain on build machine
-- `curl`, `systemctl` on target host
+- Rust toolchain on the build machine.
+- `curl` and `systemctl` on Linux targets.
+- Root or per-user service-manager access, depending on where you install.
+- An existing Calciforge config at `/etc/calciforge/config.toml` or
+  `~/.config/calciforge/config.toml`.
 
-## Step 1: Build (on build machine)
+## Build
 
 ```bash
-cd /root/projects/calciforge
-cargo build --release -p adversary-detector -p security-gateway -p clashd
+cd ~/projects/calciforge
+cargo build --release -p calciforge -p security-proxy -p clashd
 ```
 
-## Step 2: Copy binaries
+The adversary detector is linked into `security-proxy`; you do not need a
+separate detector service for the default local scanner path.
+
+## Copy Binaries
+
+For a system install:
 
 ```bash
-TARGET=gateway.example.internal  # change per host
+TARGET=gateway.example.internal
 
-ssh -i ~/.ssh/id_ed25519 root@$TARGET "mkdir -p /opt/calciforge/bin /etc/calciforge"
+ssh root@$TARGET "mkdir -p /opt/calciforge/bin /etc/calciforge"
 
-for bin in adversary-detector security-gateway clashd; do
-    scp -i ~/.ssh/id_ed25519 \
-        target/release/$bin \
-        root@$TARGET:/opt/calciforge/bin/$bin
+for bin in calciforge security-proxy clashd; do
+    scp target/release/$bin root@$TARGET:/opt/calciforge/bin/$bin
+    ssh root@$TARGET "chmod 0755 /opt/calciforge/bin/$bin"
 done
-
-scp -i ~/.ssh/id_ed25519 \
-    crates/clashd/config/agents.json \
-    root@$TARGET:/etc/calciforge/agents.json
-
-scp -i ~/.ssh/id_ed25519 \
-    crates/clashd/config/default-policy.star \
-    root@$TARGET:/etc/calciforge/default-policy.star
 ```
 
-## Step 3: Create systemd services
+For a per-user install, copy to `~/.local/bin` and use systemd user units or
+LaunchAgents instead of the system units below.
 
-SSH into the target and create these three files:
+## Linux Systemd Units
 
-### `/etc/systemd/system/adversary-detector.service`
+The unit names below match `scripts/install.sh` for Linux system installs.
+
+Create `/etc/systemd/system/calciforge.service`:
+
 ```ini
 [Unit]
-Description=Calciforge Adversary Detector
+Description=Calciforge Router
+After=network.target calciforge-clashd.service calciforge-security-proxy.service
+Wants=calciforge-clashd.service calciforge-security-proxy.service
+
+[Service]
+Type=simple
+ExecStart=/opt/calciforge/bin/calciforge --config /etc/calciforge/config.toml
+Environment=RUST_LOG=calciforge=info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create `/etc/systemd/system/calciforge-security-proxy.service`:
+
+```ini
+[Unit]
+Description=Calciforge Security Proxy
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/calciforge/bin/adversary-detector
-Environment=ADVERSARY_DETECTOR_PORT=9800
-Environment=RUST_LOG=adversary_detector=info
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### `/etc/systemd/system/security-gateway.service`
-```ini
-[Unit]
-Description=Calciforge Security Gateway
-After=network.target adversary-detector.service
-
-[Service]
-Type=simple
-ExecStart=/opt/calciforge/bin/security-gateway
+ExecStart=/opt/calciforge/bin/security-proxy
+Environment=SECURITY_PROXY_BIND=127.0.0.1
+Environment=SECURITY_PROXY_PORT=8888
+Environment=SECURITY_PROXY_CA_CERT=/etc/calciforge/mitm-ca.pem
+Environment=SECURITY_PROXY_CA_KEY=/etc/calciforge/mitm-ca-key.pem
+Environment=CALCIFORGE_CONFIG_HOME=/etc/calciforge
 Environment=AGENT_CONFIG=/etc/calciforge/agents.json
-Environment=ADVERSARY_DETECTOR_PORT=9800
-Environment=RUST_LOG=security_gateway=info
+Environment=RUST_LOG=security_proxy=info
 Restart=always
 RestartSec=5
 
@@ -83,10 +100,11 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-### `/etc/systemd/system/clashd.service`
+Create `/etc/systemd/system/calciforge-clashd.service`:
+
 ```ini
 [Unit]
-Description=Calciforge Clashd Policy Engine
+Description=Calciforge Clash Policy Engine
 After=network.target
 
 [Service]
@@ -101,81 +119,61 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-## Step 4: Enable and start services
+Enable and start:
 
 ```bash
 systemctl daemon-reload
-systemctl enable adversary-detector security-gateway clashd
-systemctl start adversary-detector security-gateway clashd
+systemctl enable --now calciforge-clashd calciforge-security-proxy calciforge
 ```
 
-## Step 5: Configure optional external-agent proxy env
+## Agent Proxy Environment
 
-Do not set `HTTP_PROXY` or `HTTPS_PROXY` globally for Calciforge itself. The
-Calciforge service should call providers, channels, and control-plane endpoints
-directly unless a stronger host/container boundary is configured.
+Do not set `HTTP_PROXY` or `HTTPS_PROXY` globally for Calciforge itself.
+Configure proxy variables only on the agent daemon that should be inspected.
 
-For an external agent daemon that you have tested with `security-proxy`, set
-proxy environment in that daemon's service manager instead of in
-`/etc/profile.d`. For OpenClaw hosts managed by `calciforge install`, prefer
-the `--claw ... proxy_endpoint=http://<calciforge-host>:8888` option; the
-installer writes OpenClaw service proxy env and browser proxy settings after
-verifying the proxy is reachable from that host. For a manually managed daemon:
+For a manually managed agent:
 
 ```bash
-export HTTP_PROXY=http://127.0.0.1:8080
-export HTTPS_PROXY=http://127.0.0.1:8080
-export NO_PROXY=localhost,127.0.0.1,10.*.*.*,172.16.*.*,192.168.*.*
+export HTTP_PROXY=http://127.0.0.1:8888
+export HTTPS_PROXY=http://127.0.0.1:8888
+export ALL_PROXY=http://127.0.0.1:8888
+export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
-Only set `HTTPS_PROXY` when the target runtime trusts the Calciforge CA. The
-unified installer enables the MITM listener by default and generates the CA if
-needed. On macOS it explains the trust step before the password prompt and can
-add the CA to the login keychain for any tested client that sends HTTPS traffic
-through `security-proxy`; set `SECURITY_PROXY_TRUST_MITM_CA=false` to skip
-that step. Manual service definitions can do the same with:
+Only set `HTTPS_PROXY` when that runtime trusts the Calciforge MITM CA. The
+unified installer can generate and trust the CA for supported local runtimes;
+manual installs must do that explicitly for the operating system, container, or
+process trust store in use.
+
+For installer-managed OpenClaw hosts, prefer the `--claw ...
+proxy_endpoint=http://<calciforge-host>:8888` path from `scripts/install.sh`.
+That path also writes OpenClaw browser proxy settings after verifying the proxy
+is reachable from the target host.
+
+## Verify
 
 ```bash
-SECURITY_PROXY_MITM_ENABLED=true
-SECURITY_PROXY_CA_CERT=/etc/calciforge/mitm-ca.pem
-SECURITY_PROXY_CA_KEY=/etc/calciforge/mitm-ca-key.pem
+curl -fsS http://127.0.0.1:9001/health
+curl -fsS http://127.0.0.1:8888/health
+/opt/calciforge/bin/calciforge doctor --config /etc/calciforge/config.toml
 ```
 
-Without MITM, standard HTTPS proxying uses opaque CONNECT tunnels. Use
-Calciforge model-gateway routes, explicit fetch/tool integration, audited
-recipes, or tested MITM proxy setup for HTTPS content that must be scanned or
-rewritten, or run the agent inside a controlled container/VM profile that
-forces egress through Calciforge services.
-
-## Step 6: Set API credentials
-
-Edit `/etc/calciforge/agents.json` or set env vars:
-```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
-## Step 7: Verify
-
-```bash
-curl -s http://127.0.0.1:9800/health  # adversary-detector
-curl -s http://127.0.0.1:8080/health  # security-gateway
-curl -s http://127.0.0.1:9001/health  # clashd
-```
-
-All should return JSON with `"status": "ok"`.
+The Calciforge router port depends on the configured channels and reply
+webhooks, so `calciforge doctor` is the reliable service/config validation path.
 
 ## Troubleshooting
 
 ```bash
-# Check service status
-systemctl status adversary-detector
-systemctl status security-gateway
-journalctl -u security-gateway -f  # live logs
+systemctl status calciforge
+systemctl status calciforge-security-proxy
+systemctl status calciforge-clashd
 
-# Check if port is listening
-ss -tlnp | grep -E '8080|9001|9800'
+journalctl -u calciforge -f
+journalctl -u calciforge-security-proxy -f
+journalctl -u calciforge-clashd -f
 
-# Test without proxy (bypass)
-curl --noproxy '*' http://127.0.0.1:8080/health
+ss -tlnp | grep -E '8888|9001|18797'
 ```
+
+If HTTPS content is not being inspected, verify the agent process is actually
+using the proxy and that its TLS stack trusts the Calciforge CA.
