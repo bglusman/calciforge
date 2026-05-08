@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use crate::config::GatewayRetryConfig;
 use crate::proxy::backend::{BackendError, ModelInfo, SecretsBackend};
-use crate::proxy::openai::{ChatCompletionRequest, ChatCompletionResponse, Usage};
-#[allow(unused_imports)]
-use tracing::{info, warn};
+use crate::proxy::openai::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, MessageContent, Usage,
+};
 
 /// High-level capability flags used to compare builtin and external gateway
 /// engines without committing Calciforge to one implementation.
@@ -571,8 +571,24 @@ impl GatewayBackend for MockGateway {
             id: "mock-id".to_string(),
             object: "chat.completion".to_string(),
             created: chrono::Utc::now().timestamp() as u64,
-            model: request.model,
-            choices: vec![],
+            model: request.model.clone(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(MessageContent::Text(format!(
+                        "Mock gateway response for model: {}",
+                        request.model
+                    ))),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
             usage: Usage {
                 prompt_tokens: 0,
                 completion_tokens: 0,
@@ -659,6 +675,46 @@ mod tests {
 
         let gateway = MockGateway::new(config);
         assert_eq!(gateway.gateway_type(), GatewayType::Mock);
+    }
+
+    #[tokio::test]
+    async fn mock_gateway_returns_openai_compatible_chat_choice() {
+        let gateway = MockGateway::new(GatewayConfig {
+            backend_type: GatewayType::Mock,
+            ..Default::default()
+        });
+
+        let response = gateway
+            .chat_completion(ChatCompletionRequest {
+                model: "gpt-4".to_string(),
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("short".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning: None,
+                    reasoning_content: None,
+                }],
+                max_tokens: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.model, "gpt-4");
+        let choice = response
+            .choices
+            .first()
+            .expect("mock gateway should return an assistant choice");
+        assert_eq!(choice.message.role, "assistant");
+        let Some(MessageContent::Text(content)) = choice.message.content.as_ref() else {
+            panic!("mock gateway choice should contain text content");
+        };
+        assert!(
+            content.contains("gpt-4") && content.to_lowercase().contains("mock"),
+            "mock response content should identify the routed model: {content}"
+        );
     }
 
     #[test]
