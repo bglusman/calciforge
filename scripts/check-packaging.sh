@@ -45,8 +45,14 @@ ROOT="$1"
 source "$ROOT/scripts/lib/common.sh"
 truthy yes
 ! truthy false
-[[ "$(expand_home_path "~/calciforge")" == "$HOME/calciforge" ]]
-[[ "$(toml_basic_string $'a"b\tc')" == '"a\"b\tc"' ]]
+[[ "$(expand_home_path "~/calciforge")" == "$HOME/calciforge" ]] || {
+    echo "expand_home_path did not expand ~/ paths" >&2
+    exit 1
+}
+[[ "$(toml_basic_string $'a"b\tc')" == '"a\"b\tc"' ]] || {
+    echo "toml_basic_string did not escape quotes and tabs" >&2
+    exit 1
+}
 
 ask_install() { return 1; }
 CALCIFORGE_CONFIG_HOME="$HOME/.config/calciforge"
@@ -60,11 +66,20 @@ FNOX_AGE_KEY_FILE=""
 IS_ROOT=false
 PLATFORM=Linux
 source "$ROOT/scripts/lib/fnox.sh"
-[[ "$(default_fnox_provider_type)" == "age" ]]
+[[ "$(default_fnox_provider_type)" == "age" ]] || {
+    echo "default fnox provider type on Linux should be age" >&2
+    exit 1
+}
 PLATFORM=Darwin
-[[ "$(default_fnox_provider_type)" == "keychain" ]]
+[[ "$(default_fnox_provider_type)" == "keychain" ]] || {
+    echo "default fnox provider type on Darwin should be keychain" >&2
+    exit 1
+}
 CALCIFORGE_FNOX_PROVIDER_TYPE="custom"
-[[ "$(default_fnox_provider_type)" == "custom" ]]
+[[ "$(default_fnox_provider_type)" == "custom" ]] || {
+    echo "explicit fnox provider type should override platform default" >&2
+    exit 1
+}
 BASH
 
 python3 - "$ROOT/scripts/install.sh" "$ROOT/docs/model-gateway.md" <<'PY'
