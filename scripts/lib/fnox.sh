@@ -53,11 +53,17 @@ install_fnox_release() {
         install_dir="/usr/local/bin"
     else
         install_dir="$HOME/.local/bin"
-        mkdir -p "$install_dir"
+        if ! mkdir -p "$install_dir"; then
+            warn "failed to create fnox install directory ${install_dir}"
+            return 1
+        fi
         export PATH="$install_dir:$PATH"
     fi
 
-    tmp="$(mktemp -d)"
+    if ! tmp="$(mktemp -d)"; then
+        warn "failed to create temporary directory for fnox release install"
+        return 1
+    fi
     echo "  Installing fnox ${version} release..."
     if ! curl -fsSL "$url" -o "$tmp/fnox.tar.gz" ||
         ! tar -xzf "$tmp/fnox.tar.gz" -C "$tmp" ||
@@ -157,9 +163,15 @@ ensure_fnox() {
 }
 
 ensure_fnox_config() {
-    mkdir -p "$CALCIFORGE_FNOX_DIR"
     local err_file
-    err_file="$(mktemp)"
+    if ! mkdir -p "$CALCIFORGE_FNOX_DIR"; then
+        warn "failed to create fnox working directory ${CALCIFORGE_FNOX_DIR}"
+        return 1
+    fi
+    if ! err_file="$(mktemp)"; then
+        warn "failed to create temporary file for fnox diagnostics"
+        return 1
+    fi
     if (cd "$CALCIFORGE_FNOX_DIR" && fnox list >/dev/null 2>"$err_file"); then
         rm -f "$err_file"
         ok "fnox config usable"
@@ -210,14 +222,20 @@ ensure_fnox_age_key() {
     fi
 
     key_file="${FNOX_AGE_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/fnox-age-ed25519}"
-    mkdir -p "$(dirname "$key_file")"
+    if ! mkdir -p "$(dirname "$key_file")"; then
+        warn "failed to create fnox age key directory for ${key_file}"
+        return 1
+    fi
     if [[ ! -f "$key_file" ]]; then
         if ! command -v ssh-keygen >/dev/null 2>&1; then
             warn "fnox age provider needs ssh-keygen to create ${key_file}; set CALCIFORGE_FNOX_AGE_RECIPIENT and FNOX_AGE_KEY_FILE to use your own key"
             return 1
         fi
         echo "  Generating fnox age key ${key_file}..." >&2
-        ssh-keygen -q -t ed25519 -N "" -C "calciforge-fnox@$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)" -f "$key_file"
+        if ! ssh-keygen -q -t ed25519 -N "" -C "calciforge-fnox@$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)" -f "$key_file"; then
+            warn "failed to generate fnox age key ${key_file}"
+            return 1
+        fi
     fi
     chmod 600 "$key_file" 2>/dev/null || true
     chmod 644 "${key_file}.pub" 2>/dev/null || true
@@ -242,16 +260,25 @@ ensure_fnox_age_provider() {
     fi
     recipient="$(ensure_fnox_age_key)" || return 1
     config_file="$(fnox_global_config_file)"
-    mkdir -p "$(dirname "$config_file")"
-    touch "$config_file"
+    if ! mkdir -p "$(dirname "$config_file")"; then
+        warn "failed to create fnox config directory for ${config_file}"
+        return 1
+    fi
+    if ! touch "$config_file"; then
+        warn "failed to create fnox config file ${config_file}"
+        return 1
+    fi
     escaped_name="$(toml_basic_string "$CALCIFORGE_FNOX_PROVIDER_NAME")"
     escaped_recipient="$(toml_basic_string "$recipient")"
-    {
+    if ! {
         echo ""
         echo "[providers.${escaped_name}]"
         echo "type = \"age\""
         echo "recipients = [${escaped_recipient}]"
-    } >> "$config_file"
+    } >> "$config_file"; then
+        warn "failed to write fnox age provider to ${config_file}"
+        return 1
+    fi
 
     if FNOX_AGE_KEY_FILE="$FNOX_AGE_KEY_FILE" fnox provider test "$CALCIFORGE_FNOX_PROVIDER_NAME" >/dev/null 2>&1; then
         ok "fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' ready"
@@ -268,7 +295,10 @@ warm_fnox_provider() {
     local key value err_file
     key="CALCIFORGE_INSTALL_PRECHECK"
     value="calciforge-install-preflight-$(date +%s)-$$"
-    err_file="$(mktemp)"
+    if ! err_file="$(mktemp)"; then
+        warn "failed to create temporary file for fnox provider warmup diagnostics"
+        return 0
+    fi
 
     echo "  Warming fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' with a temporary secret..."
     if ! (cd "$CALCIFORGE_FNOX_DIR" && printf '%s' "$value" | fnox set "$key" >/dev/null 2>"$err_file"); then
@@ -312,7 +342,10 @@ ensure_fnox_provider() {
         return 1
     fi
 
-    err_file="$(mktemp)"
+    if ! err_file="$(mktemp)"; then
+        warn "failed to create temporary file for fnox provider diagnostics"
+        return 1
+    fi
     echo "  Adding fnox provider '${CALCIFORGE_FNOX_PROVIDER_NAME}' (${provider_type})..."
     if fnox provider add "$CALCIFORGE_FNOX_PROVIDER_NAME" "$provider_type" --global >/dev/null 2>"$err_file"; then
         if fnox provider test "$CALCIFORGE_FNOX_PROVIDER_NAME" >/dev/null 2>"$err_file"; then
