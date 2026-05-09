@@ -166,7 +166,7 @@ impl CalciforgeMitmHandler {
         };
 
         let method = req.method().clone();
-        let target_url = match request_target_url(&req) {
+        let original_target_url = match request_target_url(&req) {
             Some(url) => url,
             None => {
                 warn!("BLOCKED: MITM request target is not reconstructable");
@@ -176,12 +176,16 @@ impl CalciforgeMitmHandler {
                 ));
             }
         };
-        info!("MITM {} {}", method, redact_url_for_log(&target_url));
+        info!(
+            "MITM {} {}",
+            method,
+            redact_url_for_log(&original_target_url)
+        );
 
-        let url_dest_host = reqwest::Url::parse(&target_url)
+        let url_dest_host = reqwest::Url::parse(&original_target_url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned));
-        if url_dest_host.is_none() && target_url.contains("{{secret:") {
+        if url_dest_host.is_none() && original_target_url.contains("{{secret:") {
             warn!("BLOCKED: MITM URL contains secret ref but host is unparseable");
             return RequestOrResponse::Response(mitm_blocked_response(
                 "URL contains a secret reference but the host portion could not be parsed; \
@@ -191,7 +195,7 @@ impl CalciforgeMitmHandler {
 
         let target_url = match self
             .state
-            .resolve_and_substitute(&target_url, url_dest_host.as_deref())
+            .resolve_and_substitute(&original_target_url, url_dest_host.as_deref())
             .await
         {
             Ok(url) => url,
@@ -252,7 +256,8 @@ impl CalciforgeMitmHandler {
         // those are explicitly requesting proxy-managed injection.
         #[cfg(feature = "ironclaw-safety")]
         {
-            let request_params = build_credential_check_params(&target_url, &parts.headers);
+            let request_params =
+                build_credential_check_params(&original_target_url, &parts.headers);
             if let Err(reason) = self
                 .state
                 .ironclaw
@@ -870,6 +875,7 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
 /// and headers from the in-flight request parts.
 #[cfg(feature = "ironclaw-safety")]
 fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serde_json::Value {
+    let credential_check_url = url_with_secret_query_params_removed(url);
     let mut header_map = serde_json::Map::new();
     for (name, value) in headers.iter() {
         // proxy-authorization is a standard hop-by-hop header used to
@@ -891,9 +897,83 @@ fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serd
         }
     }
     serde_json::json!({
-        "url": url,
+        "url": credential_check_url,
         "headers": header_map,
     })
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn url_with_secret_query_params_removed(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_owned();
+    };
+
+    let original_pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    if original_pairs.is_empty() {
+        return url.to_owned();
+    }
+
+    let mut removed_any = false;
+    let kept_pairs: Vec<(String, String)> = original_pairs
+        .into_iter()
+        .filter(|(_, value)| {
+            let is_proxy_managed_secret = value.contains("{{secret:");
+            removed_any |= is_proxy_managed_secret;
+            !is_proxy_managed_secret
+        })
+        .collect();
+
+    if !removed_any {
+        return url.to_owned();
+    }
+
+    parsed.set_query(None);
+    if !kept_pairs.is_empty() {
+        let mut query = parsed.query_pairs_mut();
+        for (name, value) in kept_pairs {
+            query.append_pair(&name, &value);
+        }
+    }
+    parsed.to_string()
+}
+
+#[cfg(all(test, feature = "ironclaw-safety"))]
+mod credential_check_tests {
+    use super::{build_credential_check_params, url_with_secret_query_params_removed};
+    use hudsucker::hyper::header;
+
+    #[test]
+    fn credential_check_url_omits_proxy_managed_secret_query_params() {
+        let url = "https://api.example.test/v1?api_key={{secret:EXAMPLE_API_KEY}}&q=books";
+        let sanitized = url_with_secret_query_params_removed(url);
+
+        assert_eq!(sanitized, "https://api.example.test/v1?q=books");
+    }
+
+    #[test]
+    fn credential_check_still_flags_manual_query_credentials() {
+        let headers = header::HeaderMap::new();
+        let params = build_credential_check_params(
+            "https://api.example.test/v1?api_key=manual-secret&q=books",
+            &headers,
+        );
+
+        assert!(ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
+    fn credential_check_allows_secret_placeholder_query_credentials() {
+        let headers = header::HeaderMap::new();
+        let params = build_credential_check_params(
+            "https://api.example.test/v1?api_key={{secret:EXAMPLE_API_KEY}}&q=books",
+            &headers,
+        );
+
+        assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
+    }
 }
 
 /// Env var holding the bearer token required to call `/vault/:secret`.
