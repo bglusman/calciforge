@@ -419,22 +419,24 @@ impl CalciforgeMitmHandler {
                 .as_deref()
                 .map(looks_like_json_content_type)
                 .unwrap_or(false);
-            if is_llm_api && looks_json && !body_bytes.is_empty() {
-                if let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy) {
-                    info!(
-                        policy = "agent_web.preflight_message_urls",
-                        dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
-                        denied_host = host.as_str(),
-                        decision = "block",
-                        "blocked LLM request: references forbidden URL"
-                    );
-                    return RequestOrResponse::Response(mitm_policy_blocked_response(
-                        "agent_web.preflight_message_urls",
-                        &format!("request references forbidden URL host: {host}"),
-                        "config_required",
-                        "none",
-                    ));
-                }
+            if is_llm_api
+                && looks_json
+                && !body_bytes.is_empty()
+                && let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy)
+            {
+                info!(
+                    policy = "agent_web.preflight_message_urls",
+                    dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
+                    denied_host = host.as_str(),
+                    decision = "block",
+                    "blocked LLM request: references forbidden URL"
+                );
+                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                    "agent_web.preflight_message_urls",
+                    &format!("request references forbidden URL host: {host}"),
+                    "config_required",
+                    "none",
+                ));
             }
         }
 
@@ -477,33 +479,29 @@ impl CalciforgeMitmHandler {
             }
         }
 
-        if self.state.config.inject_credentials {
-            if let Some(host) = dest_host.as_deref() {
-                let injections = self.state.credentials.injections_for_host(host).await;
-                for injection in injections {
-                    match injection {
-                        CredentialInjection::Header { name, value } => {
-                            if let (Ok(name), Ok(value)) = (
-                                header::HeaderName::try_from(name.as_str()),
-                                header::HeaderValue::try_from(value.as_str()),
-                            ) {
-                                parts.headers.insert(name, value);
-                            }
+        if self.state.config.inject_credentials
+            && let Some(host) = dest_host.as_deref()
+        {
+            let injections = self.state.credentials.injections_for_host(host).await;
+            for injection in injections {
+                match injection {
+                    CredentialInjection::Header { name, value } => {
+                        if let (Ok(name), Ok(value)) = (
+                            header::HeaderName::try_from(name.as_str()),
+                            header::HeaderValue::try_from(value.as_str()),
+                        ) {
+                            parts.headers.insert(name, value);
                         }
-                        CredentialInjection::QueryParam { name, value } => {
-                            if let Err(err) =
-                                append_query_param_to_uri(&mut parts.uri, &name, &value)
-                            {
-                                warn!(
-                                    "BLOCKED: MITM credential query-param injection failed: {err}"
-                                );
-                                return RequestOrResponse::Response(mitm_policy_blocked_response(
-                                    "credential_injection.query_param",
-                                    "Credential query-parameter injection failed before forwarding.",
-                                    "config_required",
-                                    "none",
-                                ));
-                            }
+                    }
+                    CredentialInjection::QueryParam { name, value } => {
+                        if let Err(err) = append_query_param_to_uri(&mut parts.uri, &name, &value) {
+                            warn!("BLOCKED: MITM credential query-param injection failed: {err}");
+                            return RequestOrResponse::Response(mitm_policy_blocked_response(
+                                "credential_injection.query_param",
+                                "Credential query-parameter injection failed before forwarding.",
+                                "config_required",
+                                "none",
+                            ));
                         }
                     }
                 }
@@ -563,44 +561,44 @@ impl CalciforgeMitmHandler {
                 .unwrap_or_else(|| "<unknown>".to_owned());
 
             // Pass 1: prompt-injection scan on the (likely JSON) body.
-            if self.state.config.scan_inbound {
-                if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
-                    let verdict = self
-                        .state
-                        .scanner
-                        .scan(
-                            &redact_url_for_log(target_url),
-                            body_str,
-                            ScanContext::WebFetch,
-                        )
-                        .await;
-                    match verdict {
-                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                            warn!(
-                                policy = "agent_web.scan_search_responses",
-                                dest_host = %dest,
-                                reason = %reason,
-                                "blocked search response: prompt-injection content"
-                            );
-                            return mitm_policy_blocked_response(
-                                "agent_web.scan_search_responses",
-                                &format!(
-                                    "Search response blocked by prompt-injection scanner: {reason}"
-                                ),
-                                "config_required",
-                                "none",
-                            );
-                        }
-                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                            info!(
-                                policy = "agent_web.scan_search_responses",
-                                dest_host = %dest,
-                                reason = %reason,
-                                "REVIEW search response from search API"
-                            );
-                        }
-                        adversary_detector::verdict::ScanVerdict::Clean => {}
+            if self.state.config.scan_inbound
+                && let Ok(body_str) = std::str::from_utf8(&body_bytes)
+            {
+                let verdict = self
+                    .state
+                    .scanner
+                    .scan(
+                        &redact_url_for_log(target_url),
+                        body_str,
+                        ScanContext::WebFetch,
+                    )
+                    .await;
+                match verdict {
+                    adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                        warn!(
+                            policy = "agent_web.scan_search_responses",
+                            dest_host = %dest,
+                            reason = %reason,
+                            "blocked search response: prompt-injection content"
+                        );
+                        return mitm_policy_blocked_response(
+                            "agent_web.scan_search_responses",
+                            &format!(
+                                "Search response blocked by prompt-injection scanner: {reason}"
+                            ),
+                            "config_required",
+                            "none",
+                        );
                     }
+                    adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                        info!(
+                            policy = "agent_web.scan_search_responses",
+                            dest_host = %dest,
+                            reason = %reason,
+                            "REVIEW search response from search API"
+                        );
+                    }
+                    adversary_detector::verdict::ScanVerdict::Clean => {}
                 }
             }
 
@@ -621,58 +619,59 @@ impl CalciforgeMitmHandler {
             body_bytes
         };
 
-        if self.state.config.scan_inbound && looks_like_scannable_content_type(&content_type) {
-            if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
-                // IronClaw leak detection (runs before adversary-detector scan)
-                #[cfg(feature = "ironclaw-safety")]
-                {
-                    if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
-                        warn!(
-                            "BLOCKED MITM response from {}: {}",
-                            redact_url_for_log(target_url),
-                            reason
-                        );
-                        return mitm_policy_blocked_response(
-                            "ironclaw.response_secret_leak",
-                            &reason,
-                            "config_required",
-                            "none",
-                        );
-                    }
+        if self.state.config.scan_inbound
+            && looks_like_scannable_content_type(&content_type)
+            && let Ok(body_str) = std::str::from_utf8(&body_bytes)
+        {
+            // IronClaw leak detection (runs before adversary-detector scan)
+            #[cfg(feature = "ironclaw-safety")]
+            {
+                if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                    warn!(
+                        "BLOCKED MITM response from {}: {}",
+                        redact_url_for_log(target_url),
+                        reason
+                    );
+                    return mitm_policy_blocked_response(
+                        "ironclaw.response_secret_leak",
+                        &reason,
+                        "config_required",
+                        "none",
+                    );
                 }
+            }
 
-                let verdict = self
-                    .state
-                    .scanner
-                    .scan(
-                        &redact_url_for_log(target_url),
-                        body_str,
-                        ScanContext::WebFetch,
-                    )
-                    .await;
-                match verdict {
-                    adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                        warn!(
-                            "BLOCKED MITM response from {}: {}",
-                            redact_url_for_log(target_url),
-                            reason
-                        );
-                        return mitm_policy_blocked_response(
-                            "scanner.inbound_prompt_injection",
-                            &format!("Response blocked: {reason}"),
-                            "config_required",
-                            "none",
-                        );
-                    }
-                    adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                        info!(
-                            "REVIEW MITM response from {}: {}",
-                            redact_url_for_log(target_url),
-                            reason
-                        );
-                    }
-                    adversary_detector::verdict::ScanVerdict::Clean => {}
+            let verdict = self
+                .state
+                .scanner
+                .scan(
+                    &redact_url_for_log(target_url),
+                    body_str,
+                    ScanContext::WebFetch,
+                )
+                .await;
+            match verdict {
+                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                    warn!(
+                        "BLOCKED MITM response from {}: {}",
+                        redact_url_for_log(target_url),
+                        reason
+                    );
+                    return mitm_policy_blocked_response(
+                        "scanner.inbound_prompt_injection",
+                        &format!("Response blocked: {reason}"),
+                        "config_required",
+                        "none",
+                    );
                 }
+                adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                    info!(
+                        "REVIEW MITM response from {}: {}",
+                        redact_url_for_log(target_url),
+                        reason
+                    );
+                }
+                adversary_detector::verdict::ScanVerdict::Clean => {}
             }
         }
 
