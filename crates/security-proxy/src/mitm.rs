@@ -212,7 +212,10 @@ impl CalciforgeMitmHandler {
                     redact_url_for_log(&original_target_url),
                     reason
                 );
-                return RequestOrResponse::Response(mitm_blocked_response(&reason));
+                return RequestOrResponse::Response(mitm_manual_credential_blocked_response(
+                    &reason,
+                    &original_target_url,
+                ));
             }
         }
 
@@ -782,6 +785,52 @@ fn mitm_body_from_bytes(bytes: Bytes) -> MitmBody {
 /// that the operator's security gateway intercepted and refused the request.
 /// Structured signals are also exposed via `X-Calciforge-*` headers so
 /// non-LLM tooling can branch on the block without parsing HTML.
+fn mitm_manual_credential_blocked_response(reason: &str, url: &str) -> Response<MitmBody> {
+    let escaped_reason = html_escape(reason);
+    let escaped_url = html_escape(&redact_url_for_log(url));
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Calciforge blocked manually supplied credentials</title></head>\
+         <body>\
+         <h1>Calciforge blocked manually supplied credentials</h1>\
+         <p><strong>Policy:</strong> ironclaw.manual_credential</p>\
+         <p><strong>Reason:</strong> {escaped_reason}</p>\
+         <p><strong>Destination:</strong> {escaped_url}</p>\
+         <h2>What this means</h2>\
+         <p>The request appeared to contain a credential supplied directly by the agent \
+         in a URL, header, or other request parameter. Calciforge only allows credentials \
+         to flow through proxy-managed mechanisms such as <code>{{{{secret:NAME}}}}</code> \
+         unless the operator explicitly approves an override.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>Retry with a Calciforge secret reference, for example \
+         <code>{{{{secret:API_KEY_NAME}}}}</code>, instead of a raw credential.</li>\
+         <li>If this was a false positive or a legacy API genuinely requires this shape, \
+         ask the operator to approve a scoped override.</li>\
+         </ul>\
+         <h2>Override</h2>\
+         <p><strong>Operator approval required by default.</strong> A future policy option \
+         may allow this class of block without operator approval for trusted destinations, \
+         but this deployment currently fails closed.</p>\
+         </body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Policy", "ironclaw.manual_credential")
+        .header("X-Calciforge-Reason", sanitize_for_header(reason))
+        .header("X-Calciforge-Operator-Approval", "required")
+        .header("X-Calciforge-Override-Supported", "operator_scoped")
+        .body(MitmBody::from(html))
+        .unwrap_or_else(|_| {
+            Response::new(MitmBody::from(
+                "Calciforge blocked manually supplied credentials. Operator approval required.\n",
+            ))
+        })
+}
+
 fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
     let escaped = html_escape(reason);
     let html = format!(
@@ -971,7 +1020,7 @@ fn is_exact_secret_reference(value: &str) -> bool {
 mod credential_check_tests {
     use super::{
         build_credential_check_params, header_value_is_proxy_managed_secret,
-        url_with_secret_query_params_removed,
+        mitm_manual_credential_blocked_response, url_with_secret_query_params_removed,
     };
     use hudsucker::hyper::header;
 
@@ -1031,6 +1080,27 @@ mod credential_check_tests {
         assert!(!header_value_is_proxy_managed_secret(
             "Bearer manual-prefix-{{secret:EXAMPLE_API_KEY}}"
         ));
+    }
+
+    #[test]
+    fn manual_credential_block_response_names_policy_and_override_requirement() {
+        let response = mitm_manual_credential_blocked_response(
+            "LLM-injected credential detected in outgoing request",
+            "https://api.example.test/v1?api_key=redacted",
+        );
+
+        assert_eq!(
+            response.headers()["X-Calciforge-Policy"],
+            "ironclaw.manual_credential"
+        );
+        assert_eq!(
+            response.headers()["X-Calciforge-Operator-Approval"],
+            "required"
+        );
+        assert_eq!(
+            response.headers()["X-Calciforge-Override-Supported"],
+            "operator_scoped"
+        );
     }
 }
 
