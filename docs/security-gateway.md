@@ -22,9 +22,10 @@ requests and internal webhooks through the security proxy unnecessarily or
 recursively.
 
 **Outbound Pipeline:**
-1. **Exfiltration Scan**: Outgoing request bodies are analyzed by the `adversary-detector` for secrets, PII, or adversarial patterns.
-2. **Secret Substitution and Credential Injection**: When the request is visible to Calciforge, the gateway can substitute placeholders such as `{% raw %}{{secret:NAME}}{% endraw %}` and inject provider `Authorization` headers from the vault.
-3. **Forwarding**: The request is forwarded to the destination.
+1. **Manual Credential Check**: Before Calciforge substitutes any secrets, IronClaw checks the original agent-supplied URL and headers for raw credentials such as `api_key=sk-...` or direct `Authorization` values. Exact proxy-managed placeholders such as `{% raw %}{{secret:NAME}}{% endraw %}` and `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are treated as safe control syntax; mixed manual+placeholder values still remain visible to the check.
+2. **Exfiltration Scan**: Outgoing request bodies are analyzed by the `adversary-detector` for secrets, PII, or adversarial patterns.
+3. **Secret Substitution and Credential Injection**: When the request is visible to Calciforge, the gateway can substitute placeholders such as `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported bodies, and inject provider `Authorization` headers from the vault.
+4. **Control Header Strip and Forwarding**: Calciforge strips `X-Calciforge-*` control headers, then forwards the request to the destination.
 
 **Inbound Pipeline:**
 1. **Injection Scan**: Incoming response bodies are scanned for prompt injection or adversarial payloads.
@@ -194,9 +195,34 @@ The gateway is configured via `GatewayConfig`:
 - `scan_outbound`: Toggle exfiltration detection.
 - `scan_inbound`: Toggle injection detection.
 - `inject_credentials`: Toggle automatic API key injection.
+- `manual_credential_override_requires_operator_approval`: Require an operator token for `ironclaw.manual_credential` override headers. Default: `true`.
 - `bypass_domains`: List of domains that skip scanning (e.g., internal services).
 - `scanner_checks`: Ordered adversary-detector checks. Empty means the built-in
   default Starlark scanner policy.
+
+Manual credential blocks return an agent-readable explanation plus structured
+headers:
+
+- `X-Calciforge-Policy: ironclaw.manual_credential`
+- `X-Calciforge-Operator-Approval: required`
+- `X-Calciforge-Override-Supported: operator_scoped`
+- `X-Calciforge-Override-Header: X-Calciforge-Override`
+
+The operator override header is request-side control metadata, not upstream
+API input:
+
+```http
+X-Calciforge-Override: ironclaw.manual_credential:<token>
+```
+
+With the default configuration, `<token>` must match
+`SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_TOKEN`. Operators can explicitly
+allow self-asserted overrides by setting
+`manual_credential_override_requires_operator_approval = false` in
+`security-proxy.toml`, or
+`SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL=false`
+in the service environment. Calciforge strips `X-Calciforge-*` headers before
+forwarding, so override metadata is never sent to the upstream server.
 
 ## Scanner Extension Points
 
@@ -213,6 +239,33 @@ Calciforge's security checks are an ordered pipeline:
 3. `remote_http` — optional custom policy service. This is where operators can
    add an LLM classifier, heavyweight DLP checks, or organization-specific
    threat modeling that belongs outside the proxy process.
+
+### Override and Approval Matrix
+
+Not every gateway denial should be equally overrideable. Recommended defaults:
+
+| Policy / block class | Configurable? | Overrideable? | Default approval |
+|---|---:|---:|---|
+| `ironclaw.manual_credential` — raw credential supplied by the agent | Yes | Yes, scoped header | Operator required |
+| Secret substitution destination denied by `secret_destination_allowlist` | Yes, via allowlist config | Not by agent header | Operator config change required |
+| Malformed or unresolved `{% raw %}{{secret:NAME}}{% endraw %}` | No | No | Fix request or secret store |
+| `agent_web.forbid_search_engines` | Yes | Prefer config only | Operator config change required |
+| `agent_web.preflight_message_urls` destination denial | Yes | Prefer config only | Operator config change required |
+| `agent_web.scan_search_responses` blocked result | Yes | Prefer config only | Operator config change required |
+| Provider-side browsing tool stripped/blocked | Yes | Prefer config only | Operator config change required |
+| Inbound prompt-injection / unsafe response scan | Yes, scanner policy | Not by agent header | Operator policy/config change required |
+| Outbound exfiltration scan | Yes, scanner policy | Not by agent header | Operator policy/config change required |
+
+The reason for the split is blast radius. Manual-credential detection can be a
+false positive for legacy APIs that use unfortunate parameter names, so a
+scoped override is useful. Destination allowlists, prompt-injection blocks, and
+exfiltration blocks are higher-risk policy boundaries; an agent should receive
+a clear explanation and ask for operator help rather than self-override.
+
+Calciforge can still make these policies configurable for operators. The key
+rule is that configuration changes should happen in `security-proxy.toml`,
+service environment, or policy files, while request-carried override metadata
+stays narrowly scoped and is stripped before forwarding upstream.
 
 Calciforge intentionally has both local and remote adversary detectors. The
 local Starlark policy is for deterministic prefiltering: hidden DOM/text,

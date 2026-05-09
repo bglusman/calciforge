@@ -168,7 +168,8 @@ test("reports channel-runtime requests that complete without a visible reply", a
   assert.deepEqual(delivered[0], {
     sessionKey: "calciforge:main:brian",
     requestId: "silent-req",
-    error: "OpenClaw completed without a visible reply for this Calciforge request",
+    error: "OpenClaw completed without a visible reply for this Calciforge request (no_reply_dispatched)",
+    noVisibleReplyReason: "no_reply_dispatched",
     channel: "telegram",
   });
 });
@@ -225,7 +226,8 @@ test("reports subagent-runtime requests that complete without a visible reply", 
   assert.deepEqual(delivered[0], {
     sessionKey: "calciforge:main:brian",
     requestId: "silent-subagent-req",
-    error: "OpenClaw completed without a visible reply for this Calciforge request",
+    error: "OpenClaw completed without a visible reply for this Calciforge request (empty_reply)",
+    noVisibleReplyReason: "empty_reply",
     channel: "telegram",
   });
 });

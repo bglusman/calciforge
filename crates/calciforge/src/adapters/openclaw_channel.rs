@@ -119,6 +119,12 @@ struct ReplyPayload {
     message: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(
+        default,
+        rename = "noVisibleReplyReason",
+        alias = "no_visible_reply_reason"
+    )]
+    no_visible_reply_reason: Option<String>,
     #[serde(default)]
     attachments: Vec<ReplyAttachmentPayload>,
     #[allow(dead_code)]
@@ -302,7 +308,11 @@ async fn handle_reply(
             }
             Err(e) => {
                 let _ = tx.send(Err(e));
-                (StatusCode::BAD_REQUEST, Json(AckResponse { ok: false }))
+                // The callback was authenticated and correlated; acknowledge
+                // it even when the payload represents an agent/runtime error.
+                // Returning 4xx here makes OpenClaw log a webhook transport
+                // failure, obscuring the real no-visible-reply reason.
+                (StatusCode::OK, Json(AckResponse { ok: true }))
             }
         }
     } else {
@@ -318,6 +328,13 @@ async fn handle_reply(
 impl ReplyPayload {
     fn into_outbound_message(self) -> Result<OutboundMessage, String> {
         if let Some(error) = self.error.filter(|error| !error.trim().is_empty()) {
+            let reason = self
+                .no_visible_reply_reason
+                .as_deref()
+                .filter(|reason| !reason.trim().is_empty());
+            if let Some(reason) = reason {
+                return Err(format!("{error} [reason={reason}]"));
+            }
             return Err(error);
         }
 
@@ -888,18 +905,21 @@ mod tests {
             let reply = serde_json::json!({
                 "sessionKey": session_key,
                 "requestId": request_id,
-                "error": "OpenClaw completed without a visible reply for this Calciforge request",
+                "error": "OpenClaw completed without a visible reply for this Calciforge request (empty_reply)",
+                "noVisibleReplyReason": "empty_reply",
             });
 
             tokio::spawn(async move {
-                let _ = reqwest::Client::builder()
+                let resp = reqwest::Client::builder()
                     .no_proxy()
                     .build()
                     .expect("test reqwest client")
                     .post(state.reply_webhook)
                     .json(&reply)
                     .send()
-                    .await;
+                    .await
+                    .expect("reply webhook should accept correlated error callback");
+                assert_eq!(resp.status(), StatusCode::OK);
             });
 
             (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
@@ -933,6 +953,7 @@ mod tests {
             err,
             AdapterError::Protocol(msg)
                 if msg.contains("completed without a visible reply")
+                    && msg.contains("reason=empty_reply")
         ));
     }
 

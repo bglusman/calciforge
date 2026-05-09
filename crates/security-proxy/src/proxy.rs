@@ -163,7 +163,12 @@ impl SecurityProxy {
             .and_then(|u| u.host_str().map(|s| s.to_string()));
         if url_dest_host.is_none() && target_url.contains("{{secret:") {
             warn!("BLOCKED: URL contains secret ref but host is unparseable");
-            return Ok(blocked_response("Request rejected"));
+            return Ok(policy_blocked_response(
+                "secret_substitution.url",
+                "URL contains a secret reference but the host portion could not be parsed; the gateway refuses to substitute secrets without a known destination.",
+                "config_required",
+                "none",
+            ));
         }
 
         // Substitute {{secret:NAME}} references in the URL before any
@@ -187,7 +192,12 @@ impl SecurityProxy {
                 // deliberately don't disclose (see vault_handler for the
                 // companion pattern).
                 warn!("BLOCKED: URL substitution failed: {}", e);
-                return Ok(blocked_response("Request rejected"));
+                return Ok(policy_blocked_response(
+                    "secret_substitution.url",
+                    "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
 
@@ -253,7 +263,12 @@ impl SecurityProxy {
                 Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
                 Err(e) => {
                     warn!("BLOCKED: header substitution failed: {}", e);
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "secret_substitution.header",
+                        "Header secret substitution failed. Check the secret exists and is allowed for this destination.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
@@ -294,7 +309,12 @@ impl SecurityProxy {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
                         Err(e) => {
                             warn!("BLOCKED: body substitution failed: {}", e);
-                            return Ok(blocked_response("Request rejected"));
+                            return Ok(policy_blocked_response(
+                                "secret_substitution.body",
+                                "Body secret substitution failed. Check the secret exists, content type is supported, and destination is allowed.",
+                                "config_required",
+                                "none",
+                            ));
                         }
                     }
                 }
@@ -309,7 +329,12 @@ impl SecurityProxy {
                              unsupported content-type ({:?})",
                             content_type.unwrap_or("unset")
                         );
-                        return Ok(blocked_response("Request rejected"));
+                        return Ok(policy_blocked_response(
+                            "secret_substitution.body_unsupported_content_type",
+                            "Body contains a secret reference but the content type is not supported for safe substitution.",
+                            "config_required",
+                            "none",
+                        ));
                     }
                     body_bytes
                 }
@@ -328,8 +353,11 @@ impl SecurityProxy {
                 decision = "block",
                 "blocked search-engine egress"
             );
-            return Ok(blocked_response(
+            return Ok(policy_blocked_response(
+                "agent_web.forbid_search_engines",
                 "search engines disabled by [security.agent_web].forbid_search_engines",
+                "config_required",
+                "none",
             ));
         }
 
@@ -350,7 +378,12 @@ impl SecurityProxy {
                     BrowsingDecision::Allow => body_bytes,
                     BrowsingDecision::Stripped { body, .. } => bytes::Bytes::from(body),
                     BrowsingDecision::Block { reason } => {
-                        return Ok(blocked_response(&reason));
+                        return Ok(policy_blocked_response(
+                            "agent_web.forbid_provider_browsing",
+                            &reason,
+                            "config_required",
+                            "none",
+                        ));
                     }
                 }
             } else {
@@ -375,9 +408,12 @@ impl SecurityProxy {
                         decision = "block",
                         "blocked LLM request: references forbidden URL"
                     );
-                    return Ok(blocked_response(&format!(
-                        "request references forbidden URL: {host}"
-                    )));
+                    return Ok(policy_blocked_response(
+                        "agent_web.preflight_message_urls",
+                        &format!("request references forbidden URL host: {host}"),
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
@@ -401,10 +437,12 @@ impl SecurityProxy {
                         redact_url_for_log(&target_url),
                         reason
                     );
-                    return Ok(blocked_response(&format!(
-                        "Outbound request blocked: {}",
-                        reason
-                    )));
+                    return Ok(policy_blocked_response(
+                        "scanner.outbound_exfiltration",
+                        &format!("Outbound request blocked: {reason}"),
+                        "config_required",
+                        "none",
+                    ));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
                     info!(
@@ -453,7 +491,12 @@ impl SecurityProxy {
                 Ok(url) => url,
                 Err(err) => {
                     warn!("BLOCKED: credential query-param injection failed: {err}");
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "credential_injection.query_param",
+                        "Credential query-parameter injection failed before forwarding.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         };
@@ -508,10 +551,12 @@ impl SecurityProxy {
                                         reason = %reason,
                                         "blocked search response: prompt-injection content"
                                     );
-                                    return Ok(blocked_response(&format!(
-                                        "Search response blocked by prompt-injection scanner: {}",
-                                        reason
-                                    )));
+                                    return Ok(policy_blocked_response(
+                                        "agent_web.scan_search_responses",
+                                        &format!("Search response blocked by prompt-injection scanner: {reason}"),
+                                        "config_required",
+                                        "none",
+                                    ));
                                 }
                                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
                                     info!(
@@ -528,7 +573,12 @@ impl SecurityProxy {
                     match agent_web::scan_search_response(&resp_bytes, &policy, dest) {
                         SearchResponseDecision::Pass => resp_bytes,
                         SearchResponseDecision::Block { reason } => {
-                            return Ok(blocked_response(&reason));
+                            return Ok(policy_blocked_response(
+                                "agent_web.scan_search_responses",
+                                &reason,
+                                "config_required",
+                                "none",
+                            ));
                         }
                         SearchResponseDecision::Strip { body, .. } => bytes::Bytes::from(body),
                     }
@@ -558,10 +608,12 @@ impl SecurityProxy {
                                     redact_url_for_log(&target_url),
                                     reason
                                 );
-                                return Ok(blocked_response(&format!(
-                                    "Response blocked: {}",
-                                    reason
-                                )));
+                                return Ok(policy_blocked_response(
+                                    "scanner.inbound_prompt_injection",
+                                    &format!("Response blocked: {reason}"),
+                                    "config_required",
+                                    "none",
+                                ));
                             }
                             adversary_detector::verdict::ScanVerdict::Review { reason } => {
                                 info!(
@@ -928,15 +980,46 @@ pub(crate) fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-pub(crate) fn blocked_response(reason: &str) -> Response {
+pub(crate) fn policy_blocked_response(
+    policy: &str,
+    reason: &str,
+    operator_approval: &str,
+    override_supported: &str,
+) -> Response {
+    let value = serde_json::json!({
+        "blocked": true,
+        "policy": policy,
+        "reason": reason,
+        "operator_approval": operator_approval,
+        "override_supported": override_supported,
+    });
     Response::builder()
         .status(StatusCode::FORBIDDEN)
         .header("content-type", "application/json")
-        .body(Body::from(format!(
-            r#"{{"blocked":true,"reason":"{}"}}"#,
-            reason.replace('"', "\\\"")
-        )))
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Policy", sanitize_header_value(policy))
+        .header("X-Calciforge-Reason", sanitize_header_value(reason))
+        .header("X-Calciforge-Operator-Approval", operator_approval)
+        .header("X-Calciforge-Override-Supported", override_supported)
+        .body(Body::from(value.to_string()))
         .unwrap()
+}
+
+pub(crate) fn blocked_response(reason: &str) -> Response {
+    policy_blocked_response("gateway.blocked", reason, "config_required", "none")
+}
+
+fn sanitize_header_value(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if cp == 0x09 || (0x20..=0x7E).contains(&cp) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

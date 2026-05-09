@@ -926,14 +926,58 @@ fn install_remote_openclaw_channel_plugin(claw: &ClawTarget, deps: &ExecutorDeps
         &manifest_path,
         OPENCLAW_CHANNEL_PLUGIN_MANIFEST,
     )?;
+    verify_remote_file_matches(
+        claw,
+        deps,
+        &manifest_path,
+        OPENCLAW_CHANNEL_PLUGIN_MANIFEST,
+        "OpenClaw channel plugin manifest",
+    )?;
     deps.ssh
         .write_file(&claw.host, key, &index_path, OPENCLAW_CHANNEL_PLUGIN_INDEX)?;
+    verify_remote_file_matches(
+        claw,
+        deps,
+        &index_path,
+        OPENCLAW_CHANNEL_PLUGIN_INDEX,
+        "OpenClaw channel plugin runtime",
+    )?;
     deps.ssh.write_file(
         &claw.host,
         key,
         &package_path,
         OPENCLAW_CHANNEL_PLUGIN_PACKAGE,
     )?;
+    verify_remote_file_matches(
+        claw,
+        deps,
+        &package_path,
+        OPENCLAW_CHANNEL_PLUGIN_PACKAGE,
+        "OpenClaw channel plugin package metadata",
+    )?;
+    Ok(())
+}
+
+fn verify_remote_file_matches(
+    claw: &ClawTarget,
+    deps: &ExecutorDeps,
+    remote_path: &str,
+    expected: &str,
+    label: &str,
+) -> Result<()> {
+    let key = claw.ssh_key.as_deref();
+    let actual = deps
+        .ssh
+        .read_file(&claw.host, key, remote_path)
+        .with_context(|| format!("failed to verify {label} at {remote_path} on {}", claw.host))?;
+    if actual != expected {
+        bail!(
+            "{} verification failed on {}: {} did not match installer payload after write",
+            label,
+            claw.host,
+            remote_path
+        );
+    }
     Ok(())
 }
 
@@ -961,13 +1005,34 @@ fn install_remote_openclaw_policy_plugin(claw: &ClawTarget, deps: &ExecutorDeps)
         &manifest_path,
         OPENCLAW_POLICY_PLUGIN_MANIFEST,
     )?;
+    verify_remote_file_matches(
+        claw,
+        deps,
+        &manifest_path,
+        OPENCLAW_POLICY_PLUGIN_MANIFEST,
+        "OpenClaw policy plugin manifest",
+    )?;
     deps.ssh
         .write_file(&claw.host, key, &index_path, OPENCLAW_POLICY_PLUGIN_INDEX)?;
+    verify_remote_file_matches(
+        claw,
+        deps,
+        &index_path,
+        OPENCLAW_POLICY_PLUGIN_INDEX,
+        "OpenClaw policy plugin runtime",
+    )?;
     deps.ssh.write_file(
         &claw.host,
         key,
         &package_path,
         OPENCLAW_POLICY_PLUGIN_PACKAGE,
+    )?;
+    verify_remote_file_matches(
+        claw,
+        deps,
+        &package_path,
+        OPENCLAW_POLICY_PLUGIN_PACKAGE,
+        "OpenClaw policy plugin package metadata",
     )?;
     Ok(())
 }
@@ -1998,15 +2063,21 @@ mod tests {
     fn push_openclaw_channel_plugin_install(ssh: &MockSshClient) {
         ssh.push_success(""); // mkdir extension dir
         ssh.push_success(""); // write openclaw.plugin.json
+        ssh.push_success(OPENCLAW_CHANNEL_PLUGIN_MANIFEST); // verify openclaw.plugin.json
         ssh.push_success(""); // write index.js
+        ssh.push_success(OPENCLAW_CHANNEL_PLUGIN_INDEX); // verify index.js
         ssh.push_success(""); // write package.json
+        ssh.push_success(OPENCLAW_CHANNEL_PLUGIN_PACKAGE); // verify package.json
     }
 
     fn push_openclaw_policy_plugin_install(ssh: &MockSshClient) {
         ssh.push_success(""); // mkdir extension/dist dir
         ssh.push_success(""); // write openclaw.plugin.json
+        ssh.push_success(OPENCLAW_POLICY_PLUGIN_MANIFEST); // verify openclaw.plugin.json
         ssh.push_success(""); // write dist/index.js
+        ssh.push_success(OPENCLAW_POLICY_PLUGIN_INDEX); // verify dist/index.js
         ssh.push_success(""); // write package.json
+        ssh.push_success(OPENCLAW_POLICY_PLUGIN_PACKAGE); // verify package.json
     }
 
     fn push_openclaw_service_restart(ssh: &MockSshClient) {

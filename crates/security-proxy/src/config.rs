@@ -292,6 +292,12 @@ pub struct GatewayConfig {
     pub scan_inbound: bool,
     /// Enable credential injection from env/vault
     pub inject_credentials: bool,
+    /// Require an operator-issued token for manual credential override
+    /// headers. Default: true (fail closed). When false, a request may
+    /// self-assert `X-Calciforge-Override: ironclaw.manual_credential`
+    /// to bypass IronClaw's manual-credential block; control headers are
+    /// still stripped before forwarding upstream.
+    pub manual_credential_override_requires_operator_approval: bool,
     /// Domains that bypass the gateway entirely
     pub bypass_domains: Vec<String>,
     /// Log all traffic (even allowed) for audit
@@ -372,6 +378,7 @@ impl Default for GatewayConfig {
             scan_outbound: true,
             scan_inbound: true,
             inject_credentials: true,
+            manual_credential_override_requires_operator_approval: true,
             bypass_domains: vec![
                 "localhost".into(),
                 "127.0.0.1".into(),
@@ -444,6 +451,7 @@ mod tests {
             scan_outbound: false,
             scan_inbound: false,
             inject_credentials: false,
+            manual_credential_override_requires_operator_approval: true,
             bypass_domains: vec!["a.example".into(), "b.example".into()],
             audit_log: false,
             scanner_checks: vec![

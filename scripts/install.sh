@@ -1187,6 +1187,8 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
         <key>SECURITY_PROXY_REMOTE_SCANNER_URL</key><string>${REMOTE_SCANNER_URL}</string>
         <key>SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED</key><string>${REMOTE_SCANNER_FAIL_CLOSED}</string>
         <key>CALCIFORGE_CONFIG_HOME</key><string>${CALCIFORGE_CONFIG_HOME}</string>
+        <key>CALCIFORGE_FNOX_DIR</key><string>${CALCIFORGE_FNOX_DIR}</string>
+        <key>FNOX_AGE_KEY_FILE</key><string>${FNOX_AGE_KEY_FILE}</string>
         <key>AGENT_CONFIG</key><string>${AGENTS_JSON}</string>
         <key>PATH</key><string>${SERVICE_PATH}</string>
     </dict>
@@ -1207,15 +1209,17 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=${BIN_DIR}/security-proxy
-Environment=SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}
-Environment=SECURITY_PROXY_BIND=${SECURITY_PROXY_BIND}
-Environment=SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}
-Environment=SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}
-Environment=SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}
-Environment=SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}
-Environment=CALCIFORGE_CONFIG_HOME=${CALCIFORGE_CONFIG_HOME}
-Environment=AGENT_CONFIG=${AGENTS_JSON}
-Environment=PATH=${SERVICE_PATH}
+Environment="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}"
+Environment="SECURITY_PROXY_BIND=${SECURITY_PROXY_BIND}"
+Environment="SECURITY_PROXY_CA_CERT=${SECURITY_PROXY_CA_CERT}"
+Environment="SECURITY_PROXY_CA_KEY=${SECURITY_PROXY_CA_KEY}"
+Environment="SECURITY_PROXY_REMOTE_SCANNER_URL=${REMOTE_SCANNER_URL}"
+Environment="SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED=${REMOTE_SCANNER_FAIL_CLOSED}"
+Environment="CALCIFORGE_CONFIG_HOME=${CALCIFORGE_CONFIG_HOME}"
+Environment="CALCIFORGE_FNOX_DIR=${CALCIFORGE_FNOX_DIR}"
+Environment="FNOX_AGE_KEY_FILE=${FNOX_AGE_KEY_FILE}"
+Environment="AGENT_CONFIG=${AGENTS_JSON}"
+Environment="PATH=${SERVICE_PATH}"
 Restart=always
 RestartSec=5
 StandardOutput=append:${SEC_LOG_DIR}/security-proxy.log
@@ -2731,7 +2735,7 @@ REMOTE_TRUST_MITM_CA
             local env_pairs unit_content exec_args
             case "$bin" in
                 clashd)         env_pairs="CLASHD_PORT=${CLASHD_PORT}\nCLASHD_POLICY=${config_dir}/policy.star\nCLASHD_AGENTS=${config_dir}/agents.json" ;;
-                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nAGENT_CONFIG=${config_dir}/agents.json" ;;
+                security-proxy) env_pairs="SECURITY_PROXY_PORT=${SECURITY_PROXY_PORT}\nSECURITY_PROXY_BIND=${security_proxy_bind}\nSECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}\nSECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}\nCALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519\nAGENT_CONFIG=${config_dir}/agents.json" ;;
                 calciforge)     env_pairs="CALCIFORGE_CONFIG_HOME=${config_dir}\nCALCIFORGE_FNOX_DIR=${config_dir}\nFNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519" ;;
             esac
             if [[ "$bin" == "calciforge" ]]; then
@@ -2784,6 +2788,8 @@ REMOTE_TRUST_MITM_CA
                     "SECURITY_PROXY_CA_CERT=${remote_mitm_ca_cert}"
                     "SECURITY_PROXY_CA_KEY=${remote_mitm_ca_key}"
                     "CALCIFORGE_CONFIG_HOME=${config_dir}"
+                    "CALCIFORGE_FNOX_DIR=${config_dir}"
+                    "FNOX_AGE_KEY_FILE=${config_dir}/secrets/fnox-age-ed25519"
                     "AGENT_CONFIG=${config_dir}/agents.json"
                 )
             fi
