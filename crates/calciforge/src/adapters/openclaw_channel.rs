@@ -318,6 +318,11 @@ async fn handle_reply(
 impl ReplyPayload {
     fn into_outbound_message(self) -> Result<OutboundMessage, String> {
         if let Some(error) = self.error.filter(|error| !error.trim().is_empty()) {
+            if is_no_visible_reply_error(&error) {
+                return Ok(OutboundMessage::text(
+                    "OpenClaw completed without a visible reply. If you expected an answer, please retry.",
+                ));
+            }
             return Err(error);
         }
 
@@ -350,6 +355,10 @@ impl ReplyPayload {
             controls: Vec::new(),
         })
     }
+}
+
+fn is_no_visible_reply_error(error: &str) -> bool {
+    error.contains("completed without a visible reply")
 }
 
 impl ReplyAttachmentPayload {
@@ -865,7 +874,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatch_fails_fast_when_callback_reports_no_visible_reply() {
+    async fn test_dispatch_returns_clean_fallback_when_callback_reports_no_visible_reply() {
         #[derive(Clone)]
         struct ErrorState {
             reply_webhook: String,
@@ -918,7 +927,7 @@ mod tests {
         });
 
         let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
-        let err = adapter
+        let reply = adapter
             .dispatch_with_context(DispatchContext {
                 message: "route this",
                 sender: Some("renee"),
@@ -927,13 +936,12 @@ mod tests {
                 channel: None,
             })
             .await
-            .expect_err("no visible OpenClaw reply should fail without waiting for timeout");
+            .expect("no visible OpenClaw reply should return a clean fallback without waiting for timeout");
 
-        assert!(matches!(
-            err,
-            AdapterError::Protocol(msg)
-                if msg.contains("completed without a visible reply")
-        ));
+        assert!(
+            reply.contains("OpenClaw completed without a visible reply"),
+            "unexpected fallback: {reply}"
+        );
     }
 
     #[tokio::test]

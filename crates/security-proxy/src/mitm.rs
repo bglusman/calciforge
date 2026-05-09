@@ -469,8 +469,11 @@ impl CalciforgeMitmHandler {
                                 warn!(
                                     "BLOCKED: MITM credential query-param injection failed: {err}"
                                 );
-                                return RequestOrResponse::Response(mitm_blocked_response(
-                                    "Request rejected",
+                                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                                    "credential_injection.query_param",
+                                    "Credential query-parameter injection failed before forwarding.",
+                                    "config_required",
+                                    "none",
                                 ));
                             }
                         }

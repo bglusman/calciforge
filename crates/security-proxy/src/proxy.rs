@@ -163,7 +163,12 @@ impl SecurityProxy {
             .and_then(|u| u.host_str().map(|s| s.to_string()));
         if url_dest_host.is_none() && target_url.contains("{{secret:") {
             warn!("BLOCKED: URL contains secret ref but host is unparseable");
-            return Ok(blocked_response("Request rejected"));
+            return Ok(policy_blocked_response(
+                "secret_substitution.url",
+                "URL contains a secret reference but the host portion could not be parsed; the gateway refuses to substitute secrets without a known destination.",
+                "config_required",
+                "none",
+            ));
         }
 
         // Substitute {{secret:NAME}} references in the URL before any
@@ -187,7 +192,12 @@ impl SecurityProxy {
                 // deliberately don't disclose (see vault_handler for the
                 // companion pattern).
                 warn!("BLOCKED: URL substitution failed: {}", e);
-                return Ok(blocked_response("Request rejected"));
+                return Ok(policy_blocked_response(
+                    "secret_substitution.url",
+                    "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
 
@@ -253,7 +263,12 @@ impl SecurityProxy {
                 Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
                 Err(e) => {
                     warn!("BLOCKED: header substitution failed: {}", e);
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "secret_substitution.header",
+                        "Header secret substitution failed. Check the secret exists and is allowed for this destination.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
@@ -294,7 +309,12 @@ impl SecurityProxy {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
                         Err(e) => {
                             warn!("BLOCKED: body substitution failed: {}", e);
-                            return Ok(blocked_response("Request rejected"));
+                            return Ok(policy_blocked_response(
+                                "secret_substitution.body",
+                                "Body secret substitution failed. Check the secret exists, content type is supported, and destination is allowed.",
+                                "config_required",
+                                "none",
+                            ));
                         }
                     }
                 }
@@ -309,7 +329,12 @@ impl SecurityProxy {
                              unsupported content-type ({:?})",
                             content_type.unwrap_or("unset")
                         );
-                        return Ok(blocked_response("Request rejected"));
+                        return Ok(policy_blocked_response(
+                            "secret_substitution.body_unsupported_content_type",
+                            "Body contains a secret reference but the content type is not supported for safe substitution.",
+                            "config_required",
+                            "none",
+                        ));
                     }
                     body_bytes
                 }
@@ -466,7 +491,12 @@ impl SecurityProxy {
                 Ok(url) => url,
                 Err(err) => {
                     warn!("BLOCKED: credential query-param injection failed: {err}");
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "credential_injection.query_param",
+                        "Credential query-parameter injection failed before forwarding.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         };
