@@ -1,0 +1,87 @@
+name: Package Install Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/package-install-smoke.yml'
+      - 'packaging/**'
+      - 'scripts/build-dist-archive.sh'
+      - 'scripts/render-homebrew-formula.sh'
+      - 'packaging/runtime-binaries.txt'
+      - 'crates/calciforge/Dockerfile'
+      - 'crates/**/Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew-formula:
+    name: Homebrew formula install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Build release archive
+        env:
+          VERSION: 0.1.0-smoke
+          TARGET: ${{ matrix.target }}
+        run: scripts/build-dist-archive.sh "$VERSION" "$TARGET"
+
+      - name: Render local Homebrew formula
+        env:
+          VERSION: 0.1.0-smoke
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$PWD/dist/calciforge-$VERSION-$TARGET.tar.gz"
+          sha="$(cut -d' ' -f1 "$archive.sha256")"
+          zero="0000000000000000000000000000000000000000000000000000000000000000"
+          case "$TARGET" in
+            aarch64-apple-darwin)
+              scripts/render-homebrew-formula.sh \
+                --version "$VERSION" \
+                --base-url "file://$PWD/dist" \
+                --mac-arm64-sha256 "$sha" \
+                --mac-intel-sha256 "$zero" \
+                --linux-amd64-sha256 "$zero" \
+                --output "$PWD/dist/calciforge.rb"
+              ;;
+            x86_64-apple-darwin)
+              scripts/render-homebrew-formula.sh \
+                --version "$VERSION" \
+                --base-url "file://$PWD/dist" \
+                --mac-arm64-sha256 "$zero" \
+                --mac-intel-sha256 "$sha" \
+                --linux-amd64-sha256 "$zero" \
+                --output "$PWD/dist/calciforge.rb"
+              ;;
+          esac
+          ruby -c "$PWD/dist/calciforge.rb"
+
+      - name: Install and test formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew uninstall --formula calciforge >/dev/null 2>&1 || true
+          brew install --formula "$PWD/dist/calciforge.rb"
+          brew test calciforge
+          calciforge --version
+          calciforge-secrets help >/dev/null
+          security-proxy --help >/dev/null
+          clashd --help >/dev/null
+          mcp-server --help >/dev/null
+          paste-server --help >/dev/null
+          brew uninstall --formula calciforge

@@ -11,6 +11,8 @@ that should be reasonably stable:
 - `index.md` — GitHub Pages feature tour
 - `agent-runtime-contract.md` — how agents learn Calciforge CLI, optional MCP,
   artifact, proxy, and future API surfaces
+- `agent-handoff-checklist.md` — maintainer checklist for resuming
+  agent-authored branches and reviews
 - `agent-adapters.md` — agent adapter selection and evaluation notes
 - `agents.md` — agent backends, identities, and routing rules
 - `agent-adapters.md` also covers secured recipes, artifact-producing
@@ -25,6 +27,21 @@ that should be reasonably stable:
 - `roadmap/` — public future-work notes
   - `roadmap/agent-recipes-orchestrators.md` — future support for secured
     recipes, richer artifacts, and async orchestrator backends
+
+## Status labels
+
+Every durable design, roadmap, or reference page should declare one of these
+labels near the top:
+
+- **Implemented** — the behavior exists in code and is expected to work.
+- **Experimental** — implemented or partially implemented, but still subject to
+  interface or operational changes.
+- **Design sketch** — planning material; not a commitment that code exists.
+- **Deprecated** — retained for history or migration guidance; do not build new
+  work on it.
+
+If a document mixes shipped behavior and future work, label the document with
+the highest-risk status and call out the implemented subset explicitly.
 
 Manual candidate-adapter smoke checks live in
 `scripts/agent-recipe-smoke.sh`. They install npcsh, OmO/oh-my-opencode, and
