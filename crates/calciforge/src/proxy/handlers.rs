@@ -3,7 +3,7 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Redirect, Response, Sse},
 };
 use futures_util::stream::{self};
@@ -869,7 +869,39 @@ fn api_error(status: StatusCode, error_type: &str, message: &str, param: Option<
         },
     };
 
-    (status, Json(error)).into_response()
+    let mut response = (status, Json(error)).into_response();
+    let headers = response.headers_mut();
+    headers.insert("X-Calciforge-Policy", safe_header_value(error_type));
+    if status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED {
+        headers.insert("X-Calciforge-Blocked", HeaderValue::from_static("true"));
+        headers.insert(
+            "X-Calciforge-Operator-Approval",
+            HeaderValue::from_static("config_required"),
+        );
+        headers.insert(
+            "X-Calciforge-Override-Supported",
+            HeaderValue::from_static("none"),
+        );
+    }
+    response
+}
+
+fn safe_header_value(value: &str) -> HeaderValue {
+    HeaderValue::from_str(&sanitize_header_value(value))
+        .unwrap_or_else(|_| HeaderValue::from_static("calciforge.error"))
+}
+
+fn sanitize_header_value(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if cp == 0x09 || (0x20..=0x7E).contains(&cp) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
