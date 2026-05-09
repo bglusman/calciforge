@@ -141,9 +141,12 @@ is still intentionally separate.
 The Rust `calciforge install` subcommand installs a central-store
 `calciforge-secrets` wrapper to each SSH-managed agent host only when
 `--agent-helper-base-url` is configured. The wrapper sets
-`CALCIFORGE_SECRETS_BASE_URL` and optional `CALCIFORGE_SECRETS_TOKEN`, then runs
-the helper binary from `~/.local/libexec/calciforge`. The install step must
-smoke-test `calciforge-secrets list` from the agent host and report whether
+`CALCIFORGE_SECRETS_BASE_URL` and `CALCIFORGE_SECRETS_TOKEN`, then runs
+the helper binary from `~/.local/libexec/calciforge`. The token must be the
+privileged secret-control token configured on the gateway as
+`[proxy].secret_control_api_key` or `secret_control_api_key_file`; do not reuse
+the model gateway `proxy.api_key` for managed secret helpers. The install step
+must smoke-test `calciforge-secrets list` from the agent host and report whether
 `~/.local/bin` is actually visible in `PATH`.
 
 ## Recipe requirement

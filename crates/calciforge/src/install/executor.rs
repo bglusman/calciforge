@@ -557,6 +557,21 @@ fn run_agent_helper_install(
         };
     }
 
+    if args
+        .agent_helper_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper API key is required and must match proxy.secret_control_api_key; proxy.api_key is not accepted for secret-control endpoints".into(),
+            },
+        };
+    }
+
     let Some(local_bin) = deps.agent_helper_binary.as_deref() else {
         return StepResult {
             step: InstallStep::AgentHelperInstall,
@@ -2950,6 +2965,37 @@ mod tests {
                 .summary()
                 .contains("single Calciforge-owned secret store"),
             "warning should explain central-store contract: {:?}",
+            helper_step.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_agent_helper_requires_secret_control_api_key() {
+        let (claw, ssh, health) = make_openclaw_claw(true);
+        let deps = ExecutorDeps::mock(ssh, health);
+        let args = InstallArgs {
+            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_api_key: None,
+            ..Default::default()
+        };
+
+        let result = install_claw(&claw, &args, &deps).await;
+        let helper_step = result
+            .steps
+            .iter()
+            .find(|step| step.step == InstallStep::AgentHelperInstall)
+            .expect("helper step should be present");
+        assert!(
+            matches!(helper_step.outcome, StepOutcome::Failed { .. }),
+            "missing secret-control token should fail managed helper install, got {:?}",
+            helper_step.outcome
+        );
+        assert!(
+            helper_step
+                .outcome
+                .summary()
+                .contains("proxy.secret_control_api_key"),
+            "failure should name the required privileged key: {:?}",
             helper_step.outcome
         );
     }

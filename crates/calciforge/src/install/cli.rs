@@ -55,6 +55,7 @@ pub struct InstallArgs {
     /// Central Calciforge secret-helper API base URL for managed agent hosts.
     pub agent_helper_base_url: Option<String>,
     /// Bearer token for the central Calciforge secret-helper API.
+    /// Must match proxy.secret_control_api_key, not proxy.api_key.
     pub agent_helper_api_key: Option<String>,
 }
 

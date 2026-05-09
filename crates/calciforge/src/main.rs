@@ -108,7 +108,7 @@ enum CliCommand {
         /// Base URL for central Calciforge secret-helper API used by managed agents.
         #[arg(long)]
         agent_helper_base_url: Option<String>,
-        /// Bearer token for the central Calciforge secret-helper API.
+        /// Bearer token for the central Calciforge secret-helper API; must match proxy.secret_control_api_key, not proxy.api_key.
         #[arg(long)]
         agent_helper_api_key: Option<String>,
     },
