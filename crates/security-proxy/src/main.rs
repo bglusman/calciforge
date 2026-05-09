@@ -85,6 +85,20 @@ async fn main() -> anyhow::Result<()> {
             config.ca_key_path = Some(path);
         }
     }
+    if let Ok(value) =
+        std::env::var("SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL")
+    {
+        config.manual_credential_override_requires_operator_approval = match value.as_str() {
+            "1" | "true" | "TRUE" | "yes" | "YES" => true,
+            "0" | "false" | "FALSE" | "no" | "NO" => false,
+            other => {
+                warn!(
+                    "invalid SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL={other:?}; defaulting to operator approval required"
+                );
+                true
+            }
+        };
+    }
     if let Ok(url) = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_URL") {
         if !url.trim().is_empty() {
             let fail_closed = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED")

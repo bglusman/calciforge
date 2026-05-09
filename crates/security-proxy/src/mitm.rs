@@ -39,6 +39,11 @@ use crate::proxy::{self, redact_url_for_log, BodyMode, SecurityProxy};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
+const CALCIFORGE_OVERRIDE_HEADER: &str = "x-calciforge-override";
+const MANUAL_CREDENTIAL_POLICY: &str = "ironclaw.manual_credential";
+const MANUAL_CREDENTIAL_OVERRIDE_TOKEN_ENV: &str =
+    "SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_TOKEN";
+
 /// Install a process-wide rustls crypto provider. Pulling hudsucker in enables
 /// aws-lc-rs while this crate also used rustls directly, so rustls can no
 /// longer infer a single provider automatically.
@@ -200,6 +205,14 @@ impl CalciforgeMitmHandler {
         // - manual credentials (bad — block these)
         // - {{secret:...}} placeholders (good — proxy-managed injection)
         #[cfg(feature = "ironclaw-safety")]
+        let manual_credential_override = manual_credential_override_status(
+            req.headers(),
+            self.state
+                .config
+                .manual_credential_override_requires_operator_approval,
+        );
+
+        #[cfg(feature = "ironclaw-safety")]
         {
             let request_params = build_credential_check_params(&original_target_url, req.headers());
             if let Err(reason) = self
@@ -212,10 +225,19 @@ impl CalciforgeMitmHandler {
                     redact_url_for_log(&original_target_url),
                     reason
                 );
-                return RequestOrResponse::Response(mitm_manual_credential_blocked_response(
-                    &reason,
-                    &original_target_url,
-                ));
+                if manual_credential_override.allowed {
+                    warn!(
+                        "OVERRIDE: allowed {} for MITM request to {} ({})",
+                        MANUAL_CREDENTIAL_POLICY,
+                        redact_url_for_log(&original_target_url),
+                        manual_credential_override.reason
+                    );
+                } else {
+                    return RequestOrResponse::Response(mitm_manual_credential_blocked_response(
+                        &reason,
+                        &original_target_url,
+                    ));
+                }
             }
         }
 
@@ -428,6 +450,7 @@ impl CalciforgeMitmHandler {
             }
         }
 
+        remove_calciforge_control_headers(&mut parts.headers);
         remove_hop_by_hop_or_recomputed_headers(&mut parts.headers);
         Request::from_parts(parts, mitm_body_from_bytes(body_bytes)).into()
     }
@@ -756,6 +779,17 @@ fn is_hop_by_hop_or_recomputed(name: &header::HeaderName) -> bool {
     )
 }
 
+fn remove_calciforge_control_headers(headers: &mut header::HeaderMap) {
+    let control_names: Vec<header::HeaderName> = headers
+        .keys()
+        .filter(|name| name.as_str().starts_with("x-calciforge-"))
+        .cloned()
+        .collect();
+    for name in control_names {
+        headers.remove(name);
+    }
+}
+
 fn remove_hop_by_hop_or_recomputed_headers(headers: &mut header::HeaderMap) {
     for name in [
         header::HOST,
@@ -785,6 +819,70 @@ fn mitm_body_from_bytes(bytes: Bytes) -> MitmBody {
 /// that the operator's security gateway intercepted and refused the request.
 /// Structured signals are also exposed via `X-Calciforge-*` headers so
 /// non-LLM tooling can branch on the block without parsing HTML.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualCredentialOverrideStatus {
+    allowed: bool,
+    reason: String,
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn manual_credential_override_status(
+    headers: &header::HeaderMap,
+    requires_operator_approval: bool,
+) -> ManualCredentialOverrideStatus {
+    let Some(value) = headers
+        .get(CALCIFORGE_OVERRIDE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+    else {
+        return ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "no override header supplied".into(),
+        };
+    };
+
+    let (policy, token) = value
+        .split_once(':')
+        .map(|(policy, token)| (policy.trim(), Some(token.trim())))
+        .unwrap_or((value, None));
+    if policy != MANUAL_CREDENTIAL_POLICY {
+        return ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "override header does not target ironclaw.manual_credential".into(),
+        };
+    }
+
+    if !requires_operator_approval {
+        return ManualCredentialOverrideStatus {
+            allowed: true,
+            reason: "operator approval disabled by configuration".into(),
+        };
+    }
+
+    let Some(token) = token.filter(|token| !token.is_empty()) else {
+        return ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "operator approval token required".into(),
+        };
+    };
+    match std::env::var(MANUAL_CREDENTIAL_OVERRIDE_TOKEN_ENV) {
+        Ok(expected) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+            ManualCredentialOverrideStatus {
+                allowed: true,
+                reason: "operator approval token accepted".into(),
+            }
+        }
+        Ok(_) => ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "operator approval token rejected".into(),
+        },
+        Err(_) => ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: format!("{MANUAL_CREDENTIAL_OVERRIDE_TOKEN_ENV} is not configured"),
+        },
+    }
+}
+
 fn mitm_manual_credential_blocked_response(reason: &str, url: &str) -> Response<MitmBody> {
     let escaped_reason = html_escape(reason);
     let escaped_url = html_escape(&redact_url_for_log(url));
@@ -810,9 +908,10 @@ fn mitm_manual_credential_blocked_response(reason: &str, url: &str) -> Response<
          ask the operator to approve a scoped override.</li>\
          </ul>\
          <h2>Override</h2>\
-         <p><strong>Operator approval required by default.</strong> A future policy option \
-         may allow this class of block without operator approval for trusted destinations, \
-         but this deployment currently fails closed.</p>\
+         <p><strong>Operator approval required by default.</strong> Operators can issue a \
+         scoped override with <code>X-Calciforge-Override</code>. Deployments may explicitly \
+         configure this class of override to skip operator approval for trusted contexts, \
+         but the default is fail-closed.</p>\
          </body></html>"
     );
     Response::builder()
@@ -823,6 +922,7 @@ fn mitm_manual_credential_blocked_response(reason: &str, url: &str) -> Response<
         .header("X-Calciforge-Reason", sanitize_for_header(reason))
         .header("X-Calciforge-Operator-Approval", "required")
         .header("X-Calciforge-Override-Supported", "operator_scoped")
+        .header("X-Calciforge-Override-Header", "X-Calciforge-Override")
         .body(MitmBody::from(html))
         .unwrap_or_else(|_| {
             Response::new(MitmBody::from(
@@ -929,7 +1029,7 @@ fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serd
         // proxy-authorization is a standard hop-by-hop header used to
         // authenticate with this proxy itself — always stripped before
         // forwarding, never LLM-injected.
-        if name == header::PROXY_AUTHORIZATION {
+        if name == header::PROXY_AUTHORIZATION || name.as_str().starts_with("x-calciforge-") {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -1020,7 +1120,9 @@ fn is_exact_secret_reference(value: &str) -> bool {
 mod credential_check_tests {
     use super::{
         build_credential_check_params, header_value_is_proxy_managed_secret,
-        mitm_manual_credential_blocked_response, url_with_secret_query_params_removed,
+        manual_credential_override_status, mitm_manual_credential_blocked_response,
+        remove_calciforge_control_headers, url_with_secret_query_params_removed,
+        CALCIFORGE_OVERRIDE_HEADER, MANUAL_CREDENTIAL_POLICY,
     };
     use hudsucker::hyper::header;
 
@@ -1101,6 +1203,58 @@ mod credential_check_tests {
             response.headers()["X-Calciforge-Override-Supported"],
             "operator_scoped"
         );
+        assert_eq!(
+            response.headers()["X-Calciforge-Override-Header"],
+            "X-Calciforge-Override"
+        );
+    }
+
+    #[test]
+    fn manual_credential_override_requires_operator_approval_by_default() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            CALCIFORGE_OVERRIDE_HEADER,
+            header::HeaderValue::from_static(MANUAL_CREDENTIAL_POLICY),
+        );
+
+        let status = manual_credential_override_status(&headers, true);
+        assert!(!status.allowed);
+        assert_eq!(status.reason, "operator approval token required");
+    }
+
+    #[test]
+    fn manual_credential_override_can_be_configured_without_operator_approval() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            CALCIFORGE_OVERRIDE_HEADER,
+            header::HeaderValue::from_static(MANUAL_CREDENTIAL_POLICY),
+        );
+
+        let status = manual_credential_override_status(&headers, false);
+        assert!(status.allowed);
+    }
+
+    #[test]
+    fn calciforge_control_headers_are_stripped_before_forwarding() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            "x-calciforge-override",
+            header::HeaderValue::from_static(MANUAL_CREDENTIAL_POLICY),
+        );
+        headers.insert(
+            "x-calciforge-anything",
+            header::HeaderValue::from_static("control-plane"),
+        );
+        headers.insert(
+            "x-upstream-header",
+            header::HeaderValue::from_static("keep"),
+        );
+
+        remove_calciforge_control_headers(&mut headers);
+
+        assert!(!headers.contains_key("x-calciforge-override"));
+        assert!(!headers.contains_key("x-calciforge-anything"));
+        assert_eq!(headers["x-upstream-header"], "keep");
     }
 }
 
