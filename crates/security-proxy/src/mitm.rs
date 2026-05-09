@@ -193,6 +193,29 @@ impl CalciforgeMitmHandler {
             ));
         }
 
+        // IronClaw credential-injection detection: check BEFORE any
+        // Calciforge secret substitution or CredentialInjector changes.
+        // At this point URL/header values are still agent-supplied and may
+        // contain either:
+        // - manual credentials (bad — block these)
+        // - {{secret:...}} placeholders (good — proxy-managed injection)
+        #[cfg(feature = "ironclaw-safety")]
+        {
+            let request_params = build_credential_check_params(&original_target_url, req.headers());
+            if let Err(reason) = self
+                .state
+                .ironclaw
+                .check_request_credentials(&request_params)
+            {
+                warn!(
+                    "BLOCKED MITM request to {}: {}",
+                    redact_url_for_log(&original_target_url),
+                    reason
+                );
+                return RequestOrResponse::Response(mitm_blocked_response(&reason));
+            }
+        }
+
         let target_url = match self
             .state
             .resolve_and_substitute(&original_target_url, url_dest_host.as_deref())
@@ -247,30 +270,6 @@ impl CalciforgeMitmHandler {
                 )));
             }
         };
-
-        // IronClaw credential-injection detection: check BEFORE substitution
-        // and CredentialInjector. Headers at this point contain either:
-        // - LLM-injected credentials (bad — block these)
-        // - {{secret:...}} placeholders (good — these are proxy-managed)
-        // The detection skips values containing {{secret:}} patterns since
-        // those are explicitly requesting proxy-managed injection.
-        #[cfg(feature = "ironclaw-safety")]
-        {
-            let request_params =
-                build_credential_check_params(&original_target_url, &parts.headers);
-            if let Err(reason) = self
-                .state
-                .ironclaw
-                .check_request_credentials(&request_params)
-            {
-                warn!(
-                    "BLOCKED MITM request to {}: {}",
-                    redact_url_for_log(&target_url),
-                    reason
-                );
-                return RequestOrResponse::Response(mitm_blocked_response(&reason));
-            }
-        }
 
         if let Err(err) =
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
