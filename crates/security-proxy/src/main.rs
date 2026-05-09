@@ -70,43 +70,57 @@ async fn main() -> anyhow::Result<()> {
     // Env-var override for port keeps the legacy operator knob working
     // even when the TOML config sets it differently. SECURITY_PROXY_MITM_ENABLED
     // is no longer parsed: MITM is the only mode after PR #112.
-    if let Ok(p) = std::env::var("SECURITY_PROXY_PORT")
-        && let Ok(p) = p.parse()
-    {
-        config.port = p;
-    }
-    if let Ok(path) = std::env::var("SECURITY_PROXY_CA_CERT")
-        && !path.trim().is_empty()
-    {
-        config.ca_cert_path = Some(path);
-    }
-    if let Ok(path) = std::env::var("SECURITY_PROXY_CA_KEY")
-        && !path.trim().is_empty()
-    {
-        config.ca_key_path = Some(path);
-    }
-    if let Ok(url) = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_URL")
-        && !url.trim().is_empty()
-    {
-        let fail_closed = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED")
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false);
-        if config.scanner_checks.is_empty() {
-            config.scanner_checks = ScannerConfig::default_checks();
+    if let Ok(p) = std::env::var("SECURITY_PROXY_PORT") {
+        if let Ok(p) = p.parse() {
+            config.port = p;
         }
-        let already_configured = config.scanner_checks.iter().any(|check| {
-            matches!(
-                check,
-                ScannerCheckConfig::RemoteHttp {
-                    url: configured,
-                    ..
-                } if configured == &url
-            )
-        });
-        if !already_configured {
-            config
-                .scanner_checks
-                .push(ScannerCheckConfig::RemoteHttp { url, fail_closed });
+    }
+    if let Ok(path) = std::env::var("SECURITY_PROXY_CA_CERT") {
+        if !path.trim().is_empty() {
+            config.ca_cert_path = Some(path);
+        }
+    }
+    if let Ok(path) = std::env::var("SECURITY_PROXY_CA_KEY") {
+        if !path.trim().is_empty() {
+            config.ca_key_path = Some(path);
+        }
+    }
+    if let Ok(value) =
+        std::env::var("SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL")
+    {
+        config.manual_credential_override_requires_operator_approval = match value.as_str() {
+            "1" | "true" | "TRUE" | "yes" | "YES" => true,
+            "0" | "false" | "FALSE" | "no" | "NO" => false,
+            other => {
+                warn!(
+                    "invalid SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL={other:?}; defaulting to operator approval required"
+                );
+                true
+            }
+        };
+    }
+    if let Ok(url) = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_URL") {
+        if !url.trim().is_empty() {
+            let fail_closed = std::env::var("SECURITY_PROXY_REMOTE_SCANNER_FAIL_CLOSED")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false);
+            if config.scanner_checks.is_empty() {
+                config.scanner_checks = ScannerConfig::default_checks();
+            }
+            let already_configured = config.scanner_checks.iter().any(|check| {
+                matches!(
+                    check,
+                    ScannerCheckConfig::RemoteHttp {
+                        url: configured,
+                        ..
+                    } if configured == &url
+                )
+            });
+            if !already_configured {
+                config
+                    .scanner_checks
+                    .push(ScannerCheckConfig::RemoteHttp { url, fail_closed });
+            }
         }
     }
     // Surface operator mistakes in policy config — e.g. "gate enabled

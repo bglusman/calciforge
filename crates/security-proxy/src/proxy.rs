@@ -163,7 +163,12 @@ impl SecurityProxy {
             .and_then(|u| u.host_str().map(|s| s.to_string()));
         if url_dest_host.is_none() && target_url.contains("{{secret:") {
             warn!("BLOCKED: URL contains secret ref but host is unparseable");
-            return Ok(blocked_response("Request rejected"));
+            return Ok(policy_blocked_response(
+                "secret_substitution.url",
+                "URL contains a secret reference but the host portion could not be parsed; the gateway refuses to substitute secrets without a known destination.",
+                "config_required",
+                "none",
+            ));
         }
         let mut secret_metadata = None;
 
@@ -179,7 +184,12 @@ impl SecurityProxy {
                 Ok(metadata) => secret_metadata = Some(metadata),
                 Err(e) => {
                     warn!("BLOCKED: URL substitution failed: {}", e);
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "secret_substitution.url",
+                        "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
@@ -201,7 +211,12 @@ impl SecurityProxy {
                 // deliberately don't disclose (see vault_handler for the
                 // companion pattern).
                 warn!("BLOCKED: URL substitution failed: {}", e);
-                return Ok(blocked_response("Request rejected"));
+                return Ok(policy_blocked_response(
+                    "secret_substitution.url",
+                    "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
 
@@ -268,7 +283,12 @@ impl SecurityProxy {
                     Ok(metadata) => secret_metadata = Some(metadata),
                     Err(e) => {
                         warn!("BLOCKED: header substitution failed: {}", e);
-                        return Ok(blocked_response("Request rejected"));
+                        return Ok(policy_blocked_response(
+                            "secret_substitution.header",
+                            "Header secret substitution failed. Check the secret exists and is allowed for this destination.",
+                            "config_required",
+                            "none",
+                        ));
                     }
                 }
             }
@@ -279,7 +299,12 @@ impl SecurityProxy {
                 Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
                 Err(e) => {
                     warn!("BLOCKED: header substitution failed: {}", e);
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "secret_substitution.header",
+                        "Header secret substitution failed. Check the secret exists and is allowed for this destination.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
@@ -321,7 +346,12 @@ impl SecurityProxy {
                             Ok(metadata) => secret_metadata = Some(metadata),
                             Err(e) => {
                                 warn!("BLOCKED: body substitution failed: {}", e);
-                                return Ok(blocked_response("Request rejected"));
+                                return Ok(policy_blocked_response(
+                                    "secret_substitution.body",
+                                    "Body secret substitution failed. Check the secret exists, content type is supported, and destination is allowed.",
+                                    "config_required",
+                                    "none",
+                                ));
                             }
                         }
                     }
@@ -336,7 +366,12 @@ impl SecurityProxy {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
                         Err(e) => {
                             warn!("BLOCKED: body substitution failed: {}", e);
-                            return Ok(blocked_response("Request rejected"));
+                            return Ok(policy_blocked_response(
+                                "secret_substitution.body",
+                                "Body secret substitution failed. Check the secret exists, content type is supported, and destination is allowed.",
+                                "config_required",
+                                "none",
+                            ));
                         }
                     }
                 }
@@ -351,7 +386,12 @@ impl SecurityProxy {
                              unsupported content-type ({:?})",
                             content_type.unwrap_or("unset")
                         );
-                        return Ok(blocked_response("Request rejected"));
+                        return Ok(policy_blocked_response(
+                            "secret_substitution.body_unsupported_content_type",
+                            "Body contains a secret reference but the content type is not supported for safe substitution.",
+                            "config_required",
+                            "none",
+                        ));
                     }
                     body_bytes
                 }
@@ -370,8 +410,11 @@ impl SecurityProxy {
                 decision = "block",
                 "blocked search-engine egress"
             );
-            return Ok(blocked_response(
+            return Ok(policy_blocked_response(
+                "agent_web.forbid_search_engines",
                 "search engines disabled by [security.agent_web].forbid_search_engines",
+                "config_required",
+                "none",
             ));
         }
 
@@ -392,7 +435,12 @@ impl SecurityProxy {
                     BrowsingDecision::Allow => body_bytes,
                     BrowsingDecision::Stripped { body, .. } => bytes::Bytes::from(body),
                     BrowsingDecision::Block { reason } => {
-                        return Ok(blocked_response(&reason));
+                        return Ok(policy_blocked_response(
+                            "agent_web.forbid_provider_browsing",
+                            &reason,
+                            "config_required",
+                            "none",
+                        ));
                     }
                 }
             } else {
@@ -408,21 +456,22 @@ impl SecurityProxy {
             let is_json = content_type
                 .map(crate::mitm::looks_like_json_content_type_pub)
                 .unwrap_or(false);
-            if is_llm_api
-                && is_json
-                && !body_bytes.is_empty()
-                && let Some(host) = agent_web::preflight_message_urls(&body_bytes, &policy)
-            {
-                info!(
-                    policy = "agent_web.preflight_message_urls",
-                    dest_host = dest_host_str.unwrap_or("<unknown>"),
-                    denied_host = host.as_str(),
-                    decision = "block",
-                    "blocked LLM request: references forbidden URL"
-                );
-                return Ok(blocked_response(&format!(
-                    "request references forbidden URL: {host}"
-                )));
+            if is_llm_api && is_json && !body_bytes.is_empty() {
+                if let Some(host) = agent_web::preflight_message_urls(&body_bytes, &policy) {
+                    info!(
+                        policy = "agent_web.preflight_message_urls",
+                        dest_host = dest_host_str.unwrap_or("<unknown>"),
+                        denied_host = host.as_str(),
+                        decision = "block",
+                        "blocked LLM request: references forbidden URL"
+                    );
+                    return Ok(policy_blocked_response(
+                        "agent_web.preflight_message_urls",
+                        &format!("request references forbidden URL host: {host}"),
+                        "config_required",
+                        "none",
+                    ));
+                }
             }
         }
 
@@ -445,10 +494,12 @@ impl SecurityProxy {
                         redact_url_for_log(&target_url),
                         reason
                     );
-                    return Ok(blocked_response(&format!(
-                        "Outbound request blocked: {}",
-                        reason
-                    )));
+                    return Ok(policy_blocked_response(
+                        "scanner.outbound_exfiltration",
+                        &format!("Outbound request blocked: {reason}"),
+                        "config_required",
+                        "none",
+                    ));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
                     info!(
@@ -467,23 +518,24 @@ impl SecurityProxy {
         // startup. See research/planning/consolidation-findings.md finding #5.
         let mut injected_headers = vec![];
         let mut injected_query_params = vec![];
-        if self.config.inject_credentials
-            && let Some(host) = reqwest::Url::parse(&target_url)
+        if self.config.inject_credentials {
+            if let Some(host) = reqwest::Url::parse(&target_url)
                 .ok()
                 .and_then(|u| u.host_str().map(String::from))
-        {
-            if let Some(provider) = self.credentials.detect_provider_pub(&host) {
-                // Populates cache from resolver if missing. Ignore the
-                // bool — inject handles the still-absent case.
-                let _ = self.credentials.ensure_cached(&provider).await;
-            }
-            for injection in self.credentials.injections_for_host(&host).await {
-                match injection {
-                    CredentialInjection::Header { name, value } => {
-                        injected_headers.push((name, value));
-                    }
-                    CredentialInjection::QueryParam { name, value } => {
-                        injected_query_params.push((name, value));
+            {
+                if let Some(provider) = self.credentials.detect_provider_pub(&host) {
+                    // Populates cache from resolver if missing. Ignore the
+                    // bool — inject handles the still-absent case.
+                    let _ = self.credentials.ensure_cached(&provider).await;
+                }
+                for injection in self.credentials.injections_for_host(&host).await {
+                    match injection {
+                        CredentialInjection::Header { name, value } => {
+                            injected_headers.push((name, value));
+                        }
+                        CredentialInjection::QueryParam { name, value } => {
+                            injected_query_params.push((name, value));
+                        }
                     }
                 }
             }
@@ -496,7 +548,12 @@ impl SecurityProxy {
                 Ok(url) => url,
                 Err(err) => {
                     warn!("BLOCKED: credential query-param injection failed: {err}");
-                    return Ok(blocked_response("Request rejected"));
+                    return Ok(policy_blocked_response(
+                        "credential_injection.query_param",
+                        "Credential query-parameter injection failed before forwarding.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         };
@@ -533,45 +590,54 @@ impl SecurityProxy {
                 // before URL-denylist strip/block handling.
                 let resp_bytes = if host_is_search {
                     let dest = dest_host_str.unwrap_or("<unknown>");
-                    if self.config.scan_inbound
-                        && let Ok(body_str) = std::str::from_utf8(&resp_bytes)
-                    {
-                        let verdict = self
-                            .scanner
-                            .scan(
-                                &redact_url_for_log(&target_url),
-                                body_str,
-                                ScanContext::WebFetch,
-                            )
-                            .await;
-                        match &verdict {
-                            adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                                warn!(
-                                    policy = "agent_web.scan_search_responses",
-                                    dest_host = dest,
-                                    reason = %reason,
-                                    "blocked search response: prompt-injection content"
-                                );
-                                return Ok(blocked_response(&format!(
-                                    "Search response blocked by prompt-injection scanner: {}",
-                                    reason
-                                )));
+                    if self.config.scan_inbound {
+                        if let Ok(body_str) = std::str::from_utf8(&resp_bytes) {
+                            let verdict = self
+                                .scanner
+                                .scan(
+                                    &redact_url_for_log(&target_url),
+                                    body_str,
+                                    ScanContext::WebFetch,
+                                )
+                                .await;
+                            match &verdict {
+                                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                                    warn!(
+                                        policy = "agent_web.scan_search_responses",
+                                        dest_host = dest,
+                                        reason = %reason,
+                                        "blocked search response: prompt-injection content"
+                                    );
+                                    return Ok(policy_blocked_response(
+                                        "agent_web.scan_search_responses",
+                                        &format!(
+                                            "Search response blocked by prompt-injection scanner: {reason}"
+                                        ),
+                                        "config_required",
+                                        "none",
+                                    ));
+                                }
+                                adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                                    info!(
+                                        policy = "agent_web.scan_search_responses",
+                                        dest_host = dest,
+                                        reason = %reason,
+                                        "REVIEW search response from search API"
+                                    );
+                                }
+                                adversary_detector::verdict::ScanVerdict::Clean => {}
                             }
-                            adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                                info!(
-                                    policy = "agent_web.scan_search_responses",
-                                    dest_host = dest,
-                                    reason = %reason,
-                                    "REVIEW search response from search API"
-                                );
-                            }
-                            adversary_detector::verdict::ScanVerdict::Clean => {}
                         }
                     }
                     match agent_web::scan_search_response(&resp_bytes, &policy, dest) {
                         SearchResponseDecision::Pass => resp_bytes,
                         SearchResponseDecision::Block { reason } => {
-                            return Ok(blocked_response(&reason));
+                            return Ok(policy_blocked_response(
+                                "agent_web.scan_search_responses",
+                                &reason,
+                                "config_required",
+                                "none",
+                            ));
                         }
                         SearchResponseDecision::Strip { body, .. } => bytes::Bytes::from(body),
                     }
@@ -584,33 +650,39 @@ impl SecurityProxy {
                 // snippets or prompt-injection text.
                 if self.config.scan_inbound
                     && crate::mitm::looks_like_scannable_content_type_pub(&content_type)
-                    && let Ok(body_str) = std::str::from_utf8(&resp_bytes)
                 {
-                    let verdict = self
-                        .scanner
-                        .scan(
-                            &redact_url_for_log(&target_url),
-                            body_str,
-                            ScanContext::WebFetch,
-                        )
-                        .await;
-                    match &verdict {
-                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                            warn!(
-                                "BLOCKED response from {}: {}",
-                                redact_url_for_log(&target_url),
-                                reason
-                            );
-                            return Ok(blocked_response(&format!("Response blocked: {}", reason)));
+                    if let Ok(body_str) = std::str::from_utf8(&resp_bytes) {
+                        let verdict = self
+                            .scanner
+                            .scan(
+                                &redact_url_for_log(&target_url),
+                                body_str,
+                                ScanContext::WebFetch,
+                            )
+                            .await;
+                        match &verdict {
+                            adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                                warn!(
+                                    "BLOCKED response from {}: {}",
+                                    redact_url_for_log(&target_url),
+                                    reason
+                                );
+                                return Ok(policy_blocked_response(
+                                    "scanner.inbound_prompt_injection",
+                                    &format!("Response blocked: {reason}"),
+                                    "config_required",
+                                    "none",
+                                ));
+                            }
+                            adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                                info!(
+                                    "REVIEW response from {}: {}",
+                                    redact_url_for_log(&target_url),
+                                    reason
+                                );
+                            }
+                            adversary_detector::verdict::ScanVerdict::Clean => {}
                         }
-                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                            info!(
-                                "REVIEW response from {}: {}",
-                                redact_url_for_log(&target_url),
-                                reason
-                            );
-                        }
-                        adversary_detector::verdict::ScanVerdict::Clean => {}
                     }
                 }
 
@@ -998,15 +1070,46 @@ pub(crate) fn memchr_substr(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-pub(crate) fn blocked_response(reason: &str) -> Response {
+pub(crate) fn policy_blocked_response(
+    policy: &str,
+    reason: &str,
+    operator_approval: &str,
+    override_supported: &str,
+) -> Response {
+    let value = serde_json::json!({
+        "blocked": true,
+        "policy": policy,
+        "reason": reason,
+        "operator_approval": operator_approval,
+        "override_supported": override_supported,
+    });
     Response::builder()
         .status(StatusCode::FORBIDDEN)
         .header("content-type", "application/json")
-        .body(Body::from(format!(
-            r#"{{"blocked":true,"reason":"{}"}}"#,
-            reason.replace('"', "\\\"")
-        )))
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Policy", sanitize_header_value(policy))
+        .header("X-Calciforge-Reason", sanitize_header_value(reason))
+        .header("X-Calciforge-Operator-Approval", operator_approval)
+        .header("X-Calciforge-Override-Supported", override_supported)
+        .body(Body::from(value.to_string()))
         .unwrap()
+}
+
+pub(crate) fn blocked_response(reason: &str) -> Response {
+    policy_blocked_response("gateway.blocked", reason, "config_required", "none")
+}
+
+fn sanitize_header_value(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if cp == 0x09 || (0x20..=0x7E).contains(&cp) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

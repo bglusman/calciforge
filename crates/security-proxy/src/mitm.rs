@@ -39,6 +39,11 @@ use crate::proxy::{self, BodyMode, SecurityProxy, redact_url_for_log};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
+const CALCIFORGE_OVERRIDE_HEADER: &str = "x-calciforge-override";
+const MANUAL_CREDENTIAL_POLICY: &str = "ironclaw.manual_credential";
+const MANUAL_CREDENTIAL_OVERRIDE_TOKEN_ENV: &str =
+    "SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_TOKEN";
+
 /// Install a process-wide rustls crypto provider. Pulling hudsucker in enables
 /// aws-lc-rs while this crate also used rustls directly, so rustls can no
 /// longer infer a single provider automatically.
@@ -166,7 +171,7 @@ impl CalciforgeMitmHandler {
         };
 
         let method = req.method().clone();
-        let target_url = match request_target_url(&req) {
+        let original_target_url = match request_target_url(&req) {
             Some(url) => url,
             None => {
                 warn!("BLOCKED: MITM request target is not reconstructable");
@@ -176,12 +181,16 @@ impl CalciforgeMitmHandler {
                 ));
             }
         };
-        info!("MITM {} {}", method, redact_url_for_log(&target_url));
+        info!(
+            "MITM {} {}",
+            method,
+            redact_url_for_log(&original_target_url)
+        );
 
-        let url_dest_host = reqwest::Url::parse(&target_url)
+        let url_dest_host = reqwest::Url::parse(&original_target_url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned));
-        if url_dest_host.is_none() && target_url.contains("{{secret:") {
+        if url_dest_host.is_none() && original_target_url.contains("{{secret:") {
             warn!("BLOCKED: MITM URL contains secret ref but host is unparseable");
             return RequestOrResponse::Response(mitm_blocked_response(
                 "URL contains a secret reference but the host portion could not be parsed; \
@@ -190,19 +199,67 @@ impl CalciforgeMitmHandler {
         }
         let mut secret_metadata = None;
 
-        if target_url.contains("{{secret:") && url_dest_host.is_some() {
+        // IronClaw credential-injection detection: check BEFORE any
+        // Calciforge secret substitution or CredentialInjector changes.
+        // At this point URL/header values are still agent-supplied and may
+        // contain either:
+        // - manual credentials (bad — block these)
+        // - {{secret:...}} placeholders (good — proxy-managed injection)
+        #[cfg(feature = "ironclaw-safety")]
+        let manual_credential_override = manual_credential_override_status(
+            req.headers(),
+            self.state
+                .config
+                .manual_credential_override_requires_operator_approval,
+        );
+
+        #[cfg(feature = "ironclaw-safety")]
+        {
+            let request_params = build_credential_check_params(&original_target_url, req.headers());
+            if let Err(reason) = self
+                .state
+                .ironclaw
+                .check_request_credentials(&request_params)
+            {
+                warn!(
+                    "BLOCKED MITM request to {}: {}",
+                    redact_url_for_log(&original_target_url),
+                    reason
+                );
+                if manual_credential_override.allowed {
+                    warn!(
+                        "OVERRIDE: allowed {} for MITM request to {} ({})",
+                        MANUAL_CREDENTIAL_POLICY,
+                        redact_url_for_log(&original_target_url),
+                        manual_credential_override.reason
+                    );
+                } else {
+                    return RequestOrResponse::Response(mitm_manual_credential_blocked_response(
+                        &reason,
+                        &original_target_url,
+                    ));
+                }
+            }
+        }
+
+        if original_target_url.contains("{{secret:") && url_dest_host.is_some() {
             match SecurityProxy::load_secret_metadata(url_dest_host.as_deref().unwrap()) {
                 Ok(metadata) => secret_metadata = Some(metadata),
                 Err(err) => {
                     warn!("BLOCKED: MITM URL substitution failed: {err}");
-                    return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                    return RequestOrResponse::Response(mitm_policy_blocked_response(
+                        "secret_substitution.url",
+                        "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
         let target_url = match self
             .state
             .resolve_and_substitute(
-                &target_url,
+                &original_target_url,
                 url_dest_host.as_deref(),
                 secret_metadata.as_ref(),
             )
@@ -212,7 +269,12 @@ impl CalciforgeMitmHandler {
             Err(err) => {
                 // Bland message; the err text contains the secret name.
                 warn!("BLOCKED: MITM URL substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                    "secret_substitution.url",
+                    "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
         self.last_url = Some(target_url.clone());
@@ -236,8 +298,11 @@ impl CalciforgeMitmHandler {
                 decision = "block",
                 "blocked search-engine egress"
             );
-            return RequestOrResponse::Response(mitm_blocked_response(
+            return RequestOrResponse::Response(mitm_policy_blocked_response(
+                "agent_web.forbid_search_engines",
                 "search engines disabled by [security.agent_web].forbid_search_engines",
+                "config_required",
+                "none",
             ));
         }
 
@@ -258,29 +323,6 @@ impl CalciforgeMitmHandler {
             }
         };
 
-        // IronClaw credential-injection detection: check BEFORE substitution
-        // and CredentialInjector. Headers at this point contain either:
-        // - LLM-injected credentials (bad — block these)
-        // - {{secret:...}} placeholders (good — these are proxy-managed)
-        // The detection skips values containing {{secret:}} patterns since
-        // those are explicitly requesting proxy-managed injection.
-        #[cfg(feature = "ironclaw-safety")]
-        {
-            let request_params = build_credential_check_params(&target_url, &parts.headers);
-            if let Err(reason) = self
-                .state
-                .ironclaw
-                .check_request_credentials(&request_params)
-            {
-                warn!(
-                    "BLOCKED MITM request to {}: {}",
-                    redact_url_for_log(&target_url),
-                    reason
-                );
-                return RequestOrResponse::Response(mitm_blocked_response(&reason));
-            }
-        }
-
         if let Err(err) = substitute_headers(
             &self.state,
             &mut parts.headers,
@@ -290,7 +332,12 @@ impl CalciforgeMitmHandler {
         .await
         {
             warn!("BLOCKED: MITM header substitution failed: {err}");
-            return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+            return RequestOrResponse::Response(mitm_policy_blocked_response(
+                "secret_substitution.header",
+                "Header secret substitution failed. Check the secret exists and is allowed for this destination.",
+                "config_required",
+                "none",
+            ));
         }
 
         let body_bytes = match body.collect().await {
@@ -316,7 +363,12 @@ impl CalciforgeMitmHandler {
                 // Bland message; the err text may contain the secret name
                 // (resolver / allowlist failures include the literal ref).
                 warn!("BLOCKED: MITM body substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                    "secret_substitution.body",
+                    "Body secret substitution failed. Check the secret exists, content type is supported, and destination is allowed.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
 
@@ -338,7 +390,12 @@ impl CalciforgeMitmHandler {
                     BrowsingDecision::Allow => body_bytes,
                     BrowsingDecision::Stripped { body, .. } => Bytes::from(body),
                     BrowsingDecision::Block { reason } => {
-                        return RequestOrResponse::Response(mitm_blocked_response(&reason));
+                        return RequestOrResponse::Response(mitm_policy_blocked_response(
+                            "agent_web.forbid_provider_browsing",
+                            &reason,
+                            "config_required",
+                            "none",
+                        ));
                     }
                 }
             } else {
@@ -359,21 +416,22 @@ impl CalciforgeMitmHandler {
                 .as_deref()
                 .map(looks_like_json_content_type)
                 .unwrap_or(false);
-            if is_llm_api
-                && looks_json
-                && !body_bytes.is_empty()
-                && let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy)
-            {
-                info!(
-                    policy = "agent_web.preflight_message_urls",
-                    dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
-                    denied_host = host.as_str(),
-                    decision = "block",
-                    "blocked LLM request: references forbidden URL"
-                );
-                return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                    "request references forbidden URL: {host}"
-                )));
+            if is_llm_api && looks_json && !body_bytes.is_empty() {
+                if let Some(host) = agent_web::preflight_message_urls(&body_bytes, policy) {
+                    info!(
+                        policy = "agent_web.preflight_message_urls",
+                        dest_host = dest_host.as_deref().unwrap_or("<unknown>"),
+                        denied_host = host.as_str(),
+                        decision = "block",
+                        "blocked LLM request: references forbidden URL"
+                    );
+                    return RequestOrResponse::Response(mitm_policy_blocked_response(
+                        "agent_web.preflight_message_urls",
+                        &format!("request references forbidden URL host: {host}"),
+                        "config_required",
+                        "none",
+                    ));
+                }
             }
         }
 
@@ -398,9 +456,12 @@ impl CalciforgeMitmHandler {
                         redact_url_for_log(&target_url),
                         reason
                     );
-                    return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                        "Outbound request blocked: {reason}"
-                    )));
+                    return RequestOrResponse::Response(mitm_policy_blocked_response(
+                        "scanner.outbound_exfiltration",
+                        &format!("Outbound request blocked: {reason}"),
+                        "config_required",
+                        "none",
+                    ));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
                     info!(
@@ -413,32 +474,40 @@ impl CalciforgeMitmHandler {
             }
         }
 
-        if self.state.config.inject_credentials
-            && let Some(host) = dest_host.as_deref()
-        {
-            let injections = self.state.credentials.injections_for_host(host).await;
-            for injection in injections {
-                match injection {
-                    CredentialInjection::Header { name, value } => {
-                        if let (Ok(name), Ok(value)) = (
-                            header::HeaderName::try_from(name.as_str()),
-                            header::HeaderValue::try_from(value.as_str()),
-                        ) {
-                            parts.headers.insert(name, value);
+        if self.state.config.inject_credentials {
+            if let Some(host) = dest_host.as_deref() {
+                let injections = self.state.credentials.injections_for_host(host).await;
+                for injection in injections {
+                    match injection {
+                        CredentialInjection::Header { name, value } => {
+                            if let (Ok(name), Ok(value)) = (
+                                header::HeaderName::try_from(name.as_str()),
+                                header::HeaderValue::try_from(value.as_str()),
+                            ) {
+                                parts.headers.insert(name, value);
+                            }
                         }
-                    }
-                    CredentialInjection::QueryParam { name, value } => {
-                        if let Err(err) = append_query_param_to_uri(&mut parts.uri, &name, &value) {
-                            warn!("BLOCKED: MITM credential query-param injection failed: {err}");
-                            return RequestOrResponse::Response(mitm_blocked_response(
-                                "Request rejected",
-                            ));
+                        CredentialInjection::QueryParam { name, value } => {
+                            if let Err(err) =
+                                append_query_param_to_uri(&mut parts.uri, &name, &value)
+                            {
+                                warn!(
+                                    "BLOCKED: MITM credential query-param injection failed: {err}"
+                                );
+                                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                                    "credential_injection.query_param",
+                                    "Credential query-parameter injection failed before forwarding.",
+                                    "config_required",
+                                    "none",
+                                ));
+                            }
                         }
                     }
                 }
             }
         }
 
+        remove_calciforge_control_headers(&mut parts.headers);
         remove_hop_by_hop_or_recomputed_headers(&mut parts.headers);
         Request::from_parts(parts, mitm_body_from_bytes(body_bytes)).into()
     }
@@ -491,9 +560,84 @@ impl CalciforgeMitmHandler {
                 .unwrap_or_else(|| "<unknown>".to_owned());
 
             // Pass 1: prompt-injection scan on the (likely JSON) body.
-            if self.state.config.scan_inbound
-                && let Ok(body_str) = std::str::from_utf8(&body_bytes)
-            {
+            if self.state.config.scan_inbound {
+                if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+                    let verdict = self
+                        .state
+                        .scanner
+                        .scan(
+                            &redact_url_for_log(target_url),
+                            body_str,
+                            ScanContext::WebFetch,
+                        )
+                        .await;
+                    match verdict {
+                        adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
+                            warn!(
+                                policy = "agent_web.scan_search_responses",
+                                dest_host = %dest,
+                                reason = %reason,
+                                "blocked search response: prompt-injection content"
+                            );
+                            return mitm_policy_blocked_response(
+                                "agent_web.scan_search_responses",
+                                &format!(
+                                    "Search response blocked by prompt-injection scanner: {reason}"
+                                ),
+                                "config_required",
+                                "none",
+                            );
+                        }
+                        adversary_detector::verdict::ScanVerdict::Review { reason } => {
+                            info!(
+                                policy = "agent_web.scan_search_responses",
+                                dest_host = %dest,
+                                reason = %reason,
+                                "REVIEW search response from search API"
+                            );
+                        }
+                        adversary_detector::verdict::ScanVerdict::Clean => {}
+                    }
+                }
+            }
+
+            // Pass 2: denylist check / strip via `scan_search_response`.
+            match agent_web::scan_search_response(&body_bytes, policy, &dest) {
+                SearchResponseDecision::Pass => body_bytes,
+                SearchResponseDecision::Block { reason } => {
+                    return mitm_policy_blocked_response(
+                        "agent_web.scan_search_responses",
+                        &reason,
+                        "config_required",
+                        "none",
+                    );
+                }
+                SearchResponseDecision::Strip { body, .. } => Bytes::from(body),
+            }
+        } else {
+            body_bytes
+        };
+
+        if self.state.config.scan_inbound && looks_like_scannable_content_type(&content_type) {
+            if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+                // IronClaw leak detection (runs before adversary-detector scan)
+                #[cfg(feature = "ironclaw-safety")]
+                {
+                    if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                        warn!(
+                            "BLOCKED MITM response from {}: {}",
+                            redact_url_for_log(target_url),
+                            reason
+                        );
+                        return mitm_policy_blocked_response(
+                            "ironclaw.response_secret_leak",
+                            &reason,
+                            "config_required",
+                            "none",
+                        );
+                    }
+                }
+
                 let verdict = self
                     .state
                     .scanner
@@ -506,82 +650,26 @@ impl CalciforgeMitmHandler {
                 match verdict {
                     adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
                         warn!(
-                            policy = "agent_web.scan_search_responses",
-                            dest_host = %dest,
-                            reason = %reason,
-                            "blocked search response: prompt-injection content"
+                            "BLOCKED MITM response from {}: {}",
+                            redact_url_for_log(target_url),
+                            reason
                         );
-                        return mitm_blocked_response(&format!(
-                            "Search response blocked by prompt-injection scanner: {reason}"
-                        ));
+                        return mitm_policy_blocked_response(
+                            "scanner.inbound_prompt_injection",
+                            &format!("Response blocked: {reason}"),
+                            "config_required",
+                            "none",
+                        );
                     }
                     adversary_detector::verdict::ScanVerdict::Review { reason } => {
                         info!(
-                            policy = "agent_web.scan_search_responses",
-                            dest_host = %dest,
-                            reason = %reason,
-                            "REVIEW search response from search API"
+                            "REVIEW MITM response from {}: {}",
+                            redact_url_for_log(target_url),
+                            reason
                         );
                     }
                     adversary_detector::verdict::ScanVerdict::Clean => {}
                 }
-            }
-
-            // Pass 2: denylist check / strip via `scan_search_response`.
-            match agent_web::scan_search_response(&body_bytes, policy, &dest) {
-                SearchResponseDecision::Pass => body_bytes,
-                SearchResponseDecision::Block { reason } => {
-                    return mitm_blocked_response(&reason);
-                }
-                SearchResponseDecision::Strip { body, .. } => Bytes::from(body),
-            }
-        } else {
-            body_bytes
-        };
-
-        if self.state.config.scan_inbound
-            && looks_like_scannable_content_type(&content_type)
-            && let Ok(body_str) = std::str::from_utf8(&body_bytes)
-        {
-            // IronClaw leak detection (runs before adversary-detector scan)
-            #[cfg(feature = "ironclaw-safety")]
-            {
-                if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
-                    warn!(
-                        "BLOCKED MITM response from {}: {}",
-                        redact_url_for_log(target_url),
-                        reason
-                    );
-                    return mitm_blocked_response(&reason);
-                }
-            }
-
-            let verdict = self
-                .state
-                .scanner
-                .scan(
-                    &redact_url_for_log(target_url),
-                    body_str,
-                    ScanContext::WebFetch,
-                )
-                .await;
-            match verdict {
-                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                    warn!(
-                        "BLOCKED MITM response from {}: {}",
-                        redact_url_for_log(target_url),
-                        reason
-                    );
-                    return mitm_blocked_response(&format!("Response blocked: {reason}"));
-                }
-                adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                    info!(
-                        "REVIEW MITM response from {}: {}",
-                        redact_url_for_log(target_url),
-                        reason
-                    );
-                }
-                adversary_detector::verdict::ScanVerdict::Clean => {}
             }
         }
 
@@ -784,6 +872,17 @@ fn is_hop_by_hop_or_recomputed(name: &header::HeaderName) -> bool {
     )
 }
 
+fn remove_calciforge_control_headers(headers: &mut header::HeaderMap) {
+    let control_names: Vec<header::HeaderName> = headers
+        .keys()
+        .filter(|name| name.as_str().starts_with("x-calciforge-"))
+        .cloned()
+        .collect();
+    for name in control_names {
+        headers.remove(name);
+    }
+}
+
 fn remove_hop_by_hop_or_recomputed_headers(headers: &mut header::HeaderMap) {
     for name in [
         header::HOST,
@@ -813,6 +912,161 @@ fn mitm_body_from_bytes(bytes: Bytes) -> MitmBody {
 /// that the operator's security gateway intercepted and refused the request.
 /// Structured signals are also exposed via `X-Calciforge-*` headers so
 /// non-LLM tooling can branch on the block without parsing HTML.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualCredentialOverrideStatus {
+    allowed: bool,
+    reason: String,
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn manual_credential_override_status(
+    headers: &header::HeaderMap,
+    requires_operator_approval: bool,
+) -> ManualCredentialOverrideStatus {
+    let Some(value) = headers
+        .get(CALCIFORGE_OVERRIDE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+    else {
+        return ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "no override header supplied".into(),
+        };
+    };
+
+    let (policy, token) = value
+        .split_once(':')
+        .map(|(policy, token)| (policy.trim(), Some(token.trim())))
+        .unwrap_or((value, None));
+    if policy != MANUAL_CREDENTIAL_POLICY {
+        return ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "override header does not target ironclaw.manual_credential".into(),
+        };
+    }
+
+    if !requires_operator_approval {
+        return ManualCredentialOverrideStatus {
+            allowed: true,
+            reason: "operator approval disabled by configuration".into(),
+        };
+    }
+
+    let Some(token) = token.filter(|token| !token.is_empty()) else {
+        return ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "operator approval token required".into(),
+        };
+    };
+    match std::env::var(MANUAL_CREDENTIAL_OVERRIDE_TOKEN_ENV) {
+        Ok(expected) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+            ManualCredentialOverrideStatus {
+                allowed: true,
+                reason: "operator approval token accepted".into(),
+            }
+        }
+        Ok(_) => ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: "operator approval token rejected".into(),
+        },
+        Err(_) => ManualCredentialOverrideStatus {
+            allowed: false,
+            reason: format!("{MANUAL_CREDENTIAL_OVERRIDE_TOKEN_ENV} is not configured"),
+        },
+    }
+}
+
+fn mitm_manual_credential_blocked_response(reason: &str, url: &str) -> Response<MitmBody> {
+    let escaped_reason = html_escape(reason);
+    let escaped_url = html_escape(&redact_url_for_log(url));
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Calciforge blocked manually supplied credentials</title></head>\
+         <body>\
+         <h1>Calciforge blocked manually supplied credentials</h1>\
+         <p><strong>Policy:</strong> ironclaw.manual_credential</p>\
+         <p><strong>Reason:</strong> {escaped_reason}</p>\
+         <p><strong>Destination:</strong> {escaped_url}</p>\
+         <h2>What this means</h2>\
+         <p>The request appeared to contain a credential supplied directly by the agent \
+         in a URL, header, or other request parameter. Calciforge only allows credentials \
+         to flow through proxy-managed mechanisms such as <code>{{{{secret:NAME}}}}</code> \
+         unless the operator explicitly approves an override.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>Retry with a Calciforge secret reference, for example \
+         <code>{{{{secret:API_KEY_NAME}}}}</code>, instead of a raw credential.</li>\
+         <li>If this was a false positive or a legacy API genuinely requires this shape, \
+         ask the operator to approve a scoped override.</li>\
+         </ul>\
+         <h2>Override</h2>\
+         <p><strong>Operator approval required by default.</strong> Operators can issue a \
+         scoped override with <code>X-Calciforge-Override</code>. Deployments may explicitly \
+         configure this class of override to skip operator approval for trusted contexts, \
+         but the default is fail-closed.</p>\
+         </body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Policy", "ironclaw.manual_credential")
+        .header("X-Calciforge-Reason", sanitize_for_header(reason))
+        .header("X-Calciforge-Operator-Approval", "required")
+        .header("X-Calciforge-Override-Supported", "operator_scoped")
+        .header("X-Calciforge-Override-Header", "X-Calciforge-Override")
+        .body(MitmBody::from(html))
+        .unwrap_or_else(|_| {
+            Response::new(MitmBody::from(
+                "Calciforge blocked manually supplied credentials. Operator approval required.\n",
+            ))
+        })
+}
+
+fn mitm_policy_blocked_response(
+    policy: &str,
+    reason: &str,
+    operator_approval: &str,
+    override_supported: &str,
+) -> Response<MitmBody> {
+    let escaped_policy = html_escape(policy);
+    let escaped_reason = html_escape(reason);
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Page blocked by Calciforge security gateway</title></head>\
+         <body>\
+         <h1>Page blocked by Calciforge security gateway</h1>\
+         <p><strong>Policy:</strong> {escaped_policy}</p>\
+         <p><strong>Reason:</strong> {escaped_reason}</p>\
+         <h2>What this means</h2>\
+         <p>This request or response was blocked by Calciforge security policy. \
+         The original content has not been delivered to the agent.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>If this is a secret placeholder issue, check the secret name, store, and destination allowlist.</li>\
+         <li>If this is an agent-web or scanner policy block, ask the operator to adjust configuration or policy.</li>\
+         <li>Do not attempt to bypass the gateway via another proxy or tool.</li>\
+         </ul>\
+         </body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Policy", sanitize_for_header(policy))
+        .header("X-Calciforge-Reason", sanitize_for_header(reason))
+        .header("X-Calciforge-Operator-Approval", operator_approval)
+        .header("X-Calciforge-Override-Supported", override_supported)
+        .body(MitmBody::from(html))
+        .unwrap_or_else(|_| {
+            Response::new(MitmBody::from(
+                "Page blocked by Calciforge security gateway.\n",
+            ))
+        })
+}
+
 fn mitm_blocked_response(reason: &str) -> Response<MitmBody> {
     let escaped = html_escape(reason);
     let html = format!(
@@ -905,18 +1159,19 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
 /// and headers from the in-flight request parts.
 #[cfg(feature = "ironclaw-safety")]
 fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serde_json::Value {
+    let credential_check_url = url_with_secret_query_params_removed(url);
     let mut header_map = serde_json::Map::new();
     for (name, value) in headers.iter() {
         // proxy-authorization is a standard hop-by-hop header used to
         // authenticate with this proxy itself — always stripped before
         // forwarding, never LLM-injected.
-        if name == header::PROXY_AUTHORIZATION {
+        if name == header::PROXY_AUTHORIZATION || name.as_str().starts_with("x-calciforge-") {
             continue;
         }
         if let Ok(v) = value.to_str() {
-            // Skip headers whose values contain {{secret:...}} substitution
-            // placeholders — these are proxy-managed credentials, not LLM-injected.
-            if v.contains("{{secret:") {
+            // Skip only fully proxy-managed credential header values. Mixed
+            // manual+placeholder values stay visible to IronClaw.
+            if header_value_is_proxy_managed_secret(v) {
                 continue;
             }
             header_map.insert(
@@ -926,9 +1181,217 @@ fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serd
         }
     }
     serde_json::json!({
-        "url": url,
+        "url": credential_check_url,
         "headers": header_map,
     })
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn url_with_secret_query_params_removed(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_owned();
+    };
+
+    let original_pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    if original_pairs.is_empty() {
+        return url.to_owned();
+    }
+
+    let mut removed_any = false;
+    let kept_pairs: Vec<(String, String)> = original_pairs
+        .into_iter()
+        .filter(|(_, value)| {
+            let is_proxy_managed_secret = is_exact_secret_reference(value);
+            removed_any |= is_proxy_managed_secret;
+            !is_proxy_managed_secret
+        })
+        .collect();
+
+    if !removed_any {
+        return url.to_owned();
+    }
+
+    parsed.set_query(None);
+    if !kept_pairs.is_empty() {
+        let mut query = parsed.query_pairs_mut();
+        for (name, value) in kept_pairs {
+            query.append_pair(&name, &value);
+        }
+    }
+    parsed.to_string()
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn header_value_is_proxy_managed_secret(value: &str) -> bool {
+    let trimmed = value.trim();
+    if is_exact_secret_reference(trimmed) {
+        return true;
+    }
+
+    let Some((scheme, rest)) = trimmed.split_once(char::is_whitespace) else {
+        return false;
+    };
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "bearer" | "basic" | "token" | "digest" | "hoba" | "mutual"
+    ) && is_exact_secret_reference(rest.trim())
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn is_exact_secret_reference(value: &str) -> bool {
+    let Ok(names) = crate::substitution::find_refs(value) else {
+        return false;
+    };
+    let mut names = names.into_iter();
+    let Some(name) = names.next() else {
+        return false;
+    };
+    names.next().is_none() && value == format!("{{{{secret:{name}}}}}")
+}
+
+#[cfg(all(test, feature = "ironclaw-safety"))]
+mod credential_check_tests {
+    use super::{
+        CALCIFORGE_OVERRIDE_HEADER, MANUAL_CREDENTIAL_POLICY, build_credential_check_params,
+        header_value_is_proxy_managed_secret, manual_credential_override_status,
+        mitm_manual_credential_blocked_response, remove_calciforge_control_headers,
+        url_with_secret_query_params_removed,
+    };
+    use hudsucker::hyper::header;
+
+    #[test]
+    fn credential_check_url_omits_proxy_managed_secret_query_params() {
+        let url = "https://api.example.test/v1?api_key={{secret:EXAMPLE_API_KEY}}&q=books";
+        let sanitized = url_with_secret_query_params_removed(url);
+
+        assert_eq!(sanitized, "https://api.example.test/v1?q=books");
+    }
+
+    #[test]
+    fn credential_check_still_flags_manual_query_credentials() {
+        let headers = header::HeaderMap::new();
+        let params = build_credential_check_params(
+            "https://api.example.test/v1?api_key=manual-secret&q=books",
+            &headers,
+        );
+
+        assert!(ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
+    fn credential_check_still_flags_mixed_manual_and_placeholder_query_credentials() {
+        let headers = header::HeaderMap::new();
+        let params = build_credential_check_params(
+            "https://api.example.test/v1?api_key=manual-prefix-{{secret:EXAMPLE_API_KEY}}&q=books",
+            &headers,
+        );
+
+        assert!(ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
+    fn credential_check_allows_secret_placeholder_query_credentials() {
+        let headers = header::HeaderMap::new();
+        let params = build_credential_check_params(
+            "https://api.example.test/v1?api_key={{secret:EXAMPLE_API_KEY}}&q=books",
+            &headers,
+        );
+
+        assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
+    fn credential_check_allows_proxy_managed_auth_headers() {
+        assert!(header_value_is_proxy_managed_secret(
+            "{{secret:EXAMPLE_API_KEY}}"
+        ));
+        assert!(header_value_is_proxy_managed_secret(
+            "Bearer {{secret:EXAMPLE_API_KEY}}"
+        ));
+    }
+
+    #[test]
+    fn credential_check_keeps_mixed_manual_and_placeholder_headers_visible() {
+        assert!(!header_value_is_proxy_managed_secret(
+            "Bearer manual-prefix-{{secret:EXAMPLE_API_KEY}}"
+        ));
+    }
+
+    #[test]
+    fn manual_credential_block_response_names_policy_and_override_requirement() {
+        let response = mitm_manual_credential_blocked_response(
+            "LLM-injected credential detected in outgoing request",
+            "https://api.example.test/v1?api_key=redacted",
+        );
+
+        assert_eq!(
+            response.headers()["X-Calciforge-Policy"],
+            "ironclaw.manual_credential"
+        );
+        assert_eq!(
+            response.headers()["X-Calciforge-Operator-Approval"],
+            "required"
+        );
+        assert_eq!(
+            response.headers()["X-Calciforge-Override-Supported"],
+            "operator_scoped"
+        );
+        assert_eq!(
+            response.headers()["X-Calciforge-Override-Header"],
+            "X-Calciforge-Override"
+        );
+    }
+
+    #[test]
+    fn manual_credential_override_requires_operator_approval_by_default() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            CALCIFORGE_OVERRIDE_HEADER,
+            header::HeaderValue::from_static(MANUAL_CREDENTIAL_POLICY),
+        );
+
+        let status = manual_credential_override_status(&headers, true);
+        assert!(!status.allowed);
+        assert_eq!(status.reason, "operator approval token required");
+    }
+
+    #[test]
+    fn manual_credential_override_can_be_configured_without_operator_approval() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            CALCIFORGE_OVERRIDE_HEADER,
+            header::HeaderValue::from_static(MANUAL_CREDENTIAL_POLICY),
+        );
+
+        let status = manual_credential_override_status(&headers, false);
+        assert!(status.allowed);
+    }
+
+    #[test]
+    fn calciforge_control_headers_are_stripped_before_forwarding() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            "x-calciforge-override",
+            header::HeaderValue::from_static(MANUAL_CREDENTIAL_POLICY),
+        );
+        headers.insert(
+            "x-calciforge-anything",
+            header::HeaderValue::from_static("control-plane"),
+        );
+        headers.insert(
+            "x-upstream-header",
+            header::HeaderValue::from_static("keep"),
+        );
+
+        remove_calciforge_control_headers(&mut headers);
+
+        assert!(!headers.contains_key("x-calciforge-override"));
+        assert!(!headers.contains_key("x-calciforge-anything"));
+        assert_eq!(headers["x-upstream-header"], "keep");
+    }
 }
 
 /// Env var holding the bearer token required to call `/vault/:secret`.
