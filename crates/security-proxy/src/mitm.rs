@@ -884,9 +884,9 @@ fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serd
             continue;
         }
         if let Ok(v) = value.to_str() {
-            // Skip headers whose values contain {{secret:...}} substitution
-            // placeholders — these are proxy-managed credentials, not LLM-injected.
-            if v.contains("{{secret:") {
+            // Skip only fully proxy-managed credential header values. Mixed
+            // manual+placeholder values stay visible to IronClaw.
+            if header_value_is_proxy_managed_secret(v) {
                 continue;
             }
             header_map.insert(
@@ -919,7 +919,7 @@ fn url_with_secret_query_params_removed(url: &str) -> String {
     let kept_pairs: Vec<(String, String)> = original_pairs
         .into_iter()
         .filter(|(_, value)| {
-            let is_proxy_managed_secret = value.contains("{{secret:");
+            let is_proxy_managed_secret = is_exact_secret_reference(value);
             removed_any |= is_proxy_managed_secret;
             !is_proxy_managed_secret
         })
@@ -939,9 +939,40 @@ fn url_with_secret_query_params_removed(url: &str) -> String {
     parsed.to_string()
 }
 
+#[cfg(feature = "ironclaw-safety")]
+fn header_value_is_proxy_managed_secret(value: &str) -> bool {
+    let trimmed = value.trim();
+    if is_exact_secret_reference(trimmed) {
+        return true;
+    }
+
+    let Some((scheme, rest)) = trimmed.split_once(char::is_whitespace) else {
+        return false;
+    };
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "bearer" | "basic" | "token" | "digest" | "hoba" | "mutual"
+    ) && is_exact_secret_reference(rest.trim())
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn is_exact_secret_reference(value: &str) -> bool {
+    let Ok(names) = crate::substitution::find_refs(value) else {
+        return false;
+    };
+    let mut names = names.into_iter();
+    let Some(name) = names.next() else {
+        return false;
+    };
+    names.next().is_none() && value == format!("{{{{secret:{name}}}}}")
+}
+
 #[cfg(all(test, feature = "ironclaw-safety"))]
 mod credential_check_tests {
-    use super::{build_credential_check_params, url_with_secret_query_params_removed};
+    use super::{
+        build_credential_check_params, header_value_is_proxy_managed_secret,
+        url_with_secret_query_params_removed,
+    };
     use hudsucker::hyper::header;
 
     #[test]
@@ -964,6 +995,17 @@ mod credential_check_tests {
     }
 
     #[test]
+    fn credential_check_still_flags_mixed_manual_and_placeholder_query_credentials() {
+        let headers = header::HeaderMap::new();
+        let params = build_credential_check_params(
+            "https://api.example.test/v1?api_key=manual-prefix-{{secret:EXAMPLE_API_KEY}}&q=books",
+            &headers,
+        );
+
+        assert!(ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
     fn credential_check_allows_secret_placeholder_query_credentials() {
         let headers = header::HeaderMap::new();
         let params = build_credential_check_params(
@@ -972,6 +1014,23 @@ mod credential_check_tests {
         );
 
         assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
+    fn credential_check_allows_proxy_managed_auth_headers() {
+        assert!(header_value_is_proxy_managed_secret(
+            "{{secret:EXAMPLE_API_KEY}}"
+        ));
+        assert!(header_value_is_proxy_managed_secret(
+            "Bearer {{secret:EXAMPLE_API_KEY}}"
+        ));
+    }
+
+    #[test]
+    fn credential_check_keeps_mixed_manual_and_placeholder_headers_visible() {
+        assert!(!header_value_is_proxy_managed_secret(
+            "Bearer manual-prefix-{{secret:EXAMPLE_API_KEY}}"
+        ));
     }
 }
 
