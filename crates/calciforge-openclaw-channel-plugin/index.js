@@ -20,6 +20,7 @@ function registerHttpRoute(api, route, log) {
     const unregister = api.registerHttpRoute({
       ...route,
       auth: "plugin",
+      replaceExisting: true,
     });
     return { unregister, source: "plugin route API" };
   }
@@ -184,12 +185,22 @@ async function handleInboundRequest({
   }
 
   const { message, sessionKey, requestId, channel, replyTo, agentId } = body;
+  const trace = {
+    requestId: requestId || null,
+    sessionKey,
+    channel: channel || null,
+    agentId: agentId || null,
+    receivedAtMs: Date.now(),
+  };
   if (!message || !sessionKey) {
     json(res, 400, { error: "message and sessionKey are required" });
     return true;
   }
 
   json(res, 200, { ok: true });
+  log?.info?.(
+    `[calciforge-channel] inbound accepted requestId=${requestId || "(none)"} sessionKey=${sessionKey} channel=${channel || "(none)"} agentId=${agentId || "(default)"}`,
+  );
 
   try {
     const runtime = await getRuntime();
@@ -206,6 +217,7 @@ async function handleInboundRequest({
         replyWebhook,
         replyAuthToken,
         log,
+        trace,
       });
       return true;
     }
@@ -226,6 +238,7 @@ async function handleInboundRequest({
       runTimeoutMs,
       errorRecoveryMs,
       log,
+      trace,
     });
   } catch (err) {
     log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
@@ -272,6 +285,7 @@ async function dispatchViaSubagentRuntime({
   runTimeoutMs,
   errorRecoveryMs,
   log,
+  trace,
 }) {
     const baselineReply = await safeReadLatestAssistantReply({
       runtime,
@@ -289,6 +303,9 @@ async function dispatchViaSubagentRuntime({
         deliver: false,
       });
 
+      log?.info?.(
+        `[calciforge-channel] subagent run started requestId=${requestId || "(none)"} runId=${runId} sessionKey=${sessionKey}`,
+      );
       const result = await runtime.subagent.waitForRun({
         runId,
         timeoutMs: runTimeoutMs,
@@ -354,6 +371,7 @@ async function dispatchViaSubagentRuntime({
         replyTo,
         reason: noReplyReason,
         log,
+        trace: { ...trace, runtime: "subagent", runId },
       });
       return true;
     }
@@ -383,6 +401,7 @@ async function dispatchViaChannelRuntime({
   replyWebhook,
   replyAuthToken,
   log,
+  trace,
 }) {
   const cfg = runtime.config.current();
   const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
@@ -405,6 +424,13 @@ async function dispatchViaChannelRuntime({
     requestId,
     timestamp,
   });
+  const baselineReply = await safeReadLatestAssistantReply({
+    runtime,
+    sessionKey,
+    log,
+    timeoutMs: 1000,
+  });
+  const runStartedAtMs = Date.now();
   const dispatcher = createSingleReplyDispatcher();
 
   await runtime.channel.turn.run({
@@ -453,11 +479,38 @@ async function dispatchViaChannelRuntime({
     },
   });
 
+  const counts = dispatcher.getQueuedCounts();
   const reply = dispatcher.takeReply();
   const noReplyReason = reply ? classifyNoVisibleReply(reply.text, reply.attachments) : "no_reply_dispatched";
   if (noReplyReason) {
+    const recoveredReply = await safeReadLatestAssistantReply({
+      runtime,
+      sessionKey,
+      log,
+      timeoutMs: 1000,
+    });
+    if (
+      isRecoverableReply(recoveredReply, baselineReply, [], runStartedAtMs) ||
+      (recoveredReply?.text?.trim() && isNewReply(recoveredReply, baselineReply))
+    ) {
+      log?.info?.(
+        `[calciforge-channel] recovered final channel-runtime reply requestId=${requestId || "(none)"} sessionKey=${sessionKey} reason=${noReplyReason} hasTimestamp=${Number.isFinite(recoveredReply?.createdAtMs)}`,
+      );
+      await deliverReply({
+        replyWebhook,
+        replyAuthToken,
+        sessionKey,
+        requestId,
+        message: recoveredReply.text,
+        channel: sourceChannel,
+        replyTo,
+        log,
+      });
+      return;
+    }
+
     log?.warn?.(
-      `[calciforge-channel] ${noReplyReason} - reporting no visible reply`,
+      `[calciforge-channel] no visible channel-runtime reply requestId=${requestId || "(none)"} sessionKey=${sessionKey} reason=${noReplyReason} counts=${JSON.stringify(counts)}`,
     );
     await deliverNoVisibleReply({
       replyWebhook,
@@ -468,6 +521,7 @@ async function dispatchViaChannelRuntime({
       replyTo,
       reason: noReplyReason,
       log,
+      trace: { ...trace, runtime: "channel", counts },
     });
     return;
   }
@@ -820,7 +874,9 @@ async function deliverReply({
   requestId,
   message,
   error,
+  errorKind,
   noVisibleReplyReason,
+  diagnostic,
   attachments,
   channel,
   replyTo,
@@ -832,7 +888,10 @@ async function deliverReply({
   }
 
   try {
-    const payload = { sessionKey, message, error, noVisibleReplyReason, channel, to: replyTo };
+    const payload = { sessionKey, message, error, channel, to: replyTo };
+    if (errorKind) payload.errorKind = errorKind;
+    if (noVisibleReplyReason) payload.noVisibleReplyReason = noVisibleReplyReason;
+    if (diagnostic) payload.diagnostic = diagnostic;
     if (requestId) {
       payload.requestId = requestId;
     }
@@ -851,7 +910,10 @@ async function deliverReply({
     });
 
     if (!resp.ok) {
-      log?.error?.(`[calciforge-channel] reply webhook failed - status=${resp.status}`);
+      const responseText = await resp.text().catch(() => "");
+      log?.error?.(
+        `[calciforge-channel] reply webhook failed - status=${resp.status} requestId=${requestId || "(none)"} sessionKey=${sessionKey} body=${responseText.slice(0, 300)}`,
+      );
     } else {
       log?.info?.("[calciforge-channel] reply delivered");
     }
@@ -860,12 +922,13 @@ async function deliverReply({
   }
 }
 
-async function deliverNoVisibleReply(args) {
-  const reason = args.reason || "unknown";
+async function deliverNoVisibleReply({ reason, trace, ...args }) {
   await deliverReply({
     ...args,
-    noVisibleReplyReason: reason,
-    error: `OpenClaw completed without a visible reply for this Calciforge request (${reason})`,
+    error: "OpenClaw completed without a visible reply for this Calciforge request",
+    errorKind: "no_visible_reply",
+    noVisibleReplyReason: reason || "unknown",
+    diagnostic: trace,
   });
 }
 
