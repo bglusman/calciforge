@@ -14,6 +14,15 @@ async function getLegacyRegisterPluginHttpRoute() {
 }
 
 async function registerHttpRoute(api, route, log) {
+  if (typeof api.registerHttpRoute === "function") {
+    api.registerHttpRoute({
+      ...route,
+      auth: "plugin",
+      replaceExisting: true,
+    });
+    return { unregister: null, source: "native plugin route registry" };
+  }
+
   const registerLegacyRoute = await getLegacyRegisterPluginHttpRoute();
   const unregister = registerLegacyRoute({
     ...route,
@@ -153,12 +162,22 @@ async function handleInboundRequest({
   }
 
   const { message, sessionKey, requestId, channel, replyTo, agentId } = body;
+  const trace = {
+    requestId: requestId || null,
+    sessionKey,
+    channel: channel || null,
+    agentId: agentId || null,
+    receivedAtMs: Date.now(),
+  };
   if (!message || !sessionKey) {
     json(res, 400, { error: "message and sessionKey are required" });
     return true;
   }
 
   json(res, 200, { ok: true });
+  log?.info?.(
+    `[calciforge-channel] inbound accepted requestId=${requestId || "(none)"} sessionKey=${sessionKey} channel=${channel || "(none)"} agentId=${agentId || "(default)"}`,
+  );
 
   try {
     const runtime = await getRuntime();
@@ -175,6 +194,7 @@ async function handleInboundRequest({
         replyWebhook,
         replyAuthToken,
         log,
+        trace,
       });
       return true;
     }
@@ -195,6 +215,7 @@ async function handleInboundRequest({
       runTimeoutMs,
       errorRecoveryMs,
       log,
+      trace,
     });
   } catch (err) {
     log?.error?.(`[calciforge-channel] dispatch error - ${err.message}`);
@@ -241,6 +262,7 @@ async function dispatchViaSubagentRuntime({
   runTimeoutMs,
   errorRecoveryMs,
   log,
+  trace,
 }) {
     const baselineReply = await safeReadLatestAssistantReply({
       runtime,
@@ -258,6 +280,9 @@ async function dispatchViaSubagentRuntime({
         deliver: false,
       });
 
+      log?.info?.(
+        `[calciforge-channel] subagent run started requestId=${requestId || "(none)"} runId=${runId} sessionKey=${sessionKey}`,
+      );
       const result = await runtime.subagent.waitForRun({
         runId,
         timeoutMs: runTimeoutMs,
@@ -320,7 +345,9 @@ async function dispatchViaSubagentRuntime({
         requestId,
         channel,
         replyTo,
+        reason: "silent_assistant_reply",
         log,
+        trace: { ...trace, runtime: "subagent", runId },
       });
       return true;
     }
@@ -350,6 +377,7 @@ async function dispatchViaChannelRuntime({
   replyWebhook,
   replyAuthToken,
   log,
+  trace,
 }) {
   const cfg = runtime.config.current();
   const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
@@ -420,10 +448,12 @@ async function dispatchViaChannelRuntime({
     },
   });
 
+  const counts = dispatcher.getQueuedCounts();
   const reply = dispatcher.takeReply();
   if (!reply || isSilentReply(reply.text)) {
+    const reason = !reply ? "no_reply_dispatched" : "silent_assistant_reply";
     log?.warn?.(
-      "[calciforge-channel] silent channel-runtime reply - reporting no visible reply",
+      `[calciforge-channel] no visible channel-runtime reply requestId=${requestId || "(none)"} sessionKey=${sessionKey} reason=${reason} counts=${JSON.stringify(counts)}`,
     );
     await deliverNoVisibleReply({
       replyWebhook,
@@ -432,7 +462,9 @@ async function dispatchViaChannelRuntime({
       requestId,
       channel: sourceChannel,
       replyTo,
+      reason,
       log,
+      trace: { ...trace, runtime: "channel", counts },
     });
     return;
   }
@@ -773,6 +805,9 @@ async function deliverReply({
   requestId,
   message,
   error,
+  errorKind,
+  noVisibleReplyReason,
+  diagnostic,
   attachments,
   channel,
   replyTo,
@@ -785,6 +820,9 @@ async function deliverReply({
 
   try {
     const payload = { sessionKey, message, error, channel, to: replyTo };
+    if (errorKind) payload.errorKind = errorKind;
+    if (noVisibleReplyReason) payload.noVisibleReplyReason = noVisibleReplyReason;
+    if (diagnostic) payload.diagnostic = diagnostic;
     if (requestId) {
       payload.requestId = requestId;
     }
@@ -803,7 +841,10 @@ async function deliverReply({
     });
 
     if (!resp.ok) {
-      log?.error?.(`[calciforge-channel] reply webhook failed - status=${resp.status}`);
+      const responseText = await resp.text().catch(() => "");
+      log?.error?.(
+        `[calciforge-channel] reply webhook failed - status=${resp.status} requestId=${requestId || "(none)"} sessionKey=${sessionKey} body=${responseText.slice(0, 300)}`,
+      );
     } else {
       log?.info?.("[calciforge-channel] reply delivered");
     }
@@ -812,10 +853,13 @@ async function deliverReply({
   }
 }
 
-async function deliverNoVisibleReply(args) {
+async function deliverNoVisibleReply({ reason, trace, ...args }) {
   await deliverReply({
     ...args,
     error: "OpenClaw completed without a visible reply for this Calciforge request",
+    errorKind: "no_visible_reply",
+    noVisibleReplyReason: reason || "unknown",
+    diagnostic: trace,
   });
 }
 
@@ -853,6 +897,7 @@ function sleep(ms) {
 }
 
 export const testInternals = {
+  registerHttpRoute,
   isNewReply,
   isRecoverableReply,
   parseTimestampMillis,

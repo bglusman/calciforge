@@ -119,6 +119,16 @@ struct ReplyPayload {
     message: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    /// Machine-readable OpenClaw error class, when the bridge can provide it.
+    #[serde(default, rename = "errorKind", alias = "error_kind")]
+    error_kind: Option<String>,
+    /// More specific reason for no-visible-reply callbacks.
+    #[serde(
+        default,
+        rename = "noVisibleReplyReason",
+        alias = "no_visible_reply_reason"
+    )]
+    no_visible_reply_reason: Option<String>,
     #[serde(default)]
     attachments: Vec<ReplyAttachmentPayload>,
     #[allow(dead_code)]
@@ -295,6 +305,20 @@ async fn handle_reply(
         .to_string();
 
     if let Some(tx) = state.router.take(&correlation_key).await {
+        if let Some(error) = payload.callback_error_message() {
+            warn!(
+                session_key = %payload.session_key,
+                correlation_key = %correlation_key,
+                request_id = ?payload.request_id,
+                error_kind = ?payload.error_kind,
+                no_visible_reply_reason = ?payload.no_visible_reply_reason,
+                error = %error,
+                "openclaw-channel correlated error callback"
+            );
+            let _ = tx.send(Err(error));
+            return (StatusCode::OK, Json(AckResponse { ok: true }));
+        }
+
         match payload.into_outbound_message() {
             Ok(message) => {
                 let _ = tx.send(Ok(message));
@@ -316,11 +340,33 @@ async fn handle_reply(
 }
 
 impl ReplyPayload {
-    fn into_outbound_message(self) -> Result<OutboundMessage, String> {
-        if let Some(error) = self.error.filter(|error| !error.trim().is_empty()) {
-            return Err(error);
-        }
+    fn callback_error_message(&self) -> Option<String> {
+        let error = self
+            .error
+            .as_deref()
+            .map(str::trim)
+            .filter(|error| !error.is_empty())?;
 
+        let reason = self
+            .no_visible_reply_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty());
+        let kind = self
+            .error_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty());
+
+        Some(match (kind, reason) {
+            (Some(kind), Some(reason)) => format!("{error} [kind={kind}, reason={reason}]"),
+            (Some(kind), None) => format!("{error} [kind={kind}]"),
+            (None, Some(reason)) => format!("{error} [reason={reason}]"),
+            (None, None) => error.to_string(),
+        })
+    }
+
+    fn into_outbound_message(self) -> Result<OutboundMessage, String> {
         if self.attachments.len() > MAX_REPLY_ATTACHMENTS {
             return Err(format!(
                 "openclaw-channel callback included {} attachments, limit is {}",
@@ -928,6 +974,53 @@ mod tests {
             AdapterError::Protocol(msg)
                 if msg.contains("completed without a visible reply")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_reply_server_acks_correlated_error_callbacks() {
+        let router = ReplyRouter::new();
+        let request_id = "req-error".to_string();
+        let session_key = "calciforge:main:renee".to_string();
+        let (tx, rx) = oneshot::channel::<ReplyResult>();
+        router
+            .insert(request_id.clone(), session_key.clone(), tx)
+            .await;
+
+        let state = ReplyServerState {
+            router,
+            auth_tokens: Arc::new(StdMutex::new(HashSet::new())),
+        };
+
+        let payload = ReplyPayload {
+            session_key,
+            request_id: Some(request_id),
+            message: None,
+            error: Some(
+                "OpenClaw completed without a visible reply for this Calciforge request".into(),
+            ),
+            error_kind: Some("no_visible_reply".into()),
+            no_visible_reply_reason: Some("no_reply_dispatched".into()),
+            attachments: Vec::new(),
+            channel: Some("signal".into()),
+            to: None,
+        };
+
+        let (status, Json(ack)) = handle_reply(State(state), HeaderMap::new(), Json(payload)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(ack.ok);
+        let err = rx
+            .await
+            .expect("reply sender should not be dropped")
+            .expect_err("callback error should route to waiter as protocol error");
+        assert!(
+            err.contains("kind=no_visible_reply"),
+            "error should include kind: {err}"
+        );
+        assert!(
+            err.contains("reason=no_reply_dispatched"),
+            "error should include reason: {err}"
+        );
     }
 
     #[tokio::test]

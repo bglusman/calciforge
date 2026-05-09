@@ -4,6 +4,29 @@ import test from "node:test";
 
 import { testInternals } from "../index.js";
 
+test("registers inbound route with native plugin HTTP registry when available", async () => {
+  const calls = [];
+  const api = {
+    registerHttpRoute: (route) => calls.push(route),
+  };
+  const route = {
+    path: "/calciforge/inbound",
+    match: "exact",
+    handler: async () => true,
+  };
+
+  const result = await testInternals.registerHttpRoute(api, route, console);
+
+  assert.equal(result.source, "native plugin route registry");
+  assert.equal(result.unregister, null);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/calciforge/inbound");
+  assert.equal(calls[0].match, "exact");
+  assert.equal(calls[0].auth, "plugin");
+  assert.equal(calls[0].replaceExisting, true);
+  assert.equal(calls[0].handler, route.handler);
+});
+
 test("dispatches through OpenClaw channel runtime with calciforge command context", async () => {
   const delivered = [];
   const server = http.createServer((req, res) => {
@@ -145,11 +168,18 @@ test("reports channel-runtime requests that complete without a visible reply", a
   }
 
   assert.equal(delivered.length, 1);
-  assert.deepEqual(delivered[0], {
-    sessionKey: "calciforge:main:brian",
-    requestId: "silent-req",
-    error: "OpenClaw completed without a visible reply for this Calciforge request",
-    channel: "telegram",
+  assert.equal(delivered[0].sessionKey, "calciforge:main:brian");
+  assert.equal(delivered[0].requestId, "silent-req");
+  assert.equal(
+    delivered[0].error,
+    "OpenClaw completed without a visible reply for this Calciforge request",
+  );
+  assert.equal(delivered[0].errorKind, "no_visible_reply");
+  assert.equal(delivered[0].noVisibleReplyReason, "no_reply_dispatched");
+  assert.equal(delivered[0].channel, "telegram");
+  assert.deepEqual(delivered[0].diagnostic, {
+    runtime: "channel",
+    counts: { tool: 0, block: 0, final: 0 },
   });
 });
 
@@ -202,11 +232,18 @@ test("reports subagent-runtime requests that complete without a visible reply", 
   }
 
   assert.equal(delivered.length, 1);
-  assert.deepEqual(delivered[0], {
-    sessionKey: "calciforge:main:brian",
-    requestId: "silent-subagent-req",
-    error: "OpenClaw completed without a visible reply for this Calciforge request",
-    channel: "telegram",
+  assert.equal(delivered[0].sessionKey, "calciforge:main:brian");
+  assert.equal(delivered[0].requestId, "silent-subagent-req");
+  assert.equal(
+    delivered[0].error,
+    "OpenClaw completed without a visible reply for this Calciforge request",
+  );
+  assert.equal(delivered[0].errorKind, "no_visible_reply");
+  assert.equal(delivered[0].noVisibleReplyReason, "silent_assistant_reply");
+  assert.equal(delivered[0].channel, "telegram");
+  assert.deepEqual(delivered[0].diagnostic, {
+    runtime: "subagent",
+    runId: "run-silent",
   });
 });
 

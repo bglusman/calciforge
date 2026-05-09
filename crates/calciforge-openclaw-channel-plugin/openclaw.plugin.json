@@ -28,5 +28,8 @@
         "description": "Additional time to wait for fallback-generated replies after OpenClaw reports an early run error"
       }
     }
+  },
+  "activation": {
+    "onStartup": true
   }
 }
