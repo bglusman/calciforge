@@ -322,8 +322,9 @@ async function dispatchViaSubagentRuntime({
       readLatestAssistantReply(runtime, sessionKey),
     );
     const attachments = normalizeAttachments(result.attachments);
-    if (isSilentReply(reply.text) && attachments.length === 0) {
-      log?.warn?.("[calciforge-channel] silent reply - reporting no visible reply");
+    const noReplyReason = classifyNoVisibleReply(reply.text, attachments);
+    if (noReplyReason && attachments.length === 0) {
+      log?.warn?.(`[calciforge-channel] ${noReplyReason} - reporting no visible reply`);
       await deliverNoVisibleReply({
         replyWebhook,
         replyAuthToken,
@@ -331,6 +332,7 @@ async function dispatchViaSubagentRuntime({
         requestId,
         channel,
         replyTo,
+        reason: noReplyReason,
         log,
       });
       return true;
@@ -432,9 +434,10 @@ async function dispatchViaChannelRuntime({
   });
 
   const reply = dispatcher.takeReply();
-  if (!reply || isSilentReply(reply.text)) {
+  const noReplyReason = reply ? classifyNoVisibleReply(reply.text, reply.attachments) : "no_reply_dispatched";
+  if (noReplyReason) {
     log?.warn?.(
-      "[calciforge-channel] silent channel-runtime reply - reporting no visible reply",
+      `[calciforge-channel] ${noReplyReason} - reporting no visible reply`,
     );
     await deliverNoVisibleReply({
       replyWebhook,
@@ -443,6 +446,7 @@ async function dispatchViaChannelRuntime({
       requestId,
       channel: sourceChannel,
       replyTo,
+      reason: noReplyReason,
       log,
     });
     return;
@@ -605,8 +609,7 @@ async function readJsonBody(req) {
 }
 
 function isSilentReply(replyText) {
-  const trimmed = (replyText ?? "").trim();
-  return !trimmed || trimmed === "NO_REPLY" || trimmed === "HEARTBEAT_OK";
+  return Boolean(classifyNoVisibleReply(replyText));
 }
 
 async function recoverReplyAfterRunError({
@@ -797,6 +800,7 @@ async function deliverReply({
   requestId,
   message,
   error,
+  noVisibleReplyReason,
   attachments,
   channel,
   replyTo,
@@ -808,7 +812,7 @@ async function deliverReply({
   }
 
   try {
-    const payload = { sessionKey, message, error, channel, to: replyTo };
+    const payload = { sessionKey, message, error, noVisibleReplyReason, channel, to: replyTo };
     if (requestId) {
       payload.requestId = requestId;
     }
@@ -837,10 +841,21 @@ async function deliverReply({
 }
 
 async function deliverNoVisibleReply(args) {
+  const reason = args.reason || "unknown";
   await deliverReply({
     ...args,
-    error: "OpenClaw completed without a visible reply for this Calciforge request",
+    noVisibleReplyReason: reason,
+    error: `OpenClaw completed without a visible reply for this Calciforge request (${reason})`,
   });
+}
+
+function classifyNoVisibleReply(replyText, attachments = []) {
+  if (normalizeAttachments(attachments).length > 0) return null;
+  const trimmed = (replyText ?? "").trim();
+  if (!trimmed) return "empty_reply";
+  if (trimmed === "NO_REPLY") return "silent_no_reply_token";
+  if (trimmed === "HEARTBEAT_OK") return "silent_heartbeat_token";
+  return null;
 }
 
 function normalizeAttachments(value) {
@@ -886,6 +901,7 @@ export const testInternals = {
   buildCalciforgeChannelContext,
   buildStatusPayload,
   createSingleReplyDispatcher,
+  classifyNoVisibleReply,
   dispatchViaSubagentRuntime,
   dispatchViaChannelRuntime,
 };
