@@ -250,7 +250,12 @@ impl CalciforgeMitmHandler {
             Err(err) => {
                 // Bland message; the err text contains the secret name.
                 warn!("BLOCKED: MITM URL substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                    "secret_substitution.url",
+                    "URL secret substitution failed. Check the secret exists and is allowed for this destination.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
         self.last_url = Some(target_url.clone());
@@ -274,8 +279,11 @@ impl CalciforgeMitmHandler {
                 decision = "block",
                 "blocked search-engine egress"
             );
-            return RequestOrResponse::Response(mitm_blocked_response(
+            return RequestOrResponse::Response(mitm_policy_blocked_response(
+                "agent_web.forbid_search_engines",
                 "search engines disabled by [security.agent_web].forbid_search_engines",
+                "config_required",
+                "none",
             ));
         }
 
@@ -300,7 +308,12 @@ impl CalciforgeMitmHandler {
             substitute_headers(&self.state, &mut parts.headers, dest_host.as_deref()).await
         {
             warn!("BLOCKED: MITM header substitution failed: {err}");
-            return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+            return RequestOrResponse::Response(mitm_policy_blocked_response(
+                "secret_substitution.header",
+                "Header secret substitution failed. Check the secret exists and is allowed for this destination.",
+                "config_required",
+                "none",
+            ));
         }
 
         let body_bytes = match body.collect().await {
@@ -325,7 +338,12 @@ impl CalciforgeMitmHandler {
                 // Bland message; the err text may contain the secret name
                 // (resolver / allowlist failures include the literal ref).
                 warn!("BLOCKED: MITM body substitution failed: {err}");
-                return RequestOrResponse::Response(mitm_blocked_response("Request rejected"));
+                return RequestOrResponse::Response(mitm_policy_blocked_response(
+                    "secret_substitution.body",
+                    "Body secret substitution failed. Check the secret exists, content type is supported, and destination is allowed.",
+                    "config_required",
+                    "none",
+                ));
             }
         };
 
@@ -347,7 +365,12 @@ impl CalciforgeMitmHandler {
                     BrowsingDecision::Allow => body_bytes,
                     BrowsingDecision::Stripped { body, .. } => Bytes::from(body),
                     BrowsingDecision::Block { reason } => {
-                        return RequestOrResponse::Response(mitm_blocked_response(&reason));
+                        return RequestOrResponse::Response(mitm_policy_blocked_response(
+                            "agent_web.forbid_provider_browsing",
+                            &reason,
+                            "config_required",
+                            "none",
+                        ));
                     }
                 }
             } else {
@@ -377,9 +400,12 @@ impl CalciforgeMitmHandler {
                         decision = "block",
                         "blocked LLM request: references forbidden URL"
                     );
-                    return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                        "request references forbidden URL: {host}"
-                    )));
+                    return RequestOrResponse::Response(mitm_policy_blocked_response(
+                        "agent_web.preflight_message_urls",
+                        &format!("request references forbidden URL host: {host}"),
+                        "config_required",
+                        "none",
+                    ));
                 }
             }
         }
@@ -405,9 +431,12 @@ impl CalciforgeMitmHandler {
                         redact_url_for_log(&target_url),
                         reason
                     );
-                    return RequestOrResponse::Response(mitm_blocked_response(&format!(
-                        "Outbound request blocked: {reason}"
-                    )));
+                    return RequestOrResponse::Response(mitm_policy_blocked_response(
+                        "scanner.outbound_exfiltration",
+                        &format!("Outbound request blocked: {reason}"),
+                        "config_required",
+                        "none",
+                    ));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
                     info!(
@@ -522,9 +551,14 @@ impl CalciforgeMitmHandler {
                                 reason = %reason,
                                 "blocked search response: prompt-injection content"
                             );
-                            return mitm_blocked_response(&format!(
-                                "Search response blocked by prompt-injection scanner: {reason}"
-                            ));
+                            return mitm_policy_blocked_response(
+                                "agent_web.scan_search_responses",
+                                &format!(
+                                    "Search response blocked by prompt-injection scanner: {reason}"
+                                ),
+                                "config_required",
+                                "none",
+                            );
                         }
                         adversary_detector::verdict::ScanVerdict::Review { reason } => {
                             info!(
@@ -543,7 +577,12 @@ impl CalciforgeMitmHandler {
             match agent_web::scan_search_response(&body_bytes, policy, &dest) {
                 SearchResponseDecision::Pass => body_bytes,
                 SearchResponseDecision::Block { reason } => {
-                    return mitm_blocked_response(&reason);
+                    return mitm_policy_blocked_response(
+                        "agent_web.scan_search_responses",
+                        &reason,
+                        "config_required",
+                        "none",
+                    );
                 }
                 SearchResponseDecision::Strip { body, .. } => Bytes::from(body),
             }
@@ -562,7 +601,12 @@ impl CalciforgeMitmHandler {
                             redact_url_for_log(target_url),
                             reason
                         );
-                        return mitm_blocked_response(&reason);
+                        return mitm_policy_blocked_response(
+                            "ironclaw.response_secret_leak",
+                            &reason,
+                            "config_required",
+                            "none",
+                        );
                     }
                 }
 
@@ -582,7 +626,12 @@ impl CalciforgeMitmHandler {
                             redact_url_for_log(target_url),
                             reason
                         );
-                        return mitm_blocked_response(&format!("Response blocked: {reason}"));
+                        return mitm_policy_blocked_response(
+                            "scanner.inbound_prompt_injection",
+                            &format!("Response blocked: {reason}"),
+                            "config_required",
+                            "none",
+                        );
                     }
                     adversary_detector::verdict::ScanVerdict::Review { reason } => {
                         info!(
@@ -927,6 +976,49 @@ fn mitm_manual_credential_blocked_response(reason: &str, url: &str) -> Response<
         .unwrap_or_else(|_| {
             Response::new(MitmBody::from(
                 "Calciforge blocked manually supplied credentials. Operator approval required.\n",
+            ))
+        })
+}
+
+fn mitm_policy_blocked_response(
+    policy: &str,
+    reason: &str,
+    operator_approval: &str,
+    override_supported: &str,
+) -> Response<MitmBody> {
+    let escaped_policy = html_escape(policy);
+    let escaped_reason = html_escape(reason);
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\">\
+         <title>Page blocked by Calciforge security gateway</title></head>\
+         <body>\
+         <h1>Page blocked by Calciforge security gateway</h1>\
+         <p><strong>Policy:</strong> {escaped_policy}</p>\
+         <p><strong>Reason:</strong> {escaped_reason}</p>\
+         <h2>What this means</h2>\
+         <p>This request or response was blocked by Calciforge security policy. \
+         The original content has not been delivered to the agent.</p>\
+         <h2>Suggested next steps</h2>\
+         <ul>\
+         <li>If this is a secret placeholder issue, check the secret name, store, and destination allowlist.</li>\
+         <li>If this is an agent-web or scanner policy block, ask the operator to adjust configuration or policy.</li>\
+         <li>Do not attempt to bypass the gateway via another proxy or tool.</li>\
+         </ul>\
+         </body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Calciforge-Blocked", "true")
+        .header("X-Calciforge-Policy", sanitize_for_header(policy))
+        .header("X-Calciforge-Reason", sanitize_for_header(reason))
+        .header("X-Calciforge-Operator-Approval", operator_approval)
+        .header("X-Calciforge-Override-Supported", override_supported)
+        .body(MitmBody::from(html))
+        .unwrap_or_else(|_| {
+            Response::new(MitmBody::from(
+                "Page blocked by Calciforge security gateway.\n",
             ))
         })
 }
