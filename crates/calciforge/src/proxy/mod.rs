@@ -138,10 +138,14 @@ pub async fn start_proxy_server(
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", config.bind, e))?;
 
-    // Resolve the gateway's client-facing API key before sharing config with
-    // handlers. `api_key_file` is preferred so deployments can avoid inline
-    // TOML secrets while still enforcing Authorization on chat completions.
+    // Resolve the gateway's client-facing API keys before sharing config with
+    // handlers. `*_key_file` is preferred so deployments can avoid inline TOML
+    // secrets while still enforcing Authorization.
     config.api_key = resolve_api_key(config.api_key.as_deref(), config.api_key_file.as_deref())?;
+    config.secret_control_api_key = resolve_api_key(
+        config.secret_control_api_key.as_deref(),
+        config.secret_control_api_key_file.as_deref(),
+    )?;
     resolve_proxy_agent_api_keys(&mut config)?;
 
     // Resolve the default backend API key (file takes precedence over inline).

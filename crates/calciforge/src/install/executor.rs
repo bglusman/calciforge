@@ -294,7 +294,16 @@ async fn install_claw(
     // ── Step 3: Agent helper install ─────────────────────────────────────────
     if claw.needs_ssh_config() {
         let step = run_agent_helper_install(claw, args, deps);
+        let failed = step.outcome.is_failure();
         steps.push(step);
+        if failed {
+            return ClawInstallResult {
+                name: claw.name.clone(),
+                success: false,
+                steps,
+                rollback_status: Some(RollbackStatus::NotApplicable),
+            };
+        }
     } else {
         steps.push(StepResult {
             step: InstallStep::AgentHelperInstall,

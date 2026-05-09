@@ -607,22 +607,22 @@ async fn post_bulk_submit(
                     results.push(BulkLineResult::AlreadyExists { key });
                     continue;
                 }
+                if allowed_destinations_submitted
+                    && let Err(error) = secrets_client::metadata::set_allowed_destinations(
+                        &key,
+                        &allowed_destinations,
+                    )
+                {
+                    results.push(BulkLineResult::StoreFailed {
+                        key,
+                        error: format!(
+                            "destination policy was not stored; refusing to write secret value: {error}"
+                        ),
+                    });
+                    continue;
+                }
                 match state.fnox.set(&key, &value).await {
                     Ok(()) => {
-                        if allowed_destinations_submitted
-                            && let Err(error) = secrets_client::metadata::set_allowed_destinations(
-                                &key,
-                                &allowed_destinations,
-                            )
-                        {
-                            results.push(BulkLineResult::StoreFailed {
-                                key,
-                                error: format!(
-                                    "value was written, but destination policy was not stored: {error}"
-                                ),
-                            });
-                            continue;
-                        }
                         let preview = state
                             .config
                             .preview_chars
@@ -920,24 +920,23 @@ async fn post_submit(
         }
     }
 
+    if allowed_destinations_submitted
+        && let Err(error) =
+            secrets_client::metadata::set_allowed_destinations(&req.name, &allowed_destinations)
+    {
+        release_request(&state.requests, &token).await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(format!(
+                "Destination policy was not stored, so the secret value was not written: {}",
+                html_escape(&error.to_string())
+            )),
+        )
+            .into_response();
+    }
+
     match state.fnox.set(&req.name, &form.value).await {
         Ok(()) => {
-            if allowed_destinations_submitted
-                && let Err(error) = secrets_client::metadata::set_allowed_destinations(
-                    &req.name,
-                    &allowed_destinations,
-                )
-            {
-                release_request(&state.requests, &token).await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Html(format!(
-                        "Secret value was stored, but failed to store destination policy: {}",
-                        html_escape(&error.to_string())
-                    )),
-                )
-                    .into_response();
-            }
             complete_request(&state.requests, &token).await;
             // Signal the spawning task that submission succeeded so the
             // CLI can exit immediately instead of sleeping until expiry.
@@ -1554,10 +1553,10 @@ mod tests {
 
     /// Given fnox rejects a submitted secret,
     /// when the form includes destination metadata,
-    /// then Calciforge must not create a sidecar policy for a value that was
-    /// never stored in the vault.
+    /// then Calciforge may leave harmless pre-written policy metadata behind,
+    /// but must not report success or signal submission.
     #[tokio::test]
-    async fn single_secret_post_does_not_write_metadata_when_value_store_fails() {
+    async fn single_secret_post_preserves_fail_closed_metadata_when_value_store_fails() {
         let _lock = ENV_MUTEX.lock().await;
         let dir = TempDir::new().unwrap();
         let metadata_path = dir.path().join("secret-metadata.json");
@@ -1590,10 +1589,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), 500);
-        assert!(
-            !metadata_path.exists(),
-            "metadata sidecar should not be created when fnox set fails"
-        );
+        let metadata = secrets_client::metadata::metadata_for_names(&["TEST_KEY".to_string()])
+            .expect("metadata should remain readable after failed fnox set");
+        assert_eq!(metadata[0].allowed_destinations, vec!["api.example.com"]);
+        // Metadata was written before the value so a policy-storage failure cannot
+        // fail open. The secret value itself still failed to store.
     }
 
     /// Given a secret already has destination metadata,
@@ -2372,7 +2372,7 @@ INVALID_NO_EQUALS
     }
 
     #[tokio::test]
-    async fn bulk_post_does_not_write_metadata_for_failed_value_store() {
+    async fn bulk_post_preserves_fail_closed_metadata_for_failed_value_store() {
         let _lock = ENV_MUTEX.lock().await;
         let dir = TempDir::new().unwrap();
         let metadata_path = dir.path().join("secret-metadata.json");
@@ -2411,10 +2411,11 @@ INVALID_NO_EQUALS
             body.contains("failed"),
             "body should report failed set: {body}"
         );
-        assert!(
-            !metadata_path.exists(),
-            "metadata sidecar should not be created when bulk fnox set fails"
-        );
+        let metadata = secrets_client::metadata::metadata_for_names(&["FIRST".to_string()])
+            .expect("metadata should remain readable after failed fnox set");
+        assert_eq!(metadata[0].allowed_destinations, vec!["api.example.com"]);
+        // Metadata was written before the value so a policy-storage failure cannot
+        // fail open. The secret value itself still failed to store.
 
         handle.shutdown();
     }

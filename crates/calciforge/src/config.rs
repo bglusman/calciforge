@@ -610,6 +610,17 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
 
+    /// API key for privileged secret-control endpoints.
+    ///
+    /// This intentionally does not reuse `proxy.api_key`: model gateway clients
+    /// should not automatically be able to list or overwrite operator secrets.
+    #[serde(default)]
+    pub secret_control_api_key: Option<String>,
+
+    /// Path to file containing the privileged secret-control API key.
+    #[serde(default)]
+    pub secret_control_api_key_file: Option<PathBuf>,
+
     /// Request timeout in seconds. Default: 300
     #[serde(default = "default_proxy_timeout")]
     pub timeout_seconds: u64,
@@ -872,6 +883,8 @@ impl Default for ProxyConfig {
             bind: default_proxy_bind(),
             api_key: None,
             api_key_file: None,
+            secret_control_api_key: None,
+            secret_control_api_key_file: None,
             timeout_seconds: default_proxy_timeout(),
             max_body_mb: default_proxy_max_body_mb(),
             agents: Vec::new(),

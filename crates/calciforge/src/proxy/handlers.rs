@@ -577,21 +577,20 @@ pub async fn secret_set(
         None => Vec::new(),
     };
 
+    if allowed_destinations_present
+        && let Err(err) =
+            secrets_client::metadata::set_allowed_destinations(name, &allowed_destinations)
+    {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "secret_metadata_unavailable",
+            &format!("destination policy was not stored; refusing to write secret value: {err}"),
+            None,
+        );
+    }
+
     match secrets_client::FnoxClient::new().set(name, value).await {
-        Ok(()) => {
-            if allowed_destinations_present
-                && let Err(err) =
-                    secrets_client::metadata::set_allowed_destinations(name, &allowed_destinations)
-            {
-                return api_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "secret_metadata_unavailable",
-                    &format!("secret value stored, but failed to store destination policy: {err}"),
-                    None,
-                );
-            }
-            (StatusCode::OK, Json(json!({ "stored": name }))).into_response()
-        }
+        Ok(()) => (StatusCode::OK, Json(json!({ "stored": name }))).into_response(),
         Err(err) => api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "secret_store_unavailable",
@@ -907,11 +906,11 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
 }
 
 fn require_control_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
-    let Some(expected_key) = config.api_key.as_deref().map(str::trim) else {
+    let Some(expected_key) = config.secret_control_api_key.as_deref().map(str::trim) else {
         return Some(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "control_api_auth_not_configured",
-            "Secret control API requires proxy.api_key or proxy.api_key_file",
+            "Secret control API requires proxy.secret_control_api_key or proxy.secret_control_api_key_file",
             None,
         ));
     };
@@ -919,12 +918,39 @@ fn require_control_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<
         return Some(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "control_api_auth_not_configured",
-            "Secret control API requires a non-empty proxy.api_key or proxy.api_key_file",
+            "Secret control API requires a non-empty proxy.secret_control_api_key or proxy.secret_control_api_key_file",
             None,
         ));
     }
 
-    require_api_key(config, headers)
+    let provided = bearer_token(headers);
+    if provided == Some(expected_key) {
+        None
+    } else {
+        Some(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid secret control API key",
+            None,
+        ))
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| {
+            let trimmed = s.trim();
+            let mut parts = trimmed.splitn(2, char::is_whitespace);
+            let scheme = parts.next()?;
+            let token = parts.next()?.trim();
+            if scheme.eq_ignore_ascii_case("Bearer") && !token.is_empty() {
+                Some(token)
+            } else {
+                None
+            }
+        })
 }
 
 #[cfg(test)]
@@ -1062,6 +1088,13 @@ mod tests {
     fn config_with_key(key: Option<&str>) -> ProxyConfig {
         ProxyConfig {
             api_key: key.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn config_with_secret_control_key(key: Option<&str>) -> ProxyConfig {
+        ProxyConfig {
+            secret_control_api_key: key.map(str::to_string),
             ..Default::default()
         }
     }
@@ -1248,11 +1281,11 @@ mod tests {
     fn require_control_api_key_fails_closed_without_configured_key() {
         let headers = HeaderMap::new();
 
-        let missing = require_control_api_key(&config_with_key(None), &headers)
+        let missing = require_control_api_key(&config_with_secret_control_key(None), &headers)
             .expect("control API must reject unconfigured auth");
         assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-        let empty = require_control_api_key(&config_with_key(Some("  ")), &headers)
+        let empty = require_control_api_key(&config_with_secret_control_key(Some("  ")), &headers)
             .expect("control API must reject empty auth");
         assert_eq!(empty.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -1262,7 +1295,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("authorization", HeaderValue::from_static("Bearer test-key"));
 
-        assert!(require_control_api_key(&config_with_key(Some("test-key")), &headers).is_none());
+        assert!(
+            require_control_api_key(&config_with_secret_control_key(Some("test-key")), &headers)
+                .is_none()
+        );
     }
 
     #[test]
