@@ -25,7 +25,7 @@ pub trait ContextStoreTrait: Send + Sync {
     /// Build a context preamble for a chat+agent pair and return the full
     /// message to send (preamble prepended if non-empty).
     async fn augment_message(&self, chat_id: &str, agent_id: &str, message: &str)
-        -> Result<String>;
+    -> Result<String>;
 
     /// Record a completed exchange and advance the agent's watermark.
     async fn push(

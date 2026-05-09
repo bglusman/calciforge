@@ -35,7 +35,7 @@
 //! ```
 
 use crate::sync::Arc;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracing::{debug, info, warn};
 use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
 use zeroclaw_channels::signal::SignalChannel as ZclSignalChannel;
@@ -741,8 +741,8 @@ mod tests {
     };
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use tokio::sync::mpsc;
     use tokio::sync::Notify;
+    use tokio::sync::mpsc;
 
     /// Test double for `zeroclawlabs::Channel`. Records every `send` call so
     /// tests can assert routing decisions without standing up a real

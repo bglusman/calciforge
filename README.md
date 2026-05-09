@@ -82,29 +82,19 @@ whose outbound proxy environment cannot be proven,
 validates configured scanner policy files and rule syntax, and can probe
 configured agent endpoints. Use `--no-network` for a purely local check.
 
-Channel-based secret input is intentionally being de-emphasized because
-chat transports can retain plaintext values. Prefer the paste UI
-(`!secret input NAME` / `!secret bulk` from chat, aliases of
-`!secure input` / `!secure bulk`, or
-`paste-server NAME` on the host) or direct `fnox` input for new secrets.
-Chat-started paste links are intended for browsers on the same local
-network unless you configure an authenticated reverse proxy/tunnel with
-`CALCIFORGE_PASTE_PUBLIC_BASE_URL`.
+Use `!secret input NAME` or `!secret bulk` to create short-lived paste
+links for new secrets. The form stores values in fnox and can attach
+destination allowlists so `{{secret:NAME}}` substitution only happens for
+approved hosts. Chat-started paste links are intended for browsers on the
+same local network unless you configure an authenticated reverse proxy or
+tunnel with `CALCIFORGE_PASTE_PUBLIC_BASE_URL`.
 
-Do not put proxy variables on the Calciforge daemon itself; that can route
-Calciforge's own provider and control-plane traffic through its security proxy.
-For model traffic, configure agents to use Calciforge's OpenAI-compatible
-model gateway as their model API base URL; this is the ingress that makes
-model aliases, alloys, cascades, dispatchers, provider routing, and model
-observability work. Separately, configure agent tool/web traffic to use
-`security-proxy` or a Calciforge fetch/tool integration when returned content
-must be scanned.
-Do not assume CLI agents can be wrapped by setting `HTTP_PROXY` or
-`HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and streaming clients
-may use CONNECT, WebSockets, or browser-backed auth flows that the current
-proxy cannot inspect and may break. Use OpenAI-compatible gateway routes,
-explicit fetch/tool integrations, audited recipes, or tested wrappers for
-traffic that must pass through `security-proxy`.
+Keep Calciforge's own service traffic separate from agent traffic. Point
+agents at Calciforge's OpenAI-compatible model gateway for model calls;
+that path provides model aliases, alloys, cascades, dispatchers, provider
+routing, and observability. Route agent tool/web traffic through
+`security-proxy` or a Calciforge fetch/tool integration when returned
+content needs scanning or `{{secret:NAME}}` substitution.
 
 For externally managed agent daemons that Calciforge does not launch, proxying
 has to be configured on that daemon or its service manager and validated

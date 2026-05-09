@@ -143,13 +143,12 @@ impl CodexCliAdapter {
                     .replace(SESSION_UUID_PLACEHOLDER, session.unwrap_or(""))
             })
             .collect();
-        if let Some(session) = session.filter(|session| !session.trim().is_empty()) {
-            if args.first().is_some_and(|arg| arg == "exec")
-                && !args.iter().any(|arg| arg == "resume")
-            {
-                args.insert(1, "resume".to_string());
-                args.insert(2, session.to_string());
-            }
+        if let Some(session) = session.filter(|session| !session.trim().is_empty())
+            && args.first().is_some_and(|arg| arg == "exec")
+            && !args.iter().any(|arg| arg == "resume")
+        {
+            args.insert(1, "resume".to_string());
+            args.insert(2, session.to_string());
         }
         let configured_output_path = Self::configured_output_path(&args)?;
 
@@ -157,11 +156,11 @@ impl CodexCliAdapter {
         let mut generated = Vec::new();
 
         let selected_model = model_override.or(self.model.as_deref());
-        if let Some(model) = selected_model {
-            if !Self::has_arg(&args, "--model", "-m") {
-                generated.push("--model".to_string());
-                generated.push(model.to_string());
-            }
+        if let Some(model) = selected_model
+            && !Self::has_arg(&args, "--model", "-m")
+        {
+            generated.push("--model".to_string());
+            generated.push(model.to_string());
         }
 
         if configured_output_path.is_none() {

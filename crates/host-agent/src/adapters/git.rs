@@ -27,10 +27,10 @@ use std::sync::OnceLock;
 use tokio::process::Command;
 use tracing::info;
 
+use crate::AppState;
 use crate::adapters::{Adapter, ExecutionResult, HostOp, PolicyDecision};
 use crate::auth::ClientIdentity;
 use crate::error::AppError;
-use crate::AppState;
 
 const GIT_BIN: &str = "/usr/bin/git";
 
@@ -133,19 +133,19 @@ impl Adapter for GitAdapter {
 
         // Check repo allowlist from config
         let config = state.config.get().await;
-        if let Some(ref git_cfg) = config.git {
-            if !git_cfg.allowed_repos.is_empty() {
-                let allowed = git_cfg
-                    .allowed_repos
-                    .iter()
-                    .any(|allowed| repo_path.starts_with(allowed.as_str()));
-                if !allowed {
-                    return Ok(PolicyDecision::Deny {
-                        reason: format!(
-                            "GitAdapter: repo path '{repo_path}' not in allowed_repos list"
-                        ),
-                    });
-                }
+        if let Some(ref git_cfg) = config.git
+            && !git_cfg.allowed_repos.is_empty()
+        {
+            let allowed = git_cfg
+                .allowed_repos
+                .iter()
+                .any(|allowed| repo_path.starts_with(allowed.as_str()));
+            if !allowed {
+                return Ok(PolicyDecision::Deny {
+                    reason: format!(
+                        "GitAdapter: repo path '{repo_path}' not in allowed_repos list"
+                    ),
+                });
             }
         }
 
@@ -161,12 +161,12 @@ impl Adapter for GitAdapter {
 
         // Policy check
         let operation_key = format!("git-{command}");
-        if let Some(rule) = config.find_rule(&operation_key) {
-            if rule.approval_required || rule.always_ask {
-                return Ok(PolicyDecision::RequiresApproval {
-                    message: format!("git-{command}/{repo_path} requires approval per policy"),
-                });
-            }
+        if let Some(rule) = config.find_rule(&operation_key)
+            && (rule.approval_required || rule.always_ask)
+        {
+            return Ok(PolicyDecision::RequiresApproval {
+                message: format!("git-{command}/{repo_path} requires approval per policy"),
+            });
         }
 
         Ok(PolicyDecision::Allow)

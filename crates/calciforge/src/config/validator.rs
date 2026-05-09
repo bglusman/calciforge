@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
-use crate::agent_kinds::{parse_agent_kind, AgentKind};
+use crate::agent_kinds::{AgentKind, parse_agent_kind};
 use crate::config::{CalciforgeConfig, CredentialOwner, GatewayRetryConfig};
 use crate::model_names::{
     configured_agent_selectors, configured_first_class_model_ids, resolve_model_alias_chain,
@@ -328,9 +328,9 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
         if let Some((previous_owner, previous_kind)) = agent_selectors.insert(
             selector.id.as_str(),
             (&selector.owner_agent_id, selector.kind),
-        ) {
-            if previous_owner != &selector.owner_agent_id {
-                result.add_error(format!(
+        ) && previous_owner != &selector.owner_agent_id
+        {
+            result.add_error(format!(
                     "Ambiguous agent selector '{}': configured as a {} for agent '{}' and a {} for agent '{}'. Agent IDs and aliases must resolve to one chat target.",
                     selector.id,
                     previous_kind.label(),
@@ -338,7 +338,6 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
                     selector.kind.label(),
                     selector.owner_agent_id
                 ));
-            }
         }
     }
 

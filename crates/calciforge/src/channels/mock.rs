@@ -19,10 +19,10 @@
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::State,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -31,7 +31,7 @@ use tracing::info;
 use crate::sync::Arc;
 
 use crate::{
-    auth::{find_agent, resolve_channel_sender, ResolvedIdentity},
+    auth::{ResolvedIdentity, find_agent, resolve_channel_sender},
     commands::CommandHandler,
     config::CalciforgeConfig,
     context::ContextStore,

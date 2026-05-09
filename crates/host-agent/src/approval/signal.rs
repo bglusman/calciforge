@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 
-use crate::approval::token::{hash_token, TokenAuditInfo};
+use crate::approval::token::{TokenAuditInfo, hash_token};
 
 /// Signal webhook payload for approval confirmations
 #[derive(Debug, Clone, Deserialize)]

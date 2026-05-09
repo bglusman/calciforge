@@ -281,12 +281,10 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
     let agent_token_no_env = || resolve_agent_token(agent, false);
 
     match agent.kind.as_str() {
-        "openclaw-http" => {
-            Err(format!(
-                "agent '{}': kind='openclaw-http' is no longer supported; use kind='openclaw-channel' with the Calciforge OpenClaw channel plugin",
-                agent.id
-            ))
-        }
+        "openclaw-http" => Err(format!(
+            "agent '{}': kind='openclaw-http' is no longer supported; use kind='openclaw-channel' with the Calciforge OpenClaw channel plugin",
+            agent.id
+        )),
         "openclaw-channel" => {
             let token = agent_token()?;
             let reply_auth_token = resolve_optional_agent_token_file(
@@ -331,12 +329,10 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
                 agent.timeout_ms,
             )))
         }
-        "openclaw-native" => {
-            Err(format!(
-                "agent '{}': kind='openclaw-native' is not a supported chat adapter; /hooks/agent is async automation. Use kind='openclaw-channel'",
-                agent.id
-            ))
-        }
+        "openclaw-native" => Err(format!(
+            "agent '{}': kind='openclaw-native' is not a supported chat adapter; /hooks/agent is async automation. Use kind='openclaw-channel'",
+            agent.id
+        )),
         // `zeroclaw-native`: wraps `ZeroClawHttpAdapter` with an in-process conversation
         // history ring buffer.  Each request includes the prior (user, assistant)
         // turns as a preamble so the ZeroClaw agent has full conversational context.
@@ -408,10 +404,12 @@ pub fn build_adapter(agent: &AgentConfig) -> Result<Box<dyn AgentAdapter>, Strin
             )))
         }
         "exec" | "cli" => {
-            let command = agent
-                .command
-                .clone()
-                .ok_or_else(|| format!("agent '{}': kind='{}' requires command", agent.id, agent.kind))?;
+            let command = agent.command.clone().ok_or_else(|| {
+                format!(
+                    "agent '{}': kind='{}' requires command",
+                    agent.id, agent.kind
+                )
+            })?;
             Ok(Box::new(CliAdapter::with_model(
                 command,
                 agent.args.clone(),

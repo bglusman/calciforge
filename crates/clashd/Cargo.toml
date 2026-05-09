@@ -1,7 +1,7 @@
 [package]
 name = "clashd"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Policy sidecar for Calciforge-managed agents - evaluates tool calls using Starlark"
 
 [lib]

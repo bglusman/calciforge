@@ -7,7 +7,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tracing::{debug, info, warn};
 
 /// Handle to a running mlx_lm.server child process.

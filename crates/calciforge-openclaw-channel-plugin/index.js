@@ -15,17 +15,26 @@ async function getLegacyRegisterPluginHttpRoute() {
   return mod.registerPluginHttpRoute;
 }
 
-async function registerHttpRoute(api, route, log) {
-  const registerLegacyRoute = await getLegacyRegisterPluginHttpRoute();
-  const unregister = registerLegacyRoute({
-    ...route,
-    auth: "none",
-    pluginId: "calciforge-channel",
-    source: "calciforge-channel-plugin",
-    replaceExisting: true,
-    log: (msg) => log?.warn?.(msg),
+function registerHttpRoute(api, route, log) {
+  if (typeof api.registerHttpRoute === "function") {
+    const unregister = api.registerHttpRoute({
+      ...route,
+      auth: "plugin",
+    });
+    return { unregister, source: "plugin route API" };
+  }
+
+  return getLegacyRegisterPluginHttpRoute().then((registerLegacyRoute) => {
+    const unregister = registerLegacyRoute({
+      ...route,
+      auth: "plugin",
+      pluginId: "calciforge-channel",
+      source: "calciforge-channel-plugin",
+      replaceExisting: true,
+      log: (msg) => log?.warn?.(msg),
+    });
+    return { unregister, source: "legacy route registry" };
   });
-  return { unregister, source: "legacy route registry" };
 }
 
 let gatewayBoundRuntimePromise = null;
@@ -91,27 +100,33 @@ export default function register(api) {
   const runTimeoutMs = positiveInteger(pluginConfig.runTimeoutMs, 300000);
   const errorRecoveryMs = positiveInteger(pluginConfig.errorRecoveryMs, 120000);
 
-  if (authToken && replyWebhook && replyAuthToken) {
-    api.logger.info(
-      `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook}`,
+  api.logger.info(
+    `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook || "(missing)"}`,
+  );
+  if (!authToken || !replyWebhook || !replyAuthToken) {
+    api.logger.warn(
+      "[calciforge-channel] plugin config is incomplete; route will reject requests until authToken, replyWebhook, and replyAuthToken are configured",
     );
+  }
 
-    registerHttpRoute(api, {
-      path: "/calciforge/inbound",
-      match: "exact",
-      handler: async (req, res) =>
-        handleInboundRequest({
-          getRuntime: getGatewayBoundRuntime,
-          req,
-          res,
-          authToken,
-          replyWebhook,
-          replyAuthToken,
-          runTimeoutMs,
-          errorRecoveryMs,
-          log: api.logger,
-        }),
-    }, api.logger)
+  const registration = registerHttpRoute(api, {
+    path: "/calciforge/inbound",
+    match: "exact",
+    handler: async (req, res) =>
+      handleInboundRequest({
+        getRuntime: getGatewayBoundRuntime,
+        req,
+        res,
+        authToken,
+        replyWebhook,
+        replyAuthToken,
+        runTimeoutMs,
+        errorRecoveryMs,
+        log: api.logger,
+      }),
+  }, api.logger);
+  if (typeof registration?.then === "function") {
+    registration
       .then(({ source }) => {
         api.logger.info(
           `[calciforge-channel] registered POST /calciforge/inbound via ${source}`,
@@ -122,6 +137,11 @@ export default function register(api) {
           `[calciforge-channel] failed to register HTTP route: ${err.message}`,
         );
       });
+  } else {
+    const { source } = registration;
+    api.logger.info(
+      `[calciforge-channel] registered POST /calciforge/inbound via ${source}`,
+    );
   }
 }
 
@@ -892,6 +912,7 @@ function sleep(ms) {
 }
 
 export const testInternals = {
+  registerHttpRoute,
   isNewReply,
   isRecoverableReply,
   parseTimestampMillis,

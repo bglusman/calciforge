@@ -14,7 +14,7 @@ def chat():
     last_request = data
     
     # Check if tools were sent (this is what we want to verify)
-    has_tools = 'tools' in data
+    has_tools = bool(data.get('tools'))
     
     response = {
         'id': 'mock-' + str(hash(str(data))),

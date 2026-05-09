@@ -33,6 +33,7 @@ DIST_DIR="$ROOT/dist"
 STAGE="$DIST_DIR/calciforge-$VERSION-$TARGET"
 ARCHIVE="$DIST_DIR/calciforge-$VERSION-$TARGET.tar.gz"
 BIN_DIR="$ROOT/target/$TARGET/$PROFILE"
+RUNTIME_BINARIES_FILE="$ROOT/packaging/runtime-binaries.txt"
 
 fnox_release_asset_and_sha_for_target() {
     case "$1" in
@@ -84,9 +85,10 @@ cargo build --profile "$PROFILE" --target "$TARGET" \
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin"
 
-for bin in calciforge clashd security-proxy mcp-server paste-server calciforge-secrets; do
+while IFS= read -r bin; do
+    [[ -z "$bin" || "$bin" == \#* ]] && continue
     install -m 755 "$BIN_DIR/$bin" "$STAGE/bin/$bin"
-done
+done < "$RUNTIME_BINARIES_FILE"
 install_fnox_companion
 
 install -m 644 "$ROOT/LICENSE" "$STAGE/LICENSE"

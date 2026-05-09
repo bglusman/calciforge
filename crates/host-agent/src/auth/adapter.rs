@@ -90,12 +90,11 @@ mod tests {
             if self.auto_approve.contains(&operation.to_string()) {
                 return false;
             }
-            if let Some(pattern) = self.pattern_rules.get(operation) {
-                if let Ok(re) = regex::Regex::new(pattern) {
-                    if re.is_match(target) {
-                        return true;
-                    }
-                }
+            if let Some(pattern) = self.pattern_rules.get(operation)
+                && let Ok(re) = regex::Regex::new(pattern)
+                && re.is_match(target)
+            {
+                return true;
             }
             true
         }

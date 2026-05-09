@@ -28,7 +28,9 @@
 //! The result (rollback ok / rollback also failed) is recorded in
 //! [`ClawInstallResult`].
 
-use anyhow::{bail, Context, Result};
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
 use tracing::{error, info, warn};
 use url::Url;
 
@@ -36,16 +38,16 @@ use crate::sync::Arc;
 
 use super::{
     cli::InstallArgs,
-    health::{health_check_claw, HealthChecker, HttpHealthChecker, MockHealthChecker},
+    health::{HealthChecker, HttpHealthChecker, MockHealthChecker, health_check_claw},
     json5::parse_json5_relaxed,
     model::{
-        backup_filename, check_version_compatibility, ClawKind, ClawTarget, InstallTarget,
-        VersionCompatibility,
+        ClawKind, ClawTarget, InstallTarget, VersionCompatibility, backup_filename,
+        check_version_compatibility,
     },
     ssh::{
-        detect_openclaw_version, detect_zeroclaw_version, ensure_openclaw_config_file,
-        remote_path_shell, shell_quote, test_agent_target_connectivity, test_remote_config_access,
-        MockSshClient, RealSshClient, SshClient,
+        MockSshClient, RealSshClient, SshClient, detect_openclaw_version, detect_zeroclaw_version,
+        ensure_openclaw_config_file, remote_path_shell, shell_quote,
+        test_agent_target_connectivity, test_remote_config_access,
     },
 };
 
@@ -53,6 +55,7 @@ const DEFAULT_AGENT_NO_PROXY: &str = "localhost,127.0.0.1,::1";
 const OPENCLAW_CHANNEL_PLUGIN_ID: &str = "calciforge-channel";
 const OPENCLAW_POLICY_PLUGIN_ID: &str = "calciforge-policy";
 const OPENCLAW_CHANNEL_PLUGIN_DIR: &str = "~/.openclaw/extensions/calciforge-channel";
+const LEGACY_OPENCLAW_CHANNEL_PLUGIN_DIR: &str = "~/.openclaw/plugins/calciforge-channel";
 const OPENCLAW_CHANNEL_PLUGIN_MANIFEST: &str =
     include_str!("../../../calciforge-openclaw-channel-plugin/openclaw.plugin.json");
 const OPENCLAW_CHANNEL_PLUGIN_INDEX: &str =
@@ -91,6 +94,7 @@ pub struct StepResult {
 pub enum InstallStep {
     SshConnectivity,
     RemoteConfigAccess,
+    AgentHelperInstall,
     HealthCheckBaseline,
     Backup,
     VersionDetection,
@@ -105,6 +109,7 @@ impl std::fmt::Display for InstallStep {
         match self {
             InstallStep::SshConnectivity => write!(f, "SSH connectivity"),
             InstallStep::RemoteConfigAccess => write!(f, "remote config access"),
+            InstallStep::AgentHelperInstall => write!(f, "agent helper install"),
             InstallStep::HealthCheckBaseline => write!(f, "baseline health check"),
             InstallStep::Backup => write!(f, "config backup"),
             InstallStep::VersionDetection => write!(f, "version detection"),
@@ -179,6 +184,7 @@ impl InstallSummary {
 pub struct ExecutorDeps {
     pub ssh: Arc<dyn SshClient>,
     pub health: Arc<dyn HealthChecker>,
+    pub agent_helper_binary: Option<PathBuf>,
 }
 
 impl ExecutorDeps {
@@ -186,6 +192,7 @@ impl ExecutorDeps {
         Self {
             ssh: Arc::new(RealSshClient),
             health: Arc::new(HttpHealthChecker::new()),
+            agent_helper_binary: find_local_calciforge_secrets(),
         }
     }
 
@@ -193,6 +200,7 @@ impl ExecutorDeps {
         Self {
             ssh: Arc::new(ssh),
             health: Arc::new(health),
+            agent_helper_binary: Some(PathBuf::from("/tmp/calciforge-secrets-test")),
         }
     }
 }
@@ -283,7 +291,29 @@ async fn install_claw(
         });
     }
 
-    // ── Step 3: Baseline health check ────────────────────────────────────────
+    // ── Step 3: Agent helper install ─────────────────────────────────────────
+    if claw.needs_ssh_config() {
+        let step = run_agent_helper_install(claw, args, deps);
+        let failed = step.outcome.is_failure();
+        steps.push(step);
+        if failed {
+            return ClawInstallResult {
+                name: claw.name.clone(),
+                success: false,
+                steps,
+                rollback_status: Some(RollbackStatus::NotApplicable),
+            };
+        }
+    } else {
+        steps.push(StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Skipped {
+                _reason: "no managed agent host for this adapter kind".into(),
+            },
+        });
+    }
+
+    // ── Step 4: Baseline health check ────────────────────────────────────────
     let health_step = run_health_check(claw, deps, InstallStep::HealthCheckBaseline).await;
     let health_failed = health_step.outcome.is_failure();
     if health_failed && matches!(claw.adapter, ClawKind::OpenClawChannel) {
@@ -309,7 +339,7 @@ async fn install_claw(
         };
     }
 
-    // ── Step 4: Backup ───────────────────────────────────────────────────────
+    // ── Step 5: Backup ───────────────────────────────────────────────────────
     if claw.needs_ssh_config() {
         let (backup_step, bak_path) = run_backup(claw, args, deps);
         let failed = backup_step.outcome.is_failure();
@@ -332,7 +362,7 @@ async fn install_claw(
         });
     }
 
-    // ── Step 5: Version detection ────────────────────────────────────────────
+    // ── Step 6: Version detection ────────────────────────────────────────────
     let detected_version = run_version_detection(claw, deps);
     let version_str = detected_version
         .clone()
@@ -344,7 +374,7 @@ async fn install_claw(
         },
     });
 
-    // ── Step 6: Compatibility check ──────────────────────────────────────────
+    // ── Step 7: Compatibility check ──────────────────────────────────────────
     let compat = check_version_compatibility(&claw.adapter, &version_str);
     let compat_step = StepResult {
         step: InstallStep::CompatibilityCheck,
@@ -374,14 +404,14 @@ async fn install_claw(
         };
     }
 
-    // ── Step 7: Proposed changes ─────────────────────────────────────────────
+    // ── Step 8: Proposed changes ─────────────────────────────────────────────
     let proposed = describe_proposed_changes(claw);
     steps.push(StepResult {
         step: InstallStep::ProposedChanges,
         outcome: StepOutcome::Ok { _detail: proposed },
     });
 
-    // ── Step 8: Apply ────────────────────────────────────────────────────────
+    // ── Step 9: Apply ────────────────────────────────────────────────────────
     let apply_step = run_apply(claw, args, deps, backup_path.as_deref());
     let apply_failed = apply_step.outcome.is_failure();
     steps.push(apply_step);
@@ -397,7 +427,7 @@ async fn install_claw(
         };
     }
 
-    // ── Step 9: Post-apply health check ──────────────────────────────────────
+    // ── Step 10: Post-apply health check ─────────────────────────────────────
     let post_health = run_health_check(claw, deps, InstallStep::HealthCheckPostApply).await;
     let post_failed = post_health.outcome.is_failure();
     steps.push(post_health);
@@ -452,17 +482,16 @@ fn run_ssh_connectivity(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
 fn run_remote_config_access(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResult {
     let key = claw.ssh_key.as_deref();
     let config_path = remote_config_path(claw);
-    if matches!(claw.adapter, ClawKind::OpenClawChannel) {
-        if let Err(e) =
+    if matches!(claw.adapter, ClawKind::OpenClawChannel)
+        && let Err(e) =
             ensure_openclaw_config_file(deps.ssh.as_ref(), &claw.host, key, &config_path)
-        {
-            return StepResult {
-                step: InstallStep::RemoteConfigAccess,
-                outcome: StepOutcome::Failed {
-                    error: e.to_string(),
-                },
-            };
-        }
+    {
+        return StepResult {
+            step: InstallStep::RemoteConfigAccess,
+            outcome: StepOutcome::Failed {
+                error: e.to_string(),
+            },
+        };
     }
     match test_remote_config_access(deps.ssh.as_ref(), &claw.host, key, &config_path) {
         Ok(()) => StepResult {
@@ -484,6 +513,283 @@ fn run_remote_config_access(claw: &ClawTarget, deps: &ExecutorDeps) -> StepResul
             }
         }
     }
+}
+
+fn run_agent_helper_install(
+    claw: &ClawTarget,
+    args: &InstallArgs,
+    deps: &ExecutorDeps,
+) -> StepResult {
+    let wrapper_path = "~/.local/bin/calciforge-secrets";
+    let helper_bin = "~/.local/libexec/calciforge/calciforge-secrets-bin";
+    if args.dry_run {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::DryRun {
+                _description: format!(
+                    "would install central-store calciforge-secrets helper wrapper to {} on {}",
+                    wrapper_path, claw.host
+                ),
+            },
+        };
+    }
+
+    let Some(base_url) = args
+        .agent_helper_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Warning {
+                _detail: "central calciforge-secrets helper was not installed; pass --agent-helper-base-url so managed agents use the single Calciforge-owned secret store instead of local fnox".into(),
+            },
+        };
+    };
+
+    if Url::parse(base_url).is_err() || base_url.contains(['\n', '\r']) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper base URL must be a valid single-line URL".into(),
+            },
+        };
+    }
+
+    if args
+        .agent_helper_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper API key is required and must match proxy.secret_control_api_key; proxy.api_key is not accepted for secret-control endpoints".into(),
+            },
+        };
+    }
+
+    let Some(local_bin) = deps.agent_helper_binary.as_deref() else {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Warning {
+                _detail: "local calciforge-secrets binary not found; build it or use the shell installer so managed agents can discover Calciforge secrets by CLI".into(),
+            },
+        };
+    };
+
+    let key = claw.ssh_key.as_deref();
+    let mkdir = "mkdir -p \"$HOME/.local/bin\" \"$HOME/.local/libexec/calciforge\"";
+    match deps.ssh.run(&claw.host, key, mkdir) {
+        Ok(out) if out.success => {}
+        Ok(out) => {
+            return StepResult {
+                step: InstallStep::AgentHelperInstall,
+                outcome: StepOutcome::Failed {
+                    error: format!(
+                        "failed to create ~/.local/bin on {}: {}",
+                        claw.host,
+                        out.stderr.trim()
+                    ),
+                },
+            };
+        }
+        Err(err) => {
+            return StepResult {
+                step: InstallStep::AgentHelperInstall,
+                outcome: StepOutcome::Failed {
+                    error: format!("failed to create ~/.local/bin on {}: {}", claw.host, err),
+                },
+            };
+        }
+    }
+
+    if let Err(err) = deps.ssh.copy_file(&claw.host, key, local_bin, helper_bin) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: format!(
+                    "failed to copy calciforge-secrets to {}: {}",
+                    claw.host, err
+                ),
+            },
+        };
+    }
+
+    let wrapper =
+        render_central_secret_helper_wrapper(base_url, args.agent_helper_api_key.as_deref());
+    if let Err(err) = deps.ssh.write_file(&claw.host, key, wrapper_path, &wrapper) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: format!(
+                    "failed to write calciforge-secrets wrapper on {}: {}",
+                    claw.host, err
+                ),
+            },
+        };
+    }
+
+    let chmod_result = deps
+        .ssh
+        .run(&claw.host, key, "chmod 0700 \"$HOME/.local/bin/calciforge-secrets\" \"$HOME/.local/libexec/calciforge/calciforge-secrets-bin\"");
+
+    match chmod_result {
+        Ok(out) if out.success => {}
+        Ok(out) => {
+            return StepResult {
+                step: InstallStep::AgentHelperInstall,
+                outcome: StepOutcome::Failed {
+                    error: format!(
+                        "failed to mark calciforge-secrets executable on {}: {}",
+                        claw.host,
+                        out.stderr.trim()
+                    ),
+                },
+            };
+        }
+        Err(err) => {
+            return StepResult {
+                step: InstallStep::AgentHelperInstall,
+                outcome: StepOutcome::Failed {
+                    error: format!(
+                        "failed to mark calciforge-secrets executable on {}: {}",
+                        claw.host, err
+                    ),
+                },
+            };
+        }
+    };
+
+    let smoke = deps.ssh.run(
+        &claw.host,
+        key,
+        "\"$HOME/.local/bin/calciforge-secrets\" list >/dev/null",
+    );
+    match smoke {
+        Ok(out) if out.success => {}
+        Ok(out) => {
+            return StepResult {
+                step: InstallStep::AgentHelperInstall,
+                outcome: StepOutcome::Failed {
+                    error: format!(
+                        "central calciforge-secrets smoke test failed on {}: {}",
+                        claw.host,
+                        out.stderr.trim()
+                    ),
+                },
+            };
+        }
+        Err(err) => {
+            return StepResult {
+                step: InstallStep::AgentHelperInstall,
+                outcome: StepOutcome::Failed {
+                    error: format!(
+                        "central calciforge-secrets smoke test failed on {}: {}",
+                        claw.host, err
+                    ),
+                },
+            };
+        }
+    }
+
+    let path_probe = deps.ssh.run(
+        &claw.host,
+        key,
+        "case \":$PATH:\" in *:\"$HOME/.local/bin\":*) echo PATH_OK;; *) echo PATH_MISSING;; esac",
+    );
+    match path_probe {
+        Ok(out) if out.success && out.stdout.contains("PATH_OK") => StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Ok {
+                _detail: format!(
+                    "installed central-store calciforge-secrets wrapper to {} on {}; smoke test passed and ~/.local/bin is visible in PATH for remote shell commands",
+                    wrapper_path, claw.host
+                ),
+            },
+        },
+        Ok(out) if out.success => StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Warning {
+                _detail: format!(
+                    "installed central-store calciforge-secrets wrapper to {} on {}, but ~/.local/bin was not visible in PATH for remote shell commands; ensure the agent service PATH includes it or use the absolute path",
+                    wrapper_path, claw.host
+                ),
+            },
+        },
+        Ok(out) => StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Warning {
+                _detail: format!(
+                    "installed central-store calciforge-secrets wrapper to {} on {}, but PATH verification failed: {}",
+                    wrapper_path,
+                    claw.host,
+                    out.stderr.trim()
+                ),
+            },
+        },
+        Err(err) => StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Warning {
+                _detail: format!(
+                    "installed central-store calciforge-secrets wrapper to {} on {}, but PATH verification failed: {}",
+                    wrapper_path, claw.host, err
+                ),
+            },
+        },
+    }
+}
+
+fn render_central_secret_helper_wrapper(base_url: &str, api_key: Option<&str>) -> String {
+    let token_line = api_key
+        .map(|token| {
+            format!(
+                "export CALCIFORGE_SECRETS_TOKEN={}\n",
+                shell_quote(token.trim())
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "#!/bin/sh\n\
+         # Managed by calciforge install. This wrapper talks to the central Calciforge secret store.\n\
+         export CALCIFORGE_SECRETS_BASE_URL={}\n\
+         {}\
+         exec \"$HOME/.local/libexec/calciforge/calciforge-secrets-bin\" \"$@\"\n",
+        shell_quote(base_url.trim().trim_end_matches('/')),
+        token_line
+    )
+}
+
+fn find_local_calciforge_secrets() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CALCIFORGE_SECRETS_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let current_exe = std::env::current_exe().ok()?;
+    let exe_dir = current_exe.parent()?;
+    let sibling = exe_dir.join("calciforge-secrets");
+    if sibling.is_file() {
+        return Some(sibling);
+    }
+
+    let debug_sibling = exe_dir
+        .parent()
+        .map(|target_dir| target_dir.join("debug").join("calciforge-secrets"));
+    if let Some(path) = debug_sibling.filter(|path| path.is_file()) {
+        return Some(path);
+    }
+
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|path| path.join("calciforge-secrets"))
+            .find(|path| path.is_file())
+    })
 }
 
 async fn run_health_check(claw: &ClawTarget, deps: &ExecutorDeps, step: InstallStep) -> StepResult {
@@ -905,8 +1211,9 @@ fn apply_remote_config(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String>
 fn install_remote_openclaw_channel_plugin(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<()> {
     let key = claw.ssh_key.as_deref();
     let mkdir = format!(
-        "mkdir -p {}",
-        remote_path_shell(OPENCLAW_CHANNEL_PLUGIN_DIR)
+        "rm -rf {} && mkdir -p {}",
+        remote_path_shell(LEGACY_OPENCLAW_CHANNEL_PLUGIN_DIR),
+        remote_path_shell(OPENCLAW_CHANNEL_PLUGIN_DIR),
     );
     let mkdir_out = deps.ssh.run(&claw.host, key, &mkdir)?;
     if !mkdir_out.success {
@@ -1171,9 +1478,9 @@ fn run_linux_hardening_pass(
     service_mode: &'static str,
 ) -> Result<String> {
     use super::linux_hardening::{
-        check_block_response, classify_service, detect_binary_path, extract_exec_start,
-        inject_proxy_server, render_exec_start_override, DropInShape, PackageManager,
-        VerifyOutcome, BLOCK_PAGE_MARKER, DEFAULT_VERIFY_URL, SHARED_HOST_BANNER,
+        BLOCK_PAGE_MARKER, DEFAULT_VERIFY_URL, DropInShape, PackageManager, SHARED_HOST_BANNER,
+        VerifyOutcome, check_block_response, classify_service, detect_binary_path,
+        extract_exec_start, inject_proxy_server, render_exec_start_override,
     };
 
     let key = claw.ssh_key.as_deref();
@@ -1548,6 +1855,7 @@ fn configure_launchd_openclaw_proxy_env(
             mkdir.stderr.trim()
         );
     }
+    let openclaw_bin = detect_openclaw_binary(claw, deps)?;
 
     let wrapper = format!(
         "#!/bin/sh\n\
@@ -1561,12 +1869,13 @@ fn configure_launchd_openclaw_proxy_env(
          export NODE_EXTRA_CA_CERTS=\"${{CALCIFORGE_MITM_CA_CERT:-$HOME/.config/calciforge/secrets/mitm-ca.pem}}\"\n\
          export CI=true\n\
          export PNPM_CONFIG_CONFIRM_MODULES_PURGE=false\n\
-         exec openclaw \"$@\"\n",
+         exec {} \"$@\"\n",
         shell_export_value(proxy_endpoint),
         shell_export_value(proxy_endpoint),
         shell_export_value(proxy_endpoint),
         shell_export_value(proxy_endpoint),
-        shell_export_value(no_proxy)
+        shell_export_value(no_proxy),
+        shell_quote(&openclaw_bin)
     );
     deps.ssh
         .write_file(&claw.host, key, wrapper_path, &wrapper)
@@ -1735,13 +2044,15 @@ fn install_or_restart_launchd_openclaw_service(
 ) -> Result<()> {
     let key = claw.ssh_key.as_deref();
     let port = endpoint_port(&claw.endpoint).unwrap_or(18789);
-    let mut install = format!("openclaw gateway install --force --port {port}");
+    let openclaw_bin = detect_openclaw_binary(claw, deps)?;
+    let openclaw_cmd = shell_quote(&openclaw_bin);
+    let mut install = format!("{openclaw_cmd} gateway install --force --port {port}");
     if let Some(wrapper_path) = wrapper_path {
         install.push_str(" --wrapper ");
         install.push_str(&remote_path_shell(wrapper_path));
     }
     let command = format!(
-        "set -eu; command -v openclaw >/dev/null 2>&1; {install}; openclaw gateway restart || openclaw gateway start"
+        "set -eu; {install}; {openclaw_cmd} gateway restart || {openclaw_cmd} gateway start"
     );
     let out = deps.ssh.run(&claw.host, key, &command)?;
     if !out.success {
@@ -1752,6 +2063,31 @@ fn install_or_restart_launchd_openclaw_service(
         );
     }
     Ok(())
+}
+
+fn detect_openclaw_binary(claw: &ClawTarget, deps: &ExecutorDeps) -> Result<String> {
+    let key = claw.ssh_key.as_deref();
+    let out = deps.ssh.run(
+        &claw.host,
+        key,
+        "openclaw_bin=\"$(command -v openclaw 2>/dev/null || true)\"; \
+         if [ -n \"$openclaw_bin\" ]; then printf '%s\\n' \"$openclaw_bin\"; else exit 127; fi",
+    )?;
+    if !out.success {
+        bail!(
+            "could not find OpenClaw binary on {} for launchd service wrapper: {}",
+            claw.host,
+            out.stderr.trim()
+        );
+    }
+    let path = out.stdout.lines().next().unwrap_or("").trim();
+    if path.is_empty() {
+        bail!(
+            "could not find OpenClaw binary on {} for launchd service wrapper",
+            claw.host
+        );
+    }
+    Ok(path.to_string())
 }
 
 fn endpoint_port(endpoint: &str) -> Option<u16> {
@@ -2093,6 +2429,22 @@ mod tests {
         ssh.push_success(""); // reload/restart service
     }
 
+    fn push_agent_helper_install(ssh: &MockSshClient) {
+        ssh.push_success(""); // mkdir ~/.local/bin and libexec dir
+        ssh.push_success(""); // write wrapper
+        ssh.push_success(""); // chmod wrapper + helper binary
+        ssh.push_success(""); // central API smoke via wrapper
+        ssh.push_success("PATH_OK\n"); // PATH probe sees ~/.local/bin
+    }
+
+    fn install_args_with_central_secret_helper() -> InstallArgs {
+        InstallArgs {
+            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_api_key: Some("secret-helper-token".into()),
+            ..Default::default()
+        }
+    }
+
     fn make_openclaw_claw(healthy: bool) -> (ClawTarget, MockSshClient, MockHealthChecker) {
         let claw = ClawTarget {
             name: "test-claw".into(),
@@ -2118,10 +2470,11 @@ mod tests {
         ssh.push_success("OK\n");
         // remote config permission preflight
         ssh.push_success("OK\n");
+        push_agent_helper_install(&ssh);
         // backup
         ssh.push_success(""); // cp
         ssh.push_success("EXISTS\n"); // verify
-                                      // version detection (jq)
+        // version detection (jq)
         ssh.push_success("2026.3.13\n");
         // apply: read config
         ssh.push_success(r#"{"version": "2026.3.13"}"#);
@@ -2174,11 +2527,12 @@ mod tests {
     #[tokio::test]
     async fn successful_openclaw_install() {
         let (claw, ssh, health) = make_openclaw_claw(true);
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
         let ssh = Arc::new(ssh);
         let deps = ExecutorDeps {
             ssh: ssh.clone(),
             health: Arc::new(health),
+            agent_helper_binary: Some(PathBuf::from("/tmp/calciforge-secrets-test")),
         };
 
         let result = install_claw(&claw, &args, &deps).await;
@@ -2186,6 +2540,13 @@ mod tests {
             result.success,
             "expected success, steps: {:?}",
             result.steps
+        );
+        assert!(
+            ssh.recorded_calls()
+                .iter()
+                .any(|call| call.command.contains("COPY")
+                    && call.command.contains("calciforge-secrets")),
+            "managed install should copy calciforge-secrets to the agent host"
         );
         // No rollback needed
         assert!(matches!(
@@ -2199,20 +2560,25 @@ mod tests {
         let args = InstallArgs {
             calciforge_host: Some("calciforge@ephemeral-runner.invalid".into()),
             calciforge_key: Some(PathBuf::from("/tmp/calciforge-ephemeral/id_ed25519")),
-            claw_specs: vec![concat!(
-                "name=matrix-e2e-openclaw,",
-                "adapter=openclaw-channel,",
-                "host=openclaw@ephemeral-runner.invalid,",
-                "key=/tmp/calciforge-ephemeral/openclaw_id_ed25519,",
-                "endpoint=http://127.0.0.1:18080,",
-                "auth_token=inbound-token,",
-                "reply_webhook=http://127.0.0.1:18797/hooks/reply,",
-                "reply_auth_token=reply-token"
-            )
-            .to_string()],
+            claw_specs: vec![
+                concat!(
+                    "name=matrix-e2e-openclaw,",
+                    "adapter=openclaw-channel,",
+                    "host=openclaw@ephemeral-runner.invalid,",
+                    "key=/tmp/calciforge-ephemeral/openclaw_id_ed25519,",
+                    "endpoint=http://127.0.0.1:18080,",
+                    "auth_token=inbound-token,",
+                    "reply_webhook=http://127.0.0.1:18797/hooks/reply,",
+                    "reply_auth_token=reply-token"
+                )
+                .to_string(),
+            ],
             dry_run: false,
             skip_backup: false,
             _yes: true,
+            agent_helper_base_url: Some("http://127.0.0.1:18080".into()),
+            agent_helper_api_key: Some("secret-helper-token".into()),
+            ..Default::default()
         };
         let target = parse_install_target(&args).expect("ephemeral install config should parse");
         assert_eq!(
@@ -2227,6 +2593,7 @@ mod tests {
         ssh.push_success("OK\n");
         ssh.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh.push_success("OK\n");
+        push_agent_helper_install(&ssh);
         ssh.push_success("");
         ssh.push_success("EXISTS\n");
         ssh.push_success("2026.3.13\n");
@@ -2253,6 +2620,7 @@ mod tests {
         let expected_steps = vec![
             &InstallStep::SshConnectivity,
             &InstallStep::RemoteConfigAccess,
+            &InstallStep::AgentHelperInstall,
             &InstallStep::HealthCheckBaseline,
             &InstallStep::Backup,
             &InstallStep::VersionDetection,
@@ -2281,7 +2649,10 @@ mod tests {
             index_of(&InstallStep::SshConnectivity) < index_of(&InstallStep::RemoteConfigAccess)
         );
         assert!(
-            index_of(&InstallStep::RemoteConfigAccess)
+            index_of(&InstallStep::RemoteConfigAccess) < index_of(&InstallStep::AgentHelperInstall)
+        );
+        assert!(
+            index_of(&InstallStep::AgentHelperInstall)
                 < index_of(&InstallStep::HealthCheckBaseline)
         );
         assert!(index_of(&InstallStep::HealthCheckBaseline) < index_of(&InstallStep::Backup));
@@ -2319,12 +2690,13 @@ mod tests {
         ssh.push_success("OK\n"); // connectivity
         ssh.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh.push_success("OK\n"); // remote config permission preflight
+        push_agent_helper_install(&ssh);
         ssh.push_success(""); // backup cp
         ssh.push_success("EXISTS\n"); // backup verify
         ssh.push_success("2026.3.13\n"); // version (jq)
         ssh.push_success(r#"{"version": "2026.3.13"}"#); // read config for apply
         ssh.push_success(""); // write config
-                              // read-back verify after write
+        // read-back verify after write
         ssh.push_success(r#"{"version": "2026.3.13", "hooks": {"enabled": true, "entries": {"bad-claw": {"enabled": true, "url": "http://host:18789", "token": "tok"}}}}"#);
         push_openclaw_channel_plugin_install(&ssh);
         push_openclaw_service_restart(&ssh);
@@ -2339,7 +2711,7 @@ mod tests {
             health.push_err("gateway down after change"); // post-apply health check retries
         }
 
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
@@ -2358,7 +2730,7 @@ mod tests {
         health.push_err("target is down");
         health.push_ok();
 
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
@@ -2402,7 +2774,7 @@ mod tests {
         ssh.push_failure("Connection refused");
 
         let health = MockHealthChecker::new();
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
@@ -2445,7 +2817,7 @@ mod tests {
         });
 
         let health = MockHealthChecker::new();
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
@@ -2469,7 +2841,7 @@ mod tests {
         ssh2.push_success("OK\n"); // connectivity
         ssh2.push_success("OK\n"); // OpenClaw clean-install config bootstrap
         ssh2.push_success("OK\n"); // remote config permission preflight
-                                   // version detection (jq) — this is a read
+        // version detection (jq) — this is a read
         ssh2.push_success("2026.3.13\n");
         // No backup write, no apply write.
         drop(ssh); // don't use the original
@@ -2497,7 +2869,7 @@ mod tests {
     #[tokio::test]
     async fn openai_compat_claw_skips_ssh_steps() {
         let (claw, ssh, health) = make_openai_compat_claw();
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
         let deps = ExecutorDeps::mock(ssh, health);
 
         let result = install_claw(&claw, &args, &deps).await;
@@ -2537,7 +2909,7 @@ mod tests {
             claws: vec![claw1, claw2],
         };
 
-        let args = InstallArgs::default();
+        let args = install_args_with_central_secret_helper();
 
         // We need a single SshClient and HealthChecker for the whole run.
         // Use the first claw's ssh/health; for testing we'll run per-claw manually.
@@ -2554,6 +2926,78 @@ mod tests {
         assert_eq!(summary.succeeded_count(), 2);
         assert_eq!(summary.failed_count(), 0);
         assert!(!summary.any_failed());
+    }
+
+    #[test]
+    fn central_secret_helper_wrapper_points_to_calciforge_api() {
+        let wrapper = render_central_secret_helper_wrapper(
+            "http://calciforge.local:8080/",
+            Some("secret-token"),
+        );
+        assert!(wrapper.contains("CALCIFORGE_SECRETS_BASE_URL='http://calciforge.local:8080'"));
+        assert!(wrapper.contains("CALCIFORGE_SECRETS_TOKEN='secret-token'"));
+        assert!(wrapper.contains("calciforge-secrets-bin"));
+        assert!(
+            !wrapper.contains("FNOX"),
+            "managed agent helper must use the central API, not local fnox"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_agent_without_central_secret_api_warns_instead_of_copying_local_fnox_helper() {
+        let (claw, ssh, health) = make_openclaw_claw(true);
+        let deps = ExecutorDeps::mock(ssh, health);
+
+        let result = install_claw(&claw, &InstallArgs::default(), &deps).await;
+        let helper_step = result
+            .steps
+            .iter()
+            .find(|step| step.step == InstallStep::AgentHelperInstall)
+            .expect("helper step should be present");
+        assert!(
+            matches!(helper_step.outcome, StepOutcome::Warning { .. }),
+            "missing central API URL should be a warning, got {:?}",
+            helper_step.outcome
+        );
+        assert!(
+            helper_step
+                .outcome
+                .summary()
+                .contains("single Calciforge-owned secret store"),
+            "warning should explain central-store contract: {:?}",
+            helper_step.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_agent_helper_requires_secret_control_api_key() {
+        let (claw, ssh, health) = make_openclaw_claw(true);
+        let deps = ExecutorDeps::mock(ssh, health);
+        let args = InstallArgs {
+            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_api_key: None,
+            ..Default::default()
+        };
+
+        let result = install_claw(&claw, &args, &deps).await;
+        let helper_step = result
+            .steps
+            .iter()
+            .find(|step| step.step == InstallStep::AgentHelperInstall)
+            .expect("helper step should be present");
+        assert!(
+            matches!(helper_step.outcome, StepOutcome::Failed { .. }),
+            "missing secret-control token should fail managed helper install, got {:?}",
+            helper_step.outcome
+        );
+        assert!(
+            helper_step
+                .outcome
+                .summary()
+                .contains("proxy.secret_control_api_key"),
+            "failure should name the required privileged key: {:?}",
+            helper_step.outcome
+        );
     }
 
     // ── S1 tests: patch_openclaw_config and mock-SSH apply ───────────────────
@@ -2613,12 +3057,16 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         let allow = v["plugins"]["allow"].as_array().unwrap();
         assert!(allow.iter().any(|entry| entry.as_str() == Some("kimi")));
-        assert!(allow
-            .iter()
-            .any(|entry| entry.as_str() == Some("calciforge-channel")));
-        assert!(allow
-            .iter()
-            .any(|entry| entry.as_str() == Some("calciforge-policy")));
+        assert!(
+            allow
+                .iter()
+                .any(|entry| entry.as_str() == Some("calciforge-channel"))
+        );
+        assert!(
+            allow
+                .iter()
+                .any(|entry| entry.as_str() == Some("calciforge-policy"))
+        );
     }
 
     /// patch_openclaw_config preserves existing hooks fields without mutation.
@@ -2728,18 +3176,26 @@ mod tests {
         assert_eq!(v["proxy"]["enabled"], true);
         assert_eq!(v["proxy"]["proxyUrl"], "http://127.0.0.1:8888");
         let extra_args = v["browser"]["extraArgs"].as_array().unwrap();
-        assert!(extra_args
-            .iter()
-            .any(|arg| arg.as_str() == Some("--window-size=1280,900")));
-        assert!(extra_args
-            .iter()
-            .any(|arg| arg.as_str() == Some("--proxy-server=http://127.0.0.1:8888")));
-        assert!(!extra_args
-            .iter()
-            .any(|arg| arg.as_str() == Some("--no-proxy-server")));
-        assert!(!extra_args
-            .iter()
-            .any(|arg| arg.as_str() == Some("http://older-proxy.invalid:8888")));
+        assert!(
+            extra_args
+                .iter()
+                .any(|arg| arg.as_str() == Some("--window-size=1280,900"))
+        );
+        assert!(
+            extra_args
+                .iter()
+                .any(|arg| arg.as_str() == Some("--proxy-server=http://127.0.0.1:8888"))
+        );
+        assert!(
+            !extra_args
+                .iter()
+                .any(|arg| arg.as_str() == Some("--no-proxy-server"))
+        );
+        assert!(
+            !extra_args
+                .iter()
+                .any(|arg| arg.as_str() == Some("http://older-proxy.invalid:8888"))
+        );
         assert_eq!(
             extra_args
                 .iter()
@@ -2814,6 +3270,7 @@ mod tests {
         let deps = ExecutorDeps {
             ssh: ssh.clone(),
             health: Arc::new(health),
+            agent_helper_binary: Some(PathBuf::from("/tmp/calciforge-secrets-test")),
         };
 
         let result = apply_remote_config(&claw, &deps);
@@ -2881,6 +3338,7 @@ mod tests {
         let deps = ExecutorDeps {
             ssh: ssh.clone(),
             health: Arc::new(MockHealthChecker::new()),
+            agent_helper_binary: Some(PathBuf::from("/tmp/calciforge-secrets-test")),
         };
         let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
         assert!(detail.contains("proxy env"));
@@ -2922,8 +3380,11 @@ mod tests {
         assert!(decoded.contains(
             "Environment=\"NODE_EXTRA_CA_CERTS=%h/.config/calciforge/secrets/mitm-ca.pem\""
         ));
-        assert!(decoded
-            .contains("Environment=\"SSL_CERT_FILE=%h/.config/calciforge/secrets/mitm-ca.pem\""));
+        assert!(
+            decoded.contains(
+                "Environment=\"SSL_CERT_FILE=%h/.config/calciforge/secrets/mitm-ca.pem\""
+            )
+        );
         assert!(decoded.contains(
             "Environment=\"REQUESTS_CA_BUNDLE=%h/.config/calciforge/secrets/mitm-ca.pem\""
         ));
@@ -2962,11 +3423,13 @@ mod tests {
         ssh.push_success(r#"{"version":"2026.4.29","plugins":{"enabled":true,"entries":{"calciforge-channel":{"enabled":true,"config":{"authToken":"inbound-token","replyWebhook":"http://127.0.0.1:18797/hooks/reply","replyAuthToken":"reply-token"}}}}}"#);
         push_openclaw_channel_plugin_install(&ssh);
         ssh.push_success("launchd\n");
+        ssh.push_success("/opt/homebrew/bin/openclaw\n");
         ssh.push_success("");
 
         let deps = ExecutorDeps {
             ssh: ssh.clone(),
             health: Arc::new(MockHealthChecker::new()),
+            agent_helper_binary: Some(PathBuf::from("/tmp/calciforge-secrets-test")),
         };
         let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
         assert!(detail.contains("launchd service"));
@@ -2975,15 +3438,89 @@ mod tests {
         assert!(
             calls.iter().any(|c| c
                 .command
-                .contains("openclaw gateway install --force --port 18789")),
+                .contains("'/opt/homebrew/bin/openclaw' gateway install --force --port 18789")),
             "expected OpenClaw launchd install command, got {calls:?}"
         );
         assert!(
-            calls
-                .iter()
-                .any(|c| c.command.contains("openclaw gateway restart")
-                    || c.command.contains("openclaw gateway start")),
+            calls.iter().any(|c| c
+                .command
+                .contains("'/opt/homebrew/bin/openclaw' gateway restart")
+                || c.command
+                    .contains("'/opt/homebrew/bin/openclaw' gateway start")),
             "expected OpenClaw launchd restart/start command, got {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn launchd_openclaw_proxy_wrapper_uses_detected_binary_path() {
+        let claw = ClawTarget {
+            name: "calciforge".into(),
+            adapter: ClawKind::OpenClawChannel,
+            host: "local".into(),
+            ssh_key: None,
+            endpoint: "http://127.0.0.1:18789".into(),
+            policy_endpoint: None,
+            auth_token: Some("inbound-token".into()),
+            reply_webhook: Some("http://127.0.0.1:18797/hooks/reply".into()),
+            reply_auth_token: Some("reply-token".into()),
+            proxy_endpoint: Some("http://127.0.0.1:8888".into()),
+            no_proxy: Some("localhost,127.0.0.1,::1".into()),
+            linux_hardening: false,
+            linux_hardening_extras: Vec::new(),
+            linux_hardening_verify_url: None,
+        };
+
+        let ssh = Arc::new(MockSshClient::new());
+        ssh.push_success(r#"{"version": "2026.5.7"}"#);
+        ssh.push_success("");
+        ssh.push_success(r#"{"version":"2026.5.7","plugins":{"enabled":true,"entries":{"calciforge-channel":{"enabled":true,"config":{"authToken":"inbound-token","replyWebhook":"http://127.0.0.1:18797/hooks/reply","replyAuthToken":"reply-token"}}}}}"#);
+        push_openclaw_channel_plugin_install(&ssh);
+        ssh.push_success(""); // security-proxy /health from OpenClaw host
+        ssh.push_success("launchd\n");
+        ssh.push_success(""); // mkdir wrapper dir
+        ssh.push_success("/opt/homebrew/bin/openclaw\n"); // wrapper binary path
+        ssh.push_success(""); // write wrapper
+        ssh.push_success(""); // chmod wrapper
+        ssh.push_success("/opt/homebrew/bin/openclaw\n"); // launchd install binary path
+        ssh.push_success(""); // install/restart launchd service
+
+        let deps = ExecutorDeps {
+            ssh: ssh.clone(),
+            health: Arc::new(MockHealthChecker::new()),
+            agent_helper_binary: Some(PathBuf::from("/tmp/calciforge-secrets-test")),
+        };
+        let detail = apply_remote_config(&claw, &deps).expect("apply should succeed");
+        assert!(detail.contains("proxy env"));
+
+        let calls = ssh.recorded_calls();
+        let wrapper_write = calls
+            .iter()
+            .find(|c| {
+                c.command
+                    .contains(".config/calciforge/openclaw-gateway-wrapper.sh")
+            })
+            .expect("expected write to OpenClaw launchd wrapper");
+        let b64 = wrapper_write
+            .command
+            .strip_prefix("echo ")
+            .and_then(|s| s.split_once(" | base64 -d > "))
+            .map(|(encoded, _)| encoded.trim_matches('\''))
+            .expect("wrapper write should be base64 encoded");
+        let decoded = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .expect("wrapper content should decode"),
+        )
+        .expect("wrapper content should be utf-8");
+        assert!(
+            decoded.contains("exec '/opt/homebrew/bin/openclaw' \"$@\""),
+            "wrapper must not depend on launchd PATH; got:\n{decoded}"
+        );
+        assert!(
+            calls.iter().any(|c| c
+                .command
+                .contains("'/opt/homebrew/bin/openclaw' gateway install --force --port 18789")),
+            "launchd install should use detected OpenClaw binary, got {calls:?}"
         );
     }
 

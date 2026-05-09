@@ -160,16 +160,16 @@ impl CredentialInjector {
     /// `inject` method so query-parameter mappings are applied correctly.
     pub async fn injections_for_host(&self, target_host: &str) -> Vec<CredentialInjection> {
         let mapping = self.find_mapping(target_host);
-        if let Some(m) = mapping {
-            if let Some(secret) = self.resolve_secret(&m.secret_name).await {
-                let injection = format_injection(&m.injection, &secret);
-                info!(
-                    secret_name = %m.secret_name,
-                    host = %target_host,
-                    "injected credential"
-                );
-                return vec![injection];
-            }
+        if let Some(m) = mapping
+            && let Some(secret) = self.resolve_secret(&m.secret_name).await
+        {
+            let injection = format_injection(&m.injection, &secret);
+            info!(
+                secret_name = %m.secret_name,
+                host = %target_host,
+                "injected credential"
+            );
+            return vec![injection];
         }
         Vec::new()
     }
@@ -215,12 +215,12 @@ impl CredentialInjector {
         let key = secret_name.to_lowercase();
 
         // Check cache (with TTL)
-        if let Some(entry) = self.cache.get(&key) {
-            if self.cache_ttl.is_zero() || entry.resolved_at.elapsed() < self.cache_ttl {
-                return Some(entry.value.clone());
-            }
-            // Expired — fall through to re-resolve
+        if let Some(entry) = self.cache.get(&key)
+            && (self.cache_ttl.is_zero() || entry.resolved_at.elapsed() < self.cache_ttl)
+        {
+            return Some(entry.value.clone());
         }
+        // Expired — fall through to re-resolve
 
         // Resolve from vault
         match secrets_client::vault::get_secret(&key).await {
@@ -538,9 +538,11 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
         let missing = temp_dir.path().join("missing.toml");
         let missing = missing.to_str().unwrap();
 
-        assert!(CredentialInjector::load_config(missing, true)
-            .unwrap()
-            .is_none());
+        assert!(
+            CredentialInjector::load_config(missing, true)
+                .unwrap()
+                .is_none()
+        );
         let err = CredentialInjector::load_config(missing, false).unwrap_err();
         assert!(err.contains("failed to read credentials config"));
     }

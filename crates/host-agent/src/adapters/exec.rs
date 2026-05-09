@@ -24,10 +24,10 @@ use std::path::Path;
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use crate::AppState;
 use crate::adapters::{Adapter, ExecutionResult, HostOp, PolicyDecision};
 use crate::auth::ClientIdentity;
 use crate::error::AppError;
-use crate::AppState;
 
 pub struct ExecAdapter;
 
@@ -119,32 +119,30 @@ impl Adapter for ExecAdapter {
 
         // Ansible stub
         if let Some(playbook) = resource.strip_prefix("ansible://") {
-            if let Some(ref exec_cfg) = config.exec {
-                if let Some(ref queue_dir) = exec_cfg.ansible_job_queue {
-                    // Write a job spec to the queue directory (stub)
-                    let job_id = uuid::Uuid::new_v4().to_string();
-                    let job_path = format!("{queue_dir}/{job_id}.json");
-                    let job_spec = serde_json::json!({
-                        "id": job_id,
-                        "playbook": playbook,
-                        "caller": identity.cn,
-                        "requested_at": chrono::Utc::now().to_rfc3339(),
-                    });
+            if let Some(ref exec_cfg) = config.exec
+                && let Some(ref queue_dir) = exec_cfg.ansible_job_queue
+            {
+                // Write a job spec to the queue directory (stub)
+                let job_id = uuid::Uuid::new_v4().to_string();
+                let job_path = format!("{queue_dir}/{job_id}.json");
+                let job_spec = serde_json::json!({
+                    "id": job_id,
+                    "playbook": playbook,
+                    "caller": identity.cn,
+                    "requested_at": chrono::Utc::now().to_rfc3339(),
+                });
 
-                    std::fs::write(&job_path, serde_json::to_string_pretty(&job_spec).unwrap())
-                        .map_err(|e| {
-                            AppError::Internal(format!("Failed to write job spec: {e}"))
-                        })?;
+                std::fs::write(&job_path, serde_json::to_string_pretty(&job_spec).unwrap())
+                    .map_err(|e| AppError::Internal(format!("Failed to write job spec: {e}")))?;
 
-                    warn!(
-                        caller = %identity.cn,
-                        playbook = %playbook,
-                        job_id = %job_id,
-                        "Ansible job queued (stub)"
-                    );
+                warn!(
+                    caller = %identity.cn,
+                    playbook = %playbook,
+                    job_id = %job_id,
+                    "Ansible job queued (stub)"
+                );
 
-                    return Ok(ExecutionResult::ok(format!("Ansible job queued: {job_id}")));
-                }
+                return Ok(ExecutionResult::ok(format!("Ansible job queued: {job_id}")));
             }
             return Err(AppError::Internal(
                 "Ansible job queue not configured".into(),

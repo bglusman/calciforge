@@ -4,6 +4,9 @@ services:
     build:
       context: ../..
       dockerfile: crates/calciforge/Dockerfile
+      args:
+        CARGO_BUILD_JOBS: ${CALCIFORGE_DOCKER_BUILD_JOBS:-1}
+        CARGO_BUILD_PROFILE: ${CALCIFORGE_DOCKER_BUILD_PROFILE:-docker}
     command: ["--config", "/config/config.toml", "--proxy-only"]
     environment:
       RUST_LOG: ${RUST_LOG:-calciforge=info}

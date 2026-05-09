@@ -1,0 +1,11 @@
+# Runtime binaries shipped by Docker, release archives, and Homebrew.
+#
+# Keep this list in sync through scripts/check-packaging.sh. The Homebrew
+# formula installs the same archive contents but uses Homebrew's fnox
+# dependency instead of the bundled manual-archive companion.
+calciforge
+security-proxy
+clashd
+mcp-server
+paste-server
+calciforge-secrets

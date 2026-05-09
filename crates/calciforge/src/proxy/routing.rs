@@ -91,10 +91,9 @@ impl ProviderEntry {
             .add_model_prefix
             .as_deref()
             .filter(|prefix| !prefix.is_empty())
+            && !upstream.starts_with(prefix)
         {
-            if !upstream.starts_with(prefix) {
-                upstream = format!("{prefix}{upstream}");
-            }
+            upstream = format!("{prefix}{upstream}");
         }
 
         upstream

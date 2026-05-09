@@ -5,6 +5,29 @@ import test from "node:test";
 
 import { testInternals } from "../index.js";
 
+test("registers the OpenClaw HTTP route synchronously when public route API exists", () => {
+  const registered = [];
+  const registration = testInternals.registerHttpRoute(
+    {
+      registerHttpRoute(route) {
+        registered.push(route);
+        return () => {};
+      },
+    },
+    {
+      path: "/calciforge/inbound",
+      match: "exact",
+      handler: async () => true,
+    },
+  );
+
+  assert.equal(typeof registration.then, "undefined");
+  assert.equal(registration.source, "plugin route API");
+  assert.equal(registered.length, 1);
+  assert.equal(registered[0].path, "/calciforge/inbound");
+  assert.equal(registered[0].auth, "plugin");
+});
+
 test("status payload reports callback URL and reply-token hash without exposing token", () => {
   const fixtureReplyToken = ["reply", "fixture"].join("-");
   const payload = testInternals.buildStatusPayload({

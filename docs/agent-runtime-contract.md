@@ -99,19 +99,22 @@ outside the agent's control.
 
 | Runtime | Default capability wiring | Optional MCP wiring | Instruction delivery | Calciforge posture |
 |---|---|---|---|
-| Codex CLI | `calciforge-secrets` on `PATH`; optional AGENTS.md guidance. | `codex mcp add` or `~/.codex/config.toml`. | `AGENTS.md` in the workspace tree. | Good first-class target. The installer should be able to append or create a Calciforge section in a chosen workspace, but should not silently modify arbitrary repos. |
+| Codex CLI | `calciforge-secrets` on `PATH`; optional AGENTS.md guidance. | `codex mcp add` or `~/.codex/config.toml`. | `AGENTS.md` in the workspace tree. | Good first-class target. The installer can print guidance or append/create a managed Calciforge section in an explicit file/workspace, but does not silently modify arbitrary repos. |
 | Claude Code | `calciforge-secrets` on `PATH`; optional CLAUDE.md/AGENTS.md guidance. | `claude mcp add`, `.mcp.json`, or user/project scope. | `CLAUDE.md`, `.claude/CLAUDE.md`, or `.claude/rules/*.md`; `CLAUDE.md` can import `AGENTS.md`. | Good first-class target. Installer can offer a CLAUDE.md/AGENTS.md snippet and separately opt into MCP registration, but instructions remain context, not hard policy. |
 | opencode | `calciforge-secrets` on `PATH`; optional AGENTS.md guidance. | Configure MCP only when the selected opencode runtime supports it. | `AGENTS.md`; opencode also supports global rules and optional Claude compatibility. | Good recipe/ACP target. Prefer `AGENTS.md` plus explicit recipe docs. |
-| OpenClaw | Bridge plugin for inbound messages and `calciforge-secrets` guidance in the OpenClaw workspace. | Configure Calciforge MCP in OpenClaw's MCP registry when the selected lane can consume outbound MCP servers. | OpenClaw workspace `AGENTS.md`, or a Calciforge skill/lane instruction when the deployment uses those surfaces. | Current gap. The bridge plugin delivers messages but does not yet prove the selected lane has Calciforge MCP or Calciforge instructions. Managed OpenClaw installs should eventually patch or create the workspace `AGENTS.md` first, then configure MCP when requested. |
+| OpenClaw | Bridge plugin for inbound messages and `calciforge-secrets` guidance in the OpenClaw workspace. | Configure Calciforge MCP in OpenClaw's MCP registry when the selected lane can consume outbound MCP servers. | OpenClaw workspace `AGENTS.md`, or a Calciforge skill/lane instruction when the deployment uses those surfaces. | The installer can create or patch an explicit instruction file/workspace, but the bridge plugin still does not prove the selected lane loaded those instructions. MCP wiring remains opt-in. |
 | ZeroClaw | `calciforge-secrets` on `PATH` plus Calciforge adapter/channel config. | Configure custom MCP servers if the active ZeroClaw config supports them. | Unverified. Public ZeroClaw docs describe a local workspace, tools, channels, and custom MCP servers, but this branch has not confirmed whether ZeroClaw reads `AGENTS.md` specifically. | Treat as a managed-agent research item until the instruction-file surface is confirmed against the installed binary/docs. |
 | Generic CLI recipe | Run through `cli` or `artifact-cli`; prefer stdin, `calciforge-secrets`, and `CALCIFORGE_ARTIFACT_DIR`. | Only if the upstream CLI supports MCP. | Prepend the baseline block in the wrapper, or require the operator to place it in the upstream agent's supported instruction file. | Supported as a recipe when the README states exactly how the prompt/tool contract reaches the agent. |
 | Async orchestrator recipe | Submit work through the orchestrator wrapper and use CLI/artifact/status callbacks where available. | Optional, and only if the orchestrator and worker agents expose MCP. | Orchestrator-level recipe instructions, plus worker-agent instructions if the orchestrator delegates to agents. | Do not assume Mayor/dispatcher instructions reach downstream workers; document that propagation explicitly. |
 
 ## Installer behavior
 
-The safe default is CLI-only guidance: install `calciforge-secrets`, print or
-write the instruction block, and leave MCP disabled unless the operator asks for
-it. Modify only files the operator names explicitly.
+The safe default is CLI-first guidance with a central secret store:
+`calciforge-secrets` must run on the same host as the agent, but managed
+multi-node installs should configure it as a wrapper that calls Calciforge's
+central secret API. Do not create a separate fnox vault on each agent node by
+default. Print how to teach agents about the helper, and leave MCP disabled
+unless the operator asks for it. Modify only files the operator names explicitly.
 
 Recommended installer modes:
 
@@ -120,14 +123,31 @@ Recommended installer modes:
 - `--agent-instructions-file PATH` — create or append a managed Calciforge
   section in `AGENTS.md`, `CLAUDE.md`, or another named file.
 - `--agent-workspace PATH` — convenience mode that writes `AGENTS.md` for
-  Codex/opencode-style agents and `CLAUDE.md` importing `AGENTS.md` for Claude
-  Code when requested.
+  Codex/opencode-style agents.
+- `--agent-helper-base-url URL` — install a managed `calciforge-secrets` wrapper
+  on SSH-managed agent hosts that calls Calciforge's central secret API.
 - `--agent-mcp codex|claude|openclaw|...` — opt into configuring the
   Calciforge MCP server for a specific runtime. This should be separate from
   instruction-file writing so operators can choose CLI-only, MCP-only, or both.
 
 Avoid silently editing every detected repo. These files are part of a project's
 prompt surface and should be treated like source-controlled policy.
+
+Current installer behavior implements the first three instruction modes. File
+writes are bounded by `BEGIN/END CALCIFORGE MANAGED INSTRUCTIONS` markers so a
+later installer run replaces only Calciforge's managed section. MCP registration
+is still intentionally separate.
+
+The Rust `calciforge install` subcommand installs a central-store
+`calciforge-secrets` wrapper to each SSH-managed agent host only when
+`--agent-helper-base-url` is configured. The wrapper sets
+`CALCIFORGE_SECRETS_BASE_URL` and `CALCIFORGE_SECRETS_TOKEN`, then runs
+the helper binary from `~/.local/libexec/calciforge`. The token must be the
+privileged secret-control token configured on the gateway as
+`[proxy].secret_control_api_key` or `secret_control_api_key_file`; do not reuse
+the model gateway `proxy.api_key` for managed secret helpers. The install step
+must smoke-test `calciforge-secrets list` from the agent host and report whether
+`~/.local/bin` is actually visible in `PATH`.
 
 ## Recipe requirement
 

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain_lists::DomainListManager;
-use crate::policy::eval::PolicyEvaluator;
 use crate::policy::PolicyResult;
+use crate::policy::eval::PolicyEvaluator;
 
 #[cfg(test)]
 mod tests;
@@ -150,10 +150,10 @@ impl PolicyEngine {
         if let Some(obj) = args.as_object() {
             // Try common field names — destructure to get &str from &&str
             for &field in &["url", "domain", "target", "host", "site"] {
-                if let Some(val) = obj.get(field).and_then(|v| v.as_str()) {
-                    if let Some(domain) = Self::parse_domain(val) {
-                        return Some(domain);
-                    }
+                if let Some(val) = obj.get(field).and_then(|v| v.as_str())
+                    && let Some(domain) = Self::parse_domain(val)
+                {
+                    return Some(domain);
                 }
             }
         }

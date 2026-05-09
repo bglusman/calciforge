@@ -360,8 +360,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_with_mock_server() {
-        use axum::routing::post;
         use axum::Router;
+        use axum::routing::post;
         use serde_json::json;
         use tokio::net::TcpListener;
 
@@ -399,9 +399,9 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_with_session_header() {
+        use axum::Router;
         use axum::extract::Request;
         use axum::routing::post;
-        use axum::Router;
         use serde_json::json;
         use std::sync::Arc;
         use tokio::net::TcpListener;
@@ -456,9 +456,9 @@ mod tests {
 
     #[tokio::test]
     async fn model_override_wins_over_configured_model() {
+        use axum::Router;
         use axum::extract::Request;
         use axum::routing::post;
-        use axum::Router;
         use serde_json::json;
         use std::sync::Arc;
         use tokio::net::TcpListener;

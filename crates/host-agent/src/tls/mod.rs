@@ -1,14 +1,14 @@
 //! TLS/mTLS configuration with client identity extraction
 
 use anyhow::{Context, Result};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::auth::{build_identity, is_cert_revoked, ClientIdentity};
+use crate::auth::{ClientIdentity, build_identity, is_cert_revoked};
 
 /// Create mTLS server configuration
 pub fn create_mtls_config<P: AsRef<Path>>(
@@ -145,25 +145,25 @@ impl IdentityExtractingAcceptor {
         // Get peer certificates
         let peer_certs = tls_stream.get_ref().1.peer_certificates();
 
-        if let Some(certs) = peer_certs {
-            if let Some(cert) = certs.first() {
-                // Check revocation
-                if is_cert_revoked(cert, self.crl_data.as_deref())? {
-                    anyhow::bail!("Client certificate has been revoked");
-                }
-
-                // Build client identity
-                let identity = build_identity(cert)
-                    .with_context(|| "Failed to build client identity from certificate")?;
-
-                debug!(
-                    cn = %identity.cn,
-                    fingerprint = %identity.fingerprint,
-                    "Extracted client identity"
-                );
-
-                return Ok((identity, tls_stream));
+        if let Some(certs) = peer_certs
+            && let Some(cert) = certs.first()
+        {
+            // Check revocation
+            if is_cert_revoked(cert, self.crl_data.as_deref())? {
+                anyhow::bail!("Client certificate has been revoked");
             }
+
+            // Build client identity
+            let identity = build_identity(cert)
+                .with_context(|| "Failed to build client identity from certificate")?;
+
+            debug!(
+                cn = %identity.cn,
+                fingerprint = %identity.fingerprint,
+                "Extracted client identity"
+            );
+
+            return Ok((identity, tls_stream));
         }
 
         anyhow::bail!("No client certificate presented (mTLS required)")

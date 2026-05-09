@@ -2,14 +2,14 @@
 //!
 //! Handles the actual Starlark execution using the starlark crate.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use starlark::{
     collections::SmallMap,
     environment::{Globals, Module},
     eval::Evaluator,
     syntax::{AstModule, Dialect},
-    values::{dict::Dict, Value as StarlarkValue},
+    values::{Value as StarlarkValue, dict::Dict},
 };
 use std::path::Path;
 use tracing::{debug, error, info};
@@ -100,14 +100,14 @@ impl PolicyEvaluator {
         let result_json: serde_json::Value = serde_json::from_str(&result.to_str())
             .map_err(|_| anyhow!("Policy result must be a string or dict"))?;
 
-        if let Some(obj) = result_json.as_object() {
-            if let Some(v) = obj.get("verdict").and_then(|v| v.as_str()) {
-                let reason = obj
-                    .get("reason")
-                    .and_then(|r| r.as_str())
-                    .map(|s| s.to_string());
-                return Self::verdict_from_string(v, reason);
-            }
+        if let Some(obj) = result_json.as_object()
+            && let Some(v) = obj.get("verdict").and_then(|v| v.as_str())
+        {
+            let reason = obj
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string());
+            return Self::verdict_from_string(v, reason);
         }
 
         Err(anyhow!(
@@ -125,7 +125,7 @@ impl PolicyEvaluator {
                 return Err(anyhow!(
                     "Invalid verdict: {}. Must be allow/review/deny",
                     verdict
-                ))
+                ));
             }
         };
 

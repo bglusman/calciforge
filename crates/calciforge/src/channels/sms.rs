@@ -9,12 +9,12 @@
 use crate::sync::Arc;
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router as AxumRouter,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router as AxumRouter,
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
@@ -24,7 +24,7 @@ use zeroclaw_channels::linq::LinqChannel as ZclLinqChannel;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{expand_tilde, CalciforgeConfig},
+    config::{CalciforgeConfig, expand_tilde},
     context::ContextStore,
     messages::OutboundMessage,
     router::Router,
@@ -722,8 +722,8 @@ mod tests {
     };
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use tokio::sync::mpsc;
     use tokio::sync::Notify;
+    use tokio::sync::mpsc;
 
     struct MockChannel {
         sent: StdMutex<Vec<SendMessage>>,

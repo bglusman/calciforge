@@ -1,8 +1,8 @@
 use axum::{
+    Json, Router,
     extract::{Path as UrlPath, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -5,7 +5,7 @@
 //! `/etc/calciforge/config.toml` for system installs. Supports the full config
 //! schema as defined in the spec (Section 3).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -610,6 +610,17 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
 
+    /// API key for privileged secret-control endpoints.
+    ///
+    /// This intentionally does not reuse `proxy.api_key`: model gateway clients
+    /// should not automatically be able to list or overwrite operator secrets.
+    #[serde(default)]
+    pub secret_control_api_key: Option<String>,
+
+    /// Path to file containing the privileged secret-control API key.
+    #[serde(default)]
+    pub secret_control_api_key_file: Option<PathBuf>,
+
     /// Request timeout in seconds. Default: 300
     #[serde(default = "default_proxy_timeout")]
     pub timeout_seconds: u64,
@@ -872,6 +883,8 @@ impl Default for ProxyConfig {
             bind: default_proxy_bind(),
             api_key: None,
             api_key_file: None,
+            secret_control_api_key: None,
+            secret_control_api_key_file: None,
             timeout_seconds: default_proxy_timeout(),
             max_body_mb: default_proxy_max_body_mb(),
             agents: Vec::new(),
@@ -1353,10 +1366,10 @@ pub fn calciforge_config_home(home_override: Option<&Path>) -> PathBuf {
 
 /// Expand a `~`-prefixed path using the home directory.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/") {
-        if let Some(home) = home::home_dir() {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = home::home_dir()
+    {
+        return home.join(stripped);
     }
     PathBuf::from(path)
 }

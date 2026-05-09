@@ -15,8 +15,8 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::artifacts::{
-    artifact_root, collect_run_artifacts, create_run_dir, create_run_dir_under,
-    DEFAULT_MAX_ARTIFACTS, DEFAULT_MAX_ARTIFACT_BYTES,
+    DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACTS, artifact_root, collect_run_artifacts,
+    create_run_dir, create_run_dir_under,
 };
 use crate::messages::{OutboundAttachment, OutboundMessage};
 

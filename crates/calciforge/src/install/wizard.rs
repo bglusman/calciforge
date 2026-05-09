@@ -20,7 +20,7 @@
 //! When `stdin` is not a TTY (e.g. piped input, CI), the wizard prints an
 //! error and exits cleanly rather than panicking inside `dialoguer`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use console::style;
 use dialoguer::{Confirm, Input, Password, Select};
 use std::io::IsTerminal;
@@ -28,10 +28,10 @@ use std::path::PathBuf;
 
 use super::{
     cli::InstallArgs,
-    executor::{run_install_with_deps, ExecutorDeps, StepOutcome},
-    health::{health_check_claw, HttpHealthChecker},
+    executor::{ExecutorDeps, StepOutcome, run_install_with_deps},
+    health::{HttpHealthChecker, health_check_claw},
     model::{CalciforgeTarget, ClawKind, ClawTarget, InstallTarget, WebhookFormat},
-    ssh::{test_agent_target_connectivity, RealSshClient},
+    ssh::{RealSshClient, test_agent_target_connectivity},
 };
 
 // ---------------------------------------------------------------------------

@@ -8,8 +8,8 @@
 use crate::sync::Mutex;
 use std::collections::HashMap;
 
-use rand::distr::weighted::WeightedIndex;
 use rand::distr::Distribution;
+use rand::distr::weighted::WeightedIndex;
 use rand::rng;
 use serde::Serialize;
 

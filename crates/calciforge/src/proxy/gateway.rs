@@ -379,15 +379,15 @@ impl GatewayBackend for LoggingGateway {
         let duration = start.elapsed();
 
         // Normalize response model back to client format
-        if let Ok(ref mut response) = result {
-            if response.model.starts_with("kimi-") {
-                let prefixed = format!("kimi/{}", response.model);
-                info!(
-                    "Normalizing response model: {} -> {}",
-                    response.model, prefixed
-                );
-                response.model = prefixed;
-            }
+        if let Ok(ref mut response) = result
+            && response.model.starts_with("kimi-")
+        {
+            let prefixed = format!("kimi/{}", response.model);
+            info!(
+                "Normalizing response model: {} -> {}",
+                response.model, prefixed
+            );
+            response.model = prefixed;
         }
 
         match &result {
@@ -793,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn builtin_http_gateway_forwards_complete_chat_request_options() {
-        use crate::proxy::backend::{create_backend, BackendConfig, BackendType};
+        use crate::proxy::backend::{BackendConfig, BackendType, create_backend};
         use crate::proxy::openai::{ChatMessage, Choice, MessageContent, Usage};
         use mockito::Matcher;
         use std::collections::HashMap;

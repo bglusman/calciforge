@@ -200,8 +200,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_idempotent(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Use arbitrary text — not just valid JSON.  The idempotency property
         // must hold for all strings, including adversarial ones.
@@ -230,8 +230,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_never_adds_content(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         let input = tc.draw(gs::text().max_size(500));
         let stripped = strip_json_comments(&input);
@@ -264,8 +264,8 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_preserves_valid_json(tc: hegel::TestCase) {
-        use hegel::generators as gs;
         use hegel::Generator;
+        use hegel::generators as gs;
 
         // Generate a simple key that is safe to embed in JSON.
         let key = tc.draw(gs::text().min_size(1).max_size(30).filter(|s: &String| {

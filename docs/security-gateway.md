@@ -247,7 +247,7 @@ Not every gateway denial should be equally overrideable. Recommended defaults:
 | Policy / block class | Configurable? | Overrideable? | Default approval |
 |---|---:|---:|---|
 | `ironclaw.manual_credential` — raw credential supplied by the agent | Yes | Yes, scoped header | Operator required |
-| Secret substitution destination denied by `secret_destination_allowlist` | Yes, via allowlist config | Not by agent header | Operator config change required |
+| Secret substitution destination denied by `secret_destination_allowlist` or dynamic `allowed_destinations` metadata | Yes, via operator config or secret metadata | Not by agent header | Operator config/metadata change required |
 | Malformed or unresolved `{% raw %}{{secret:NAME}}{% endraw %}` | No | No | Fix request or secret store |
 | `agent_web.forbid_search_engines` | Yes | Prefer config only | Operator config change required |
 | `agent_web.preflight_message_urls` destination denial | Yes | Prefer config only | Operator config change required |
@@ -505,7 +505,7 @@ Calciforge's MITM gateway already scans every outbound HTTPS, but the highest-li
 
 `[security.agent_web]` adds four configurable defenses against this class of leak. All default to safe values; operators opt into stricter modes.
 
-This complements but does **not** replace `secret_destination_allowlist` — the allowlist gates *secrets-into-hosts*, while `agent_web` gates *content* (search snippets, provider browsing tool defs, URLs in LLM message bodies).
+This complements but does **not** replace `secret_destination_allowlist` or dynamic `allowed_destinations` secret metadata — those allowlists gate *secrets-into-hosts*, while `agent_web` gates *content* (search snippets, provider browsing tool defs, URLs in LLM message bodies). Static TOML policy and dynamic metadata are intersected; metadata read failures fail closed when substitution needs a destination policy decision.
 
 ### (A) `forbid_search_engines`
 

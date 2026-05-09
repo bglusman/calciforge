@@ -32,7 +32,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::audit::AuditLogger;
-use crate::digest::{sha256_hex, ContentDigest, DigestStore};
+use crate::digest::{ContentDigest, DigestStore, sha256_hex};
 use crate::profiles::RateLimitConfig;
 use crate::scanner::{AdversaryScanner, ScannerConfig};
 use crate::verdict::{ScanContext, ScanVerdict};

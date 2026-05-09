@@ -189,10 +189,8 @@ impl DomainListManager {
                 .map(|f| now.duration_since(f) > dl.refresh_interval)
                 .unwrap_or(true);
 
-            if needs_refresh {
-                if let Err(e) = dl.fetch(client).await {
-                    warn!(name = %dl.name, error = %e, "Failed to refresh domain list");
-                }
+            if needs_refresh && let Err(e) = dl.fetch(client).await {
+                warn!(name = %dl.name, error = %e, "Failed to refresh domain list");
             }
         }
 

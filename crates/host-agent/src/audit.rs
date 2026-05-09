@@ -216,15 +216,14 @@ impl AuditLogger {
                 if filename.starts_with(&*base_stem) && filename.contains('.') {
                     // Extract date from filename
                     let parts: Vec<&str> = filename.split('.').collect();
-                    if parts.len() >= 2 {
-                        if let Ok(date) = chrono::NaiveDate::parse_from_str(parts[1], "%Y-%m-%d") {
-                            let datetime =
-                                Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
-                            if datetime < cutoff {
-                                info!(path = %path.display(), "Removing old audit log");
-                                if let Err(e) = std::fs::remove_file(&path) {
-                                    warn!(path = %path.display(), error = %e, "Failed to remove old audit log");
-                                }
+                    if parts.len() >= 2
+                        && let Ok(date) = chrono::NaiveDate::parse_from_str(parts[1], "%Y-%m-%d")
+                    {
+                        let datetime = Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
+                        if datetime < cutoff {
+                            info!(path = %path.display(), "Removing old audit log");
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                warn!(path = %path.display(), error = %e, "Failed to remove old audit log");
                             }
                         }
                     }

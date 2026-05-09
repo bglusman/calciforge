@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 
 use anyhow::Context as _;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -17,8 +17,8 @@ use tracing::info;
 use crate::sync::Arc;
 
 use crate::config::{ModelShortcutConfig, ProxyConfig};
-use crate::providers::alloy::AlloyManager;
 use crate::providers::ProviderRegistry;
+use crate::providers::alloy::AlloyManager;
 
 mod auth;
 mod backend;
@@ -138,10 +138,14 @@ pub async fn start_proxy_server(
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", config.bind, e))?;
 
-    // Resolve the gateway's client-facing API key before sharing config with
-    // handlers. `api_key_file` is preferred so deployments can avoid inline
-    // TOML secrets while still enforcing Authorization on chat completions.
+    // Resolve the gateway's client-facing API keys before sharing config with
+    // handlers. `*_key_file` is preferred so deployments can avoid inline TOML
+    // secrets while still enforcing Authorization.
     config.api_key = resolve_api_key(config.api_key.as_deref(), config.api_key_file.as_deref())?;
+    config.secret_control_api_key = resolve_api_key(
+        config.secret_control_api_key.as_deref(),
+        config.secret_control_api_key_file.as_deref(),
+    )?;
     resolve_proxy_agent_api_keys(&mut config)?;
 
     // Resolve the default backend API key (file takes precedence over inline).
@@ -229,6 +233,12 @@ pub async fn start_proxy_server(
         .route("/gateway", get(handlers::gateway_info))
         .route("/gateway/ui", get(handlers::gateway_ui_redirect))
         .route("/control/local/switch", post(handlers::local_model_switch))
+        .route("/control/secrets/list", get(handlers::secret_list))
+        .route(
+            "/control/secrets/ref/:name",
+            get(handlers::secret_reference),
+        )
+        .route("/control/secrets/set", post(handlers::secret_set))
         // Voice passthrough — always registered; returns 501 when not configured.
         .route(
             "/v1/audio/transcriptions",

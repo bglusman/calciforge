@@ -24,11 +24,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::{
-    agent_session_capability, agent_supports_model_override,
+    AgentSessionCapability, agent_session_capability, agent_supports_model_override,
     openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter},
-    AgentSessionCapability,
 };
-use crate::config::{calciforge_config_home, CalciforgeConfig};
+use crate::config::{CalciforgeConfig, calciforge_config_home};
 use crate::messages::{ChoiceControl, ChoiceOption, Match, OutboundMessage};
 use crate::model_names::configured_first_class_model_ids;
 use crate::providers::alloy::AlloyManager;
@@ -1491,12 +1490,11 @@ impl CommandHandler {
                 let session_capability = agent_cfg
                     .map(agent_session_capability)
                     .unwrap_or(AgentSessionCapability::None);
-                if session_capability != AgentSessionCapability::None {
-                    if let Some(session) = session_arg.as_deref() {
-                        if !valid_downstream_session_name(session) {
-                            return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash.".to_string();
-                        }
-                    }
+                if session_capability != AgentSessionCapability::None
+                    && let Some(session) = session_arg.as_deref()
+                    && !valid_downstream_session_name(session)
+                {
+                    return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash.".to_string();
                 }
                 let session_info = if session_capability != AgentSessionCapability::None {
                     if let Some(session) = session_arg.as_ref() {
@@ -1618,7 +1616,9 @@ impl CommandHandler {
         let agent_arg = args.first().copied().unwrap_or("").to_string();
 
         if agent_arg.is_empty() {
-            return OutboundMessage::text("Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available ACP sessions for an agent.\nUse !agent list to see available agents.");
+            return OutboundMessage::text(
+                "Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available ACP sessions for an agent.\nUse !agent list to see available agents.",
+            );
         }
 
         // Look up the routing rule for this identity.
@@ -1900,61 +1900,61 @@ impl CommandHandler {
             }
 
             // Synthetic models section
-            if let Some(ref manager) = self.alloy_manager {
-                if !manager.is_empty() {
-                    if !lines.is_empty() {
-                        lines.push(String::new());
-                    }
-                    lines.push("Configured alloys:".to_string());
-                    for alloy in manager.list() {
-                        let constituents: Vec<String> = alloy
-                            .constituents
+            if let Some(ref manager) = self.alloy_manager
+                && !manager.is_empty()
+            {
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                lines.push("Configured alloys:".to_string());
+                for alloy in manager.list() {
+                    let constituents: Vec<String> = alloy
+                        .constituents
+                        .iter()
+                        .map(|c| format!("{} (weight {})", c.model, c.weight))
+                        .collect();
+                    lines.push(format!(
+                        "  {} — {} ({:?}): {}",
+                        alloy.id,
+                        alloy.name,
+                        alloy.strategy,
+                        constituents.join(", ")
+                    ));
+                }
+                let cascades = manager.list_cascades();
+                if !cascades.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Configured cascades:".to_string());
+                    for cascade in cascades {
+                        let models: Vec<String> = cascade
+                            .models
                             .iter()
-                            .map(|c| format!("{} (weight {})", c.model, c.weight))
+                            .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
                             .collect();
                         lines.push(format!(
-                            "  {} — {} ({:?}): {}",
-                            alloy.id,
-                            alloy.name,
-                            alloy.strategy,
-                            constituents.join(", ")
+                            "  {} — {}: {}",
+                            cascade.id,
+                            cascade.name,
+                            models.join(" → ")
                         ));
                     }
-                    let cascades = manager.list_cascades();
-                    if !cascades.is_empty() {
-                        lines.push(String::new());
-                        lines.push("Configured cascades:".to_string());
-                        for cascade in cascades {
-                            let models: Vec<String> = cascade
-                                .models
-                                .iter()
-                                .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
-                                .collect();
-                            lines.push(format!(
-                                "  {} — {}: {}",
-                                cascade.id,
-                                cascade.name,
-                                models.join(" → ")
-                            ));
-                        }
-                    }
-                    let dispatchers = manager.list_dispatchers();
-                    if !dispatchers.is_empty() {
-                        lines.push(String::new());
-                        lines.push("Configured dispatchers:".to_string());
-                        for dispatcher in dispatchers {
-                            let models: Vec<String> = dispatcher
-                                .models
-                                .iter()
-                                .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
-                                .collect();
-                            lines.push(format!(
-                                "  {} — {}: {}",
-                                dispatcher.id,
-                                dispatcher.name,
-                                models.join(", ")
-                            ));
-                        }
+                }
+                let dispatchers = manager.list_dispatchers();
+                if !dispatchers.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Configured dispatchers:".to_string());
+                    for dispatcher in dispatchers {
+                        let models: Vec<String> = dispatcher
+                            .models
+                            .iter()
+                            .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
+                            .collect();
+                        lines.push(format!(
+                            "  {} — {}: {}",
+                            dispatcher.id,
+                            dispatcher.name,
+                            models.join(", ")
+                        ));
                     }
                 }
             }
@@ -2052,81 +2052,81 @@ impl CommandHandler {
         }
 
         // 1. Synthetic model selector switch.
-        if let Some(ref manager) = self.alloy_manager {
-            if manager.is_synthetic_model(model_id) {
-                if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
-                    return format!("⚠️ Failed to activate model: {}", e);
-                }
-                self.set_active_model_for_identity(identity_id, model_id);
-                if let Some(alloy) = manager.get(model_id) {
-                    let constituents: Vec<String> = alloy
-                        .definition()
-                        .constituents
-                        .iter()
-                        .map(|c| format!("{} (weight {})", c.model, c.weight))
-                        .collect();
-                    return format!(
-                        "✅ Activated alloy '{}'{} for your identity.\n\nConstituents ({:?} strategy): {}",
-                        model_id,
-                        shortcut_note.as_deref().unwrap_or(""),
-                        alloy.definition().strategy,
-                        constituents.join(", ")
-                    );
-                }
-                let kind = if manager
-                    .list_cascades()
+        if let Some(ref manager) = self.alloy_manager
+            && manager.is_synthetic_model(model_id)
+        {
+            if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
+                return format!("⚠️ Failed to activate model: {}", e);
+            }
+            self.set_active_model_for_identity(identity_id, model_id);
+            if let Some(alloy) = manager.get(model_id) {
+                let constituents: Vec<String> = alloy
+                    .definition()
+                    .constituents
                     .iter()
-                    .any(|cascade| cascade.id == model_id)
-                {
-                    "cascade"
-                } else if manager
-                    .list_dispatchers()
-                    .iter()
-                    .any(|dispatcher| dispatcher.id == model_id)
-                {
-                    "dispatcher"
-                } else {
-                    "synthetic model selector"
-                };
+                    .map(|c| format!("{} (weight {})", c.model, c.weight))
+                    .collect();
                 return format!(
-                    "✅ Activated {kind} '{}'{} for your identity.",
+                    "✅ Activated alloy '{}'{} for your identity.\n\nConstituents ({:?} strategy): {}",
                     model_id,
-                    shortcut_note.as_deref().unwrap_or("")
+                    shortcut_note.as_deref().unwrap_or(""),
+                    alloy.definition().strategy,
+                    constituents.join(", ")
                 );
             }
+            let kind = if manager
+                .list_cascades()
+                .iter()
+                .any(|cascade| cascade.id == model_id)
+            {
+                "cascade"
+            } else if manager
+                .list_dispatchers()
+                .iter()
+                .any(|dispatcher| dispatcher.id == model_id)
+            {
+                "dispatcher"
+            } else {
+                "synthetic model selector"
+            };
+            return format!(
+                "✅ Activated {kind} '{}'{} for your identity.",
+                model_id,
+                shortcut_note.as_deref().unwrap_or("")
+            );
         }
 
         // 2. Local model switch.
-        if let Some(ref lm_mgr) = self.local_manager {
-            if let Some(model_def) = lm_mgr.find_model(model_id) {
-                let hf_id = model_def.hf_id.clone();
-                let id = model_id.to_string();
-                let mgr = crate::sync::Arc::clone(lm_mgr);
-                self.set_active_model_for_identity(identity_id, model_id);
-                // Run the blocking switch in a background task — may take 1-2 minutes.
-                tokio::spawn(async move {
-                    let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
-                    match result {
-                        Ok(Ok(loaded)) => {
-                            tracing::info!(model = %loaded.id, "!model local switch complete");
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!(error = %e, "!model local switch failed");
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "!model local switch panic");
-                        }
+        if let Some(ref lm_mgr) = self.local_manager
+            && let Some(model_def) = lm_mgr.find_model(model_id)
+        {
+            let hf_id = model_def.hf_id.clone();
+            let id = model_id.to_string();
+            let mgr = crate::sync::Arc::clone(lm_mgr);
+            self.set_active_model_for_identity(identity_id, model_id);
+            // Run the blocking switch in a background task — may take 1-2 minutes.
+            tokio::spawn(async move {
+                let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
+                match result {
+                    Ok(Ok(loaded)) => {
+                        tracing::info!(model = %loaded.id, "!model local switch complete");
                     }
-                });
-                return format!(
-                    "🔄 Switching to local model '{}'{} (HF: {}).\n\
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "!model local switch failed");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "!model local switch panic");
+                    }
+                }
+            });
+            return format!(
+                "🔄 Switching to local model '{}'{} (HF: {}).\n\
                     This may take 1-2 minutes while the model loads.\n\
                     The gateway will continue serving requests during the transition.",
-                    model_id,
-                    shortcut_note.as_deref().unwrap_or(""),
-                    hf_id
-                );
-            }
+                model_id,
+                shortcut_note.as_deref().unwrap_or(""),
+                hf_id
+            );
         }
 
         // 3. Provider-backed concrete model.
@@ -2138,15 +2138,15 @@ impl CommandHandler {
                     .any(|p| crate::proxy::routing::model_matches_pattern(model_id, p));
                 if model_matches {
                     self.set_active_model_for_identity(identity_id, model_id);
-                    if let Some(ref hook_script) = provider.on_switch {
-                        if !hook_script.is_empty() {
-                            return format!(
-                                "✅ Activated model '{}'{} for your identity (provider: {}). Its on_switch hook will run before the next gateway request that uses this provider.",
-                                model_id,
-                                shortcut_note.as_deref().unwrap_or(""),
-                                provider.id
-                            );
-                        }
+                    if let Some(ref hook_script) = provider.on_switch
+                        && !hook_script.is_empty()
+                    {
+                        return format!(
+                            "✅ Activated model '{}'{} for your identity (provider: {}). Its on_switch hook will run before the next gateway request that uses this provider.",
+                            model_id,
+                            shortcut_note.as_deref().unwrap_or(""),
+                            provider.id
+                        );
                     }
                     return format!(
                         "✅ Activated model '{}'{} for your identity (provider: {}).",
@@ -2525,12 +2525,36 @@ async fn secure_list() -> String {
             "📭 No secrets stored. Use `paste-server NAME` to add one without chat history."
                 .to_string()
         }
-        Ok(names) => format!(
-            "🔐 {} stored secret{}:\n  {}",
-            names.len(),
-            if names.len() == 1 { "" } else { "s" },
-            names.join("\n  ")
-        ),
+        Ok(names) => {
+            let metadata = match secrets_client::metadata::metadata_for_names(&names) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    return format!(
+                        "⚠️ Secret metadata unavailable; refusing to display incomplete destination policy: {error}"
+                    );
+                }
+            };
+            let rows = metadata
+                .into_iter()
+                .map(|secret| {
+                    if secret.allowed_destinations.is_empty() {
+                        secret.name
+                    } else {
+                        format!(
+                            "{} — allowed: {}",
+                            secret.name,
+                            secret.allowed_destinations.join(", ")
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+            format!(
+                "🔐 {} stored secret{}:\n  {}",
+                rows.len(),
+                if rows.len() == 1 { "" } else { "s" },
+                rows.join("\n  ")
+            )
+        }
         Err(secrets_client::FnoxError::NotInstalled(e)) => format!("⚠️ fnox not available: {e}"),
         Err(e) => format!("⚠️ fnox list failed: {e}"),
     }
@@ -3684,10 +3708,11 @@ mod tests {
         // !STATUS now requires identity context — returns None from handle()
         assert!(h.handle("!STATUS").is_none());
         // cmd_status_for_identity is case-insensitive at the identity level
-        assert!(h
-            .cmd_status_for_identity("brian")
-            .await
-            .contains("version:"));
+        assert!(
+            h.cmd_status_for_identity("brian")
+                .await
+                .contains("version:")
+        );
     }
 
     // --- record_dispatch counter ---

@@ -389,10 +389,10 @@ impl HttpBackend {
         if let Some(headers) = &headers {
             let mut header_map = reqwest::header::HeaderMap::new();
             for (key, value) in headers {
-                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-                    if let Ok(header_value) = reqwest::header::HeaderValue::from_str(value) {
-                        header_map.insert(header_name, header_value);
-                    }
+                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                    && let Ok(header_value) = reqwest::header::HeaderValue::from_str(value)
+                {
+                    header_map.insert(header_name, header_value);
                 }
             }
             client_builder = client_builder.default_headers(header_map);

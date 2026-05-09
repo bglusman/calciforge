@@ -1,10 +1,10 @@
 //! HTTP request handlers for the model gateway
 
 use axum::{
-    extract::State,
+    Json,
+    extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Redirect, Response, Sse},
-    Json,
 };
 use futures_util::stream::{self};
 use serde_json::json;
@@ -17,12 +17,13 @@ use crate::config::ProxyConfig;
 use crate::model_names::is_exact_model_pattern;
 use crate::proxy::backend::BackendError;
 use crate::proxy::{
+    ChatCompletionRequest, ProxyState,
     model_resolver::ModelResolver,
     openai::{
         ApiError, ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, DeltaMessage,
         ErrorDetail, ModelInfo, ModelListResponse,
     },
-    routing, token_estimator, ChatCompletionRequest, ProxyState,
+    routing, token_estimator,
 };
 
 /// List of valid/known models - in production this would come from config or backend
@@ -456,6 +457,149 @@ pub async fn local_model_switch(
     }
 }
 
+/// Handler for GET /control/secrets/list
+pub async fn secret_list(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    if let Some(response) = require_control_api_key(&state.config, &headers) {
+        return response;
+    }
+
+    match secrets_client::FnoxClient::new().list().await {
+        Ok(secrets) => match secrets_client::metadata::metadata_for_names(&secrets) {
+            Ok(metadata) => (
+                StatusCode::OK,
+                Json(json!({ "secrets": secrets, "metadata": metadata })),
+            )
+                .into_response(),
+            Err(err) => api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_metadata_unavailable",
+                &format!("secret metadata unavailable: {err}"),
+                None,
+            ),
+        },
+        Err(err) => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "secret_store_unavailable",
+            &format!("fnox list failed: {err}"),
+            None,
+        ),
+    }
+}
+
+/// Handler for GET /control/secrets/ref/:name
+pub async fn secret_reference(
+    State(state): State<ProxyState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(response) = require_control_api_key(&state.config, &headers) {
+        return response;
+    }
+
+    match secrets_client::secret_reference_token(&name) {
+        Some(reference) => {
+            (StatusCode::OK, Json(json!({ "reference": reference }))).into_response()
+        }
+        None => api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_secret_name",
+            "Secret names may contain only A-Z, a-z, 0-9, underscore, and dash",
+            Some("name"),
+        ),
+    }
+}
+
+/// Handler for POST /control/secrets/set
+pub async fn secret_set(
+    State(state): State<ProxyState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Some(response) = require_control_api_key(&state.config, &headers) {
+        return response;
+    }
+
+    let name = match body.get("name").and_then(|v| v.as_str()) {
+        Some(name) => name,
+        None => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "Request body must include {\"name\":\"...\",\"value\":\"...\"}",
+                Some("name"),
+            );
+        }
+    };
+    if secrets_client::secret_reference_token(name).is_none() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_secret_name",
+            "Secret names may contain only A-Z, a-z, 0-9, underscore, and dash",
+            Some("name"),
+        );
+    }
+
+    let value = match body.get("value").and_then(|v| v.as_str()) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "Request body must include a non-empty string value",
+                Some("value"),
+            );
+        }
+    };
+
+    let allowed_destinations_present = body.get("allowed_destinations").is_some();
+    let allowed_destinations = match body.get("allowed_destinations") {
+        Some(value) => match serde_json::from_value::<Vec<String>>(value.clone()) {
+            Ok(values) => match secrets_client::metadata::parse_destinations(&values.join(",")) {
+                Ok(values) => values,
+                Err(err) => {
+                    return api_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_allowed_destinations",
+                        &err.to_string(),
+                        Some("allowed_destinations"),
+                    );
+                }
+            },
+            Err(_) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "allowed_destinations must be an array of host patterns",
+                    Some("allowed_destinations"),
+                );
+            }
+        },
+        None => Vec::new(),
+    };
+
+    if allowed_destinations_present
+        && let Err(err) =
+            secrets_client::metadata::set_allowed_destinations(name, &allowed_destinations)
+    {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "secret_metadata_unavailable",
+            &format!("destination policy was not stored; refusing to write secret value: {err}"),
+            None,
+        );
+    }
+
+    match secrets_client::FnoxClient::new().set(name, value).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "stored": name }))).into_response(),
+        Err(err) => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "secret_store_unavailable",
+            &format!("fnox set failed: {err}"),
+            None,
+        ),
+    }
+}
+
 /// Handler for GET /v1/models
 pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
     if let Some(response) = require_api_key(&state.config, &headers) {
@@ -793,6 +937,54 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
     }
 }
 
+fn require_control_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
+    let Some(expected_key) = config.secret_control_api_key.as_deref().map(str::trim) else {
+        return Some(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "control_api_auth_not_configured",
+            "Secret control API requires proxy.secret_control_api_key or proxy.secret_control_api_key_file",
+            None,
+        ));
+    };
+    if expected_key.is_empty() {
+        return Some(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "control_api_auth_not_configured",
+            "Secret control API requires a non-empty proxy.secret_control_api_key or proxy.secret_control_api_key_file",
+            None,
+        ));
+    }
+
+    let provided = bearer_token(headers);
+    if provided == Some(expected_key) {
+        None
+    } else {
+        Some(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid secret control API key",
+            None,
+        ))
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| {
+            let trimmed = s.trim();
+            let mut parts = trimmed.splitn(2, char::is_whitespace);
+            let scheme = parts.next()?;
+            let token = parts.next()?.trim();
+            if scheme.eq_ignore_ascii_case("Bearer") && !token.is_empty() {
+                Some(token)
+            } else {
+                None
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,12 +992,12 @@ mod tests {
         DispatcherConfig, ModelShortcutConfig, ProxyAccessPolicy, ProxyAgentConfig,
         SyntheticModelConfig,
     };
-    use crate::providers::alloy::AlloyManager;
     use crate::providers::ProviderRegistry;
+    use crate::providers::alloy::AlloyManager;
+    use crate::proxy::ProxyState;
     use crate::proxy::backend::{BackendError, ModelInfo as BackendModelInfo};
     use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
     use crate::proxy::openai::{ChatCompletionResponse, Choice, Usage};
-    use crate::proxy::ProxyState;
     use crate::sync::Arc;
     use async_trait::async_trait;
     use axum::body::to_bytes;
@@ -928,6 +1120,13 @@ mod tests {
     fn config_with_key(key: Option<&str>) -> ProxyConfig {
         ProxyConfig {
             api_key: key.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn config_with_secret_control_key(key: Option<&str>) -> ProxyConfig {
+        ProxyConfig {
+            secret_control_api_key: key.map(str::to_string),
             ..Default::default()
         }
     }
@@ -1108,6 +1307,30 @@ mod tests {
         let headers = HeaderMap::new();
         let response = require_api_key(&config_with_key(Some("test-key")), &headers);
         assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn require_control_api_key_fails_closed_without_configured_key() {
+        let headers = HeaderMap::new();
+
+        let missing = require_control_api_key(&config_with_secret_control_key(None), &headers)
+            .expect("control API must reject unconfigured auth");
+        assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let empty = require_control_api_key(&config_with_secret_control_key(Some("  ")), &headers)
+            .expect("control API must reject empty auth");
+        assert_eq!(empty.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn require_control_api_key_accepts_valid_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer test-key"));
+
+        assert!(
+            require_control_api_key(&config_with_secret_control_key(Some("test-key")), &headers)
+                .is_none()
+        );
     }
 
     #[test]

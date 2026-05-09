@@ -55,7 +55,7 @@ pub fn generate_hmac_token(secret_key: &[u8], context: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let nonce: u64 = rand::thread_rng().gen();
+    let nonce: u64 = rand::random();
 
     mac.update(&timestamp.to_be_bytes());
     mac.update(&nonce.to_be_bytes());

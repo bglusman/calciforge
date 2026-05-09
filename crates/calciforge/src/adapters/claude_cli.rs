@@ -48,17 +48,17 @@ impl ClaudeCliAdapter {
 
     fn build_args(&self, model_override: Option<&str>, session: Option<&str>) -> Vec<String> {
         let mut args = self.args.clone();
-        if let Some(model) = model_override.or(self.model.as_deref()) {
-            if !Self::has_arg(&args, "--model", "") {
-                args.push("--model".to_string());
-                args.push(model.to_string());
-            }
+        if let Some(model) = model_override.or(self.model.as_deref())
+            && !Self::has_arg(&args, "--model", "")
+        {
+            args.push("--model".to_string());
+            args.push(model.to_string());
         }
-        if let Some(session) = session.filter(|session| !session.trim().is_empty()) {
-            if !Self::has_arg(&args, "--session-id", "") {
-                args.push("--session-id".to_string());
-                args.push(session.to_string());
-            }
+        if let Some(session) = session.filter(|session| !session.trim().is_empty())
+            && !Self::has_arg(&args, "--session-id", "")
+        {
+            args.push("--session-id".to_string());
+            args.push(session.to_string());
         }
         args
     }

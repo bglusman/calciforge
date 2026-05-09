@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::approval::signal::{SignalClient, SignalWebhookPayload};
-use crate::approval::token::{generate_token, hash_token, TokenAuditInfo};
+use crate::approval::token::{TokenAuditInfo, generate_token, hash_token};
 
 pub mod identity_plugin;
 pub mod signal;

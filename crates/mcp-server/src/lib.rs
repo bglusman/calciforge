@@ -107,8 +107,16 @@ impl CalciforgeMcp {
     async fn list_secrets(&self) -> Result<CallToolResult, McpError> {
         match self.fnox.list().await {
             Ok(names) => {
+                let metadata =
+                    secrets_client::metadata::metadata_for_names(&names).map_err(|error| {
+                        McpError::internal_error(
+                            format!("secret metadata unavailable: {error}"),
+                            None,
+                        )
+                    })?;
                 let payload = serde_json::json!({
                     "names": names,
+                    "secrets": metadata,
                     "count": names.len(),
                 });
                 Ok(CallToolResult::success(vec![Content::text(

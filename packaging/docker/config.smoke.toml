@@ -1,0 +1,13 @@
+[calciforge]
+version = 2
+
+[proxy]
+enabled = true
+bind = "0.0.0.0:18792"
+backend_type = "http"
+backend_url = "http://mock-llm:8000/v1"
+backend_api_key = "mock"
+timeout_seconds = 30
+
+[security]
+profile = "balanced"
