@@ -75,9 +75,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tap="calciforge/local-smoke"
+          tap_dir="$(brew --repository)/Library/Taps/calciforge/homebrew-local-smoke"
           brew uninstall --formula calciforge >/dev/null 2>&1 || true
-          brew install --formula "$PWD/dist/calciforge.rb"
-          brew test calciforge
+          brew untap "$tap" >/dev/null 2>&1 || true
+          brew tap-new "$tap"
+          cp "$PWD/dist/calciforge.rb" "$tap_dir/Formula/calciforge.rb"
+          brew install "$tap/calciforge"
+          brew test "$tap/calciforge"
           calciforge --version
           calciforge-secrets help >/dev/null
           security-proxy --help >/dev/null
@@ -85,3 +90,4 @@ jobs:
           mcp-server --help >/dev/null
           paste-server --help >/dev/null
           brew uninstall --formula calciforge
+          brew untap "$tap"
