@@ -9,6 +9,7 @@
 
 pub mod matrix;
 pub mod mock;
+pub mod runtime;
 pub mod signal;
 pub mod sms;
 pub mod telegram;

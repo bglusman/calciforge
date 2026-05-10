@@ -27,6 +27,9 @@ that should be reasonably stable:
 - `roadmap/` — public future-work notes
   - `roadmap/agent-recipes-orchestrators.md` — future support for secured
     recipes, richer artifacts, and async orchestrator backends
+  - `roadmap/architecture-laws-action-plan.md` — refactor plan for channel
+    pipelines, command handling, security proxy policy, installer structure,
+    and adapter lifecycle cleanup
 
 ## Status labels
 

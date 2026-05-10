@@ -31,6 +31,13 @@ proxy, model-gateway, or future Calciforge API surfaces.
 
 ## Current Adapter Posture
 
+Adapter lifecycle labels:
+
+- Stable: recommended for ordinary operator configuration.
+- Legacy: retained for compatibility, but not preferred for new deployments.
+- Experimental: available for targeted use while the contract is still
+  settling.
+
 | Agent | Calciforge path | Notes |
 |---|---|---|
 | Codex CLI | `kind = "codex-cli"` or future ACP via `codex-acp` | Good fit when the Unix account running Calciforge owns Codex credentials. Calciforge can pass selected sessions through the Codex resume path. Zed's Apache-2.0 `codex-acp` adapter is the better reference path for richer Codex sessions because it exposes ACP features such as images, tool-call permission requests, edit review, TODO lists, slash commands, MCP server forwarding, and Codex auth methods. Keep chat-facing agents conservative unless the channel is trusted. |

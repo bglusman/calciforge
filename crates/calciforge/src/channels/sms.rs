@@ -30,10 +30,9 @@ use crate::{
     router::Router,
 };
 
-use super::telemetry;
+use super::{runtime, telemetry};
 
 use adversary_detector::middleware::ChannelScanner;
-use adversary_detector::verdict::ScanContext;
 
 pub struct SmsChannel<C: Channel + ?Sized = ZclLinqChannel> {
     config: Arc<CalciforgeConfig>,
@@ -64,12 +63,7 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
     }
 
     fn scan_enabled(&self) -> bool {
-        self.config
-            .channels
-            .iter()
-            .find(|c| c.kind == "sms")
-            .map(|c| c.scan_messages)
-            .unwrap_or(false)
+        runtime::scan_enabled(&self.config, "sms")
     }
 
     async fn send_reply(&self, recipient: &str, body: &str) {
@@ -112,11 +106,7 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
         let delivery_lag_ms = telemetry::delivery_lag_ms_from_unix_seconds(msg.timestamp);
 
         let from = msg.sender.clone();
-        let reply_target = if msg.reply_target.is_empty() {
-            msg.sender.clone()
-        } else {
-            msg.reply_target.clone()
-        };
+        let reply_target = runtime::reply_target(&msg);
         let text = msg.content.clone();
 
         let identity = match resolve_channel_sender("sms", &from, &self.config) {
@@ -131,42 +121,23 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
 
         let chat_key = conversation_chat_key(&identity.id, &reply_target);
 
-        if self.scan_enabled() {
-            let verdict = self
-                .channel_scanner
-                .scan_text(&text, ScanContext::UserMessage)
-                .await;
-            match &verdict {
-                adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                    warn!(
-                        identity = %identity.id,
-                        reason = %reason,
-                        "Text/iMessage: inbound message BLOCKED by adversary scan"
-                    );
-                    let channel = self.clone();
-                    let target = reply_target.clone();
-                    let reason_owned = reason.clone();
-                    tokio::spawn(async move {
-                        channel
-                            .send_reply(
-                                &target,
-                                &format!("Message blocked by security scanner: {reason_owned}"),
-                            )
-                            .await;
-                    });
-                    return;
-                }
-                adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                    warn!(
-                        identity = %identity.id,
-                        reason = %reason,
-                        "Text/iMessage: inbound message flagged REVIEW - passing with caution"
-                    );
-                }
-                adversary_detector::verdict::ScanVerdict::Clean => {
-                    debug!(identity = %identity.id, "Text/iMessage: inbound scan clean");
-                }
-            }
+        if self.scan_enabled()
+            && let Some(reply) = runtime::inbound_scan_block_reply(
+                "sms",
+                "Text/iMessage",
+                &identity.id,
+                &text,
+                &self.channel_scanner,
+                "Message blocked by security scanner",
+            )
+            .await
+        {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
         }
 
         let text = match self
