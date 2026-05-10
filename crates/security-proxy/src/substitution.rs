@@ -39,10 +39,25 @@
 //! through an authoritative per-agent map before loading any secret.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub const PLACEHOLDER_PREFIX: &str = "cfg_";
 pub const PLACEHOLDER_RANDOM_HEX_LEN: usize = 32;
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PlaceholderMapError {
+    #[error("placeholder agent id must not be empty")]
+    EmptyAgentId,
+
+    #[error("invalid placeholder token: {0}")]
+    InvalidToken(String),
+
+    #[error("invalid placeholder secret name: {0}")]
+    InvalidSecretName(String),
+
+    #[error("placeholder token {token:?} is already registered for another secret")]
+    ConflictingToken { token: String },
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SubstitutionError {
@@ -57,6 +72,60 @@ pub enum SubstitutionError {
 
     #[error("malformed secret reference: {0}")]
     Malformed(String),
+}
+
+/// Per-agent placeholder token registry.
+///
+/// This map intentionally resolves only `agent_id + full opaque token` to a
+/// secret name. It does not trust the token's embedded name hint, and it does
+/// not load secret values. Callers must pass the returned secret name through
+/// the normal identity ACL and destination allowlist before resolving a value.
+#[derive(Debug, Clone, Default)]
+pub struct PlaceholderMap {
+    by_agent: HashMap<String, HashMap<String, String>>,
+}
+
+impl PlaceholderMap {
+    pub fn insert(
+        &mut self,
+        agent_id: impl Into<String>,
+        token: impl Into<String>,
+        secret_name: impl Into<String>,
+    ) -> Result<(), PlaceholderMapError> {
+        let agent_id = agent_id.into();
+        if agent_id.trim().is_empty() {
+            return Err(PlaceholderMapError::EmptyAgentId);
+        }
+
+        let token = token.into();
+        if placeholder_name_hint(&token).is_none() {
+            return Err(PlaceholderMapError::InvalidToken(token));
+        }
+
+        let secret_name = secret_name.into();
+        if let Err(error) = validate_name(&secret_name) {
+            return Err(PlaceholderMapError::InvalidSecretName(error.to_string()));
+        }
+
+        let agent_tokens = self.by_agent.entry(agent_id).or_default();
+        if let Some(existing) = agent_tokens.get(&token) {
+            if existing != &secret_name {
+                return Err(PlaceholderMapError::ConflictingToken { token });
+            }
+            return Ok(());
+        }
+        agent_tokens.insert(token, secret_name);
+        Ok(())
+    }
+
+    pub fn resolve<'a>(
+        &'a self,
+        identity: &secrets_client::SecretAccessIdentity,
+        token: &str,
+    ) -> Option<&'a str> {
+        let agent_id = identity.agent_id.as_deref()?;
+        self.by_agent.get(agent_id)?.get(token).map(String::as_str)
+    }
 }
 
 /// Parse `input` and return the set of unique reference names it
@@ -395,6 +464,100 @@ mod tests {
         let found =
             find_placeholder_tokens("prefixcfg_OPENAI_KEY_0123456789abcdef0123456789abcdef");
         assert!(found.is_empty());
+    }
+
+    /// Given a placeholder registered for one agent,
+    /// when that same agent resolves the full token,
+    /// then the authoritative secret name is returned.
+    #[test]
+    fn placeholder_map_resolves_for_matching_agent() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            user_id: Some("user-1".to_string()),
+            channel: Some("signal".to_string()),
+        };
+        let mut map = PlaceholderMap::default();
+
+        map.insert("agent-a", token, "OPENAI_API_KEY").unwrap();
+
+        assert_eq!(map.resolve(&identity, token), Some("OPENAI_API_KEY"));
+    }
+
+    /// Given the same opaque placeholder token is registered under another
+    /// agent,
+    /// when a different agent tries to resolve it,
+    /// then no secret name is returned.
+    #[test]
+    fn placeholder_map_is_scoped_by_agent_id() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-b".to_string()),
+            user_id: None,
+            channel: None,
+        };
+        let mut map = PlaceholderMap::default();
+
+        map.insert("agent-a", token, "OPENAI_API_KEY").unwrap();
+
+        assert_eq!(map.resolve(&identity, token), None);
+    }
+
+    /// Given an identity without an agent id,
+    /// when it tries to resolve a placeholder,
+    /// then resolution fails closed.
+    #[test]
+    fn placeholder_map_requires_agent_identity() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let identity = secrets_client::SecretAccessIdentity::default();
+        let mut map = PlaceholderMap::default();
+
+        map.insert("agent-a", token, "OPENAI_API_KEY").unwrap();
+
+        assert_eq!(map.resolve(&identity, token), None);
+    }
+
+    /// Given invalid registration inputs,
+    /// when inserting into the placeholder map,
+    /// then invalid agent, token, and secret names are rejected early.
+    #[test]
+    fn placeholder_map_rejects_invalid_registration() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let mut map = PlaceholderMap::default();
+
+        assert_eq!(
+            map.insert(" ", token, "OPENAI_API_KEY"),
+            Err(PlaceholderMapError::EmptyAgentId)
+        );
+        assert_eq!(
+            map.insert("agent-a", "cfg_short_deadbeef", "OPENAI_API_KEY"),
+            Err(PlaceholderMapError::InvalidToken(
+                "cfg_short_deadbeef".to_string()
+            ))
+        );
+        assert!(matches!(
+            map.insert("agent-a", token, "OPENAI.API.KEY"),
+            Err(PlaceholderMapError::InvalidSecretName(_))
+        ));
+    }
+
+    /// Given a placeholder token is already registered for one secret,
+    /// when the same agent tries to reuse that token for another secret,
+    /// then the map rejects the conflicting registration.
+    #[test]
+    fn placeholder_map_rejects_conflicting_token_registration() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let mut map = PlaceholderMap::default();
+
+        map.insert("agent-a", token, "OPENAI_API_KEY").unwrap();
+        map.insert("agent-a", token, "OPENAI_API_KEY").unwrap();
+
+        assert_eq!(
+            map.insert("agent-a", token, "OTHER_API_KEY"),
+            Err(PlaceholderMapError::ConflictingToken {
+                token: token.to_string()
+            })
+        );
     }
 
     /// Given input with no valid placeholders,
