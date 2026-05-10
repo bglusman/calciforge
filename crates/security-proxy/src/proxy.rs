@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
 use tracing::{error, info, warn};
@@ -41,6 +41,31 @@ use crate::config::GatewayConfig;
 use crate::credentials::{CredentialInjection, CredentialInjector};
 #[cfg(feature = "ironclaw-safety")]
 use crate::ironclaw::IronclawSafety;
+
+const CALCIFORGE_AGENT_ID: &str = "x-calciforge-agent-id";
+const LEGACY_AGENT_ID: &str = "x-agent-id";
+const CALCIFORGE_USER_ID: &str = "x-calciforge-user-id";
+const CALCIFORGE_CHANNEL: &str = "x-calciforge-channel";
+const CALCIFORGE_CHANNEL_ID: &str = "x-calciforge-channel-id";
+
+pub(crate) fn secret_access_identity_from_headers(
+    headers: &HeaderMap,
+) -> secrets_client::SecretAccessIdentity {
+    let header_string = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+
+    secrets_client::SecretAccessIdentity {
+        agent_id: header_string(CALCIFORGE_AGENT_ID).or_else(|| header_string(LEGACY_AGENT_ID)),
+        user_id: header_string(CALCIFORGE_USER_ID),
+        channel: header_string(CALCIFORGE_CHANNEL_ID).or_else(|| header_string(CALCIFORGE_CHANNEL)),
+    }
+}
 
 // ── SecurityProxy ────────────────────────────────────────────────────────────
 
@@ -146,6 +171,7 @@ impl SecurityProxy {
         };
 
         info!("{} {}", method, redact_url_for_log(&target_url));
+        let secret_access_identity = secret_access_identity_from_headers(req.headers());
 
         // Pre-substitution host extraction. The destination allowlist
         // (RFC §11.1) MUST gate URL substitution too — an attacker can
@@ -201,6 +227,7 @@ impl SecurityProxy {
                 &target_url,
                 url_dest_host.as_deref(),
                 secret_metadata.as_ref(),
+                &secret_access_identity,
             )
             .await
         {
@@ -254,7 +281,9 @@ impl SecurityProxy {
                         | "trailers"
                         | "transfer-encoding"
                         | "upgrade"
-                ) {
+                ) || key_str.starts_with("x-calciforge-")
+                    || key_str == LEGACY_AGENT_ID
+                {
                     None
                 } else {
                     v.to_str()
@@ -299,7 +328,12 @@ impl SecurityProxy {
                 }
             }
             match self
-                .resolve_and_substitute(v, dest_host.as_deref(), secret_metadata.as_ref())
+                .resolve_and_substitute(
+                    v,
+                    dest_host.as_deref(),
+                    secret_metadata.as_ref(),
+                    &secret_access_identity,
+                )
                 .await
             {
                 Ok(new_v) => substituted_headers.push((k.clone(), new_v)),
@@ -366,6 +400,7 @@ impl SecurityProxy {
                             &body_str,
                             dest_host.as_deref(),
                             secret_metadata.as_ref(),
+                            &secret_access_identity,
                         )
                         .await
                     {
@@ -783,6 +818,7 @@ impl SecurityProxy {
         input: &str,
         dest_host: Option<&str>,
         metadata: Option<&secrets_client::SecretMetadataStore>,
+        access_identity: &secrets_client::SecretAccessIdentity,
     ) -> Result<String, String> {
         let names = crate::substitution::find_refs(input).map_err(|e| e.to_string())?;
         if names.is_empty() {
@@ -796,12 +832,25 @@ impl SecurityProxy {
         //     a destination we don't trust.
         if let Some(host) = dest_host {
             let host_lower = host.to_lowercase();
-            let Some(metadata) = metadata else {
-                return Err(
-                    "secret metadata unavailable for destination-scoped substitution".to_string(),
-                );
-            };
             for name in &names {
+                if !self.config.secret_access.allows(access_identity, name) {
+                    tracing::warn!(
+                        secret = %name,
+                        agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
+                        user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
+                        channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
+                        "secret substitution denied by identity access policy"
+                    );
+                    return Err(format!(
+                        "secret {name:?} not allowed for current Calciforge identity"
+                    ));
+                }
+                let Some(metadata) = metadata else {
+                    return Err(
+                        "secret metadata unavailable for destination-scoped substitution"
+                            .to_string(),
+                    );
+                };
                 if !self.is_destination_allowed(name, &host_lower, metadata) {
                     tracing::warn!(
                         secret = %name,
@@ -817,6 +866,18 @@ impl SecurityProxy {
 
         let mut resolved = std::collections::HashMap::new();
         for name in names {
+            if !self.config.secret_access.allows(access_identity, &name) {
+                tracing::warn!(
+                    secret = %name,
+                    agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
+                    user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
+                    channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
+                    "secret substitution denied by identity access policy"
+                );
+                return Err(format!(
+                    "secret {name:?} not allowed for current Calciforge identity"
+                ));
+            }
             match secrets_client::vault::get_secret(&name).await {
                 Ok(value) => {
                     tracing::debug!(
@@ -1176,6 +1237,7 @@ mod tests {
                 "https://attacker.example/?key={{secret:OPENAI}}",
                 Some("attacker.example"),
                 Some(&metadata),
+                &secrets_client::SecretAccessIdentity::default(),
             )
             .await
             .expect_err("disallowed dynamic metadata destination must fail closed");
@@ -1187,6 +1249,45 @@ mod tests {
         assert!(
             !err.contains("not found in env or fnox"),
             "secret resolver must not run for denied destinations: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_secret_policy_denies_before_secret_resolver() {
+        let proxy = test_proxy(GatewayConfig {
+            secret_access: secrets_client::SecretAccessPolicy {
+                rules: vec![secrets_client::SecretAccessRule {
+                    agents: vec!["agent-a".to_string()],
+                    secrets: vec!["ALLOWED_*".to_string()],
+                    ..Default::default()
+                }],
+            },
+            ..Default::default()
+        })
+        .await;
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("DENIED_KEY", &["api.example.com"]);
+
+        let err = proxy
+            .resolve_and_substitute(
+                "https://api.example.com/?key={{secret:DENIED_KEY}}",
+                Some("api.example.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .await
+            .expect_err("identity policy should fail closed for unlisted secrets");
+
+        assert!(
+            err.contains("not allowed for current Calciforge identity"),
+            "denial should happen before resolver lookup; got {err}"
+        );
+        assert!(
+            !err.contains("not found in env or fnox"),
+            "secret resolver must not run for identity-policy denials: {err}"
         );
     }
 
@@ -1403,6 +1504,33 @@ mod tests {
         assert!(!redacted.contains("pass"));
         assert!(!redacted.contains("path"));
         assert!(!redacted.contains("token-fragment"));
+    }
+
+    #[test]
+    fn secret_access_identity_prefers_calciforge_headers_and_trims_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CALCIFORGE_AGENT_ID,
+            header::HeaderValue::from_static(" research-agent "),
+        );
+        headers.insert(
+            LEGACY_AGENT_ID,
+            header::HeaderValue::from_static("legacy-agent"),
+        );
+        headers.insert(
+            CALCIFORGE_USER_ID,
+            header::HeaderValue::from_static(" brian "),
+        );
+        headers.insert(
+            CALCIFORGE_CHANNEL,
+            header::HeaderValue::from_static("signal"),
+        );
+
+        let identity = secret_access_identity_from_headers(&headers);
+
+        assert_eq!(identity.agent_id.as_deref(), Some("research-agent"));
+        assert_eq!(identity.user_id.as_deref(), Some("brian"));
+        assert_eq!(identity.channel.as_deref(), Some("signal"));
     }
 
     #[tokio::test]

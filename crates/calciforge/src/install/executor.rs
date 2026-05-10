@@ -619,8 +619,11 @@ fn run_agent_helper_install(
         };
     }
 
-    let wrapper =
-        render_central_secret_helper_wrapper(base_url, args.agent_helper_api_key.as_deref());
+    let wrapper = render_central_secret_helper_wrapper(
+        base_url,
+        args.agent_helper_api_key.as_deref(),
+        &claw.name,
+    );
     if let Err(err) = deps.ssh.write_file(&claw.host, key, wrapper_path, &wrapper) {
         return StepResult {
             step: InstallStep::AgentHelperInstall,
@@ -743,7 +746,11 @@ fn run_agent_helper_install(
     }
 }
 
-fn render_central_secret_helper_wrapper(base_url: &str, api_key: Option<&str>) -> String {
+fn render_central_secret_helper_wrapper(
+    base_url: &str,
+    api_key: Option<&str>,
+    agent_id: &str,
+) -> String {
     let token_line = api_key
         .map(|token| {
             format!(
@@ -755,9 +762,11 @@ fn render_central_secret_helper_wrapper(base_url: &str, api_key: Option<&str>) -
     format!(
         "#!/bin/sh\n\
          # Managed by calciforge install. This wrapper talks to the central Calciforge secret store.\n\
+         export CALCIFORGE_AGENT_ID={}\n\
          export CALCIFORGE_SECRETS_BASE_URL={}\n\
          {}\
          exec \"$HOME/.local/libexec/calciforge/calciforge-secrets-bin\" \"$@\"\n",
+        shell_quote(agent_id.trim()),
         shell_quote(base_url.trim().trim_end_matches('/')),
         token_line
     )
@@ -2933,7 +2942,9 @@ mod tests {
         let wrapper = render_central_secret_helper_wrapper(
             "http://calciforge.local:8080/",
             Some("secret-token"),
+            "research-agent",
         );
+        assert!(wrapper.contains("CALCIFORGE_AGENT_ID='research-agent'"));
         assert!(wrapper.contains("CALCIFORGE_SECRETS_BASE_URL='http://calciforge.local:8080'"));
         assert!(wrapper.contains("CALCIFORGE_SECRETS_TOKEN='secret-token'"));
         assert!(wrapper.contains("calciforge-secrets-bin"));

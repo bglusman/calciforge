@@ -463,20 +463,28 @@ pub async fn secret_list(State(state): State<ProxyState>, headers: HeaderMap) ->
         return response;
     }
 
+    let (policy, identity) = match secret_access_context_from_headers(&headers).await {
+        Ok(context) => context,
+        Err(response) => return *response,
+    };
+
     match secrets_client::FnoxClient::new().list().await {
-        Ok(secrets) => match secrets_client::metadata::metadata_for_names(&secrets) {
-            Ok(metadata) => (
-                StatusCode::OK,
-                Json(json!({ "secrets": secrets, "metadata": metadata })),
-            )
-                .into_response(),
-            Err(err) => api_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "secret_metadata_unavailable",
-                &format!("secret metadata unavailable: {err}"),
-                None,
-            ),
-        },
+        Ok(secrets) => {
+            let secrets = policy.filter_names(&identity, secrets);
+            match secrets_client::metadata::metadata_for_names(&secrets) {
+                Ok(metadata) => (
+                    StatusCode::OK,
+                    Json(json!({ "secrets": secrets, "metadata": metadata })),
+                )
+                    .into_response(),
+                Err(err) => api_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "secret_metadata_unavailable",
+                    &format!("secret metadata unavailable: {err}"),
+                    None,
+                ),
+            }
+        }
         Err(err) => api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "secret_store_unavailable",
@@ -497,15 +505,75 @@ pub async fn secret_reference(
     }
 
     match secrets_client::secret_reference_token(&name) {
-        Some(reference) => {
-            (StatusCode::OK, Json(json!({ "reference": reference }))).into_response()
-        }
+        Some(reference) => match secret_access_context_from_headers(&headers).await {
+            Ok((policy, identity)) if policy.allows(&identity, &name) => {
+                (StatusCode::OK, Json(json!({ "reference": reference }))).into_response()
+            }
+            Ok(_) => api_error(
+                StatusCode::FORBIDDEN,
+                "secret_access_denied",
+                "Secret is not allowed for the current Calciforge identity",
+                Some("name"),
+            ),
+            Err(response) => *response,
+        },
         None => api_error(
             StatusCode::BAD_REQUEST,
             "invalid_secret_name",
             "Secret names may contain only A-Z, a-z, 0-9, underscore, and dash",
             Some("name"),
         ),
+    }
+}
+
+async fn secret_access_context_from_headers(
+    headers: &HeaderMap,
+) -> Result<
+    (
+        secrets_client::SecretAccessPolicy,
+        secrets_client::SecretAccessIdentity,
+    ),
+    Box<Response>,
+> {
+    let identity = secret_access_identity_from_headers(headers);
+    let policy = tokio::task::spawn_blocking(secrets_client::load_default_access_policy)
+        .await
+        .map_err(|err| {
+            Box::new(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_access_policy_unavailable",
+                &format!("secret access policy load task failed: {err}"),
+                None,
+            ))
+        })?
+        .map_err(|err| {
+            Box::new(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_access_policy_unavailable",
+                &format!("secret access policy unavailable: {err}"),
+                None,
+            ))
+        })?;
+    Ok((policy, identity))
+}
+
+fn secret_access_identity_from_headers(
+    headers: &HeaderMap,
+) -> secrets_client::SecretAccessIdentity {
+    let header_string = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+
+    secrets_client::SecretAccessIdentity {
+        agent_id: header_string("x-calciforge-agent-id").or_else(|| header_string("x-agent-id")),
+        user_id: header_string("x-calciforge-user-id"),
+        channel: header_string("x-calciforge-channel-id")
+            .or_else(|| header_string("x-calciforge-channel")),
     }
 }
 
@@ -1331,6 +1399,24 @@ mod tests {
             require_control_api_key(&config_with_secret_control_key(Some("test-key")), &headers)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn secret_access_identity_prefers_calciforge_control_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-calciforge-agent-id",
+            HeaderValue::from_static(" research-agent "),
+        );
+        headers.insert("x-agent-id", HeaderValue::from_static("legacy-agent"));
+        headers.insert("x-calciforge-user-id", HeaderValue::from_static(" brian "));
+        headers.insert("x-calciforge-channel", HeaderValue::from_static("signal"));
+
+        let identity = secret_access_identity_from_headers(&headers);
+
+        assert_eq!(identity.agent_id.as_deref(), Some("research-agent"));
+        assert_eq!(identity.user_id.as_deref(), Some("brian"));
+        assert_eq!(identity.channel.as_deref(), Some("signal"));
     }
 
     #[test]

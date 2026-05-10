@@ -16,6 +16,7 @@
 //! This crate is a focused secrets-resolution library. It does not expose an
 //! HTTP credential proxy or print secret values.
 
+pub mod access_policy;
 pub mod config;
 pub mod fnox_client;
 pub mod fnox_library;
@@ -23,6 +24,9 @@ pub mod metadata;
 pub mod secret_refs;
 pub mod vault;
 
+pub use access_policy::{
+    SecretAccessIdentity, SecretAccessPolicy, SecretAccessRule, load_default_access_policy,
+};
 pub use config::RetryConfig;
 pub use fnox_client::{FnoxClient, FnoxError};
 pub use fnox_library::FnoxLibrary;

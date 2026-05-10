@@ -3,7 +3,9 @@
 //! This exposes the same safe surface as the MCP server: list names and build
 //! placeholder references. It never resolves or prints secret values.
 
-use secrets_client::{FnoxClient, secret_reference_token};
+use secrets_client::{
+    FnoxClient, SecretAccessIdentity, SecretAccessPolicy, secret_reference_token,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -41,7 +43,7 @@ async fn run() -> Result<(), String> {
             let name = args
                 .next()
                 .ok_or_else(|| "usage: calciforge-secrets ref NAME".to_string())?;
-            reference(&name)
+            reference(&name).await
         }
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
@@ -78,10 +80,12 @@ async fn list(json_output: bool) -> Result<(), String> {
         return Ok(());
     }
 
+    let (policy, identity) = access_context()?;
     let names = FnoxClient::new()
         .list()
         .await
         .map_err(|e| format!("fnox list failed: {e}"))?;
+    let names = policy.filter_names(&identity, names);
     let metadata = secrets_client::metadata::metadata_for_names(&names)
         .map_err(|e| format!("secret metadata unavailable: {e}"))?;
     if json_output {
@@ -146,15 +150,44 @@ fn local_reference(name: &str) -> Result<String, String> {
     Ok(token)
 }
 
-fn reference(name: &str) -> Result<(), String> {
-    println!("{}", local_reference(name)?);
+async fn reference(name: &str) -> Result<(), String> {
+    let local_token = local_reference(name)?;
+    if let Some(remote) = RemoteSecretsApi::from_env() {
+        println!("{}", remote.reference(name).await?);
+        return Ok(());
+    }
+
+    let (policy, identity) = access_context()?;
+    ensure_policy_allows_reference(&policy, &identity, name)?;
+    println!("{local_token}");
     Ok(())
+}
+
+fn ensure_policy_allows_reference(
+    policy: &SecretAccessPolicy,
+    identity: &SecretAccessIdentity,
+    name: &str,
+) -> Result<(), String> {
+    if policy.allows(identity, name) {
+        return Ok(());
+    }
+    Err(format!(
+        "secret {name:?} is not allowed for the current Calciforge identity"
+    ))
+}
+
+fn access_context() -> Result<(SecretAccessPolicy, SecretAccessIdentity), String> {
+    let policy = secrets_client::load_default_access_policy()
+        .map_err(|e| format!("secret access policy unavailable: {e}"))?;
+    let identity = SecretAccessIdentity::from_env();
+    Ok((policy, identity))
 }
 
 #[derive(Clone)]
 struct RemoteSecretsApi {
     base_url: String,
     token: Option<String>,
+    identity: SecretAccessIdentity,
     client: reqwest::Client,
 }
 
@@ -163,6 +196,11 @@ struct ListResponse {
     secrets: Vec<String>,
     #[serde(default)]
     metadata: Vec<secrets_client::SecretMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReferenceResponse {
+    reference: String,
 }
 
 impl RemoteSecretsApi {
@@ -178,6 +216,7 @@ impl RemoteSecretsApi {
         Some(Self {
             base_url,
             token,
+            identity: SecretAccessIdentity::from_env(),
             client: reqwest::Client::new(),
         })
     }
@@ -215,12 +254,34 @@ impl RemoteSecretsApi {
         Ok(())
     }
 
+    async fn reference(&self, name: &str) -> Result<String, String> {
+        let response = self
+            .send(
+                self.client
+                    .get(format!("{}/control/secrets/ref/{name}", self.base_url)),
+            )
+            .await?
+            .json::<ReferenceResponse>()
+            .await
+            .map_err(|e| format!("invalid Calciforge secret-reference response: {e}"))?;
+        Ok(response.reference)
+    }
+
     async fn send(
         &self,
         mut request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, String> {
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
+        }
+        if let Some(agent_id) = &self.identity.agent_id {
+            request = request.header("x-calciforge-agent-id", agent_id);
+        }
+        if let Some(user_id) = &self.identity.user_id {
+            request = request.header("x-calciforge-user-id", user_id);
+        }
+        if let Some(channel_id) = &self.identity.channel {
+            request = request.header("x-calciforge-channel-id", channel_id);
         }
         let response = request
             .send()
@@ -286,6 +347,11 @@ mod tests {
         let api = RemoteSecretsApi {
             base_url,
             token: Some("test-token".into()),
+            identity: SecretAccessIdentity {
+                agent_id: Some("research-agent".into()),
+                user_id: Some("brian".into()),
+                channel: Some("signal".into()),
+            },
             client: reqwest::Client::new(),
         };
 
@@ -313,6 +379,18 @@ mod tests {
                 .contains("authorization: bearer test-token"),
             "request should authenticate to central Calciforge API: {request}"
         );
+        assert!(
+            request.contains("x-calciforge-agent-id: research-agent"),
+            "request should forward Calciforge agent identity: {request}"
+        );
+        assert!(
+            request.contains("x-calciforge-user-id: brian"),
+            "request should forward Calciforge user identity: {request}"
+        );
+        assert!(
+            request.contains("x-calciforge-channel-id: signal"),
+            "request should forward Calciforge channel identity: {request}"
+        );
     }
 
     #[tokio::test]
@@ -321,6 +399,7 @@ mod tests {
         let api = RemoteSecretsApi {
             base_url,
             token: Some("test-token".into()),
+            identity: SecretAccessIdentity::default(),
             client: reqwest::Client::new(),
         };
 
@@ -330,6 +409,31 @@ mod tests {
         assert!(request.starts_with("POST /control/secrets/set "));
         assert!(request.contains(r#""name":"API_KEY""#));
         assert!(request.contains(r#""value":"secret-value""#));
+    }
+
+    #[tokio::test]
+    async fn remote_reference_uses_central_api_for_policy_decision() {
+        let (base_url, request) =
+            one_shot_http(r#"{"reference":"{{secret:BRAVE_API_KEY}}"}"#).await;
+        let api = RemoteSecretsApi {
+            base_url,
+            token: Some("test-token".into()),
+            identity: SecretAccessIdentity {
+                agent_id: Some("research-agent".into()),
+                ..Default::default()
+            },
+            client: reqwest::Client::new(),
+        };
+
+        let reference = api.reference("BRAVE_API_KEY").await.unwrap();
+
+        assert_eq!(reference, "{{secret:BRAVE_API_KEY}}");
+        let request = request.await.unwrap();
+        assert!(request.starts_with("GET /control/secrets/ref/BRAVE_API_KEY "));
+        assert!(
+            request.contains("x-calciforge-agent-id: research-agent"),
+            "reference request should forward Calciforge identity: {request}"
+        );
     }
 
     #[test]
