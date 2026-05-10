@@ -285,7 +285,7 @@ async function dispatchViaSubagentRuntime({
   runTimeoutMs,
   errorRecoveryMs,
   log,
-  trace,
+  trace = {},
 }) {
     const baselineReply = await safeReadLatestAssistantReply({
       runtime,
@@ -401,7 +401,7 @@ async function dispatchViaChannelRuntime({
   replyWebhook,
   replyAuthToken,
   log,
-  trace,
+  trace = {},
 }) {
   const cfg = runtime.config.current();
   const resolvedAgentId = agentId || parseAgentIdFromSessionKey(sessionKey) || "main";
@@ -790,6 +790,13 @@ async function safeReadLatestAssistantReply({
   withGatewayClient = runWithSyntheticGatewayClient,
   timeoutMs,
 }) {
+  if (typeof runtime?.subagent?.getSessionMessages !== "function") {
+    log?.warn?.(
+      "[calciforge-channel] assistant reply recovery unavailable: runtime.subagent.getSessionMessages missing",
+    );
+    return null;
+  }
+
   try {
     return await withOptionalTimeout(
       withGatewayClient(() => readLatestAssistantReply(runtime, sessionKey)),
@@ -911,8 +918,9 @@ async function deliverReply({
 
     if (!resp.ok) {
       const responseText = await resp.text().catch(() => "");
+      const responseSnippet = sanitizeLogSnippet(responseText, 160);
       log?.error?.(
-        `[calciforge-channel] reply webhook failed - status=${resp.status} requestId=${requestId || "(none)"} sessionKey=${sessionKey} body=${responseText.slice(0, 300)}`,
+        `[calciforge-channel] reply webhook failed - status=${resp.status} requestId=${requestId || "(none)"} sessionKey=${sessionKey} responseBytes=${responseText.length} responseSnippet=${responseSnippet}`,
       );
     } else {
       log?.info?.("[calciforge-channel] reply delivered");
@@ -920,6 +928,14 @@ async function deliverReply({
   } catch (err) {
     log?.error?.(`[calciforge-channel] reply webhook error - ${err.message}`);
   }
+}
+
+function sanitizeLogSnippet(value, maxLen = 160) {
+  return String(value ?? "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/[^\x20-\x7E]/g, "?")
+    .replace(/\s+/g, " ")
+    .slice(0, maxLen);
 }
 
 async function deliverNoVisibleReply({ reason, trace, ...args }) {
@@ -976,6 +992,8 @@ function sleep(ms) {
 
 export const testInternals = {
   registerHttpRoute,
+  canUseChannelRuntime,
+  sanitizeLogSnippet,
   isNewReply,
   isRecoverableReply,
   parseTimestampMillis,

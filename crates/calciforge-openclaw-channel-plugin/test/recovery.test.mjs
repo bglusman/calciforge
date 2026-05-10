@@ -70,6 +70,43 @@ test("registers inbound route with replaceExisting when public route API exists"
   assert.equal(calls[0].handler, route.handler);
 });
 
+test("channel runtime can run without session message recovery support", () => {
+  const runtime = {
+    config: { current: () => ({ session: {} }) },
+    channel: {
+      session: {
+        resolveStorePath: () => "/tmp/openclaw-test-sessions.json",
+        readSessionUpdatedAt: () => undefined,
+        recordInboundSession: async () => {},
+      },
+      reply: {
+        resolveEnvelopeFormatOptions: () => ({}),
+        formatInboundEnvelope: ({ body }) => body,
+        finalizeInboundContext: (ctx) => ctx,
+        withReplyDispatcher: async ({ run }) => run(),
+        dispatchReplyFromConfig: async () => ({ queuedFinal: false }),
+      },
+      turn: {
+        run: async () => {},
+      },
+    },
+  };
+
+  assert.equal(testInternals.canUseChannelRuntime(runtime), true);
+});
+
+test("reply webhook log snippets are single-line bounded ASCII", () => {
+  const snippet = testInternals.sanitizeLogSnippet(
+    "secret=abc\nsecond\tline\u0000more".repeat(20),
+    24,
+  );
+
+  assert.equal(snippet.length, 24);
+  assert.equal(snippet.includes("\n"), false);
+  assert.equal(snippet.includes("\t"), false);
+  assert.match(snippet, /^[\x20-\x7E]*$/);
+});
+
 test("dispatches through OpenClaw channel runtime with calciforge command context", async () => {
   const delivered = [];
   const server = http.createServer((req, res) => {
