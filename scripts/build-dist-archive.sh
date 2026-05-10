@@ -89,6 +89,7 @@ while IFS= read -r bin; do
     [[ -z "$bin" || "$bin" == \#* ]] && continue
     install -m 755 "$BIN_DIR/$bin" "$STAGE/bin/$bin"
 done < "$RUNTIME_BINARIES_FILE"
+install -m 755 "$ROOT/scripts/ollama-model-switch.sh" "$STAGE/bin/calciforge-ollama-switch"
 install_fnox_companion
 
 install -m 644 "$ROOT/LICENSE" "$STAGE/LICENSE"

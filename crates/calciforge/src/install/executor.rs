@@ -2124,7 +2124,7 @@ fn systemd_environment_line(key: &str, value: &str) -> Result<String> {
 /// Preserves all existing config fields.
 fn patch_openclaw_config(
     current_content: &str,
-    _claw_name: &str,
+    claw_name: &str,
     auth_token: Option<&str>,
     reply_webhook: Option<&str>,
     reply_auth_token: Option<&str>,
@@ -2140,7 +2140,13 @@ fn patch_openclaw_config(
         .ok_or_else(|| anyhow::anyhow!("openclaw.json root is not a JSON object"))?;
 
     remove_legacy_openclaw_hook_entries(config_obj)?;
-    patch_openclaw_channel_plugin(config_obj, auth_token, reply_webhook, reply_auth_token)?;
+    patch_openclaw_channel_plugin(
+        config_obj,
+        claw_name,
+        auth_token,
+        reply_webhook,
+        reply_auth_token,
+    )?;
     patch_openclaw_policy_plugin(config_obj, policy_endpoint)?;
     patch_openclaw_proxy_config(config_obj, proxy_endpoint)?;
 
@@ -2220,10 +2226,12 @@ fn patch_openclaw_proxy_config(
 
 fn patch_openclaw_channel_plugin(
     config_obj: &mut serde_json::Map<String, serde_json::Value>,
+    claw_name: &str,
     auth_token: Option<&str>,
     reply_webhook: Option<&str>,
     reply_auth_token: Option<&str>,
 ) -> Result<()> {
+    let claw_name = required_single_line(Some(claw_name), "claw_name")?;
     let auth_token = required_single_line(auth_token, "auth_token")?;
     let reply_webhook = required_single_line(reply_webhook, "reply_webhook")?;
     let reply_auth_token = required_single_line(reply_auth_token, "reply_auth_token")?;
@@ -2256,6 +2264,7 @@ fn patch_openclaw_channel_plugin(
                 "authToken": auth_token,
                 "replyWebhook": reply_webhook,
                 "replyAuthToken": reply_auth_token,
+                "allowedAgentIds": [claw_name],
             },
         }),
     );
@@ -3044,6 +3053,10 @@ mod tests {
         assert_eq!(
             v["plugins"]["entries"]["calciforge-channel"]["config"]["replyAuthToken"],
             TEST_REPLY_AUTH_TOKEN
+        );
+        assert_eq!(
+            v["plugins"]["entries"]["calciforge-channel"]["config"]["allowedAgentIds"],
+            serde_json::json!(["calciforge"])
         );
         assert!(
             v["plugins"].get("allow").is_none(),

@@ -298,7 +298,10 @@ pub struct GatewayConfig {
     /// to bypass IronClaw's manual-credential block; control headers are
     /// still stripped before forwarding upstream.
     pub manual_credential_override_requires_operator_approval: bool,
-    /// Domains that bypass the gateway entirely
+    /// Hosts that opt out of automatic provider credential injection.
+    /// Security processing still runs: Calciforge continues to substitute
+    /// supported secret references, reject unsupported secret-reference bodies,
+    /// strip control headers, and scan request/response bodies.
     pub bypass_domains: Vec<String>,
     /// Log all traffic (even allowed) for audit
     pub audit_log: bool,
@@ -399,12 +402,7 @@ impl Default for GatewayConfig {
             scan_inbound: true,
             inject_credentials: true,
             manual_credential_override_requires_operator_approval: true,
-            bypass_domains: vec![
-                "localhost".into(),
-                "127.0.0.1".into(),
-                "192.168.1.*".into(),
-                "10.*.*.*".into(),
-            ],
+            bypass_domains: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
             audit_log: true,
             scanner_checks: Vec::new(),
             // Empty by default — preserves current behavior (no secret

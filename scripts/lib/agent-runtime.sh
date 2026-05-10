@@ -31,12 +31,21 @@ _AGENT_RUNTIME_LOADED=1
 # ── Binary installation ───────────────────────────────────────────────────────
 
 # Download and install a binary from a GitHub release tarball.
+# This path is disabled by default until a runtime has pinned checksums or
+# signatures. Set CALCIFORGE_ALLOW_UNVERIFIED_AGENT_RUNTIME_DOWNLOADS=true only
+# for an explicit local compatibility override.
 # The release must follow the naming convention: <binary>-<triple>.tar.gz
 #
 # Args: <github_repo> <binary_name> <install_dir>
 # Example: install_from_github_release "nearai/ironclaw" "ironclaw" "/opt/ironclaw"
 install_from_github_release() {
     local repo="$1" bin_name="$2" install_dir="$3"
+
+    if [[ "${CALCIFORGE_ALLOW_UNVERIFIED_AGENT_RUNTIME_DOWNLOADS:-}" != "true" ]]; then
+        echo "  Refusing unverified ${bin_name} GitHub release download." >&2
+        echo "  Install ${bin_name} with brew or set CALCIFORGE_ALLOW_UNVERIFIED_AGENT_RUNTIME_DOWNLOADS=true for an explicit local override." >&2
+        return 1
+    fi
 
     mkdir -p "$install_dir/bin"
 
@@ -90,7 +99,9 @@ install_from_github_release() {
     fi
 }
 
-# Install a binary, trying brew first on macOS, falling back to GitHub release.
+# Install a binary, trying brew first on macOS, then source/runtime-specific
+# paths, and only falling back to unverified GitHub releases when explicitly
+# allowed by CALCIFORGE_ALLOW_UNVERIFIED_AGENT_RUNTIME_DOWNLOADS=true.
 # Args: <brew_formula> <binary_name> <github_repo> <install_dir>
 ensure_agent_binary() {
     local brew_formula="$1" bin_name="$2" github_repo="$3" install_dir="$4"

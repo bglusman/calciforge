@@ -289,6 +289,13 @@ impl CalciforgeMitmHandler {
         let dest_host = reqwest::Url::parse(&target_url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned));
+        let bypassed = self.state.check_bypassed(&target_url);
+        if bypassed {
+            info!(
+                "Matched bypass domain for {}; MITM security checks still apply",
+                redact_url_for_log(&target_url)
+            );
+        }
 
         // (A) Search-engine egress block. Fires before body decoding so
         // we don't waste cycles on a request we're going to refuse.
@@ -446,10 +453,7 @@ impl CalciforgeMitmHandler {
             }
         }
 
-        if !self.state.check_bypassed(&target_url)
-            && self.state.config.scan_outbound
-            && !body_bytes.is_empty()
-        {
+        if self.state.config.scan_outbound && !body_bytes.is_empty() {
             let body_text = String::from_utf8_lossy(&body_bytes);
             let verdict = self
                 .state
@@ -486,6 +490,7 @@ impl CalciforgeMitmHandler {
         }
 
         if self.state.config.inject_credentials
+            && !bypassed
             && let Some(host) = dest_host.as_deref()
         {
             let injections = self.state.credentials.injections_for_host(host).await;

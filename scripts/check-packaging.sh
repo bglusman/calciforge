@@ -53,6 +53,11 @@ for bin in $expected_bins; do
     }
 done
 
+grep -q "calciforge-ollama-switch" "$ROOT/scripts/build-dist-archive.sh" || {
+    echo "build-dist-archive.sh does not package calciforge-ollama-switch" >&2
+    exit 1
+}
+
 installer_shell_files=(
     "$ROOT/scripts/install.sh"
     "$ROOT/scripts/clean-install-reset.sh"

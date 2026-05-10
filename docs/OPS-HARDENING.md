@@ -100,9 +100,13 @@ ls -la /usr/local/sbin/pct-create-wrapper \
 
 ### Step 2: Check for risky entries via the API
 
+`/admin/warn-permissions` requires an mTLS client certificate whose CN matches
+`[approval].admin_cn_pattern` in `/etc/clash/host-agent.toml`. If that pattern
+is unset, the endpoint returns `403` by design.
+
 ```bash
 # With your mTLS client cert:
-curl -sk --cert /etc/clash/certs/agent1-bundle.pem \
+curl -sk --cert /etc/clash/certs/admin-bundle.pem \
     https://localhost:18443/admin/warn-permissions | jq .
 ```
 
@@ -208,8 +212,16 @@ The host-agent exposes two ways to see sudoers warnings:
 
 ### 6.1 `/admin/warn-permissions` (API)
 
+This is an admin endpoint. Configure `[approval].admin_cn_pattern` to match a
+dedicated admin client certificate CN before using it:
+
+```toml
+[approval]
+admin_cn_pattern = "admin-*"
+```
+
 ```bash
-curl -sk --cert /etc/clash/certs/agent1-bundle.pem \
+curl -sk --cert /etc/clash/certs/admin-bundle.pem \
     https://localhost:18443/admin/warn-permissions
 ```
 

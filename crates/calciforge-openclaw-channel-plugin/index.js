@@ -101,9 +101,11 @@ export default function register(api) {
   const runTimeoutMs = positiveInteger(pluginConfig.runTimeoutMs, 300000);
   const errorRecoveryMs = positiveInteger(pluginConfig.errorRecoveryMs, 120000);
   const useNativeChannelRuntime = pluginConfig.useNativeChannelRuntime === true;
+  const allowedAgentIds = stringSet(pluginConfig.allowedAgentIds);
+  const allowedChannels = stringSet(pluginConfig.allowedChannels);
 
   api.logger.info(
-    `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook || "(missing)"}`,
+    `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook || "(missing)"} nativeRuntime=${useNativeChannelRuntime ? "enabled" : "disabled"} allowedAgentIds=${allowedAgentIds.size || "(none)"}`,
   );
   if (!authToken || !replyWebhook || !replyAuthToken) {
     api.logger.warn(
@@ -125,6 +127,8 @@ export default function register(api) {
         runTimeoutMs,
         errorRecoveryMs,
         useNativeChannelRuntime,
+        allowedAgentIds,
+        allowedChannels,
         log: api.logger,
       }),
   }, api.logger);
@@ -158,6 +162,8 @@ async function handleInboundRequest({
   runTimeoutMs,
   errorRecoveryMs,
   useNativeChannelRuntime,
+  allowedAgentIds,
+  allowedChannels,
   log,
 }) {
   if (req.method === "GET") {
@@ -199,6 +205,18 @@ async function handleInboundRequest({
     json(res, 400, { error: "message and sessionKey are required" });
     return true;
   }
+  const validationError = validateInboundRoute({
+    sessionKey,
+    agentId,
+    sender: body.sender,
+    channel,
+    allowedAgentIds,
+    allowedChannels,
+  });
+  if (validationError) {
+    json(res, 403, { error: validationError });
+    return true;
+  }
 
   json(res, 200, { ok: true });
   log?.info?.(
@@ -228,10 +246,6 @@ async function handleInboundRequest({
     if (useNativeChannelRuntime) {
       log?.warn?.(
         "[calciforge-channel] OpenClaw channel runtime unavailable; falling back to subagent runtime",
-      );
-    } else {
-      log?.info?.(
-        "[calciforge-channel] using subagent runtime; native channel runtime is opt-in",
       );
     }
     await dispatchViaSubagentRuntime({
@@ -659,6 +673,43 @@ function parseAgentIdFromSessionKey(sessionKey) {
   return match?.[1] || null;
 }
 
+function validateInboundRoute({
+  sessionKey,
+  agentId,
+  sender,
+  channel,
+  allowedAgentIds = new Set(),
+  allowedChannels = new Set(),
+}) {
+  const parsedAgentId = parseAgentIdFromSessionKey(sessionKey);
+  if (!parsedAgentId) return "invalid Calciforge sessionKey";
+  if (agentId && agentId !== parsedAgentId) {
+    return "agentId must match sessionKey";
+  }
+  if (allowedAgentIds.size > 0 && !allowedAgentIds.has(parsedAgentId)) {
+    return "agentId is not allowed";
+  }
+  const normalizedSender = normalizeString(sender);
+  if (!normalizedSender) return "sender is required";
+  if (sessionKey !== `calciforge:${parsedAgentId}:${normalizedSender}`) {
+    return "sessionKey must match sender";
+  }
+  const normalizedChannel = normalizeString(channel);
+  if (allowedChannels.size > 0 && !allowedChannels.has(normalizedChannel)) {
+    return "channel is not allowed";
+  }
+  return null;
+}
+
+function stringSet(value) {
+  if (!Array.isArray(value)) return new Set();
+  return new Set(
+    value
+      .map((entry) => normalizeString(entry))
+      .filter((entry) => entry.length > 0),
+  );
+}
+
 function isAuthorized(req, expectedToken) {
   if (!expectedToken) return false;
   const authHeader = req.headers["authorization"] ?? "";
@@ -1011,6 +1062,8 @@ export const testInternals = {
   recoverReplyAfterRunError,
   buildCalciforgeChannelContext,
   buildStatusPayload,
+  validateInboundRoute,
+  stringSet,
   createSingleReplyDispatcher,
   classifyNoVisibleReply,
   dispatchViaSubagentRuntime,

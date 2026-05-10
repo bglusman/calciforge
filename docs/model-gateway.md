@@ -371,12 +371,13 @@ url = "http://127.0.0.1:8787/ai"
 api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
 models = []
 add_model_prefix = "ollama/"
-on_switch = "/usr/local/bin/calciforge-ollama-switch"
+on_switch = "calciforge-ollama-switch"
 timeout_seconds = 900
 ```
 
-The installer writes `calciforge-ollama-switch` when Helicone is enabled. The
-hook receives `CALCIFORGE_PROVIDER_ID`, `CALCIFORGE_MODEL_ID`,
+The source installer writes `calciforge-ollama-switch` when Helicone is enabled,
+and release archives/Homebrew installs include the helper under `bin/`. The hook
+receives `CALCIFORGE_PROVIDER_ID`, `CALCIFORGE_MODEL_ID`,
 `CALCIFORGE_UPSTREAM_MODEL_ID`, and `CALCIFORGE_PREV_MODEL_ID`. `!model` only
 stores the selected model for the sender identity; provider hooks run
 synchronously before the next gateway request that uses that provider.
@@ -391,8 +392,8 @@ service environment, not only in an interactive shell. Ollama.app commonly
 installs its CLI at `/usr/local/bin/ollama` on Apple Silicon Macs even when
 Calciforge itself was installed by Homebrew under `/opt/homebrew`. The bundled
 `calciforge-ollama-switch` checks common Homebrew, `/usr/local/bin`, and
-Ollama.app paths explicitly so Homebrew services can still run the hook with a
-minimal launchd `PATH`.
+Ollama.app paths explicitly so packaged services can still run the hook with a
+minimal service `PATH`.
 
 Provider `on_switch` hooks are different from `[local_models]` lifecycle hooks.
 Use `[local_models.mlx_lm.hooks]` when Calciforge owns a local `mlx_lm.server`

@@ -173,6 +173,9 @@ ttl_seconds = 300
 token_entropy_bits = 80
 signal_webhook = "https://signal.example.com/webhook"
 allowed_approvers = ["+15555550001"]
+# Required for admin endpoints such as /admin/pending and /admin/warn-permissions.
+# Leave unset to fail closed until a dedicated admin client certificate exists.
+admin_cn_pattern = "admin-*"
 
 [metrics]
 enabled = true
@@ -243,6 +246,16 @@ curl -k --cert client.pem -X POST \
 curl http://localhost:19090/metrics
 ```
 
+### Pending Approvals
+```bash
+# Caller-scoped view: returns only approvals requested by this client cert CN.
+curl -k --cert client.pem https://host:18443/pending
+
+# Admin view: returns all pending approvals only when this client cert CN matches
+# [approval].admin_cn_pattern. If the pattern is unset, this endpoint is 403.
+curl -k --cert admin-client.pem https://host:18443/admin/pending
+```
+
 ## Security Model
 
 1. **mTLS is mandatory** — No plaintext HTTP fallback
@@ -250,7 +263,8 @@ curl http://localhost:19090/metrics
 3. **Identity from CN** — Unix user resolved from certificate Common Name
 4. **Operations as user** — All ZFS commands run as the authenticated user
 5. **Approval for destruction** — Destroy operations require human confirmation
-6. **Audit everything** — All operations logged with hashes (no plaintext tokens)
+6. **Admin views fail closed** — `/admin/pending` and `/admin/warn-permissions` require `approval.admin_cn_pattern`
+7. **Audit everything** — All operations logged with hashes (no plaintext tokens)
 
 ## Testing
 

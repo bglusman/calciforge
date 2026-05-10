@@ -47,6 +47,45 @@ test("status payload reports callback URL and reply-token hash without exposing 
   assert.equal(JSON.stringify(payload).includes(fixtureReplyToken), false);
 });
 
+test("validates Calciforge route identity from token-authenticated bodies", () => {
+  const allowedAgentIds = testInternals.stringSet(["librarian"]);
+  const allowedChannels = testInternals.stringSet(["signal"]);
+
+  assert.equal(
+    testInternals.validateInboundRoute({
+      sessionKey: "calciforge:librarian:+15555550001",
+      agentId: "librarian",
+      sender: "+15555550001",
+      channel: "signal",
+      allowedAgentIds,
+      allowedChannels,
+    }),
+    null,
+  );
+  assert.equal(
+    testInternals.validateInboundRoute({
+      sessionKey: "calciforge:custodian:+15555550001",
+      agentId: "custodian",
+      sender: "+15555550001",
+      channel: "signal",
+      allowedAgentIds,
+      allowedChannels,
+    }),
+    "agentId is not allowed",
+  );
+  assert.equal(
+    testInternals.validateInboundRoute({
+      sessionKey: "calciforge:librarian:+15555550001",
+      agentId: "librarian",
+      sender: "+19999999999",
+      channel: "signal",
+      allowedAgentIds,
+      allowedChannels,
+    }),
+    "sessionKey must match sender",
+  );
+});
+
 test("registers inbound route with replaceExisting when public route API exists", async () => {
   const calls = [];
   const unregister = () => {};

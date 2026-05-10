@@ -1884,7 +1884,8 @@ if agent_enabled ironclaw; then
 
     if [[ "$CONFIGURE_ONLY" != true ]]; then
         # Prefer building from source (ensures adapter ↔ binary version sync).
-        # Falls back to GitHub release if source not available.
+        # Unverified GitHub release fallback is opt-in via
+        # CALCIFORGE_ALLOW_UNVERIFIED_AGENT_RUNTIME_DOWNLOADS=true.
         ironclaw_src="${CALCIFORGE_IRONCLAW_SOURCE:-$IRONCLAW_DIR/src}"
         # Clone source if not already present
         if [[ ! -f "$ironclaw_src/Cargo.toml" ]] && command -v git &>/dev/null; then

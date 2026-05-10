@@ -42,11 +42,42 @@ fnox_release_asset() {
     esac
 }
 
+fnox_release_sha256() {
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "${FNOX_VERSION:-v1.23.0}:${os}:${arch}" in
+        v1.23.0:Linux:x86_64|v1.23.0:Linux:amd64) echo "021c4fe683e109b616a4b936117c60e63f351b4000bd0999f0110f3088fc7f58" ;;
+        v1.23.0:Linux:aarch64|v1.23.0:Linux:arm64) echo "de4c06fc8851ad4be8109d077d0362ee8603ae0aac0cbffb715ac89e2238f2c4" ;;
+        v1.23.0:Darwin:x86_64) echo "0b09405d648387a163d3f21be3e88972332d3fa04e5db55955726890a3f22877" ;;
+        v1.23.0:Darwin:arm64|v1.23.0:Darwin:aarch64) echo "f92d60ee4bb669b97a500f000fe053f92f7cbf0817ed4678e5b0f506d1357dd6" ;;
+        *) return 1 ;;
+    esac
+}
+
+verify_sha256_file() {
+    local expected="$1" path="$2" actual
+    if command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$path" | awk '{print $1}')"
+    elif command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$path" | awk '{print $1}')"
+    else
+        warn "cannot verify ${path}: shasum or sha256sum is required"
+        return 1
+    fi
+    [[ "$actual" == "$expected" ]]
+}
+
 install_fnox_release() {
     local version="${FNOX_VERSION:-v1.23.0}"
-    local asset install_dir url tmp
+    local asset expected_sha install_dir url tmp
 
     asset="$(fnox_release_asset)" || return 1
+    expected_sha="$(fnox_release_sha256)" || {
+        warn "no pinned fnox checksum for ${version} ${asset}; refusing release download"
+        return 1
+    }
     url="https://github.com/jdx/fnox/releases/download/${version}/${asset}"
 
     if [[ -w /usr/local/bin || "$IS_ROOT" == true ]]; then
@@ -66,6 +97,7 @@ install_fnox_release() {
     fi
     echo "  Installing fnox ${version} release..."
     if ! curl -fsSL "$url" -o "$tmp/fnox.tar.gz" ||
+        ! verify_sha256_file "$expected_sha" "$tmp/fnox.tar.gz" ||
         ! tar -xzf "$tmp/fnox.tar.gz" -C "$tmp" ||
         ! install -m 0755 "$tmp/fnox" "$install_dir/fnox"; then
         rm -rf "$tmp"

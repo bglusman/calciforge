@@ -702,11 +702,64 @@ async fn list_pending(
     Json(pending).into_response()
 }
 
-// Admin pending endpoint — all pending (could be restricted by admin role)
-async fn list_all_pending(State(state): State<AppState>) -> impl IntoResponse {
+fn admin_cn_matches(pattern: &str, cn: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        cn.starts_with(prefix)
+    } else {
+        cn == pattern
+    }
+}
+
+fn require_admin_identity(
+    config: &Config,
+    identity: &ClientIdentity,
+) -> Result<(), axum::http::StatusCode> {
+    let Some(pattern) = config
+        .approval
+        .admin_cn_pattern
+        .as_deref()
+        .filter(|pattern| !pattern.is_empty())
+    else {
+        warn!(
+            caller = %identity.cn,
+            "Admin endpoint denied: approval.admin_cn_pattern is not configured"
+        );
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    };
+
+    if admin_cn_matches(pattern, &identity.cn) {
+        Ok(())
+    } else {
+        warn!(
+            caller = %identity.cn,
+            required_pattern = %pattern,
+            "Admin endpoint denied: caller CN does not match admin_cn_pattern"
+        );
+        Err(axum::http::StatusCode::FORBIDDEN)
+    }
+}
+
+// Admin pending endpoint — all pending approvals.
+// Fails closed unless approval.admin_cn_pattern is configured and matches.
+async fn list_all_pending(
+    State(state): State<AppState>,
+    Extension(identity): Extension<ClientIdentity>,
+) -> impl IntoResponse {
     state.metrics.increment_requests();
+    let config = state.config.get().await;
+    if let Err(status) = require_admin_identity(&config, &identity) {
+        return (
+            status,
+            Json(serde_json::json!({
+                "error": "admin access required",
+                "caller": identity.cn,
+            })),
+        )
+            .into_response();
+    }
+
     let pending = state.approvals.list_all_pending().await;
-    Json(pending)
+    Json(pending).into_response()
 }
 
 // Admin permission-warning probe — GET /admin/warn-permissions
@@ -715,33 +768,23 @@ async fn list_all_pending(State(state): State<AppState>) -> impl IntoResponse {
 // the clash-agent user has overly-broad sudo privileges.  Results are also
 // written to audit.jsonl and exposed in the Prometheus metrics endpoint.
 //
-// This endpoint is admin-only (caller CN must match admin_cn_pattern if set).
+// This endpoint is admin-only. It fails closed unless admin_cn_pattern is set.
 async fn warn_permissions(
     State(state): State<AppState>,
     Extension(identity): Extension<ClientIdentity>,
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
 
-    // Admin-only guard (mirrors list_all_pending logic)
     let config = state.config.get().await;
-    if let Some(ref pattern) = config.approval.admin_cn_pattern
-        && !pattern.is_empty()
-    {
-        let matches = if pattern.ends_with('*') {
-            identity.cn.starts_with(&pattern[..pattern.len() - 1])
-        } else {
-            identity.cn == *pattern
-        };
-        if !matches {
-            return (
-                axum::http::StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "error": "admin access required",
-                    "caller": identity.cn,
-                })),
-            )
-                .into_response();
-        }
+    if let Err(status) = require_admin_identity(&config, &identity) {
+        return (
+            status,
+            Json(serde_json::json!({
+                "error": "admin access required",
+                "caller": identity.cn,
+            })),
+        )
+            .into_response();
     }
 
     use std::sync::atomic::AtomicU64;
@@ -1203,4 +1246,43 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(cn: &str) -> ClientIdentity {
+        ClientIdentity {
+            cn: cn.to_string(),
+            uid: 1000,
+            username: cn.to_string(),
+            fingerprint: "test-fingerprint".to_string(),
+        }
+    }
+
+    #[test]
+    fn admin_identity_requires_configured_pattern() {
+        let config = Config::default();
+
+        assert!(require_admin_identity(&config, &identity("librarian")).is_err());
+    }
+
+    #[test]
+    fn admin_identity_matches_exact_pattern() {
+        let mut config = Config::default();
+        config.approval.admin_cn_pattern = Some("admin".to_string());
+
+        assert!(require_admin_identity(&config, &identity("admin")).is_ok());
+        assert!(require_admin_identity(&config, &identity("librarian")).is_err());
+    }
+
+    #[test]
+    fn admin_identity_matches_wildcard_prefix_pattern() {
+        let mut config = Config::default();
+        config.approval.admin_cn_pattern = Some("admin-*".to_string());
+
+        assert!(require_admin_identity(&config, &identity("admin-alice")).is_ok());
+        assert!(require_admin_identity(&config, &identity("agent-admin-alice")).is_err());
+    }
 }
