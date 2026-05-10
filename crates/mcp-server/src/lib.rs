@@ -42,6 +42,7 @@ pub struct CalciforgeMcp {
     fnox: secrets_client::FnoxClient,
     secret_access_policy: secrets_client::SecretAccessPolicy,
     secret_access_identity: secrets_client::SecretAccessIdentity,
+    secret_access_error: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -58,19 +59,16 @@ impl CalciforgeMcp {
     /// pointing at a fake script.
     pub fn new(fnox: secrets_client::FnoxClient) -> Self {
         let secret_access_identity = secrets_client::SecretAccessIdentity::from_env();
-        let (secret_access_policy, secret_access_identity) =
+        let (secret_access_policy, secret_access_error) =
             match secrets_client::load_default_access_policy() {
-                Ok(policy) => (policy, secret_access_identity),
+                Ok(policy) => (policy, None),
                 Err(e) => {
                     tracing::warn!(
                         "secret access policy unavailable; using fail-closed empty policy: {e}"
                     );
                     (
                         secrets_client::SecretAccessPolicy::default(),
-                        secrets_client::SecretAccessIdentity {
-                            agent_id: Some("policy-load-error".to_string()),
-                            ..Default::default()
-                        },
+                        Some(e.to_string()),
                     )
                 }
             };
@@ -78,6 +76,7 @@ impl CalciforgeMcp {
             fnox,
             secret_access_policy,
             secret_access_identity,
+            secret_access_error,
             tool_router: Self::tool_router(),
         }
     }
@@ -91,6 +90,7 @@ impl CalciforgeMcp {
             fnox,
             secret_access_policy,
             secret_access_identity,
+            secret_access_error: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -139,6 +139,12 @@ impl CalciforgeMcp {
         description = "List all stored secret NAMES (never values). Returns the names an agent can build references to via `secret_reference`."
     )]
     async fn list_secrets(&self) -> Result<CallToolResult, McpError> {
+        if let Some(error) = &self.secret_access_error {
+            return Err(McpError::internal_error(
+                format!("secret access policy unavailable: {error}"),
+                None,
+            ));
+        }
         match self.fnox.list().await {
             Ok(names) => {
                 let names = self
@@ -197,6 +203,12 @@ impl CalciforgeMcp {
                 format!(
                     "secret name {name:?} contains invalid characters (allowed: A-Z a-z 0-9 _ -)"
                 ),
+                None,
+            ));
+        }
+        if let Some(error) = &self.secret_access_error {
+            return Err(McpError::internal_error(
+                format!("secret access policy unavailable: {error}"),
                 None,
             ));
         }

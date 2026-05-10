@@ -145,10 +145,30 @@ pub fn load_access_policy(
             });
         }
     };
-    toml::from_str(&text).map_err(|source| AccessPolicyError::Parse {
+    parse_access_policy_toml(&text).map_err(|source| AccessPolicyError::Parse {
         path: path.display().to_string(),
         source,
     })
+}
+
+fn parse_access_policy_toml(input: &str) -> Result<SecretAccessPolicy, toml::de::Error> {
+    let mut value: toml::Value = toml::from_str(input)?;
+    let has_top_level_rules = value
+        .as_table()
+        .is_some_and(|table| table.contains_key("rules"));
+
+    if !has_top_level_rules {
+        let nested = value
+            .get("security")
+            .and_then(|security| security.get("secret_access"))
+            .and_then(|secret_access| secret_access.get("rules"))
+            .cloned();
+        if let (Some(rules), Some(table)) = (nested, value.as_table_mut()) {
+            table.insert("rules".to_string(), rules);
+        }
+    }
+
+    value.try_into()
 }
 
 fn selector_allows(patterns: &[String], value: Option<&str>) -> bool {
@@ -275,7 +295,8 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-[[rules]]
+[security.secret_access]
+[[security.secret_access.rules]]
 agents = ["research-*"]
 users = ["brian"]
 channels = ["signal"]

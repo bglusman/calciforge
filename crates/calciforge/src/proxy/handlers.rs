@@ -463,7 +463,7 @@ pub async fn secret_list(State(state): State<ProxyState>, headers: HeaderMap) ->
         return response;
     }
 
-    let (policy, identity) = match secret_access_context_from_headers(&headers) {
+    let (policy, identity) = match secret_access_context_from_headers(&headers).await {
         Ok(context) => context,
         Err(response) => return *response,
     };
@@ -505,7 +505,7 @@ pub async fn secret_reference(
     }
 
     match secrets_client::secret_reference_token(&name) {
-        Some(reference) => match secret_access_context_from_headers(&headers) {
+        Some(reference) => match secret_access_context_from_headers(&headers).await {
             Ok((policy, identity)) if policy.allows(&identity, &name) => {
                 (StatusCode::OK, Json(json!({ "reference": reference }))).into_response()
             }
@@ -526,7 +526,7 @@ pub async fn secret_reference(
     }
 }
 
-fn secret_access_context_from_headers(
+async fn secret_access_context_from_headers(
     headers: &HeaderMap,
 ) -> Result<
     (
@@ -535,15 +535,26 @@ fn secret_access_context_from_headers(
     ),
     Box<Response>,
 > {
-    let policy = secrets_client::load_default_access_policy().map_err(|err| {
-        Box::new(api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "secret_access_policy_unavailable",
-            &format!("secret access policy unavailable: {err}"),
-            None,
-        ))
-    })?;
-    Ok((policy, secret_access_identity_from_headers(headers)))
+    let identity = secret_access_identity_from_headers(headers);
+    let policy = tokio::task::spawn_blocking(secrets_client::load_default_access_policy)
+        .await
+        .map_err(|err| {
+            Box::new(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_access_policy_unavailable",
+                &format!("secret access policy load task failed: {err}"),
+                None,
+            ))
+        })?
+        .map_err(|err| {
+            Box::new(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_access_policy_unavailable",
+                &format!("secret access policy unavailable: {err}"),
+                None,
+            ))
+        })?;
+    Ok((policy, identity))
 }
 
 fn secret_access_identity_from_headers(
