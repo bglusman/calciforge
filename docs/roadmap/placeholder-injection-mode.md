@@ -53,6 +53,36 @@ Calciforge can't use this — they hardcode env-var reads.
 about Calciforge. Works with any off-the-shelf agent that reads
 credentials from env vars.
 
+## Current staged implementation
+
+Status as of 2026-05-10: the security-proxy-local primitives are
+implemented on the issue #151 work branch, but live placeholder
+substitution is intentionally not enabled yet.
+
+Implemented pieces:
+- Placeholder token recognition for `cfg_<NAME>_<32-hex>`.
+- Placeholder rendering keyed by the full opaque token, not by the
+  embedded name hint.
+- Per-agent `PlaceholderMap` that resolves `agent_id + token` to an
+  authoritative secret name.
+- Fail-closed token-set resolution when any discovered placeholder is
+  not registered for the current agent.
+- A shared identity/destination policy gate that placeholder
+  substitution can reuse before any real secret value is loaded.
+- An inert `SecurityProxy` placeholder-name resolution helper that
+  scans request text, resolves token -> secret name, and applies the
+  same policy gate as explicit `{{secret:NAME}}` references.
+
+Not yet wired:
+- Agent lifecycle registration of generated placeholders.
+- Passing generated placeholders into agent env vars at spawn time.
+- Live request rewriting from placeholder token -> real secret value.
+
+The next safe implementation slice is lifecycle registration: create a
+source of truth for which placeholders exist for a running agent, then
+wire live substitution only after that source can register and retire
+tokens deterministically.
+
 ## What we'd build
 
 Per-agent state in security-proxy:
@@ -76,6 +106,13 @@ When security-proxy sees an outbound request, it scans body + headers
 for placeholder shapes (regex on the `cfg_*_*` prefix) and swaps
 through PlaceholderMap before forwarding. Same code path as
 `{{secret:NAME}}` substitution — just a different recognizer.
+
+Important invariant: the placeholder path must never trust the
+embedded `<NAME>` hint in `cfg_<NAME>_<random>`. It must resolve the
+full opaque token through the per-agent map, apply the same
+per-agent/user/channel secret access policy and destination allowlist
+as explicit `{{secret:NAME}}` substitution, and only then load the real
+secret value.
 
 ## Comparison vs. true eBPF interception
 
