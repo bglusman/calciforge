@@ -1551,11 +1551,14 @@ impl CommandHandler {
         }
     }
 
-    fn agent_switch_context_notice(&self) -> &'static str {
+    fn agent_switch_context_notice(&self) -> String {
         if self.config.context.inject_depth == 0 {
-            "Context: isolated; no prior thread context will be shared."
+            "Context: isolated; no prior thread context will be shared.".to_string()
         } else {
-            "Context: recent thread context may be shared with this agent."
+            format!(
+                "Context: recent thread context is shared with switched agents (up to {} exchanges).",
+                self.config.context.inject_depth
+            )
         }
     }
 
@@ -3884,7 +3887,9 @@ mod tests {
         let h = make_handler();
         let reply = h.handle_switch("!switch librarian", "brian");
         assert!(
-            reply.contains("Context: recent thread context may be shared with this agent."),
+            reply.contains(
+                "Context: recent thread context is shared with switched agents (up to 5 exchanges)."
+            ),
             "switch reply should disclose context sharing mode: {reply}"
         );
     }
