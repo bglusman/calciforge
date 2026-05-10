@@ -57,17 +57,27 @@ impl CalciforgeMcp {
     /// `fnox` from `PATH`; tests inject a `FnoxClient::with_binary(path)`
     /// pointing at a fake script.
     pub fn new(fnox: secrets_client::FnoxClient) -> Self {
-        let secret_access_policy =
-            secrets_client::load_default_access_policy().unwrap_or_else(|e| {
-                tracing::warn!(
-                    "secret access policy unavailable; using fail-closed empty policy: {e}"
-                );
-                secrets_client::SecretAccessPolicy::default()
-            });
+        let secret_access_identity = secrets_client::SecretAccessIdentity::from_env();
+        let (secret_access_policy, secret_access_identity) =
+            match secrets_client::load_default_access_policy() {
+                Ok(policy) => (policy, secret_access_identity),
+                Err(e) => {
+                    tracing::warn!(
+                        "secret access policy unavailable; using fail-closed empty policy: {e}"
+                    );
+                    (
+                        secrets_client::SecretAccessPolicy::default(),
+                        secrets_client::SecretAccessIdentity {
+                            agent_id: Some("policy-load-error".to_string()),
+                            ..Default::default()
+                        },
+                    )
+                }
+            };
         Self {
             fnox,
             secret_access_policy,
-            secret_access_identity: secrets_client::SecretAccessIdentity::from_env(),
+            secret_access_identity,
             tool_router: Self::tool_router(),
         }
     }
