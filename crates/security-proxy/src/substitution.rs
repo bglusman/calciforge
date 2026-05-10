@@ -30,9 +30,19 @@
 //! - Nested refs (`{{secret:{{secret:X}}}}`) are rejected at parse time.
 //! - Resolved values are NOT re-scanned for refs. Substitution is a
 //!   single pass.
+//!
+//! Placeholder-injection mode (roadmap #151) uses the same policy-gated
+//! resolver path, but starts from opaque placeholder values such as
+//! `cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef` instead of explicit
+//! `{{secret:NAME}}` refs. The scanner in this module only recognizes
+//! placeholder tokens; callers must still resolve token -> secret name
+//! through an authoritative per-agent map before loading any secret.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+
+pub const PLACEHOLDER_PREFIX: &str = "cfg_";
+pub const PLACEHOLDER_RANDOM_HEX_LEN: usize = 32;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SubstitutionError {
@@ -76,6 +86,62 @@ pub fn find_refs(input: &str) -> Result<HashSet<String>, SubstitutionError> {
     }
 
     Ok(names)
+}
+
+/// Find unique placeholder-injection tokens in `input`.
+///
+/// Valid placeholders have shape `cfg_<NAME>_<32-hex>`, where `<NAME>`
+/// uses the same syntax as explicit `{{secret:NAME}}` references. The
+/// returned token is the full opaque placeholder string, not the embedded
+/// secret-name hint; the caller must use an authoritative per-agent
+/// placeholder map to decide which secret, if any, the token may resolve to.
+///
+/// Malformed `cfg_`-prefixed strings are ignored instead of failing the
+/// request. That keeps ordinary configuration identifiers from becoming a
+/// proxy-level denial of service while still allowing valid generated
+/// placeholders to be found cheaply.
+pub fn find_placeholder_tokens(input: &str) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+    let bytes = input.as_bytes();
+    let mut search_start = 0;
+
+    while let Some(relative_start) = input[search_start..].find(PLACEHOLDER_PREFIX) {
+        let start = search_start + relative_start;
+        if start > 0 && is_placeholder_token_byte(bytes[start - 1]) {
+            search_start = start + PLACEHOLDER_PREFIX.len();
+            continue;
+        }
+
+        let mut end = start;
+        while end < bytes.len() && is_placeholder_token_byte(bytes[end]) {
+            end += 1;
+        }
+
+        let token = &input[start..end];
+        if placeholder_name_hint(token).is_some() {
+            tokens.insert(token.to_string());
+        }
+        search_start = end.max(start + PLACEHOLDER_PREFIX.len());
+    }
+
+    tokens
+}
+
+/// Return the embedded secret-name hint for a syntactically valid placeholder.
+///
+/// This is only a hint for diagnostics and generation tests. Runtime
+/// substitution must use the per-agent placeholder map rather than trusting
+/// this embedded name.
+pub fn placeholder_name_hint(token: &str) -> Option<&str> {
+    let rest = token.strip_prefix(PLACEHOLDER_PREFIX)?;
+    let (name, suffix) = rest.rsplit_once('_')?;
+    if suffix.len() != PLACEHOLDER_RANDOM_HEX_LEN
+        || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || validate_name(name).is_err()
+    {
+        return None;
+    }
+    Some(name)
 }
 
 /// Render `input`, replacing every `{{secret:NAME}}` with the value
@@ -135,6 +201,10 @@ fn validate_name(name: &str) -> Result<(), SubstitutionError> {
         )));
     }
     Ok(())
+}
+
+fn is_placeholder_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
 /// Abstraction over the map `substitute` looks up names in. Implemented
@@ -232,6 +302,55 @@ mod tests {
                 "expected Malformed for {input:?}, got {err:?}"
             );
         }
+    }
+
+    // ── placeholder tokens ──────────────────────────────────────
+
+    /// Given an input with repeated valid placeholder-injection tokens,
+    /// when find_placeholder_tokens is called,
+    /// then it returns the unique opaque token strings.
+    #[test]
+    fn find_placeholder_tokens_deduplicates_valid_tokens() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let other = "cfg_DATABASE-URL_ffffffffffffffffffffffffffffffff";
+        let found = find_placeholder_tokens(&format!("Bearer {token}; again={token}; db={other}"));
+
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(token));
+        assert!(found.contains(other));
+    }
+
+    /// Given a valid placeholder token,
+    /// when placeholder_name_hint is called,
+    /// then it returns the embedded diagnostic hint only.
+    #[test]
+    fn placeholder_name_hint_accepts_valid_shape() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        assert_eq!(placeholder_name_hint(token), Some("OPENAI_KEY"));
+    }
+
+    /// Given cfg-prefixed strings that do not match the generated
+    /// placeholder shape,
+    /// when find_placeholder_tokens is called,
+    /// then they are ignored so ordinary config identifiers do not
+    /// fail outbound requests.
+    #[test]
+    fn find_placeholder_tokens_ignores_malformed_candidates() {
+        let found = find_placeholder_tokens(
+            "cfg_ cfg_short_deadbeef cfg_BAD_SUFFIX_nothex cfg_BAD.NAME_0123456789abcdef0123456789abcdef",
+        );
+        assert!(found.is_empty());
+    }
+
+    /// Given a placeholder-looking token embedded inside a larger
+    /// identifier,
+    /// when find_placeholder_tokens is called,
+    /// then it is ignored rather than partially matching.
+    #[test]
+    fn find_placeholder_tokens_requires_token_boundary() {
+        let found =
+            find_placeholder_tokens("prefixcfg_OPENAI_KEY_0123456789abcdef0123456789abcdef");
+        assert!(found.is_empty());
     }
 
     // ── substitute ───────────────────────────────────────────────
