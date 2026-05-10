@@ -49,8 +49,12 @@ test("status payload reports callback URL and reply-token hash without exposing 
 
 test("registers inbound route with replaceExisting when public route API exists", async () => {
   const calls = [];
+  const unregister = () => {};
   const api = {
-    registerHttpRoute: (route) => calls.push(route),
+    registerHttpRoute: (route) => {
+      calls.push(route);
+      return unregister;
+    },
   };
   const route = {
     path: "/calciforge/inbound",
@@ -61,7 +65,7 @@ test("registers inbound route with replaceExisting when public route API exists"
   const result = await testInternals.registerHttpRoute(api, route, console);
 
   assert.equal(result.source, "plugin route API");
-  assert.equal(result.unregister, undefined);
+  assert.equal(result.unregister, unregister);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, "/calciforge/inbound");
   assert.equal(calls[0].match, "exact");
