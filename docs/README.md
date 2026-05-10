@@ -27,6 +27,8 @@ that should be reasonably stable:
 - `roadmap/` — public future-work notes
   - `roadmap/agent-recipes-orchestrators.md` — future support for secured
     recipes, richer artifacts, and async orchestrator backends
+  - `roadmap/agent-activity-ledger.md` — possible shared event/coordination
+    graph for agent activity, decisions, artifacts, outcomes, and handoffs
 
 ## Status labels
 
