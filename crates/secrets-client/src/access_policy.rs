@@ -267,4 +267,40 @@ mod tests {
             "HOME_ASSISTANT_TOKEN"
         ));
     }
+
+    #[test]
+    fn loads_documented_policy_file_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret-access-policy.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[rules]]
+agents = ["research-*"]
+users = ["brian"]
+channels = ["signal"]
+secrets = ["BRAVE_*", "SEARCH_*"]
+"#,
+        )
+        .unwrap();
+
+        let policy = load_access_policy(&path).unwrap();
+        let identity = SecretAccessIdentity {
+            agent_id: Some("research-web".into()),
+            user_id: Some("brian".into()),
+            channel: Some("signal".into()),
+        };
+
+        assert_eq!(
+            policy.filter_names(
+                &identity,
+                vec![
+                    "OPENAI_API_KEY".into(),
+                    "BRAVE_API_KEY".into(),
+                    "SEARCH_API_KEY".into(),
+                ],
+            ),
+            vec!["BRAVE_API_KEY", "SEARCH_API_KEY"]
+        );
+    }
 }
