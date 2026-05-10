@@ -526,6 +526,9 @@ Identity sources:
 - MCP and `calciforge-secrets`: `CALCIFORGE_AGENT_ID`,
   `CALCIFORGE_USER_ID`, `CALCIFORGE_CHANNEL_ID`, or
   `CALCIFORGE_CHANNEL`.
+- API-backed `calciforge-secrets` wrappers forward those identities to the
+  central secret-control API; managed installs set `CALCIFORGE_AGENT_ID` to
+  the claw name in the generated wrapper.
 - security proxy: `x-calciforge-agent-id`, legacy `x-agent-id`,
   `x-calciforge-user-id`, `x-calciforge-channel-id`, or
   `x-calciforge-channel`.

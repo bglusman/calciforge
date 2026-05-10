@@ -46,6 +46,9 @@ Identity sources:
 - MCP and `calciforge-secrets` read `CALCIFORGE_AGENT_ID`,
   `CALCIFORGE_USER_ID`, and `CALCIFORGE_CHANNEL_ID` /
   `CALCIFORGE_CHANNEL`.
+- API-backed `calciforge-secrets` wrappers forward those identities to the
+  central secret-control API; managed installs set `CALCIFORGE_AGENT_ID` to
+  the claw name in the generated wrapper.
 - `security-proxy` reads `x-calciforge-agent-id`, legacy `x-agent-id`,
   `x-calciforge-user-id`, and `x-calciforge-channel-id` /
   `x-calciforge-channel`, then strips these identity headers before
