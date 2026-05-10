@@ -386,6 +386,14 @@ non-zero or times out. Dispatchers, cascades, and alloys may still try later
 fallback constituents when their routing plan allows it; a direct request with
 no fallback fails the whole request.
 
+For service installs, verify the hook can find the runtime binary in the
+service environment, not only in an interactive shell. Ollama.app commonly
+installs its CLI at `/usr/local/bin/ollama` on Apple Silicon Macs even when
+Calciforge itself was installed by Homebrew under `/opt/homebrew`. The bundled
+`calciforge-ollama-switch` checks common Homebrew, `/usr/local/bin`, and
+Ollama.app paths explicitly so Homebrew services can still run the hook with a
+minimal launchd `PATH`.
+
 Provider `on_switch` hooks are different from `[local_models]` lifecycle hooks.
 Use `[local_models.mlx_lm.hooks]` when Calciforge owns a local `mlx_lm.server`
 process. Use `[[proxy.providers]].on_switch` when an external runtime such as

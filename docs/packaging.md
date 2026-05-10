@@ -103,8 +103,12 @@ docker compose --env-file .env up -d
 The Compose example runs Calciforge, `security-proxy`, and `clashd` from the
 same image. It is separate from `scripts/docker-compose.yml`, which remains the
 CI/mock-LLM smoke stack. Release Compose installs should use the published GHCR
-image, for example `ghcr.io/bglusman/calciforge:<version>`. Local `--build`
-remains useful for development and pre-release smoke tests.
+image. GitHub Actions publishes `ghcr.io/bglusman/calciforge:main` and
+`ghcr.io/bglusman/calciforge:sha-<commit>` on every merge to `main`; release
+tags also publish immutable version tags from the release workflow. Use `:main`
+for staging nodes that should follow the integration branch, and pin a version
+or SHA tag for stable hosts. Local `--build` remains useful for development and
+pre-release smoke tests.
 
 To validate the packaged Compose path without real provider credentials:
 

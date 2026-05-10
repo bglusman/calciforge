@@ -17,7 +17,8 @@ trap 'rm -rf "$TMP"' EXIT
 
 ruby -c "$TMP/calciforge.rb" >/dev/null
 ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
-    "$ROOT/.github/workflows/release-packaging.yml"
+    "$ROOT/.github/workflows/release-packaging.yml" \
+    "$ROOT/.github/workflows/docker-image.yml"
 
 if "$ROOT/scripts/render-homebrew-formula.sh" --version 2>"$TMP/missing-arg.err"; then
     echo "render-homebrew-formula accepted missing flag value" >&2
@@ -33,11 +34,15 @@ grep -Eq '^[[:space:]]*/dist/?[[:space:]]*$' "$ROOT/.dockerignore"
 test -s "$ROOT/crates/calciforge-policy-plugin/dist/index.js"
 
 expected_bins="$(grep -Ev '^[[:space:]]*(#|$)' "$ROOT/packaging/runtime-binaries.txt" | tr '\n' ' ')"
+grep -q "packaging/runtime-binaries.txt" "$ROOT/crates/calciforge/Dockerfile" || {
+    echo "Dockerfile must stage runtime binaries from packaging/runtime-binaries.txt" >&2
+    exit 1
+}
+grep -q "COPY --from=builder /app/dist-bin/ /usr/local/bin/" "$ROOT/crates/calciforge/Dockerfile" || {
+    echo "Dockerfile must copy the staged runtime binary directory as one unit" >&2
+    exit 1
+}
 for bin in $expected_bins; do
-    grep -q "dist-bin/$bin" "$ROOT/crates/calciforge/Dockerfile" || {
-        echo "Dockerfile does not copy runtime binary: $bin" >&2
-        exit 1
-    }
     grep -q "$bin" "$ROOT/scripts/build-dist-archive.sh" || {
         echo "build-dist-archive.sh does not package runtime binary: $bin" >&2
         exit 1
