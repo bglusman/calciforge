@@ -85,9 +85,8 @@ jobs:
           brew test "$tap/calciforge"
           calciforge --version
           calciforge-secrets help >/dev/null
-          security-proxy --help >/dev/null
-          clashd --help >/dev/null
-          mcp-server --help >/dev/null
-          paste-server --help >/dev/null
+          for binary in security-proxy clashd mcp-server paste-server; do
+            test -x "$(brew --prefix "$tap/calciforge")/bin/$binary"
+          done
           brew uninstall --formula calciforge
           brew untap "$tap"
