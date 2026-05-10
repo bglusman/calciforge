@@ -27,6 +27,8 @@ that should be reasonably stable:
 - `roadmap/` — public future-work notes
   - `roadmap/agent-recipes-orchestrators.md` — future support for secured
     recipes, richer artifacts, and async orchestrator backends
+  - `roadmap/agent-activity-ledger.md` — possible shared event/coordination
+    graph for agent activity, decisions, artifacts, outcomes, and handoffs
   - `roadmap/architecture-laws-action-plan.md` — refactor plan for channel
     pipelines, command handling, security proxy policy, installer structure,
     and adapter lifecycle cleanup
