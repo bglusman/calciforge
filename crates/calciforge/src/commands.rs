@@ -1541,10 +1541,21 @@ impl CommandHandler {
                 save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
 
                 format!(
-                    "✅ Switched to {}{}. Your messages will now route to {}.",
-                    display_name, session_info, agent_id
+                    "✅ Switched to {}{}. Your messages will now route to {}.\n{}",
+                    display_name,
+                    session_info,
+                    agent_id,
+                    self.agent_switch_context_notice()
                 )
             }
+        }
+    }
+
+    fn agent_switch_context_notice(&self) -> &'static str {
+        if self.config.context.inject_depth == 0 {
+            "Context: isolated; no prior thread context will be shared."
+        } else {
+            "Context: recent thread context may be shared with this agent."
         }
     }
 
@@ -2604,6 +2615,10 @@ mod tests {
 
     fn make_handler() -> CommandHandler {
         let config = Arc::new(make_config());
+        make_handler_with_config(config)
+    }
+
+    fn make_handler_with_config(config: Arc<CalciforgeConfig>) -> CommandHandler {
         // Use a per-test temp directory so persisted state (`active-agents.json`)
         // never bleeds between test runs.  Without this, a test that calls
         // `handle_switch` writes to the shared active-agent state file
@@ -3861,6 +3876,29 @@ mod tests {
             reply.contains("Librarian"),
             "should show display name: {}",
             reply
+        );
+    }
+
+    #[test]
+    fn test_switch_discloses_recent_context_sharing_when_enabled() {
+        let h = make_handler();
+        let reply = h.handle_switch("!switch librarian", "brian");
+        assert!(
+            reply.contains("Context: recent thread context may be shared with this agent."),
+            "switch reply should disclose context sharing mode: {reply}"
+        );
+    }
+
+    #[test]
+    fn test_switch_discloses_isolated_context_when_injection_disabled() {
+        let mut config = make_config();
+        config.context.inject_depth = 0;
+        let h = make_handler_with_config(Arc::new(config));
+
+        let reply = h.handle_switch("!switch librarian", "brian");
+        assert!(
+            reply.contains("Context: isolated; no prior thread context will be shared."),
+            "switch reply should disclose isolated context mode: {reply}"
         );
     }
 

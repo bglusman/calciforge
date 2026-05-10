@@ -1998,6 +1998,46 @@ mod tests {
     }
 
     #[test]
+    fn warns_on_legacy_and_experimental_agent_kinds() {
+        let mut config = base_config();
+        config.agents = vec![
+            AgentConfig {
+                id: "legacy-agent".to_string(),
+                kind: "zeroclaw".to_string(),
+                endpoint: "http://127.0.0.1:18084".to_string(),
+                api_key: Some("test-token".to_string()),
+                ..Default::default()
+            },
+            AgentConfig {
+                id: "experimental-agent".to_string(),
+                kind: "acp".to_string(),
+                command: Some("test-agent".to_string()),
+                ..Default::default()
+            },
+        ];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("agent 'legacy-agent' uses legacy kind 'zeroclaw'")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("agent 'experimental-agent' uses experimental kind 'acp'")
+        }));
+    }
+
+    #[test]
     fn rejects_openai_compat_without_model_or_override_opt_in() {
         let mut config = base_config();
         config.agents = vec![AgentConfig {

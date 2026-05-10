@@ -23,6 +23,25 @@ pub enum AgentKind {
     Acpx,
 }
 
+pub const ALL_AGENT_KINDS: &[AgentKind] = &[
+    AgentKind::OpenClawChannel,
+    AgentKind::OpenAiCompat,
+    AgentKind::ZeroClawHttp,
+    AgentKind::ZeroClawNative,
+    AgentKind::ZeroClaw,
+    AgentKind::IronClaw,
+    AgentKind::Hermes,
+    AgentKind::Exec,
+    AgentKind::Cli,
+    AgentKind::ArtifactCli,
+    AgentKind::CodexCli,
+    AgentKind::ClaudeCli,
+    AgentKind::DiracCli,
+    AgentKind::KimiCli,
+    AgentKind::Acp,
+    AgentKind::Acpx,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKindLifecycle {
     /// Recommended for ordinary operator configuration.
@@ -239,9 +258,7 @@ pub fn agent_kind_metadata(kind: &str) -> Option<AgentKindMetadata> {
 }
 
 pub fn known_agent_kind_names() -> impl Iterator<Item = &'static str> {
-    AGENT_KIND_METADATA
-        .iter()
-        .map(|metadata| metadata.kind.as_str())
+    ALL_AGENT_KINDS.iter().map(|kind| kind.as_str())
 }
 
 #[cfg(test)]
@@ -267,6 +284,17 @@ mod tests {
 
     #[test]
     fn agent_kind_metadata_covers_all_parseable_kinds() {
+        assert_eq!(AGENT_KIND_METADATA.len(), ALL_AGENT_KINDS.len());
+
+        for kind in ALL_AGENT_KINDS {
+            assert!(
+                AGENT_KIND_METADATA
+                    .iter()
+                    .any(|metadata| metadata.kind == *kind),
+                "missing metadata for {kind:?}"
+            );
+        }
+
         for metadata in AGENT_KIND_METADATA {
             assert_eq!(parse_agent_kind(metadata.name), Some(metadata.kind));
             assert_eq!(metadata.kind.as_str(), metadata.name);
