@@ -11,7 +11,7 @@ secrets bootstrap.
 
 The service runs with a Homebrew-oriented `PATH` so helper binaries installed by
 the formula, including `calciforge-secrets` and Homebrew's `fnox`, are visible to
-Calciforge and `calciforge doctor`.
+the supervised Calciforge process.
 
 The release flow is:
 

@@ -16,7 +16,7 @@ trap 'rm -rf "$TMP"' EXIT
     --output "$TMP/calciforge.rb" >/dev/null
 
 ruby -c "$TMP/calciforge.rb" >/dev/null
-ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, aliases: false, permitted_classes: []) }' \
     "$ROOT/.github/workflows/release-packaging.yml" \
     "$ROOT/.github/workflows/docker-image.yml"
 
