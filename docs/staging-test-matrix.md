@@ -149,3 +149,44 @@ Rationale: keep speed benefits without hiding stateful bugs.
    scanner policy behavior.
 4. Extend artifact retention beyond Docker logs and JSONL summaries once metrics
    export is stable.
+
+## v0.1.0-rc1 Candidate Notes
+
+Treat `v0.1.0-rc1` as the first release-candidate label once the packaging
+release-path PR is merged. The candidate should be cut from the merge commit,
+not from an unmerged branch, so GitHub Actions publishes archives and GHCR tags
+from the same source.
+
+Before tagging:
+
+- Confirm PR CI is green, including the Docker image workflow.
+- Re-run the packaged Compose smoke on Linux and retain the summary JSONL.
+- Re-run the Homebrew install/Gatekeeper smoke on the paired Mac and retain the
+  rendered formula, archive checksum, and service health result.
+- Confirm the 210 Docker migration keeps `calciforge`, `security-proxy`, and
+  `clashd` in containers with old systemd units disabled.
+- Confirm the Mac Homebrew service can reach local model runtimes from launchd,
+  including the Ollama `on_switch` hook path.
+- Record known non-blockers separately from release blockers. The current
+  librarian `no_reply_dispatched` symptom appears to be an OpenClaw/Matrix
+  reply-dispatch issue on the librarian node, while custodian succeeds through
+  the same 210 Calciforge Docker path.
+
+Additional review strategies worth running before promoting rc1 to 0.1.0:
+
+- **Route-differential smoke:** send the same Calciforge prompt through at least
+  two agents and one direct model-gateway route, then compare whether failures
+  are route-specific, channel-specific, or global.
+- **Config-path migration audit:** run a static check over live configs for
+  absolute paths, then verify each path is mounted or rewritten in Docker and
+  visible to Homebrew services.
+- **Tiny mutation pass:** run `cargo mutants` only on high-risk modules touched
+  by recent work, such as openclaw-channel callbacks, config validation, secret
+  policy, and model gateway hooks. Do not start with a whole-workspace mutation
+  run; it will be slow and noisy.
+- **Negative-path packaging drills:** intentionally omit a token file, bind an
+  occupied port, and remove a runtime binary from the candidate image to confirm
+  failures are clear and early.
+- **Rollback rehearsal:** document the exact commands to return a host from
+  Docker Compose to systemd or from Homebrew service to the prior binary before
+  cutting the final 0.1.0 tag.
