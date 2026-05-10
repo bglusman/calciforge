@@ -35,7 +35,9 @@ use crate::agent_web::{
     host_matches_search_engine,
 };
 use crate::credentials::CredentialInjection;
-use crate::proxy::{self, BodyMode, SecurityProxy, redact_url_for_log};
+use crate::proxy::{
+    self, BodyMode, SecurityProxy, redact_url_for_log, secret_access_identity_from_headers,
+};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
@@ -241,6 +243,7 @@ impl CalciforgeMitmHandler {
             }
         }
 
+        let secret_access_identity = secret_access_identity_from_headers(req.headers());
         let mut secret_metadata = None;
         if original_target_url.contains("{{secret:")
             && let Some(host) = url_dest_host.as_deref()
@@ -265,6 +268,7 @@ impl CalciforgeMitmHandler {
                 &original_target_url,
                 url_dest_host.as_deref(),
                 secret_metadata.as_ref(),
+                &secret_access_identity,
             )
             .await
         {
@@ -331,6 +335,7 @@ impl CalciforgeMitmHandler {
             &mut parts.headers,
             dest_host.as_deref(),
             &mut secret_metadata,
+            &secret_access_identity,
         )
         .await
         {
@@ -358,6 +363,7 @@ impl CalciforgeMitmHandler {
             content_type.as_deref(),
             dest_host.as_deref(),
             &mut secret_metadata,
+            &secret_access_identity,
         )
         .await
         {
@@ -731,6 +737,7 @@ async fn substitute_headers(
     headers: &mut header::HeaderMap,
     dest_host: Option<&str>,
     metadata: &mut Option<secrets_client::SecretMetadataStore>,
+    access_identity: &secrets_client::SecretAccessIdentity,
 ) -> Result<(), String> {
     let original: Vec<(header::HeaderName, header::HeaderValue)> = headers
         .iter()
@@ -753,7 +760,7 @@ async fn substitute_headers(
             *metadata = Some(SecurityProxy::load_secret_metadata(host)?);
         }
         let substituted = state
-            .resolve_and_substitute(value_str, dest_host, metadata.as_ref())
+            .resolve_and_substitute(value_str, dest_host, metadata.as_ref(), access_identity)
             .await?;
         let header_value = header::HeaderValue::try_from(substituted.as_str())
             .map_err(|err| format!("invalid substituted header value for {name}: {err}"))?;
@@ -770,6 +777,7 @@ async fn substitute_body(
     content_type: Option<&str>,
     dest_host: Option<&str>,
     metadata: &mut Option<secrets_client::SecretMetadataStore>,
+    access_identity: &secrets_client::SecretAccessIdentity,
 ) -> Result<Bytes, String> {
     if body_bytes.is_empty() {
         return Ok(body_bytes);
@@ -785,7 +793,7 @@ async fn substitute_body(
                 *metadata = Some(SecurityProxy::load_secret_metadata(host)?);
             }
             state
-                .resolve_and_substitute(&body_str, dest_host, metadata.as_ref())
+                .resolve_and_substitute(&body_str, dest_host, metadata.as_ref(), access_identity)
                 .await
                 .map(|substituted| Bytes::from(substituted.into_bytes()))
         }

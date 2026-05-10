@@ -336,6 +336,13 @@ pub struct GatewayConfig {
     /// `docs/security-gateway.md` for the threat model.
     #[serde(default)]
     pub agent_web: AgentWebPolicy,
+    /// `[security.secret_access]` — per-agent/user/channel secret ACLs.
+    /// If a request carries a Calciforge identity header, the referenced
+    /// secret must match at least one rule here before substitution can
+    /// resolve the value. Destination allowlists remain an independent
+    /// second gate.
+    #[serde(default)]
+    pub secret_access: secrets_client::SecretAccessPolicy,
 }
 
 /// Parse `security-proxy.toml` with backward-compatible support for the
@@ -358,6 +365,19 @@ pub fn parse_gateway_config_toml(input: &str) -> Result<GatewayConfig, toml::de:
             .cloned();
         if let (Some(agent_web), Some(table)) = (nested, value.as_table_mut()) {
             table.insert("agent_web".to_string(), agent_web);
+        }
+    }
+
+    let has_top_level_secret_access = value
+        .as_table()
+        .is_some_and(|table| table.contains_key("secret_access"));
+    if !has_top_level_secret_access {
+        let nested = value
+            .get("security")
+            .and_then(|security| security.get("secret_access"))
+            .cloned();
+        if let (Some(secret_access), Some(table)) = (nested, value.as_table_mut()) {
+            table.insert("secret_access".to_string(), secret_access);
         }
     }
 
@@ -392,6 +412,7 @@ impl Default for GatewayConfig {
             // they tighten the deployment.
             secret_destination_allowlist: HashMap::new(),
             agent_web: AgentWebPolicy::default(),
+            secret_access: secrets_client::SecretAccessPolicy::default(),
         }
     }
 }
@@ -470,6 +491,7 @@ mod tests {
                 ("LOCKED".into(), vec![]),
             ]),
             agent_web: AgentWebPolicy::default(),
+            secret_access: secrets_client::SecretAccessPolicy::default(),
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: GatewayConfig = serde_json::from_str(&json).unwrap();
@@ -521,6 +543,28 @@ mod tests {
             parsed.agent_web.forbid_provider_browsing,
             "explicit top-level agent_web should not be overwritten by compat normalization"
         );
+    }
+
+    #[test]
+    fn toml_parser_accepts_documented_security_secret_access_table() {
+        let parsed = parse_gateway_config_toml(
+            r#"
+            [security.secret_access]
+            [[security.secret_access.rules]]
+            agents = ["research-*"]
+            channels = ["signal"]
+            secrets = ["BRAVE_*"]
+            "#,
+        )
+        .expect("parse documented nested secret-access table");
+
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("research-web".into()),
+            channel: Some("signal".into()),
+            ..Default::default()
+        };
+        assert!(parsed.secret_access.allows(&identity, "BRAVE_API_KEY"));
+        assert!(!parsed.secret_access.allows(&identity, "OPENAI_API_KEY"));
     }
 
     #[test]

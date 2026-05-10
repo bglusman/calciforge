@@ -40,6 +40,8 @@ use serde::Deserialize;
 #[derive(Clone)]
 pub struct CalciforgeMcp {
     fnox: secrets_client::FnoxClient,
+    secret_access_policy: secrets_client::SecretAccessPolicy,
+    secret_access_identity: secrets_client::SecretAccessIdentity,
     tool_router: ToolRouter<Self>,
 }
 
@@ -55,8 +57,30 @@ impl CalciforgeMcp {
     /// `fnox` from `PATH`; tests inject a `FnoxClient::with_binary(path)`
     /// pointing at a fake script.
     pub fn new(fnox: secrets_client::FnoxClient) -> Self {
+        let secret_access_policy =
+            secrets_client::load_default_access_policy().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "secret access policy unavailable; using fail-closed empty policy: {e}"
+                );
+                secrets_client::SecretAccessPolicy::default()
+            });
         Self {
             fnox,
+            secret_access_policy,
+            secret_access_identity: secrets_client::SecretAccessIdentity::from_env(),
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    pub fn with_secret_access(
+        fnox: secrets_client::FnoxClient,
+        secret_access_policy: secrets_client::SecretAccessPolicy,
+        secret_access_identity: secrets_client::SecretAccessIdentity,
+    ) -> Self {
+        Self {
+            fnox,
+            secret_access_policy,
+            secret_access_identity,
             tool_router: Self::tool_router(),
         }
     }
@@ -107,6 +131,9 @@ impl CalciforgeMcp {
     async fn list_secrets(&self) -> Result<CallToolResult, McpError> {
         match self.fnox.list().await {
             Ok(names) => {
+                let names = self
+                    .secret_access_policy
+                    .filter_names(&self.secret_access_identity, names);
                 let metadata =
                     secrets_client::metadata::metadata_for_names(&names).map_err(|error| {
                         McpError::internal_error(
@@ -160,6 +187,15 @@ impl CalciforgeMcp {
                 format!(
                     "secret name {name:?} contains invalid characters (allowed: A-Z a-z 0-9 _ -)"
                 ),
+                None,
+            ));
+        }
+        if !self
+            .secret_access_policy
+            .allows(&self.secret_access_identity, &name)
+        {
+            return Err(McpError::invalid_params(
+                format!("secret {name:?} is not allowed for the current Calciforge identity"),
                 None,
             ));
         }
@@ -314,6 +350,39 @@ OUT"#,
         assert_eq!(name_strs, vec!["KEY_A", "KEY_B", "KEY_C"]);
     }
 
+    #[tokio::test]
+    async fn list_secrets_filters_by_secret_access_policy() {
+        let dir = TempDir::new().unwrap();
+        let bin = fake_fnox(
+            &dir,
+            r#"cat <<OUT
+BRAVE_API_KEY
+OPENAI_API_KEY
+OUT"#,
+        );
+        let server = CalciforgeMcp::with_secret_access(
+            secrets_client::FnoxClient::with_binary(bin),
+            secrets_client::SecretAccessPolicy {
+                rules: vec![secrets_client::SecretAccessRule {
+                    agents: vec!["research-*".into()],
+                    secrets: vec!["BRAVE_*".into()],
+                    ..Default::default()
+                }],
+            },
+            secrets_client::SecretAccessIdentity {
+                agent_id: Some("research-web".into()),
+                ..Default::default()
+            },
+        );
+
+        let result = server.list_secrets().await.unwrap();
+        let body = result.content[0].raw.as_text().unwrap().text.clone();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["count"], 1);
+        assert_eq!(parsed["names"][0], "BRAVE_API_KEY");
+    }
+
     /// Given fnox not installed,
     /// when list_secrets is called,
     /// then the MCP returns an error that points the operator at the
@@ -385,6 +454,36 @@ OUT"#,
         assert!(
             msg.contains("invalid characters") || msg.contains("FOO/BAR"),
             "error should name the problem: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_reference_rejects_policy_denied_secret() {
+        let server = CalciforgeMcp::with_secret_access(
+            secrets_client::FnoxClient::new(),
+            secrets_client::SecretAccessPolicy {
+                rules: vec![secrets_client::SecretAccessRule {
+                    agents: vec!["agent-a".into()],
+                    secrets: vec!["BRAVE_*".into()],
+                    ..Default::default()
+                }],
+            },
+            secrets_client::SecretAccessIdentity {
+                agent_id: Some("agent-a".into()),
+                ..Default::default()
+            },
+        );
+
+        let err = server
+            .secret_reference(Parameters(SecretReferenceParams {
+                name: "OPENAI_API_KEY".to_string(),
+            }))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not allowed"),
+            "policy-denied references must be rejected: {err}"
         );
     }
 

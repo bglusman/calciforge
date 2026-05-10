@@ -26,6 +26,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
+toml = "0.8"
 
 # Crate-specific
 url = "2"
@@ -40,4 +41,3 @@ fnox = { version = "1.22", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-toml = "0.8"

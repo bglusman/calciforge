@@ -3,7 +3,9 @@
 //! This exposes the same safe surface as the MCP server: list names and build
 //! placeholder references. It never resolves or prints secret values.
 
-use secrets_client::{FnoxClient, secret_reference_token};
+use secrets_client::{
+    FnoxClient, SecretAccessIdentity, SecretAccessPolicy, secret_reference_token,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -54,8 +56,13 @@ async fn run() -> Result<(), String> {
 }
 
 async fn list(json_output: bool) -> Result<(), String> {
+    let (policy, identity) = access_context()?;
     if let Some(remote) = RemoteSecretsApi::from_env() {
-        let response = remote.list().await?;
+        let mut response = remote.list().await?;
+        response.secrets = policy.filter_names(&identity, response.secrets);
+        response
+            .metadata
+            .retain(|secret| policy.allows(&identity, &secret.name));
         if json_output {
             println!(
                 "{}",
@@ -82,6 +89,7 @@ async fn list(json_output: bool) -> Result<(), String> {
         .list()
         .await
         .map_err(|e| format!("fnox list failed: {e}"))?;
+    let names = policy.filter_names(&identity, names);
     let metadata = secrets_client::metadata::metadata_for_names(&names)
         .map_err(|e| format!("secret metadata unavailable: {e}"))?;
     if json_output {
@@ -147,8 +155,21 @@ fn local_reference(name: &str) -> Result<String, String> {
 }
 
 fn reference(name: &str) -> Result<(), String> {
+    let (policy, identity) = access_context()?;
+    if !policy.allows(&identity, name) {
+        return Err(format!(
+            "secret {name:?} is not allowed for the current Calciforge identity"
+        ));
+    }
     println!("{}", local_reference(name)?);
     Ok(())
+}
+
+fn access_context() -> Result<(SecretAccessPolicy, SecretAccessIdentity), String> {
+    let policy = secrets_client::load_default_access_policy()
+        .map_err(|e| format!("secret access policy unavailable: {e}"))?;
+    let identity = SecretAccessIdentity::from_env();
+    Ok((policy, identity))
 }
 
 #[derive(Clone)]
