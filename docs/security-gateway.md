@@ -534,7 +534,8 @@ Known identities fail closed: if no rule allows a secret, `list_secrets`
 and `calciforge-secrets list` hide it, reference creation rejects it, and
 security-proxy substitution refuses to resolve it. Unknown identities
 preserve process-scoped compatibility for existing deployments. The proxy
-strips Calciforge identity headers before forwarding upstream.
+strips Calciforge identity headers, including legacy `x-agent-id`, before
+forwarding upstream.
 
 ## `[security.agent_web]` — agent-web-content defenses
 

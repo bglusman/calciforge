@@ -48,7 +48,7 @@ Identity sources:
   `CALCIFORGE_CHANNEL`.
 - `security-proxy` reads `x-calciforge-agent-id`, legacy `x-agent-id`,
   `x-calciforge-user-id`, and `x-calciforge-channel-id` /
-  `x-calciforge-channel`, then strips Calciforge identity headers before
+  `x-calciforge-channel`, then strips these identity headers before
   forwarding upstream.
 
 Compatibility rule: unknown identity preserves process-scoped behavior

@@ -885,7 +885,7 @@ fn is_hop_by_hop_or_recomputed(name: &header::HeaderName) -> bool {
 fn remove_calciforge_control_headers(headers: &mut header::HeaderMap) {
     let control_names: Vec<header::HeaderName> = headers
         .keys()
-        .filter(|name| name.as_str().starts_with("x-calciforge-"))
+        .filter(|name| name.as_str().starts_with("x-calciforge-") || name.as_str() == "x-agent-id")
         .cloned()
         .collect();
     for name in control_names {
@@ -1392,6 +1392,10 @@ mod credential_check_tests {
             header::HeaderValue::from_static("control-plane"),
         );
         headers.insert(
+            "x-agent-id",
+            header::HeaderValue::from_static("legacy-agent"),
+        );
+        headers.insert(
             "x-upstream-header",
             header::HeaderValue::from_static("keep"),
         );
@@ -1400,6 +1404,7 @@ mod credential_check_tests {
 
         assert!(!headers.contains_key("x-calciforge-override"));
         assert!(!headers.contains_key("x-calciforge-anything"));
+        assert!(!headers.contains_key("x-agent-id"));
         assert_eq!(headers["x-upstream-header"], "keep");
     }
 }
