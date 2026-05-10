@@ -788,59 +788,22 @@ impl SecurityProxy {
             return Ok(input.to_string());
         }
 
-        // Allowlist gate — runs BEFORE the resolver so that:
+        // Policy gate — runs BEFORE the resolver so that:
         // (a) we don't pay the resolver cost for a request we're
         //     about to reject, and
         // (b) the secret value is never even loaded into memory for
         //     a destination we don't trust.
-        if let Some(host) = dest_host {
-            let host_lower = host.to_lowercase();
-            for name in &names {
-                if !self.config.secret_access.allows(access_identity, name) {
-                    tracing::warn!(
-                        secret = %name,
-                        agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
-                        user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
-                        channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
-                        "secret substitution denied by identity access policy"
-                    );
-                    return Err(format!(
-                        "secret {name:?} not allowed for current Calciforge identity"
-                    ));
-                }
-                let Some(metadata) = metadata else {
-                    return Err(
-                        "secret metadata unavailable for destination-scoped substitution"
-                            .to_string(),
-                    );
-                };
-                if !self.is_destination_allowed(name, &host_lower, metadata) {
-                    tracing::warn!(
-                        secret = %name,
-                        destination_host = %host_lower,
-                        "secret substitution denied by destination allowlist"
-                    );
-                    return Err(format!(
-                        "secret {name:?} not allowed at destination {host:?}"
-                    ));
-                }
-            }
+        for name in &names {
+            self.ensure_secret_allowed_for_substitution(
+                name,
+                dest_host,
+                metadata,
+                access_identity,
+            )?;
         }
 
         let mut resolved = std::collections::HashMap::new();
         for name in names {
-            if !self.config.secret_access.allows(access_identity, &name) {
-                tracing::warn!(
-                    secret = %name,
-                    agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
-                    user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
-                    channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
-                    "secret substitution denied by identity access policy"
-                );
-                return Err(format!(
-                    "secret {name:?} not allowed for current Calciforge identity"
-                ));
-            }
             match secrets_client::vault::get_secret(&name).await {
                 Ok(value) => {
                     tracing::debug!(
@@ -864,6 +827,50 @@ impl SecurityProxy {
         crate::substitution::substitute(input, &resolved)
             .map(|cow| cow.into_owned())
             .map_err(|e| e.to_string())
+    }
+
+    fn ensure_secret_allowed_for_substitution(
+        &self,
+        name: &str,
+        dest_host: Option<&str>,
+        metadata: Option<&secrets_client::SecretMetadataStore>,
+        access_identity: &secrets_client::SecretAccessIdentity,
+    ) -> Result<(), String> {
+        if !self.config.secret_access.allows(access_identity, name) {
+            tracing::warn!(
+                secret = %name,
+                agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
+                user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
+                channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
+                "secret substitution denied by identity access policy"
+            );
+            return Err(format!(
+                "secret {name:?} not allowed for current Calciforge identity"
+            ));
+        }
+
+        let Some(host) = dest_host else {
+            return Ok(());
+        };
+        let Some(metadata) = metadata else {
+            return Err(
+                "secret metadata unavailable for destination-scoped substitution".to_string(),
+            );
+        };
+
+        let host_lower = host.to_lowercase();
+        if !self.is_destination_allowed(name, &host_lower, metadata) {
+            tracing::warn!(
+                secret = %name,
+                destination_host = %host_lower,
+                "secret substitution denied by destination allowlist"
+            );
+            return Err(format!(
+                "secret {name:?} not allowed at destination {host:?}"
+            ));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn load_secret_metadata(
