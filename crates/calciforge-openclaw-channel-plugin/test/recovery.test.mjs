@@ -47,6 +47,70 @@ test("status payload reports callback URL and reply-token hash without exposing 
   assert.equal(JSON.stringify(payload).includes(fixtureReplyToken), false);
 });
 
+test("registers inbound route with replaceExisting when public route API exists", async () => {
+  const calls = [];
+  const unregister = () => {};
+  const api = {
+    registerHttpRoute: (route) => {
+      calls.push(route);
+      return unregister;
+    },
+  };
+  const route = {
+    path: "/calciforge/inbound",
+    match: "exact",
+    handler: async () => true,
+  };
+
+  const result = await testInternals.registerHttpRoute(api, route, console);
+
+  assert.equal(result.source, "plugin route API");
+  assert.equal(result.unregister, unregister);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/calciforge/inbound");
+  assert.equal(calls[0].match, "exact");
+  assert.equal(calls[0].auth, "plugin");
+  assert.equal(calls[0].replaceExisting, true);
+  assert.equal(calls[0].handler, route.handler);
+});
+
+test("channel runtime can run without session message recovery support", () => {
+  const runtime = {
+    config: { current: () => ({ session: {} }) },
+    channel: {
+      session: {
+        resolveStorePath: () => "/tmp/openclaw-test-sessions.json",
+        readSessionUpdatedAt: () => undefined,
+        recordInboundSession: async () => {},
+      },
+      reply: {
+        resolveEnvelopeFormatOptions: () => ({}),
+        formatInboundEnvelope: ({ body }) => body,
+        finalizeInboundContext: (ctx) => ctx,
+        withReplyDispatcher: async ({ run }) => run(),
+        dispatchReplyFromConfig: async () => ({ queuedFinal: false }),
+      },
+      turn: {
+        run: async () => {},
+      },
+    },
+  };
+
+  assert.equal(testInternals.canUseChannelRuntime(runtime), true);
+});
+
+test("reply webhook log snippets are single-line bounded ASCII", () => {
+  const snippet = testInternals.sanitizeLogSnippet(
+    "secret=abc\nsecond\tline\u0000more".repeat(20),
+    24,
+  );
+
+  assert.equal(snippet.length, 24);
+  assert.equal(snippet.includes("\n"), false);
+  assert.equal(snippet.includes("\t"), false);
+  assert.match(snippet, /^[\x20-\x7E]*$/);
+});
+
 test("dispatches through OpenClaw channel runtime with calciforge command context", async () => {
   const delivered = [];
   const server = http.createServer((req, res) => {
@@ -131,7 +195,7 @@ test("dispatches through OpenClaw channel runtime with calciforge command contex
   });
 });
 
-test("reports channel-runtime requests that complete without a visible reply", async () => {
+test("recovers private final channel-runtime replies when no visible dispatch is captured", async () => {
   const delivered = [];
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -144,7 +208,20 @@ test("reports channel-runtime requests that complete without a visible reply", a
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const replyWebhook = `http://127.0.0.1:${server.address().port}/reply`;
+  let getSessionMessagesCount = 0;
   const runtime = {
+    subagent: {
+      async getSessionMessages({ sessionKey }) {
+        assert.equal(sessionKey, "calciforge:main:brian");
+        getSessionMessagesCount += 1;
+        return {
+          messages:
+            getSessionMessagesCount === 1
+              ? [{ role: "assistant", id: "before", content: "previous" }]
+              : [{ role: "assistant", id: "after", content: "private final" }],
+        };
+      },
+    },
     config: { current: () => ({ session: {} }) },
     channel: {
       session: {
@@ -191,9 +268,85 @@ test("reports channel-runtime requests that complete without a visible reply", a
   assert.deepEqual(delivered[0], {
     sessionKey: "calciforge:main:brian",
     requestId: "silent-req",
-    error: "OpenClaw completed without a visible reply for this Calciforge request (no_reply_dispatched)",
-    noVisibleReplyReason: "no_reply_dispatched",
+    message: "private final",
     channel: "telegram",
+  });
+});
+
+test("reports channel-runtime requests that complete without a visible or recoverable reply", async () => {
+  const delivered = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      delivered.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const replyWebhook = `http://127.0.0.1:${server.address().port}/reply`;
+  const runtime = {
+    subagent: {
+      async getSessionMessages() {
+        return { messages: [] };
+      },
+    },
+    config: { current: () => ({ session: {} }) },
+    channel: {
+      session: {
+        resolveStorePath: () => "/tmp/openclaw-test-sessions.json",
+        readSessionUpdatedAt: () => undefined,
+        recordInboundSession: async () => {},
+      },
+      reply: {
+        resolveEnvelopeFormatOptions: () => ({}),
+        formatInboundEnvelope: ({ body }) => body,
+        finalizeInboundContext: (ctx) => ctx,
+        withReplyDispatcher: async ({ run }) => run(),
+        dispatchReplyFromConfig: async ({ dispatcher }) => {
+          assert.equal(dispatcher.getQueuedCounts().final, 0);
+          return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
+        },
+      },
+      turn: {
+        run: async ({ raw, adapter }) => {
+          const input = adapter.ingest(raw);
+          const resolved = adapter.resolveTurn(input);
+          return resolved.runDispatch();
+        },
+      },
+    },
+  };
+
+  try {
+    await testInternals.dispatchViaChannelRuntime({
+      runtime,
+      message: "hello?",
+      sessionKey: "calciforge:main:brian",
+      requestId: "silent-req",
+      channel: "telegram",
+      sender: "brian",
+      replyWebhook,
+      replyAuthToken: "reply-secret",
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].sessionKey, "calciforge:main:brian");
+  assert.equal(delivered[0].requestId, "silent-req");
+  assert.equal(
+    delivered[0].error,
+    "OpenClaw completed without a visible reply for this Calciforge request",
+  );
+  assert.equal(delivered[0].errorKind, "no_visible_reply");
+  assert.equal(delivered[0].noVisibleReplyReason, "no_reply_dispatched");
+  assert.equal(delivered[0].channel, "telegram");
+  assert.deepEqual(delivered[0].diagnostic, {
+    runtime: "channel",
+    counts: { tool: 0, block: 0, final: 0 },
   });
 });
 
@@ -246,12 +399,18 @@ test("reports subagent-runtime requests that complete without a visible reply", 
   }
 
   assert.equal(delivered.length, 1);
-  assert.deepEqual(delivered[0], {
-    sessionKey: "calciforge:main:brian",
-    requestId: "silent-subagent-req",
-    error: "OpenClaw completed without a visible reply for this Calciforge request (empty_reply)",
-    noVisibleReplyReason: "empty_reply",
-    channel: "telegram",
+  assert.equal(delivered[0].sessionKey, "calciforge:main:brian");
+  assert.equal(delivered[0].requestId, "silent-subagent-req");
+  assert.equal(
+    delivered[0].error,
+    "OpenClaw completed without a visible reply for this Calciforge request",
+  );
+  assert.equal(delivered[0].errorKind, "no_visible_reply");
+  assert.equal(delivered[0].noVisibleReplyReason, "empty_reply");
+  assert.equal(delivered[0].channel, "telegram");
+  assert.deepEqual(delivered[0].diagnostic, {
+    runtime: "subagent",
+    runId: "run-silent",
   });
 });
 
