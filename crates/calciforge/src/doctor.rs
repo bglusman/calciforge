@@ -20,7 +20,9 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::adapters::agent_supports_model_override;
-use crate::agent_kinds::{AgentKind, parse_agent_kind};
+use crate::agent_kinds::{
+    AgentKind, AgentKindLifecycle, agent_kind_metadata, known_agent_kind_names, parse_agent_kind,
+};
 use crate::config::{self, AgentConfig, CalciforgeConfig};
 use crate::model_names::configured_first_class_model_ids;
 use crate::providers::alloy::AlloyManager;
@@ -1296,11 +1298,32 @@ async fn check_agent_wiring(
             continue;
         }
 
-        if !is_known_agent_kind(&agent.kind) {
-            report.error(format!(
-                "agent '{}' has unknown kind '{}'",
-                agent.id, agent.kind
-            ));
+        match agent_kind_metadata(&agent.kind) {
+            Some(metadata) => match metadata.lifecycle {
+                AgentKindLifecycle::Stable => {}
+                AgentKindLifecycle::Legacy => report.warn(format!(
+                    "agent '{}' uses {} kind '{}': {}",
+                    agent.id,
+                    metadata.lifecycle.label(),
+                    metadata.name,
+                    metadata.summary
+                )),
+                AgentKindLifecycle::Experimental => report.warn(format!(
+                    "agent '{}' uses {} kind '{}': {}",
+                    agent.id,
+                    metadata.lifecycle.label(),
+                    metadata.name,
+                    metadata.summary
+                )),
+            },
+            None => {
+                report.error(format!(
+                    "agent '{}' has unknown kind '{}'; known kinds: {}",
+                    agent.id,
+                    agent.kind,
+                    known_agent_kind_names().collect::<Vec<_>>().join(", ")
+                ));
+            }
         }
 
         if is_http_agent(agent) {
@@ -1377,10 +1400,6 @@ async fn check_agent_wiring(
             ));
         }
     }
-}
-
-fn is_known_agent_kind(kind: &str) -> bool {
-    parse_agent_kind(kind).is_some()
 }
 
 fn is_http_agent(agent: &AgentConfig) -> bool {
