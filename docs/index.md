@@ -663,11 +663,11 @@ and fail to retrieve values.
 Calciforge's default agent guidance should be CLI-first:
 `calciforge-secrets list` and `calciforge-secrets ref NAME` work for any
 runtime that can run a command. MCP is an opt-in convenience for runtimes that
-support it and have been configured explicitly. Today, discovery is
-process-scoped: it sees the fnox names available to the MCP server or CLI
-process. Calciforge enforces per-secret destination allowlists at substitution
-time, but does not yet enforce per-agent secret discovery/use ACLs. That policy
-layer is on the [roadmap](roadmap/agent-secret-access-policy.html).
+support it and have been configured explicitly. Discovery is filtered by
+the active [secret access policy](roadmap/agent-secret-access-policy.html)
+when a Calciforge agent, user, or channel identity is known. Unknown
+identities preserve process-scoped compatibility. Calciforge also enforces
+per-secret destination allowlists at substitution time.
 
 ```json
 // ~/.claude/mcp-config.json

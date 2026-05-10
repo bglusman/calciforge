@@ -499,6 +499,43 @@ Good sources for new fixture families include:
 - scurl-style sanitized-fetch middleware; see the
   [sanitized fetch roadmap](roadmap/sanitized-fetch-middleware.html).
 
+## `[security.secret_access]` — identity-scoped secret ACLs
+
+`[security.secret_access]` gates which secret names an identified agent,
+user, or channel may discover, reference, and substitute. This is an
+identity gate; `secret_destination_allowlist` and dynamic
+`allowed_destinations` metadata still apply independently as destination
+gates.
+
+```toml
+[security.secret_access]
+[[security.secret_access.rules]]
+agents = ["research-*"]
+users = ["brian"]
+channels = ["signal"]
+secrets = ["BRAVE_*", "SEARCH_*"]
+```
+
+Rule selectors are conjunctive. Empty `agents`, `users`, or `channels`
+lists are wildcards for that selector type; configured selectors must
+match the active identity. `secrets` must be non-empty and supports `*`
+wildcards.
+
+Identity sources:
+
+- MCP and `calciforge-secrets`: `CALCIFORGE_AGENT_ID`,
+  `CALCIFORGE_USER_ID`, `CALCIFORGE_CHANNEL_ID`, or
+  `CALCIFORGE_CHANNEL`.
+- security proxy: `x-calciforge-agent-id`, legacy `x-agent-id`,
+  `x-calciforge-user-id`, `x-calciforge-channel-id`, or
+  `x-calciforge-channel`.
+
+Known identities fail closed: if no rule allows a secret, `list_secrets`
+and `calciforge-secrets list` hide it, reference creation rejects it, and
+security-proxy substitution refuses to resolve it. Unknown identities
+preserve process-scoped compatibility for existing deployments. The proxy
+strips Calciforge identity headers before forwarding upstream.
+
 ## `[security.agent_web]` — agent-web-content defenses
 
 Calciforge's MITM gateway already scans every outbound HTTPS, but the highest-likelihood leak path for blocked content is *not* a direct egress to a denied host — it's the **search-API response** that contains pre-indexed snippets of the same denied host, or a **provider-side browsing tool** that the model invokes from inside an allowed `api.openai.com` session.
