@@ -79,11 +79,15 @@ Homebrew `fnox` dependency for secret helpers. It expects you to provide config 
 install certificates, or populate secrets by itself.
 
 ```bash
+brew install bglusman/tap/calciforge
+$EDITOR "$(brew --prefix)/etc/calciforge/config.toml"
 brew services start calciforge
 ```
 
-Use the source installer when Calciforge should manage local service setup and
-wire supported agents for you.
+Use the formula when you want released binaries and native macOS supervision.
+Run the explicit installer/configuration flow after installing when Calciforge
+should discover agents, install certificates, bootstrap secrets, or wire remote
+nodes.
 
 ## Docker Compose
 
@@ -93,12 +97,18 @@ Use this for trials, LAN staging, and repeatable smoke environments:
 cd packaging/docker
 cp calciforge.env.example .env
 mkdir -p data
-docker compose --env-file .env up --build
+docker compose --env-file .env up -d
 ```
 
 The Compose example runs Calciforge, `security-proxy`, and `clashd` from the
 same image. It is separate from `scripts/docker-compose.yml`, which remains the
-CI/mock-LLM smoke stack.
+CI/mock-LLM smoke stack. Release Compose installs should use the published GHCR
+image. GitHub Actions publishes `ghcr.io/bglusman/calciforge:main` and
+`ghcr.io/bglusman/calciforge:sha-<commit>` on every merge to `main`; release
+tags also publish immutable version tags from the release workflow. Use `:main`
+for staging nodes that should follow the integration branch, and pin a version
+or SHA tag for stable hosts. Local `--build` remains useful for development and
+pre-release smoke tests.
 
 To validate the packaged Compose path without real provider credentials:
 
@@ -109,6 +119,24 @@ scripts/packaging-docker-smoke.sh
 That smoke script overlays the packaged Compose file with a mock
 OpenAI-compatible backend and checks Calciforge, `security-proxy`, `clashd`,
 model listing, and a chat completion.
+
+## Choosing an Install Shape
+
+Most users should start with a single-node install: Homebrew on macOS, Docker
+Compose on a server, or the source installer when they are developing or need
+managed local agents. In this mode Calciforge, `security-proxy`, `clashd`, and
+the model gateway live on one host.
+
+Multi-node installs are explicit. Keep one Calciforge control host as the owner
+of config, policy, model gateway, and secrets. Remote agent hosts should point
+back to that control host through managed wrappers, API-backed
+`calciforge-secrets`, or gateway/proxy endpoints. Do not create independent fnox
+vaults on every agent host unless the operator intentionally wants separate
+secret ownership.
+
+Containerized or virtualized agents are the recommended isolation boundary for
+stronger deployments. Expose only the Calciforge-approved gateway, proxy, and
+helper endpoints into those containers or VMs.
 
 ## Secret Path Validation
 

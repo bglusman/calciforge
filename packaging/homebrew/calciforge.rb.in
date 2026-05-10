@@ -41,6 +41,7 @@ class Calciforge < Formula
   service do
     run [opt_bin/"calciforge", "--config", etc/"calciforge/config.toml"]
     keep_alive true
+    environment_variables PATH: "#{opt_bin}:#{HOMEBREW_PREFIX}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     working_dir var/"lib/calciforge"
     log_path var/"log/calciforge/calciforge.log"
     error_log_path var/"log/calciforge/calciforge.log"

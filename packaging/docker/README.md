@@ -12,6 +12,21 @@ docker compose --env-file .env build calciforge
 docker compose --env-file .env up -d
 ```
 
+For staging or release installs, set `CALCIFORGE_IMAGE` in `.env` to a
+published GHCR image before running `up -d`. `:main` follows every merge to the
+main branch, `sha-<commit>` pins an immutable commit image, and release version
+tags are published by the release workflow.
+
+When migrating an existing systemd or Homebrew install to Compose, stop the
+existing service before binding the same ports. Preserve config paths that are
+already referenced from `config.toml`: if the file points at
+`/etc/calciforge/secrets/...` or `/etc/calciforge/whatsapp/session.db`, mount
+the host config directory at `/etc/calciforge` in the container and run
+Calciforge with `--config /etc/calciforge/config.toml`, or rewrite those paths
+to the Compose mounts before starting the container. The sample Compose file
+uses `/config` for clean trials; live migrations should keep paths stable unless
+they are intentionally changing layout.
+
 The example starts:
 
 - `calciforge` on `${CALCIFORGE_PROXY_PORT:-18792}`

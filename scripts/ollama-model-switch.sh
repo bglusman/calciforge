@@ -12,6 +12,40 @@ set -euo pipefail
 # This script unloads other resident Ollama models before Calciforge sends the
 # next gateway request. The request itself will load the target model.
 
+find_ollama() {
+    if command -v ollama >/dev/null 2>&1; then
+        command -v ollama
+        return 0
+    fi
+
+    for candidate in \
+        /opt/homebrew/bin/ollama \
+        /usr/local/bin/ollama \
+        /Applications/Ollama.app/Contents/Resources/ollama
+    do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+if [[ -z "${HOME:-}" ]]; then
+    user="$(id -un 2>/dev/null || true)"
+    if [[ -n "$user" ]]; then
+        home_dir="$(
+            dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}' \
+                || awk -F: -v u="$user" '$1 == u {print $6; exit}' /etc/passwd 2>/dev/null \
+                || true
+        )"
+        if [[ -n "$home_dir" && "$home_dir" != "~$user" ]]; then
+            export HOME="$home_dir"
+        fi
+    fi
+fi
+
 target="${CALCIFORGE_UPSTREAM_MODEL_ID:-${CALCIFORGE_MODEL_ID:-}}"
 target="${target#ollama/}"
 
@@ -20,12 +54,12 @@ if [[ -z "$target" ]]; then
     exit 64
 fi
 
-if ! command -v ollama >/dev/null 2>&1; then
+if ! ollama_bin="$(find_ollama)"; then
     echo "ollama command not found" >&2
     exit 69
 fi
 
-current_models="$(ollama ps 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')"
+current_models="$("$ollama_bin" ps 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')"
 if [[ -z "$current_models" ]]; then
     exit 0
 fi
@@ -35,5 +69,5 @@ while IFS= read -r model; do
     if [[ "$model" == "$target" ]]; then
         continue
     fi
-    ollama stop "$model" >/dev/null 2>&1 || true
+    "$ollama_bin" stop "$model" >/dev/null 2>&1 || true
 done <<< "$current_models"

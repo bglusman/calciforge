@@ -505,8 +505,9 @@ id = "local-ollama"
 url = "http://127.0.0.1:11434/v1"
 models = ["local/*", "qwen/*", "ollama/*"]
 # Optional request-time hook for single-resident local runtimes such as large
-# Ollama models. Calciforge runs it before forwarding to this provider.
-on_switch = "/usr/local/bin/calciforge-ollama-switch"
+# Ollama models. Calciforge runs it before forwarding to this provider. Ensure
+# the hook can locate ollama from the service environment, not just your shell.
+on_switch = "calciforge-ollama-switch"
 
 # Explicit routes take precedence over provider pattern lists.
 [[proxy.model_routes]]

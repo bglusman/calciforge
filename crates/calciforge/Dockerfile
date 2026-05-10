@@ -13,12 +13,10 @@ RUN cargo build --profile "${CARGO_BUILD_PROFILE}" -j "${CARGO_BUILD_JOBS}" -p c
     && cargo build --profile "${CARGO_BUILD_PROFILE}" -j "${CARGO_BUILD_JOBS}" -p secrets-client --bin calciforge-secrets \
     && cargo build --profile "${CARGO_BUILD_PROFILE}" -j "${CARGO_BUILD_JOBS}" -p calciforge --features channel-matrix \
     && mkdir -p /app/dist-bin \
-    && cp "/app/target/${CARGO_BUILD_PROFILE}/calciforge" /app/dist-bin/calciforge \
-    && cp "/app/target/${CARGO_BUILD_PROFILE}/security-proxy" /app/dist-bin/security-proxy \
-    && cp "/app/target/${CARGO_BUILD_PROFILE}/clashd" /app/dist-bin/clashd \
-    && cp "/app/target/${CARGO_BUILD_PROFILE}/mcp-server" /app/dist-bin/mcp-server \
-    && cp "/app/target/${CARGO_BUILD_PROFILE}/paste-server" /app/dist-bin/paste-server \
-    && cp "/app/target/${CARGO_BUILD_PROFILE}/calciforge-secrets" /app/dist-bin/calciforge-secrets
+    && while IFS= read -r bin; do \
+        case "$bin" in ''|\#*) continue ;; esac; \
+        install -m 0755 "/app/target/${CARGO_BUILD_PROFILE}/$bin" "/app/dist-bin/$bin"; \
+    done < /app/packaging/runtime-binaries.txt
 
 # Runtime image
 FROM debian:stable-slim
@@ -41,12 +39,7 @@ RUN set -eux; \
     install -m 0755 "$tmp/fnox" /usr/local/bin/fnox; \
     rm -rf "$tmp"
 
-COPY --from=builder /app/dist-bin/calciforge /usr/local/bin/calciforge
-COPY --from=builder /app/dist-bin/security-proxy /usr/local/bin/security-proxy
-COPY --from=builder /app/dist-bin/clashd /usr/local/bin/clashd
-COPY --from=builder /app/dist-bin/mcp-server /usr/local/bin/mcp-server
-COPY --from=builder /app/dist-bin/paste-server /usr/local/bin/paste-server
-COPY --from=builder /app/dist-bin/calciforge-secrets /usr/local/bin/calciforge-secrets
+COPY --from=builder /app/dist-bin/ /usr/local/bin/
 COPY LICENSE /usr/local/share/calciforge/LICENSE
 COPY THIRD_PARTY_NOTICES.txt /usr/local/share/calciforge/THIRD_PARTY_NOTICES.txt
 

@@ -193,6 +193,9 @@ enabled = true
 ttl_seconds = 300
 token_entropy_bits = 80
 allowed_approvers = []
+# Admin endpoints such as /admin/pending and /admin/warn-permissions fail closed
+# until this is set to a dedicated admin client-cert CN pattern, for example:
+# admin_cn_pattern = "admin-*"
 
 [metrics]
 enabled = true
@@ -223,6 +226,7 @@ EOF
     chmod 640 "$CONFIG_PATH"
     
     log_info "Configuration created at $CONFIG_PATH"
+    log_warn "Admin endpoints are disabled until approval.admin_cn_pattern is set to a dedicated admin client-cert CN pattern."
 }
 
 # Install OS-level wrapper scripts (root-owned, mode 0755)

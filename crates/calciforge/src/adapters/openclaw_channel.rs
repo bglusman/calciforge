@@ -214,46 +214,43 @@ impl ReplyServerHandle {
             .lock()
             .expect("openclaw-channel reply server registry poisoned");
 
-        if let Some(existing) = servers.get(&port) {
-            let config_error = match auth_token {
-                Some(token) => {
-                    let mut tokens = existing
-                        .auth_tokens
-                        .lock()
-                        .expect("openclaw-channel reply auth token set poisoned");
-                    if tokens.is_empty() {
-                        Some(format!(
-                            "reply port {port} is already registered without reply_auth_token"
-                        ))
-                    } else {
-                        tokens.insert(token);
-                        None
-                    }
-                }
-                None => {
-                    let tokens = existing
-                        .auth_tokens
-                        .lock()
-                        .expect("openclaw-channel reply auth token set poisoned");
-                    if tokens.is_empty() {
-                        None
-                    } else {
-                        Some(format!(
-                            "reply port {port} is already registered with reply_auth_token"
-                        ))
-                    }
-                }
+        let Some(auth_token) = auth_token.filter(|token| !token.trim().is_empty()) else {
+            let shared = servers
+                .get(&port)
+                .cloned()
+                .unwrap_or_else(|| SharedReplyServer {
+                    port,
+                    auth_tokens: Arc::new(StdMutex::new(HashSet::new())),
+                    router: ReplyRouter::default(),
+                    once: Arc::new(OnceLock::new()),
+                    ready_notify: Arc::new(Notify::new()),
+                    startup_complete: Arc::new(AtomicBool::new(false)),
+                    started: Arc::new(AtomicBool::new(false)),
+                    start_error: Arc::new(Mutex::new(None)),
+                });
+            return Self {
+                shared,
+                config_error: Some(
+                    "openclaw-channel requires reply_auth_token or reply_auth_token_file; unauthenticated callback listeners are not allowed"
+                        .to_string(),
+                ),
             };
+        };
+
+        if let Some(existing) = servers.get(&port) {
+            let mut tokens = existing
+                .auth_tokens
+                .lock()
+                .expect("openclaw-channel reply auth token set poisoned");
+            tokens.insert(auth_token);
             return Self {
                 shared: existing.clone(),
-                config_error,
+                config_error: None,
             };
         }
 
         let mut auth_tokens = HashSet::new();
-        if let Some(token) = auth_token {
-            auth_tokens.insert(token);
-        }
+        auth_tokens.insert(auth_token);
 
         let shared = SharedReplyServer {
             port,
@@ -692,6 +689,8 @@ mod tests {
 
     use crate::sync::Arc;
 
+    const TEST_REPLY_AUTH_TOKEN: &str = "reply-secret";
+
     #[derive(Clone)]
     struct CaptureState {
         last_body: Arc<TokioMutex<Option<Value>>>,
@@ -736,9 +735,7 @@ mod tests {
                 .post(webhook)
                 .json(&reply);
 
-            if let Some(token) = state.reply_auth {
-                req = req.bearer_auth(token);
-            }
+            req = req.bearer_auth(state.reply_auth.as_deref().unwrap_or(TEST_REPLY_AUTH_TOKEN));
 
             tokio::spawn(async move {
                 let _ = req.send().await;
@@ -785,7 +782,7 @@ mod tests {
             "hooks-test-token".to_string(),
             "main".to_string(),
             Some(reply_port),
-            reply_auth_token,
+            Some(reply_auth_token.unwrap_or_else(|| TEST_REPLY_AUTH_TOKEN.to_string())),
             Some(3000),
         )
     }
@@ -947,6 +944,7 @@ mod tests {
                     .build()
                     .expect("test reqwest client")
                     .post(state.reply_webhook)
+                    .bearer_auth(TEST_REPLY_AUTH_TOKEN)
                     .json(&reply)
                     .send()
                     .await
@@ -1141,6 +1139,7 @@ mod tests {
                     .build()
                     .expect("test reqwest client")
                     .post(state.reply_webhook)
+                    .bearer_auth(TEST_REPLY_AUTH_TOKEN)
                     .json(&reply)
                     .send()
                     .await;
@@ -1204,6 +1203,7 @@ mod tests {
                     .build()
                     .expect("test reqwest client")
                     .post(state.reply_webhook)
+                    .bearer_auth(TEST_REPLY_AUTH_TOKEN)
                     .json(&reply)
                     .send()
                     .await;
@@ -1326,6 +1326,7 @@ mod tests {
                     .build()
                     .expect("test reqwest client")
                     .post(webhook)
+                    .bearer_auth(TEST_REPLY_AUTH_TOKEN)
                     .json(&reply)
                     .send()
                     .await;
@@ -1512,7 +1513,14 @@ mod tests {
         );
         let _ = first.ensure_reply_server_started().await;
 
-        let second = make_adapter("http://127.0.0.1:1".to_string(), reply_port, None);
+        let second = OpenClawChannelAdapter::new(
+            "http://127.0.0.1:1".to_string(),
+            "hooks-test-token".to_string(),
+            "main".to_string(),
+            Some(reply_port),
+            None,
+            Some(3000),
+        );
         let err = second
             .dispatch_with_context(DispatchContext {
                 message: "will not send",
@@ -1526,7 +1534,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("already registered with reply_auth_token")
+                .contains("requires reply_auth_token or reply_auth_token_file")
         );
     }
 
@@ -1687,7 +1695,11 @@ mod tests {
     async fn test_reply_server_startup_error_is_reused_without_hanging() {
         let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let reply_port = listener.local_addr().unwrap().port();
-        let first = make_adapter("http://127.0.0.1:1".to_string(), reply_port, None);
+        let first = make_adapter(
+            "http://127.0.0.1:1".to_string(),
+            reply_port,
+            Some("reply-secret".to_string()),
+        );
 
         let first_err = first
             .ensure_reply_server_started()
@@ -1695,7 +1707,11 @@ mod tests {
             .expect_err("occupied reply port should fail startup");
         assert!(first_err.to_string().contains("failed to start"));
 
-        let second = make_adapter("http://127.0.0.1:1".to_string(), reply_port, None);
+        let second = make_adapter(
+            "http://127.0.0.1:1".to_string(),
+            reply_port,
+            Some("reply-secret".to_string()),
+        );
         let second_result = tokio::time::timeout(
             Duration::from_millis(200),
             second.ensure_reply_server_started(),

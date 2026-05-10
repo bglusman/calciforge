@@ -87,6 +87,13 @@ writes those into the remote
 `plugins.allow` when an allowlist is present, and restarts the OpenClaw gateway
 service.
 
+By default, the plugin runs OpenClaw with `deliver: false`, reads the assistant
+reply from the Calciforge session, and posts that reply back to Calciforge's
+reply webhook. This keeps Calciforge-originated requests isolated from unrelated
+OpenClaw channel delivery configured on the same node. The native OpenClaw
+channel runtime remains available only when the plugin config sets
+`useNativeChannelRuntime: true`.
+
 ```toml
 [[agents]]
 id = "primary-agent"

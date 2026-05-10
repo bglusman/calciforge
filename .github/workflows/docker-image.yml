@@ -1,0 +1,96 @@
+name: Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/docker-image.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/**'
+      - 'packaging/docker/**'
+      - 'packaging/runtime-binaries.txt'
+  pull_request:
+    paths:
+      - '.github/workflows/docker-image.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/**'
+      - 'packaging/docker/**'
+      - 'packaging/runtime-binaries.txt'
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: Push image to GHCR
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/calciforge
+
+jobs:
+  docker-image:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Build Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME,,}"
+          docker build \
+            -f crates/calciforge/Dockerfile \
+            --build-arg CARGO_BUILD_JOBS=1 \
+            --build-arg CARGO_BUILD_PROFILE=docker \
+            -t "$image:sha-${GITHUB_SHA::12}" \
+            -t "$image:main" \
+            .
+
+  publish-image:
+    name: Publish image
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_image == true))
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Build Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME,,}"
+          docker build \
+            -f crates/calciforge/Dockerfile \
+            --build-arg CARGO_BUILD_JOBS=1 \
+            --build-arg CARGO_BUILD_PROFILE=docker \
+            -t "$image:sha-${GITHUB_SHA::12}" \
+            -t "$image:main" \
+            .
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME,,}"
+          docker push "$image:sha-${GITHUB_SHA::12}"
+          docker push "$image:main"

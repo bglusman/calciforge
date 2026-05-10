@@ -9,12 +9,21 @@ The formula also depends on Homebrew's `fnox` package and defines a
 source-tree installer for managed agent wiring, certificate setup, or full
 secrets bootstrap.
 
+The service runs with a Homebrew-oriented `PATH` so helper binaries installed by
+the formula, including `calciforge-secrets` and Homebrew's `fnox`, are visible to
+the supervised Calciforge process.
+
 The release flow is:
 
 1. Build platform archives with `scripts/build-dist-archive.sh`.
 2. Publish the archives on a GitHub release.
 3. Render the formula with `scripts/render-homebrew-formula.sh`.
 4. Copy the rendered `calciforge.rb` into the Homebrew tap.
+
+Homebrew 5.x rejects installing arbitrary formula files directly from `/tmp` or
+another non-tap path. For local release-candidate testing, copy the rendered
+formula into a test tap and install it by tap name, for example
+`brew install local/calciforge-test/calciforge`.
 
 The `Release Packaging` workflow automates steps 1 and 2 for `v*` tags and
 also exposes a manual run for release-candidate artifact checks.
