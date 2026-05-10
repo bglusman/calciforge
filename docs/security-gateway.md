@@ -540,6 +540,14 @@ preserve process-scoped compatibility for existing deployments. The proxy
 strips Calciforge identity headers, including legacy `x-agent-id`, before
 forwarding upstream.
 
+This ACL is a read/use policy. The central `POST /control/secrets/set`
+helper remains a privileged operator path guarded by the
+`secret_control_api_key` and, when `allowed_destinations` are supplied,
+refuses to store the secret value unless destination metadata is stored
+first. It does not currently grant per-identity write permissions; treat
+that as separate secret-integrity hardening before exposing write-capable
+helpers broadly.
+
 ## `[security.agent_web]` — agent-web-content defenses
 
 Calciforge's MITM gateway already scans every outbound HTTPS, but the highest-likelihood leak path for blocked content is *not* a direct egress to a denied host — it's the **search-API response** that contains pre-indexed snippets of the same denied host, or a **provider-side browsing tool** that the model invokes from inside an allowed `api.openai.com` session.

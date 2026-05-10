@@ -59,9 +59,19 @@ for existing deployments. Known identity fails closed: no matching rule
 means no discovery, no reference, and no substitution. Destination
 allowlists remain a second, independent gate.
 
+Scope boundary: this policy controls secret discovery, reference
+creation, and network-boundary substitution. The central
+`/control/secrets/set` helper is a privileged operator write path guarded
+by `secret_control_api_key`; it is not a per-agent write ACL. Add
+identity-scoped write permissions separately before exposing
+write-capable helpers to broad agent surfaces.
+
 Remaining hardening work:
 
 - ensure all managed agent launchers set stable identity env vars or
   headers by default.
+- define identity-scoped secret write permissions if agents or channels
+  are ever allowed to create or update fnox secrets through the central
+  helper.
 - add operator examples to generated install output once the managed
   launcher path is finalized.
