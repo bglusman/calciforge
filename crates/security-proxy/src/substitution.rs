@@ -60,6 +60,12 @@ pub enum PlaceholderMapError {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PlaceholderResolutionError {
+    #[error("placeholder token {0:?} is not registered for the current agent")]
+    UnknownToken(String),
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SubstitutionError {
     #[error("secret reference {{{{secret:{0}}}}} could not be resolved")]
     Unresolvable(String),
@@ -125,6 +131,21 @@ impl PlaceholderMap {
     ) -> Option<&'a str> {
         let agent_id = identity.agent_id.as_deref()?;
         self.by_agent.get(agent_id)?.get(token).map(String::as_str)
+    }
+
+    pub fn resolve_tokens(
+        &self,
+        identity: &secrets_client::SecretAccessIdentity,
+        tokens: &HashSet<String>,
+    ) -> Result<HashMap<String, String>, PlaceholderResolutionError> {
+        let mut resolved = HashMap::new();
+        for token in tokens {
+            let secret_name = self
+                .resolve(identity, token)
+                .ok_or_else(|| PlaceholderResolutionError::UnknownToken(token.clone()))?;
+            resolved.insert(token.clone(), secret_name.to_string());
+        }
+        Ok(resolved)
     }
 }
 
@@ -557,6 +578,57 @@ mod tests {
             Err(PlaceholderMapError::ConflictingToken {
                 token: token.to_string()
             })
+        );
+    }
+
+    /// Given a set of placeholder tokens registered for the current agent,
+    /// when resolve_tokens is called,
+    /// then the returned map is keyed by full opaque token and values are
+    /// authoritative secret names.
+    #[test]
+    fn placeholder_map_resolves_token_set_for_matching_agent() {
+        let openai = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let db = "cfg_DATABASE-URL_ffffffffffffffffffffffffffffffff";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let mut map = PlaceholderMap::default();
+        let tokens = HashSet::from([openai.to_string(), db.to_string()]);
+
+        map.insert("agent-a", openai, "OPENAI_API_KEY").unwrap();
+        map.insert("agent-a", db, "DATABASE_URL").unwrap();
+
+        let resolved = map.resolve_tokens(&identity, &tokens).unwrap();
+
+        assert_eq!(
+            resolved.get(openai).map(String::as_str),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(resolved.get(db).map(String::as_str), Some("DATABASE_URL"));
+    }
+
+    /// Given a set containing an unregistered placeholder token,
+    /// when resolve_tokens is called,
+    /// then resolution fails closed instead of silently dropping it.
+    #[test]
+    fn placeholder_map_resolve_tokens_fails_closed_for_unknown_token() {
+        let known = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let unknown = "cfg_DATABASE-URL_ffffffffffffffffffffffffffffffff";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let mut map = PlaceholderMap::default();
+        let tokens = HashSet::from([known.to_string(), unknown.to_string()]);
+
+        map.insert("agent-a", known, "OPENAI_API_KEY").unwrap();
+
+        assert_eq!(
+            map.resolve_tokens(&identity, &tokens),
+            Err(PlaceholderResolutionError::UnknownToken(
+                unknown.to_string()
+            ))
         );
     }
 
