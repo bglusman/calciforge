@@ -49,6 +49,9 @@ pub enum SubstitutionError {
     #[error("secret reference {{{{secret:{0}}}}} could not be resolved")]
     Unresolvable(String),
 
+    #[error("secret placeholder {0:?} could not be resolved")]
+    UnresolvablePlaceholder(String),
+
     #[error("nested secret references are not permitted")]
     Nested,
 
@@ -102,6 +105,14 @@ pub fn find_refs(input: &str) -> Result<HashSet<String>, SubstitutionError> {
 /// placeholders to be found cheaply.
 pub fn find_placeholder_tokens(input: &str) -> HashSet<String> {
     let mut tokens = HashSet::new();
+    for (start, end) in placeholder_token_spans(input) {
+        tokens.insert(input[start..end].to_string());
+    }
+    tokens
+}
+
+fn placeholder_token_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
     let bytes = input.as_bytes();
     let mut search_start = 0;
 
@@ -119,12 +130,12 @@ pub fn find_placeholder_tokens(input: &str) -> HashSet<String> {
 
         let token = &input[start..end];
         if placeholder_name_hint(token).is_some() {
-            tokens.insert(token.to_string());
+            spans.push((start, end));
         }
         search_start = end.max(start + PLACEHOLDER_PREFIX.len());
     }
 
-    tokens
+    spans
 }
 
 /// Return the embedded secret-name hint for a syntactically valid placeholder.
@@ -182,6 +193,39 @@ pub fn substitute<'a, Map: RefMap>(
         rest = &after_prefix[close + 2..];
     }
     out.push_str(rest);
+
+    Ok(Cow::Owned(out))
+}
+
+/// Render `input`, replacing every valid placeholder token with the value
+/// from `resolved`.
+///
+/// The `resolved` map is keyed by the full opaque placeholder token, not by
+/// the embedded name hint. Callers are responsible for resolving
+/// placeholder token -> secret name through the per-agent map, then applying
+/// the normal identity and destination policy gates before passing values
+/// here. Malformed `cfg_` candidates are preserved unchanged.
+pub fn substitute_placeholders<'a, Map: RefMap>(
+    input: &'a str,
+    resolved: &Map,
+) -> Result<Cow<'a, str>, SubstitutionError> {
+    let spans = placeholder_token_spans(input);
+    if spans.is_empty() {
+        return Ok(Cow::Borrowed(input));
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0;
+    for (start, end) in spans {
+        out.push_str(&input[cursor..start]);
+        let token = &input[start..end];
+        let value = resolved
+            .get(token)
+            .ok_or_else(|| SubstitutionError::UnresolvablePlaceholder(token.to_string()))?;
+        out.push_str(value);
+        cursor = end;
+    }
+    out.push_str(&input[cursor..]);
 
     Ok(Cow::Owned(out))
 }
@@ -351,6 +395,49 @@ mod tests {
         let found =
             find_placeholder_tokens("prefixcfg_OPENAI_KEY_0123456789abcdef0123456789abcdef");
         assert!(found.is_empty());
+    }
+
+    /// Given input with no valid placeholders,
+    /// when substitute_placeholders is called,
+    /// then it returns a borrowed Cow and leaves malformed cfg strings alone.
+    #[test]
+    fn substitute_placeholders_returns_borrowed_when_no_valid_placeholders() {
+        let map = map_of(&[]);
+        let input = "cfg_ cfg_short_deadbeef plain text";
+        let result = substitute_placeholders(input, &map).unwrap();
+        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_eq!(result.as_ref(), input);
+    }
+
+    /// Given valid placeholder tokens and a map keyed by full token,
+    /// when substitute_placeholders is called,
+    /// then each placeholder is replaced and surrounding text is preserved.
+    #[test]
+    fn substitute_placeholders_replaces_full_opaque_tokens() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let other = "cfg_DATABASE-URL_ffffffffffffffffffffffffffffffff";
+        let map = map_of(&[(token, "sk-real"), (other, "postgres://real")]);
+        let input = format!("Authorization: Bearer {token}\nDatabase: {other}");
+        let result = substitute_placeholders(&input, &map).unwrap();
+
+        assert_eq!(
+            result.as_ref(),
+            "Authorization: Bearer sk-real\nDatabase: postgres://real"
+        );
+    }
+
+    /// Given a valid placeholder token that is missing from the resolved map,
+    /// when substitute_placeholders is called,
+    /// then it fails closed instead of forwarding the opaque token upstream.
+    #[test]
+    fn substitute_placeholders_unresolvable_fails_closed() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let map = map_of(&[]);
+        let err = substitute_placeholders(token, &map).unwrap_err();
+        assert_eq!(
+            err,
+            SubstitutionError::UnresolvablePlaceholder(token.to_string())
+        );
     }
 
     // ── substitute ───────────────────────────────────────────────
