@@ -147,8 +147,8 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         let chat_key = format!("signal-{}", identity.id);
 
         // ── Adversary inbound scan ────────────────────────────────────────
-        if self.scan_enabled() {
-            if let Some(reply) = runtime::inbound_scan_block_reply(
+        if self.scan_enabled()
+            && let Some(reply) = runtime::inbound_scan_block_reply(
                 "signal",
                 "Signal",
                 &identity.id,
@@ -157,14 +157,13 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
                 "🚫 Message blocked by security scanner",
             )
             .await
-            {
-                let channel = self.clone();
-                let target = reply_target.clone();
-                tokio::spawn(async move {
-                    channel.send_reply(&target, &reply).await;
-                });
-                return;
-            }
+        {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
         }
 
         // ── Command fast-path ─────────────────────────────────────────────

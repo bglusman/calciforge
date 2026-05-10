@@ -121,8 +121,8 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
 
         let chat_key = conversation_chat_key(&identity.id, &reply_target);
 
-        if self.scan_enabled() {
-            if let Some(reply) = runtime::inbound_scan_block_reply(
+        if self.scan_enabled()
+            && let Some(reply) = runtime::inbound_scan_block_reply(
                 "sms",
                 "Text/iMessage",
                 &identity.id,
@@ -131,14 +131,13 @@ impl<C: Channel + ?Sized + 'static> SmsChannel<C> {
                 "Message blocked by security scanner",
             )
             .await
-            {
-                let channel = self.clone();
-                let target = reply_target.clone();
-                tokio::spawn(async move {
-                    channel.send_reply(&target, &reply).await;
-                });
-                return;
-            }
+        {
+            let channel = self.clone();
+            let target = reply_target.clone();
+            tokio::spawn(async move {
+                channel.send_reply(&target, &reply).await;
+            });
+            return;
         }
 
         let text = match self
