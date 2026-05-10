@@ -100,6 +100,7 @@ export default function register(api) {
   const { authToken, replyWebhook, replyAuthToken } = pluginConfig;
   const runTimeoutMs = positiveInteger(pluginConfig.runTimeoutMs, 300000);
   const errorRecoveryMs = positiveInteger(pluginConfig.errorRecoveryMs, 120000);
+  const useNativeChannelRuntime = pluginConfig.useNativeChannelRuntime === true;
 
   api.logger.info(
     `[calciforge-channel] plugin loaded - replyWebhook=${replyWebhook || "(missing)"}`,
@@ -123,6 +124,7 @@ export default function register(api) {
         replyAuthToken,
         runTimeoutMs,
         errorRecoveryMs,
+        useNativeChannelRuntime,
         log: api.logger,
       }),
   }, api.logger);
@@ -155,6 +157,7 @@ async function handleInboundRequest({
   replyAuthToken,
   runTimeoutMs,
   errorRecoveryMs,
+  useNativeChannelRuntime,
   log,
 }) {
   if (req.method === "GET") {
@@ -204,7 +207,7 @@ async function handleInboundRequest({
 
   try {
     const runtime = await getRuntime();
-    if (canUseChannelRuntime(runtime)) {
+    if (useNativeChannelRuntime && canUseChannelRuntime(runtime)) {
       await dispatchViaChannelRuntime({
         runtime,
         message,
@@ -222,9 +225,15 @@ async function handleInboundRequest({
       return true;
     }
 
-    log?.warn?.(
-      "[calciforge-channel] OpenClaw channel runtime unavailable; falling back to subagent runtime",
-    );
+    if (useNativeChannelRuntime) {
+      log?.warn?.(
+        "[calciforge-channel] OpenClaw channel runtime unavailable; falling back to subagent runtime",
+      );
+    } else {
+      log?.info?.(
+        "[calciforge-channel] using subagent runtime; native channel runtime is opt-in",
+      );
+    }
     await dispatchViaSubagentRuntime({
       runtime,
       message,
