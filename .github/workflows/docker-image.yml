@@ -58,7 +58,7 @@ jobs:
   publish-image:
     name: Publish image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_image == true)
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_image == true))
     permissions:
       contents: read
       packages: write
