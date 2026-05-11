@@ -654,6 +654,8 @@ forbidden_browsing_tools = ["web_search", "web_search_20250305", "google_search"
 forbidden_browsing_models = ["gpt-4o-search-preview"]
 known_llm_apis = [
     "api.openai.com",
+    "chatgpt.com",
+    "chat.openai.com",
     "api.anthropic.com",
     "openrouter.ai",
     "generativelanguage.googleapis.com",
@@ -663,13 +665,15 @@ known_llm_apis = [
 
 ### (D) `preflight_message_urls`
 
-Extract `https?://…` URLs from outbound LLM `messages[].content` (string AND Anthropic content-array shape) and from `tools[].description` (when `preflight_tool_descriptions = true`); test each against `url_destination_denylist`. If any URL would be blocked at fetch time, the LLM request is refused before forwarding to the provider.
+Extract `https?://...` URLs from outbound LLM request bodies for hosts in `known_llm_apis`; test each against `url_destination_denylist`. The scanner covers common shapes such as `messages[].content`, Anthropic content arrays, OpenAI Responses `input`, provider-specific nested JSON envelopes, and `tools[].description` when `preflight_tool_descriptions = true`.
+
+If any URL would be blocked at fetch time, the LLM request is refused before forwarding to the provider. This is separate from content scanning: response scanners still inspect raw content that crosses the gateway, while URL preflight prevents opaque provider-side browsing from fetching denied origins where the gateway would otherwise only see a synthesized model summary.
 
 ```toml
 [security.agent_web]
 preflight_message_urls = true
 preflight_tool_descriptions = true
-url_destination_denylist = ["leaked-corp-docs.example.com"]
+url_destination_denylist = ["leaked-corp-docs.example.com", "ref.jock.pl"]
 ```
 
 ### Audit
