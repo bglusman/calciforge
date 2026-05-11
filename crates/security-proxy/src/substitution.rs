@@ -133,6 +133,18 @@ impl PlaceholderMap {
         self.by_agent.get(agent_id)?.get(token).map(String::as_str)
     }
 
+    pub fn remove(&mut self, agent_id: &str, token: &str) -> bool {
+        let Some(agent_tokens) = self.by_agent.get_mut(agent_id) else {
+            return false;
+        };
+
+        let removed = agent_tokens.remove(token).is_some();
+        if agent_tokens.is_empty() {
+            self.by_agent.remove(agent_id);
+        }
+        removed
+    }
+
     pub fn resolve_tokens(
         &self,
         identity: &secrets_client::SecretAccessIdentity,
@@ -624,6 +636,25 @@ mod tests {
                 token: token.to_string()
             })
         );
+    }
+
+    /// Given a placeholder token is retired,
+    /// when that same agent tries to resolve it again,
+    /// then no secret name is returned.
+    #[test]
+    fn placeholder_map_remove_retires_token() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let mut map = PlaceholderMap::default();
+
+        map.insert("agent-a", token, "OPENAI_API_KEY").unwrap();
+
+        assert!(map.remove("agent-a", token));
+        assert_eq!(map.resolve(&identity, token), None);
+        assert!(!map.remove("agent-a", token));
     }
 
     /// Given a set of placeholder tokens registered for the current agent,

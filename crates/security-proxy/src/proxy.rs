@@ -146,6 +146,11 @@ impl SecurityProxy {
         self.placeholder_map.insert(agent_id, token, secret_name)
     }
 
+    /// Retire one lifecycle-owned placeholder token for a specific agent.
+    pub fn unregister_secret_placeholder(&mut self, agent_id: &str, token: &str) -> bool {
+        self.placeholder_map.remove(agent_id, token)
+    }
+
     /// Generate and register one lifecycle-owned placeholder token.
     ///
     /// The returned token is safe to pass to an agent as an opaque stand-in,
@@ -1408,6 +1413,48 @@ mod tests {
         assert_eq!(
             resolved.get(&token).map(String::as_str),
             Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn unregistered_placeholder_fails_closed() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let token = proxy
+            .generate_secret_placeholder("agent-a", "OPENAI_API_KEY")
+            .unwrap();
+        assert!(proxy.unregister_secret_placeholder("agent-a", &token));
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let err = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .expect_err("retired placeholder should not resolve");
+
+        assert!(
+            err.contains("not registered for the current agent"),
+            "retired placeholder must fail closed before value resolution; got {err}"
         );
     }
 
