@@ -105,6 +105,12 @@ OpenClaw channel delivery configured on the same node. The native OpenClaw
 channel runtime remains available only when the plugin config sets
 `useNativeChannelRuntime: true`.
 
+The plugin status endpoint also reports the OpenClaw default agent runtime and
+the configured primary/fallback model route. `calciforge doctor` fails the
+agent check when the selected runtime cannot load one of those providers, so a
+broken fallback cannot pass deployment preflight and later surface as a generic
+`OpenClaw run error`.
+
 ```toml
 [[agents]]
 id = "primary-agent"
@@ -119,6 +125,11 @@ registry = { display_name = "Primary Agent", specialties = ["general", "homelab-
 
 `openclaw_agent_id` (optional) sets the lane id sent to the gateway; defaults
 to this agent's `id`.
+
+`!new <name>` and `!switch <agent> <name>` select a Calciforge-managed
+OpenClaw session lane. Calciforge keeps the old default lane when no session is
+selected, and adds the selected name to the OpenClaw `sessionKey` when one is
+active.
 
 `reply_port` (optional, default 18797) is the local port Calciforge listens on
 for async `/hooks/reply` callbacks when the gateway pushes replies
@@ -267,6 +278,12 @@ supports additional protocol versions. The `command` field holds the agent
 name (not a path); `acpx` resolves it.
 
 Required: `command` (agent name passed to acpx).
+
+Both `acpx` and the named client command must be installed in the same runtime
+that runs Calciforge. If Calciforge runs in Docker, host-level `acpx`,
+`opencode`, `claude`, or `kilo` binaries are not visible unless you build them
+into the image or mount a wrapper path. `calciforge doctor` reports this as a
+configuration error.
 
 ```toml
 [[agents]]
@@ -419,6 +436,9 @@ calciforge doctor   # checks agent reachability and identity/routing consistency
 calciforge          # start; send a message from a configured alias
 ```
 
-`calciforge doctor` warns on common misconfigurations: missing `api_key` on
-`openclaw-channel` agents, `openai-compat` without `model`, identities with
-no routing rule, and routing rules that reference undefined agents.
+`calciforge doctor` warns or fails on common misconfigurations: missing
+`api_key` on `openclaw-channel` agents, stale reply callback tokens or hosts,
+OpenClaw runtime/model incompatibilities, `openai-compat` without `model`,
+subprocess agents whose command is not visible to the Calciforge runtime,
+identities with no routing rule, and routing rules that reference undefined
+agents.

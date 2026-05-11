@@ -139,6 +139,10 @@ The `openclaw-channel` reply webhook accepts the original text-only callback:
 { "sessionKey": "calciforge:codex:brian", "message": "done" }
 ```
 
+When a user selects a named Calciforge session with `!new <name>` or
+`!switch <agent> <name>`, Calciforge appends that name to the OpenClaw
+`sessionKey`, for example `calciforge:codex:brian:review-thread`.
+
 It also accepts inline attachment payloads for generated images, diagrams,
 reports, or other files:
 

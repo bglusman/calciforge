@@ -480,8 +480,14 @@ impl OpenClawChannelAdapter {
         format!("{}/calciforge/inbound", self.endpoint.trim_end_matches('/'))
     }
 
-    fn session_key_for(&self, sender: &str) -> String {
-        format!("calciforge:{}:{}", self.openclaw_agent_id, sender)
+    fn session_key_for(&self, sender: &str, session: Option<&str>) -> String {
+        match session.filter(|session| !session.trim().is_empty()) {
+            Some(session) => format!(
+                "calciforge:{}:{}:{}",
+                self.openclaw_agent_id, sender, session
+            ),
+            None => format!("calciforge:{}:{}", self.openclaw_agent_id, sender),
+        }
     }
 
     async fn ensure_reply_server_started(&self) -> Result<(), AdapterError> {
@@ -558,7 +564,7 @@ impl AgentAdapter for OpenClawChannelAdapter {
         self.ensure_reply_server_started().await?;
 
         let sender = ctx.sender.unwrap_or("unknown");
-        let session_key = self.session_key_for(sender);
+        let session_key = self.session_key_for(sender, ctx.session);
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel::<ReplyResult>();
         self.reply_server
@@ -880,6 +886,44 @@ mod tests {
             Some("telegram")
         );
         assert_eq!(body.get("agentId").and_then(|v| v.as_str()), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_uses_selected_downstream_session_in_session_key() {
+        let captured = Arc::new(TokioMutex::new(None));
+        let reply_port = free_port();
+
+        let state = CaptureState {
+            last_body: captured.clone(),
+            reply_webhook: Some(format!("http://127.0.0.1:{reply_port}/hooks/reply")),
+            reply_auth: None,
+            reply_attachments: None,
+        };
+        let inbound_port = start_inbound_server(state).await;
+
+        let adapter = make_adapter(format!("http://127.0.0.1:{inbound_port}"), reply_port, None);
+
+        adapter
+            .dispatch_with_context(DispatchContext {
+                message: "hello selected session",
+                sender: Some("brian"),
+                model_override: None,
+                session: Some("scratch"),
+                channel: Some("telegram"),
+            })
+            .await
+            .expect("dispatch should succeed");
+
+        let body = captured
+            .lock()
+            .await
+            .clone()
+            .expect("expected inbound payload");
+
+        assert_eq!(
+            body.get("sessionKey").and_then(|v| v.as_str()),
+            Some("calciforge:main:brian:scratch")
+        );
     }
 
     #[tokio::test]
