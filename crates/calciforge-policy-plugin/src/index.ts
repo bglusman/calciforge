@@ -79,7 +79,7 @@ export default definePluginEntry({
         const args = event.params || {};
         const identity = context.agentId || context.sessionKey || "unknown";
 
-        api.logger.debug(
+        api.logger.debug?.(
           `[calciforge-policy] Evaluating: ${toolName} for ${identity}`,
         );
 
@@ -108,7 +108,7 @@ export default definePluginEntry({
             return {
               requireApproval: {
                 title: `Calciforge policy review: ${toolName}`,
-                description: `Policy review required: ${verdict.reason || "custodian approval needed"}`,
+                description: `Policy review required: ${verdict.reason || "operator approval needed"}`,
                 severity: "warning",
                 timeoutMs: 300_000,
                 timeoutBehavior: "deny",
@@ -117,7 +117,7 @@ export default definePluginEntry({
           }
 
           // verdict === "allow"
-          api.logger.debug(`[calciforge-policy] ALLOWED: ${toolName}`);
+          api.logger.debug?.(`[calciforge-policy] ALLOWED: ${toolName}`);
           return { block: false };
         } catch (error) {
           const errorMsg =
@@ -199,11 +199,34 @@ async function evaluateWithClashd(
       );
     }
 
-    const result: ClashdResponse = await response.json();
-    return result;
+    return parseClashdResponse(await response.json());
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function parseClashdResponse(value: unknown): ClashdResponse {
+  if (!value || typeof value !== "object") {
+    throw new Error("clashd returned a non-object response");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (
+    record.verdict !== "allow" &&
+    record.verdict !== "deny" &&
+    record.verdict !== "review"
+  ) {
+    throw new Error("clashd returned an unknown verdict");
+  }
+
+  if (record.reason !== undefined && typeof record.reason !== "string") {
+    throw new Error("clashd returned a non-string reason");
+  }
+
+  return {
+    verdict: record.verdict,
+    reason: record.reason,
+  };
 }
 
 async function checkClashdHealth(endpoint: string): Promise<boolean> {

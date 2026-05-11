@@ -57,7 +57,7 @@ interface HookContext {
   toolName: string;           // Tool being called
   args: Record<string, unknown>;  // Tool arguments
   session?: {
-    identity?: string;        // Agent identity (e.g., "librarian")
+    identity?: string;        // Agent identity (e.g., "research-agent")
   };
 }
 ```
@@ -67,7 +67,7 @@ interface HookContext {
 ```typescript
 interface HookResult {
   block?: boolean;           // true = deny the tool call
-  requireApproval?: boolean; // true = custodian must approve
+  requireApproval?: boolean; // true = operator must approve
   reason?: string;           // Explanation for block/approval
 }
 ```
@@ -78,7 +78,7 @@ interface HookResult {
 |----------------|---------------|
 | `allow` | `{ block: false }` — tool executes normally |
 | `deny` | `{ block: true, reason: "..." }` — tool blocked |
-| `review` | `{ requireApproval: true, reason: "..." }` — custodian approval required |
+| `review` | `{ requireApproval: true, reason: "..." }` — operator approval required |
 | Error/Timeout | `{ block: true, reason: "Policy unavailable" }` — fail-closed |
 
 ## Example Flow
@@ -92,7 +92,7 @@ Plugin → POST clashd/evaluate
          {
            "tool": "exec",
            "args": {"command": "rm -rf /data/*"},
-           "context": {"agent_id": "librarian"}
+           "context": {"agent_id": "research-agent"}
          }
 
 clashd → Policy check:
@@ -101,7 +101,7 @@ clashd → Policy check:
 
 Plugin → {requireApproval: true, reason: "Destructive command requires approval"}
 
-OpenClaw → Blocks execution, asks custodian for approval
+OpenClaw → Blocks execution, asks the operator for approval
 ```
 
 ## Development

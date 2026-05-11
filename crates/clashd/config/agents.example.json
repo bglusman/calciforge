@@ -1,7 +1,7 @@
 {
   "agents": [
     {
-      "agent_id": "librarian",
+      "agent_id": "research-agent",
       "allowed_domains": [],
       "denied_domains": [],
       "domain_list_sources": [

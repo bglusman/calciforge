@@ -52,7 +52,7 @@ def evaluate(tool, args, context):
         if action in ("config.patch", "config.apply", "restart"):
             return {
                 "verdict": "review",
-                "reason": "Gateway " + action + " requires custodian approval"
+                "reason": "Gateway " + action + " requires operator approval"
             }
 
     # Destructive shell commands — deny

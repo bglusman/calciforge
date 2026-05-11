@@ -10,7 +10,7 @@ clashd evaluates agent tool calls through a Starlark policy before execution. Po
 - **Filter by domain** (exact match, regex patterns, subdomain matching)
 - **Query threat intelligence feeds** (malware lists, ad servers, etc.)
 - **Apply per-agent rules** (different policies for different agents)
-- **Require custodian approval** for sensitive operations
+- **Require operator approval** for sensitive operations
 
 ## Quick Start
 
@@ -23,7 +23,7 @@ CLASHD_POLICY=./config/default-policy.star ./target/release/clashd
 
 # Run with custom agent configs
 CLASHD_POLICY=./config/default-policy.star \
-  CLASHD_AGENTS=./config/agents.json \
+  CLASHD_AGENTS=./config/agents.example.json \
   ./target/release/clashd
 ```
 
@@ -78,7 +78,7 @@ def evaluate(tool, args, context):
 {
   "agents": [
     {
-      "agent_id": "librarian",
+      "agent_id": "research-agent",
       "allowed_domains": [],
       "denied_domains": ["example.net"],
       "domain_list_sources": [
@@ -149,7 +149,7 @@ POST /evaluate
 {
   "tool": "browser",
   "args": {"url": "https://example.com"},
-  "context": {"agent_id": "librarian"}
+  "context": {"agent_id": "research-agent"}
 }
 ```
 
@@ -164,8 +164,8 @@ POST /evaluate
 
 ## Agent Runtime Integration
 
-The current `calciforge-policy-plugin` connects OpenClaw to clashd, and the
-same `/evaluate` contract can be used by other first-class adapters:
+Calciforge currently ships an OpenClaw policy plugin for clashd, and the same
+`/evaluate` contract can be used by other first-class adapters:
 
 1. Plugin installed in OpenClaw's plugin directory
 2. Plugin calls `POST /evaluate` before each tool execution

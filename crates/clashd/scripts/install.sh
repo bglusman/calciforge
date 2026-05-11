@@ -4,7 +4,7 @@
 
 set -e
 
-CLASHD_USER="${CLASHD_USER:-librarian}"
+CLASHD_USER="${CLASHD_USER:-$(id -un)}"
 CLASHD_DIR="${CLASHD_DIR:-/opt/clashd}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/clashd}"
 SERVICE_NAME="clashd"
@@ -35,6 +35,11 @@ sudo chmod +x "$CLASHD_DIR/clashd"
 if [ ! -f "$CONFIG_DIR/policy.star" ]; then
     echo "Installing default policy..."
     sudo cp config/default-policy.star "$CONFIG_DIR/policy.star"
+fi
+
+if [ ! -f "$CONFIG_DIR/agents.json" ]; then
+    echo "Installing example agent policy config..."
+    sudo cp config/agents.example.json "$CONFIG_DIR/agents.json"
 fi
 
 # Create systemd service
