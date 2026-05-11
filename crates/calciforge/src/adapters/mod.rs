@@ -20,7 +20,9 @@
 //! ```
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 pub mod acp;
 pub mod acpx;
@@ -56,6 +58,7 @@ pub use openclaw_channel::OpenClawChannelAdapter;
 pub use zeroclaw::ZeroClawAdapter;
 pub use zeroclaw_native::ZeroClawNativeAdapter;
 
+use crate::agent_kinds::{AgentKind, parse_agent_kind};
 use crate::config::AgentConfig;
 use crate::messages::OutboundMessage;
 
@@ -229,8 +232,94 @@ pub fn agent_supports_native_commands(agent: &AgentConfig) -> bool {
 pub fn agent_session_capability(agent: &AgentConfig) -> AgentSessionCapability {
     match agent.kind.as_str() {
         "acpx" => AgentSessionCapability::Listable,
-        "hermes" | "codex-cli" | "claude-cli" | "kimi-cli" => AgentSessionCapability::Named,
+        "openclaw-channel" | "hermes" | "codex-cli" | "claude-cli" | "kimi-cli" => {
+            AgentSessionCapability::Named
+        }
         _ => AgentSessionCapability::None,
+    }
+}
+
+/// Resolve a subprocess dependency using the agent's configured environment.
+///
+/// This is intentionally shared by command handling, adapters, and doctor:
+/// if an agent's config provides a PATH for its runtime, every path that
+/// launches or validates that runtime should see the same executable.
+pub fn find_executable_for_agent(
+    binary: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<PathBuf> {
+    let binary_path = Path::new(binary);
+    if binary_path.is_absolute() || binary.contains(std::path::MAIN_SEPARATOR) {
+        return is_executable_file(binary_path).then(|| binary_path.to_path_buf());
+    }
+
+    let path = env
+        .and_then(|env| env.get("PATH").map(PathBuf::from))
+        .or_else(|| std::env::var_os("PATH").map(PathBuf::from))?;
+
+    std::env::split_paths(&path).find_map(|dir| {
+        executable_candidates(&dir, binary)
+            .into_iter()
+            .find(|candidate| is_executable_file(candidate))
+    })
+}
+
+pub fn subprocess_command_for_agent(agent: &AgentConfig) -> Option<&str> {
+    match parse_agent_kind(&agent.kind)? {
+        AgentKind::Exec | AgentKind::Cli | AgentKind::ArtifactCli | AgentKind::Acp => {
+            agent.command.as_deref()
+        }
+        AgentKind::CodexCli => Some(agent.command.as_deref().unwrap_or("codex")),
+        AgentKind::ClaudeCli => Some(agent.command.as_deref().unwrap_or("claude")),
+        AgentKind::DiracCli => Some(agent.command.as_deref().unwrap_or("dirac")),
+        AgentKind::KimiCli => Some(agent.command.as_deref().unwrap_or("kimi")),
+        AgentKind::Acpx => agent.command.as_deref(),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
+    if Path::new(bin).extension().is_some() {
+        return vec![dir.join(bin)];
+    }
+
+    let pathext = std::env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+
+    pathext
+        .split(';')
+        .filter(|ext| !ext.trim().is_empty())
+        .map(|ext| dir.join(format!("{bin}{ext}")))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
+    vec![dir.join(bin)]
+}
+
+fn is_executable_file(candidate: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(candidate) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
     }
 }
 

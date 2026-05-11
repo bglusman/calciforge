@@ -10,6 +10,8 @@ cp calciforge.env.example .env
 mkdir -p data data-security-proxy data-clashd
 docker compose --env-file .env build calciforge
 docker compose --env-file .env up -d
+docker compose --env-file .env exec calciforge \
+  calciforge --config /config/config.toml doctor --no-network
 ```
 
 For staging or release installs, set `CALCIFORGE_IMAGE` in `.env` to a
@@ -45,6 +47,13 @@ The default Calciforge config points the model gateway at an OpenAI-compatible
 service on the host machine at `http://host.docker.internal:11434/v1`, which
 matches common Ollama-compatible local testing. Edit `config.example.toml` or set
 `CALCIFORGE_CONFIG` before using it for real traffic.
+
+Subprocess-backed agents run inside the Calciforge container. If you configure
+`kind = "acpx"`, `kind = "codex-cli"`, `kind = "claude-cli"`, or another CLI
+adapter, the relevant binaries and credentials must be available inside that
+container, not only on the host. Run `doctor` after every image update or config
+change; it reports missing runtime commands before chat messages hit
+`No such file or directory`.
 
 When validating a fresh install on a staging host, first run the repository
 reset helper in dry-run mode from the repo root:

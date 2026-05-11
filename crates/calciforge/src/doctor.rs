@@ -19,7 +19,9 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
-use crate::adapters::agent_supports_model_override;
+use crate::adapters::{
+    agent_supports_model_override, find_executable_for_agent, subprocess_command_for_agent,
+};
 use crate::agent_kinds::{
     AgentKind, AgentKindLifecycle, agent_kind_metadata, known_agent_kind_names, parse_agent_kind,
 };
@@ -974,57 +976,7 @@ fn display_proxy_value(value: &str) -> String {
 }
 
 fn which(bin: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
-        executable_candidates(&dir, bin)
-            .into_iter()
-            .find(|candidate| is_executable_file(candidate))
-    })
-}
-
-#[cfg(windows)]
-fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
-    if Path::new(bin).extension().is_some() {
-        return vec![dir.join(bin)];
-    }
-
-    let pathext = std::env::var_os("PATHEXT")
-        .and_then(|value| value.into_string().ok())
-        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
-
-    pathext
-        .split(';')
-        .filter(|ext| !ext.trim().is_empty())
-        .map(|ext| dir.join(format!("{bin}{ext}")))
-        .collect()
-}
-
-#[cfg(not(windows))]
-fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
-    vec![dir.join(bin)]
-}
-
-fn is_executable_file(candidate: &Path) -> bool {
-    let Ok(metadata) = std::fs::metadata(candidate) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(windows)]
-    {
-        true
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        true
-    }
+    find_executable_for_agent(bin, None)
 }
 
 fn check_secret_files(config: &CalciforgeConfig, report: &mut DoctorReport) {
@@ -1273,6 +1225,48 @@ fn check_readable_file(report: &mut DoctorReport, label: &str, owner: &str, path
     }
 }
 
+fn check_agent_runtime_dependencies(agent: &AgentConfig, report: &mut DoctorReport) {
+    let Some(kind) = parse_agent_kind(&agent.kind) else {
+        return;
+    };
+    if !kind.is_subprocess_agent() {
+        return;
+    }
+
+    if kind == AgentKind::Acpx {
+        match find_executable_for_agent("acpx", agent.env.as_ref()) {
+            Some(path) => report.ok(format!(
+                "agent '{}' acpx runtime found at {}",
+                agent.id,
+                path.display()
+            )),
+            None => report.error(format!(
+                "agent '{}' kind 'acpx' requires acpx on Calciforge's service PATH or this agent's env.PATH; install acpx before using !sessions, !new, or message dispatch",
+                agent.id
+            )),
+        }
+    }
+
+    match subprocess_command_for_agent(agent) {
+        Some(command) => match find_executable_for_agent(command, agent.env.as_ref()) {
+            Some(path) => report.ok(format!(
+                "agent '{}' subprocess command '{}' found at {}",
+                agent.id,
+                command,
+                path.display()
+            )),
+            None => report.error(format!(
+                "agent '{}' kind '{}' command '{}' is not on Calciforge's service PATH or this agent's env.PATH; install the client in the same runtime that runs Calciforge",
+                agent.id, agent.kind, command
+            )),
+        },
+        None => report.error(format!(
+            "agent '{}' kind '{}' requires command",
+            agent.id, agent.kind
+        )),
+    }
+}
+
 async fn check_agent_wiring(
     config: &CalciforgeConfig,
     no_network: bool,
@@ -1325,6 +1319,8 @@ async fn check_agent_wiring(
                 ));
             }
         }
+
+        check_agent_runtime_dependencies(agent, report);
 
         if is_http_agent(agent) {
             if agent.endpoint.trim().is_empty() {
@@ -2146,6 +2142,106 @@ mod tests {
     }
 
     #[test]
+    fn check_agent_wiring_reports_missing_acpx_runtime() {
+        let empty_path = tempfile::tempdir().expect("empty path dir");
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "opencode".to_string(),
+            kind: "acpx".to_string(),
+            command: Some("opencode".to_string()),
+            env: Some(HashMap::from([(
+                "PATH".to_string(),
+                empty_path.path().display().to_string(),
+            )])),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("opencode")
+                && finding.message.contains("requires acpx")
+        }));
+    }
+
+    #[test]
+    fn check_agent_wiring_reports_missing_acpx_agent_command() {
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        let acpx_path = bin_dir.path().join("acpx");
+        std::fs::write(&acpx_path, "#!/bin/sh\nexit 0\n").expect("write acpx");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&acpx_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&acpx_path, permissions).unwrap();
+        }
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "opencode".to_string(),
+            kind: "acpx".to_string(),
+            command: Some("opencode".to_string()),
+            env: Some(HashMap::from([(
+                "PATH".to_string(),
+                bin_dir.path().display().to_string(),
+            )])),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding.message.contains("opencode")
+                && finding.message.contains("acpx runtime found")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("opencode")
+                && finding.message.contains("command 'opencode'")
+        }));
+    }
+
+    #[test]
+    fn check_agent_wiring_reports_missing_default_cli_command() {
+        let empty_path = tempfile::tempdir().expect("empty path dir");
+        let mut config = base_config();
+        config.agents = vec![AgentConfig {
+            id: "codex".to_string(),
+            kind: "codex-cli".to_string(),
+            env: Some(HashMap::from([(
+                "PATH".to_string(),
+                empty_path.path().display().to_string(),
+            )])),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(check_agent_wiring(&config, true, &mut report));
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("codex")
+                && finding.message.contains("command 'codex'")
+        }));
+    }
+
+    #[test]
     fn validates_persisted_active_state_against_config() {
         let mut config = base_config();
         config
@@ -2895,13 +2991,14 @@ mod tests {
         permissions.set_mode(0o644);
         std::fs::set_permissions(&path, permissions).unwrap();
 
-        assert!(!is_executable_file(&path));
+        let env = HashMap::from([("PATH".to_string(), tmp.path().display().to_string())]);
+        assert!(find_executable_for_agent("fnox", Some(&env)).is_none());
 
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).unwrap();
 
-        assert!(is_executable_file(&path));
+        assert_eq!(find_executable_for_agent("fnox", Some(&env)), Some(path));
     }
 
     #[test]

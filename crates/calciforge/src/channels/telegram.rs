@@ -356,7 +356,7 @@ fn handle_message_nonblocking(
         return;
     }
 
-    // !sessions — list ACP sessions for an agent; requires identity context.
+    // !sessions — list downstream sessions for an agent; requires identity context.
     if CommandHandler::is_sessions_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !sessions command");
         let bot2 = bot.clone();
@@ -1365,7 +1365,7 @@ async fn handle_message(
         return;
     }
 
-    // !sessions — list ACP sessions for an agent; requires identity context.
+    // !sessions — list downstream sessions for an agent; requires identity context.
     if CommandHandler::is_sessions_command(&text) {
         debug!(chat_id = %chat_id, identity = %identity.id, "handling !sessions command");
         let reply = command_handler
