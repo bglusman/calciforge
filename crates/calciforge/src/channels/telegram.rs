@@ -255,22 +255,10 @@ fn handle_message_nonblocking(
     }
 
     // If the text looks like a !command but wasn't handled as an
-    // identity-independent local command and it is NOT an identity-context
-    // command (status/gateway/switch/default/sessions/secure),
-    // reply with a helpful unknown-command message rather than routing it to an agent.
-    if CommandHandler::is_command(&text)
-        && !CommandHandler::is_status_command(&text)
-        && !CommandHandler::is_gateway_command(&text)
-        && !CommandHandler::is_switch_command(&text)
-        && !CommandHandler::is_default_command(&text)
-        && !CommandHandler::is_sessions_command(&text)
-        && !CommandHandler::is_new_session_command(&text)
-        && !CommandHandler::is_btw_command(&text)
-        && !CommandHandler::is_model_command(&text)
-        && !CommandHandler::is_secure_command(&text)
-        && !CommandHandler::is_approve_command(&text)
-        && !CommandHandler::is_deny_command(&text)
-    {
+    // identity-independent local command and it is not one of the
+    // identity-scoped or inline channel commands, reply with a helpful
+    // unknown-command message rather than routing it to an agent.
+    if CommandHandler::is_unknown_channel_command(&text) {
         let reply = command_handler.unknown_command(&text);
         telemetry::command_reply_ready(
             "telegram",
@@ -543,7 +531,7 @@ fn handle_message_nonblocking(
     }
 
     // !context clear — clear the conversation buffer for this chat.
-    if text.trim().eq_ignore_ascii_case("!context clear") {
+    if CommandHandler::is_context_clear_command(&text) {
         context_store.clear(&chat_key);
         telemetry::command_reply_ready(
             "telegram",
@@ -1474,7 +1462,7 @@ async fn handle_message(
     }
 
     // !context clear — clear the conversation buffer for this chat.
-    if text.trim().eq_ignore_ascii_case("!context clear") {
+    if CommandHandler::is_context_clear_command(&text) {
         context_store.clear(&chat_key);
         if let Err(e) = bot
             .send_message(chat_id, "🧹 Conversation context cleared.")

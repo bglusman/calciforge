@@ -1033,9 +1033,35 @@ impl CommandHandler {
         cmd == "!deny"
     }
 
+    /// Returns `true` if the text is the inline context-clear command.
+    ///
+    /// This command is handled by channel dispatchers because context storage is
+    /// channel/thread scoped. Keep this predicate next to the other command
+    /// classifiers so every channel agrees it is a known command and does not
+    /// route it to the agent or reply with the generic unknown-command message.
+    pub fn is_context_clear_command(text: &str) -> bool {
+        text.trim().eq_ignore_ascii_case("!context clear")
+    }
+
     /// Return true if the text starts with '!' (a command).
     pub fn is_command(text: &str) -> bool {
         text.trim().starts_with('!')
+    }
+
+    /// Returns `true` for simple local command tokens that [`handle`] answers
+    /// directly.
+    ///
+    /// This is intentionally only the small token-level subset that needs no
+    /// subcommand inspection. Other locally handled commands such as
+    /// `!agent list` and `!model` are classified by their own command-specific
+    /// predicates because related subcommands may need identity context.
+    pub fn is_simple_local_command(text: &str) -> bool {
+        let trimmed = text.trim();
+        let cmd = command_token(trimmed).to_lowercase();
+        matches!(
+            cmd.as_str(),
+            "!help" | "!commands" | "!agents" | "!metrics" | "!ping"
+        )
     }
 
     /// Returns `true` if the text is a `!secret` / `!secure` command (case-insensitive).
@@ -1061,6 +1087,37 @@ impl CommandHandler {
         let cmd = parts.next().unwrap_or("").to_lowercase();
         let sub = parts.next().unwrap_or("").to_lowercase();
         (cmd == "!secure" || cmd == "!secret") && sub == "set"
+    }
+
+    /// Returns `true` for commands that are recognized after identity
+    /// resolution by the shared channel layer or answered locally by
+    /// [`handle`].
+    ///
+    /// [`handle`] covers identity-independent commands such as `!help`,
+    /// `!agents`, `!metrics`, and `!ping`. Channel dispatchers use this helper
+    /// for the remaining authenticated/inline commands before deciding whether
+    /// an unhandled bang-prefixed message should receive the unknown-command
+    /// reply.
+    pub fn is_known_channel_command(text: &str) -> bool {
+        Self::is_simple_local_command(text)
+            || Self::is_status_command(text)
+            || Self::is_gateway_command(text)
+            || Self::is_switch_command(text)
+            || Self::is_default_command(text)
+            || Self::is_sessions_command(text)
+            || Self::is_new_session_command(text)
+            || Self::is_btw_command(text)
+            || Self::is_model_command(text)
+            || Self::is_secure_command(text)
+            || Self::is_approve_command(text)
+            || Self::is_deny_command(text)
+            || Self::is_context_clear_command(text)
+    }
+
+    /// Returns `true` when a channel should send the generic unknown-command
+    /// reply instead of routing the message to an agent.
+    pub fn is_unknown_channel_command(text: &str) -> bool {
+        Self::is_command(text) && !Self::is_known_channel_command(text)
     }
 
     /// Reply used when a channel has not opted into chat-transport
@@ -3000,6 +3057,49 @@ mod tests {
         assert!(!CommandHandler::is_status_command("!ping"));
         assert!(!CommandHandler::is_status_command("!switch foo"));
         assert!(!CommandHandler::is_status_command("status")); // no !
+    }
+
+    #[test]
+    fn channel_command_classification_keeps_known_commands_out_of_unknown_path() {
+        for command in [
+            "!help",
+            "!commands",
+            "!agents",
+            "!agent list",
+            "!agent custodian",
+            "!metrics",
+            "!ping",
+            "!status",
+            "!gateway",
+            "!switch custodian",
+            "!default",
+            "!sessions codex",
+            "!session list codex",
+            "!new",
+            "!btw codex say hi",
+            "!model",
+            "!secure input API_KEY",
+            "!secret list",
+            "!approve 1",
+            "!deny 1",
+            "!context clear",
+        ] {
+            assert!(
+                CommandHandler::is_known_channel_command(command),
+                "{command} should be recognized by the shared channel classifier"
+            );
+            assert!(
+                !CommandHandler::is_unknown_channel_command(command),
+                "{command} should not be handled as an unknown command"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_command_classification_still_flags_unknown_bang_commands() {
+        assert!(CommandHandler::is_unknown_channel_command("!wat"));
+        assert!(CommandHandler::is_unknown_channel_command("  !statuz  "));
+        assert!(!CommandHandler::is_unknown_channel_command("hello agent"));
     }
 
     #[test]

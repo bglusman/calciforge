@@ -902,19 +902,7 @@ async fn handle_message(
     }
 
     // Unknown !command
-    if CommandHandler::is_command(body)
-        && !CommandHandler::is_status_command(body)
-        && !CommandHandler::is_gateway_command(body)
-        && !CommandHandler::is_switch_command(body)
-        && !CommandHandler::is_default_command(body)
-        && !CommandHandler::is_sessions_command(body)
-        && !CommandHandler::is_new_session_command(body)
-        && !CommandHandler::is_btw_command(body)
-        && !CommandHandler::is_model_command(body)
-        && !CommandHandler::is_secure_command(body)
-        && !CommandHandler::is_approve_command(body)
-        && !CommandHandler::is_deny_command(body)
-    {
+    if CommandHandler::is_unknown_channel_command(body) {
         send(cmd_handler.unknown_command(body), "unknown_command").await;
         return;
     }
@@ -1011,7 +999,7 @@ async fn handle_message(
         return;
     }
 
-    if body.trim().eq_ignore_ascii_case("!context clear") {
+    if CommandHandler::is_context_clear_command(body) {
         ctx_store.clear(chat_key);
         send("Conversation context cleared.".to_string(), "context_clear").await;
         return;
