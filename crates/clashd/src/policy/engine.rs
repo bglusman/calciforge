@@ -21,7 +21,7 @@ mod tests;
 /// Per-agent policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentPolicyConfig {
-    /// Agent identifier (e.g., "librarian", "custodian")
+    /// Agent identifier (e.g., "research-agent", "ops-agent")
     pub agent_id: String,
     /// Additional allowed domains for this agent
     pub allowed_domains: Vec<String>,
