@@ -286,10 +286,20 @@ pub struct GatewayConfig {
     pub ca_cert_path: Option<String>,
     /// Path to CA private key PEM
     pub ca_key_path: Option<String>,
-    /// Enable exfiltration scanning on outbound requests
+    /// Enable adversary/exfiltration scanning on outbound requests.
+    /// Default: false. This scanner is intentionally opt-in while the
+    /// policy matures because model/provider transports often carry
+    /// prompt-injection examples, high-entropy IDs, and tool transcripts
+    /// that are not themselves exfiltration attempts.
     pub scan_outbound: bool,
     /// Enable injection scanning on inbound responses
     pub scan_inbound: bool,
+    /// Enable high-entropy/secret-pattern scanning on inbound response
+    /// bodies. Default: false. Prompt-injection scanning remains governed
+    /// by `scan_inbound`; this stricter leak detector is opt-in because
+    /// provider APIs commonly return opaque IDs and hashes in normal
+    /// responses.
+    pub scan_response_secrets: bool,
     /// Enable credential injection from env/vault
     pub inject_credentials: bool,
     /// Require an operator-issued token for manual credential override
@@ -398,8 +408,9 @@ impl Default for GatewayConfig {
             port: 8888,
             ca_cert_path: None,
             ca_key_path: None,
-            scan_outbound: true,
+            scan_outbound: false,
             scan_inbound: true,
+            scan_response_secrets: false,
             inject_credentials: true,
             manual_credential_override_requires_operator_approval: true,
             bypass_domains: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
@@ -457,6 +468,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn default_config_keeps_brittle_exfil_scans_opt_in() {
+        let config = GatewayConfig::default();
+
+        assert!(
+            !config.scan_outbound,
+            "outbound adversary/exfil scanning is opt-in by default"
+        );
+        assert!(
+            !config.scan_response_secrets,
+            "high-entropy response secret scanning is opt-in by default"
+        );
+        assert!(
+            config.scan_inbound,
+            "prompt-injection response scanning must stay enabled by default"
+        );
+    }
+
     /// Structural JSON roundtrip preserves every field. The previous
     /// test only compared `port`, so adding a field with
     /// `#[serde(skip_serializing_if)]` or forgetting `Deserialize`
@@ -469,6 +498,7 @@ mod tests {
             ca_key_path: Some("/tmp/ca.key".into()),
             scan_outbound: false,
             scan_inbound: false,
+            scan_response_secrets: true,
             inject_credentials: false,
             manual_credential_override_requires_operator_approval: true,
             bypass_domains: vec!["a.example".into(), "b.example".into()],

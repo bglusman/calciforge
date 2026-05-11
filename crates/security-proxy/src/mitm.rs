@@ -216,11 +216,7 @@ impl CalciforgeMitmHandler {
 
         #[cfg(feature = "ironclaw-safety")]
         {
-            let request_params = build_credential_check_params(
-                &original_target_url,
-                req.headers(),
-                url_dest_host.as_deref(),
-            );
+            let request_params = build_credential_check_params(&original_target_url, req.headers());
             if let Err(reason) = self
                 .state
                 .ironclaw
@@ -638,10 +634,15 @@ impl CalciforgeMitmHandler {
             && looks_like_scannable_content_type(&content_type)
             && let Ok(body_str) = std::str::from_utf8(&body_bytes)
         {
-            // IronClaw leak detection (runs before adversary-detector scan)
+            // Optional IronClaw leak detection (runs before adversary-detector scan).
+            // Keep this separate from prompt-injection scanning: provider
+            // responses routinely contain opaque IDs and hashes that are
+            // not user-data exfiltration.
             #[cfg(feature = "ironclaw-safety")]
             {
-                if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                if self.state.config.scan_response_secrets
+                    && let Err(reason) = self.state.ironclaw.scan_response_body(body_str)
+                {
                     warn!(
                         "BLOCKED MITM response from {}: {}",
                         redact_url_for_log(target_url),
@@ -1177,11 +1178,7 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<MitmB
 /// `ironclaw_safety::params_contain_manual_credentials`. Extracts the URL
 /// and headers from the in-flight request parts.
 #[cfg(feature = "ironclaw-safety")]
-fn build_credential_check_params(
-    url: &str,
-    headers: &header::HeaderMap,
-    dest_host: Option<&str>,
-) -> serde_json::Value {
+fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serde_json::Value {
     let credential_check_url = url_with_secret_query_params_removed(url);
     let mut header_map = serde_json::Map::new();
     for (name, value) in headers.iter() {
@@ -1191,7 +1188,7 @@ fn build_credential_check_params(
         if name == header::PROXY_AUTHORIZATION || name.as_str().starts_with("x-calciforge-") {
             continue;
         }
-        if is_provider_transport_auth_header(name.as_str(), dest_host) {
+        if is_transport_secret_header(name.as_str()) {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -1213,14 +1210,7 @@ fn build_credential_check_params(
 }
 
 #[cfg(feature = "ironclaw-safety")]
-fn is_provider_transport_auth_header(name: &str, dest_host: Option<&str>) -> bool {
-    let Some(host) = dest_host.map(normalize_host_for_policy) else {
-        return false;
-    };
-    if !is_known_provider_auth_host(&host) {
-        return false;
-    }
-
+fn is_transport_secret_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "authorization"
@@ -1232,42 +1222,6 @@ fn is_provider_transport_auth_header(name: &str, dest_host: Option<&str>) -> boo
             | "anthropic-version"
             | "anthropic-beta"
     )
-}
-
-#[cfg(feature = "ironclaw-safety")]
-fn is_known_provider_auth_host(host: &str) -> bool {
-    const HOSTS: &[&str] = &[
-        "api.openai.com",
-        "chatgpt.com",
-        "chat.openai.com",
-        "api.anthropic.com",
-        "generativelanguage.googleapis.com",
-        "openrouter.ai",
-        "api.groq.com",
-        "api.moonshot.cn",
-        "api.kimi.com",
-        "api.deepseek.com",
-        "api.mistral.ai",
-        "api.x.ai",
-        "api.cohere.ai",
-        "api.together.xyz",
-        "api.fireworks.ai",
-        "api.perplexity.ai",
-    ];
-    HOSTS
-        .iter()
-        .any(|allowed| host_matches_policy(host, allowed))
-}
-
-#[cfg(feature = "ironclaw-safety")]
-fn normalize_host_for_policy(host: &str) -> String {
-    host.trim().trim_end_matches('.').to_ascii_lowercase()
-}
-
-#[cfg(feature = "ironclaw-safety")]
-fn host_matches_policy(host: &str, pattern: &str) -> bool {
-    let pattern = normalize_host_for_policy(pattern);
-    host == pattern || host.ends_with(&format!(".{pattern}"))
 }
 
 #[cfg(feature = "ironclaw-safety")]
@@ -1360,7 +1314,6 @@ mod credential_check_tests {
         let params = build_credential_check_params(
             "https://api.example.test/v1?api_key=manual-secret&q=books",
             &headers,
-            Some("api.example.test"),
         );
 
         assert!(ironclaw_safety::params_contain_manual_credentials(&params));
@@ -1372,7 +1325,6 @@ mod credential_check_tests {
         let params = build_credential_check_params(
             "https://api.example.test/v1?api_key=manual-prefix-{{secret:EXAMPLE_API_KEY}}&q=books",
             &headers,
-            Some("api.example.test"),
         );
 
         assert!(ironclaw_safety::params_contain_manual_credentials(&params));
@@ -1384,7 +1336,6 @@ mod credential_check_tests {
         let params = build_credential_check_params(
             "https://api.example.test/v1?api_key={{secret:EXAMPLE_API_KEY}}&q=books",
             &headers,
-            Some("api.example.test"),
         );
 
         assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
@@ -1408,7 +1359,7 @@ mod credential_check_tests {
     }
 
     #[test]
-    fn credential_check_allows_provider_transport_auth_headers() {
+    fn credential_check_sanitizes_transport_auth_headers() {
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -1422,27 +1373,25 @@ mod credential_check_tests {
         let params = build_credential_check_params(
             "https://chatgpt.com/backend-api/accounts/check/v4-2024-04-27",
             &headers,
-            Some("chatgpt.com"),
         );
 
         assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
     }
 
     #[test]
-    fn credential_check_still_flags_manual_auth_headers_to_untrusted_hosts() {
+    fn credential_check_sanitizes_transport_auth_headers_without_host_allowlist() {
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
-            "Bearer leaked-token".parse().unwrap(),
+            "Bearer local-provider-token".parse().unwrap(),
         );
 
         let params = build_credential_check_params(
-            "https://example.test/collect",
+            "http://192.168.1.175:18083/v1/chat/completions",
             &headers,
-            Some("example.test"),
         );
 
-        assert!(ironclaw_safety::params_contain_manual_credentials(&params));
+        assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
     }
 
     #[test]

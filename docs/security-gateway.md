@@ -227,8 +227,12 @@ egress limited to Calciforge services.
 ## ⚙️ Configuration
 
 The gateway is configured via `GatewayConfig`:
-- `scan_outbound`: Toggle exfiltration detection.
+- `scan_outbound`: Toggle outbound adversary/exfiltration detection. Defaults
+  off while this policy matures; enable only for deployments that have tuned
+  false positives on provider/tool transcripts.
 - `scan_inbound`: Toggle injection detection.
+- `scan_response_secrets`: Toggle high-entropy/secret-pattern response leak
+  detection. Defaults off independently from prompt-injection scanning.
 - `inject_credentials`: Toggle automatic API key injection.
 - `manual_credential_override_requires_operator_approval`: Require an operator token for `ironclaw.manual_credential` override headers. Default: `true`.
 - `bypass_domains`: List of domains that skip scanning (e.g., internal services).
@@ -369,7 +373,8 @@ Or configure checks directly in `config.toml`:
 ```toml
 [security]
 profile = "balanced"
-scan_outbound = true
+scan_outbound = false
+scan_response_secrets = false
 
 # Empty scanner_checks uses the built-in Starlark default:
 # builtin:calciforge/default-scanner.star
