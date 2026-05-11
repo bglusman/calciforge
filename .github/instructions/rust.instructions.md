@@ -25,6 +25,12 @@ These extend `.github/copilot-instructions.md`. Same review philosophy: **if unc
 - `tokio::select!` branches must be cancellation-safe. If a branch holds partial state across `.await` (e.g., a half-written buffer), losing the race silently corrupts state. Worth flagging if non-obvious.
 - `tokio::process::Command` without `.kill_on_drop(true)` leaks the child if the parent task is dropped mid-await. Flag for long-running children; skip for one-shot commands that are awaited to completion.
 - Spawned `JoinHandle`s that are dropped silently swallow panics. Worth flagging for long-running tasks; not for fire-and-forget helpers.
+- New `tokio::spawn` or thread-spawned work that mutates shared state should have an obvious owner, cancellation/error reporting path, and ordering story. Flag detached background state changes that make request/session/channel lifecycle implicit.
+
+## Boundary hygiene
+
+- Raw config/protocol/CLI values should be converted into typed structs or enums before security, routing, lifecycle, persistence, or model-selection decisions. Flag new core logic that keeps branching on arbitrary strings or positional `Vec<String>` indexes when a local typed request/decision type would make invalid states unrepresentable.
+- New registries for adapter kinds, channel capabilities, model identifiers, or secret policy should reuse the existing source of truth. Flag duplicated tables unless the diff includes a synchronization comment/test.
 
 ## Lints / attributes
 

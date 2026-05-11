@@ -10,14 +10,16 @@ Self-hosted security gateway between AI agents and the rest of the world. Multi-
 
 1. **Correctness** — does the code do what its name/comments/tests claim?
 2. **Security** — secret leakage in logs, missing auth/identity check, substitution-boundary regression, exfil paths
-3. **Resource & error handling** — see Rust path-scoped instructions
-4. **Performance** — only when measurable in a hot path; otherwise skip
-5. **Style** — skip entirely (pre-commit handles it)
+3. **Architecture drift** — new source of truth, boundary bypass, god-object growth, stringly core logic, background state without ownership
+4. **Resource & error handling** — see Rust path-scoped instructions
+5. **Performance** — only when measurable in a hot path; otherwise skip
+6. **Style** — skip entirely (pre-commit handles it)
 
 ## Tools that already gate — don't re-flag what they catch
 
 - `cargo fmt --all -- --check` — formatting (pre-commit blocks commit)
 - `cargo clippy --all-targets -- -D warnings` — lints (pre-commit + CI)
+- `ruby scripts/check-architecture-ratchets.rb` — large-module budgets and watched pattern counts. Do not repeat the raw line-budget failure as a review comment unless the diff shows the architectural reason it grew or an obvious split point.
 - `gitleaks protect --staged` — secret scanning (pre-commit) + the same scan in CI. `.gitleaks.toml` allowlists by **path** (`tests/**/fixtures/`, `docs/rfcs/*.md`, lockfiles, `crates/paste-server/src/lib.rs`, `*.example.*`) and by **regex** (loopback IPs, RFC 5737 doc-ranges, a few specific inherited-from-main values). If a finding is inside an allowlisted path or matches an allowlisted regex, do NOT re-flag it — it's intentional. Findings outside the allowlist are real.
 
 ## Project context — NOT bugs despite looking like them
@@ -27,6 +29,19 @@ Self-hosted security gateway between AI agents and the rest of the world. Multi-
 - `clashd` is a daemon adapter around the upstream `clash` crate. The "d" is for "daemon". Do NOT suggest renaming or merging into `security-proxy`.
 - References to `zeroclaw_*` (no trailing `ed`) are the upstream third-party tool we wrap, NOT pre-rename leftover of this project.
 - Mixed Rust edition (2021 + 2024) is known and tracked. Do NOT suggest the bump unless the PR is explicitly about edition migration.
+
+## Architecture drift worth flagging
+
+Only flag these when the diff gives concrete evidence and a local fix or narrower design question is available:
+
+1. **Growing an existing oversized module** — especially `commands.rs`, channel modules, installer executor, proxy handlers, config, or doctor — when the added behavior could live behind a typed helper/module boundary.
+2. **New duplicate source of truth** — adapter kinds, model identifiers, channel capabilities, secret policy, gateway routing, install paths, or lifecycle state copied into a second registry/table without a synchronization plan.
+3. **Stringly core decisions** — security, routing, model selection, adapter lifecycle, approval, or persistence logic operating directly on raw `String`, `Vec<String>`, positional args, or `HashMap<String, String>` after the external boundary has already been crossed.
+4. **Background work without ownership** — spawned tasks that mutate shared state, swallow errors, or outlive the request/channel/session without a cancellation and reporting path.
+5. **Gateway/proxy bypasses** — new provider, fetch, exec, browser, or agent network paths that avoid Calciforge's configured model gateway/security proxy without being explicitly documented as opt-out or unenforceable.
+6. **Config/docs/test drift** — new channel, adapter, model gateway, or security config fields without matching docs and compile/smoke coverage.
+
+Do not ask for a broad rewrite. Prefer comments like: "This adds another command sub-flow to `commands.rs`; can this live in `commands/<domain>.rs` with a typed request enum so the ratchet budget does not keep rising?"
 
 ## Self-discipline
 
