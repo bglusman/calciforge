@@ -4,6 +4,8 @@ target/
 target-local/
 .tmp/
 vendor/
+.hegel/
+**/.hegel/
 *.orig
 mutants.out/
 mutants.out.old/
