@@ -3,18 +3,18 @@
 //! Builds a priority-ordered `Vec<ProviderEntry>` from explicit
 //! `[[proxy.model_routes]]` and `[[proxy.providers]]` config. The handler
 //! iterates entries in order and uses the first match, falling back to the
-//! default gateway.
+//! default provider adapter.
 
 use std::collections::HashMap;
 
 use anyhow::Context as _;
 use tracing::info;
 
-use crate::config::{GatewayFailureKind, ProxyConfig};
+use crate::config::{CredentialOwner, GatewayFailureKind, ProxyConfig};
 use crate::sync::Arc;
 
 use super::backend::{BackendConfig, BackendType};
-use super::gateway::{self, GatewayBackend, GatewayConfig, GatewayType};
+use super::gateway::{self, GatewayConfig, GatewayType, ProviderAdapter};
 use super::openai::is_reserved_chat_completion_field;
 
 /// Per-provider model switch state shared by routes that point to the same provider.
@@ -37,8 +37,8 @@ pub struct ProviderEntry {
     /// Model name patterns this entry handles, in declaration order.
     /// Supports exact match and `prefix/*` glob.
     pub patterns: Vec<String>,
-    /// Gateway to use for matching requests.
-    pub gateway: Arc<dyn GatewayBackend>,
+    /// Provider adapter to use for matching requests.
+    pub gateway: Arc<dyn ProviderAdapter>,
     /// Shell script to run before a gateway request switches to any model of this provider.
     pub on_switch: Option<String>,
     /// Shared state for serializing provider model swaps before gateway requests.
@@ -129,7 +129,7 @@ pub fn build_provider_entries(
     default_timeout: u64,
 ) -> anyhow::Result<Vec<ProviderEntry>> {
     // Build a map of provider_id → resolved gateway for efficient lookup.
-    let mut provider_gateways: HashMap<String, Arc<dyn GatewayBackend>> = HashMap::new();
+    let mut provider_gateways: HashMap<String, Arc<dyn ProviderAdapter>> = HashMap::new();
     let mut provider_on_switch: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_strip_prefix: HashMap<String, Option<String>> = HashMap::new();
     let mut provider_add_prefix: HashMap<String, Option<String>> = HashMap::new();
@@ -365,18 +365,39 @@ fn validate_request_body_extensions(
 fn resolve_provider_api_key(
     provider: &crate::config::ProxyProviderConfig,
 ) -> anyhow::Result<Option<String>> {
-    let api_key = if let Some(ref file) = provider.api_key_file {
+    let endpoint_auth = resolve_provider_key(
+        &provider.id,
+        "provider adapter API key",
+        provider.api_key.as_deref(),
+        provider.api_key_file.as_deref(),
+    )?;
+    let model_auth = resolve_provider_key(
+        &provider.id,
+        "model API key",
+        provider.model_api_key.as_deref(),
+        provider.model_api_key_file.as_deref(),
+    )?;
+
+    Ok(match provider.model_credential_owner {
+        CredentialOwner::Calciforge => model_auth.or(endpoint_auth),
+        CredentialOwner::Provider => endpoint_auth,
+    })
+}
+
+fn resolve_provider_key(
+    provider_id: &str,
+    label: &str,
+    inline: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> anyhow::Result<Option<String>> {
+    let api_key = if let Some(file) = file {
         let raw = std::fs::read_to_string(file)
-            .with_context(|| format!("reading API key file for provider '{}'", provider.id))?;
+            .with_context(|| format!("reading {label} file for provider '{provider_id}'"))?;
         raw.trim().to_string()
+    } else if let Some(key) = inline.map(str::trim).filter(|key| !key.is_empty()) {
+        key.to_string()
     } else {
-        provider
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .unwrap_or_default()
-            .to_string()
+        String::new()
     };
     Ok(if api_key.is_empty() {
         None

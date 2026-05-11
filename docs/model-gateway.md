@@ -3,14 +3,26 @@ layout: default
 title: Model Gateway
 ---
 
-# Model Gateway
+# Model Boundary And Provider Adapters
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests across upstream providers, local models, aliases, and synthetic
 model choices.
 
-For the architecture boundary between channels, agents, the model gateway, the
-security proxy, and external gateway engines, see
+The product boundary is not a singular gateway implementation. Calciforge owns
+the model access boundary: authentication, identity, per-agent model policy,
+auditing, aliases, synthetic selectors, and route selection. Concrete model
+traffic then exits through one or more configured `ProviderAdapter`s, such as
+Ollama, OpenRouter, LiteLLM, Helicone, or a direct OpenAI-compatible endpoint.
+
+Operational installs should choose at least one explicit provider adapter.
+`mock` is test-only and there is intentionally no built-in public-provider
+default. Installer recipes may offer convenience setup for adapters such as
+Helicone or OpenCode, but those are adapter choices, not Calciforge's required
+runtime architecture.
+
+For the architecture boundary between channels, agents, the model boundary, the
+security proxy, and provider-owned boundaries, see
 [ADR 0001: Model Gateway And Agent Boundaries](adr/0001-model-gateway-and-agent-boundaries.html).
 
 Agents can also point at an OpenAI-compatible endpoint with
@@ -35,9 +47,9 @@ The intended protected model path is:
 flowchart TD
   User["User channel"] --> Calciforge["Calciforge router"]
   Calciforge --> Agent["Agent adapter"]
-  Agent --> Gateway["Calciforge model gateway"]
+  Agent --> Gateway["Calciforge model boundary"]
   Gateway --> Policy["policy, secret, and adversary checks"]
-  Policy --> ExternalGateway["Helicone or another gateway engine"]
+  Policy --> ExternalGateway["ProviderAdapter: OpenRouter, LiteLLM, Helicone, Ollama, direct HTTP"]
   ExternalGateway --> Provider["Model provider"]
 ```
 
@@ -71,11 +83,11 @@ flowchart TD
 Run `calciforge doctor` after config changes. Its per-agent coverage lines
 state whether each agent is using the model gateway, whether `!model` overrides
 are enabled, and whether security-proxy coverage is configured or unknown. It
-also validates configured provider routes and referenced provider key files, and
+also validates configured provider adapters and referenced provider key files, and
 reports stale persisted `!model` overrides that no longer point at a configured
 gateway selector. Doctor also resolves the configured model route graph for
 alloys, cascades, dispatchers, exact routes, and shortcuts. When a selector
-falls through to the default gateway instead of an explicit provider route, it
+falls through to the legacy root adapter instead of an explicit provider route, it
 warns because that path bypasses provider-specific prefixes, API keys, and
 `on_switch` hooks.
 
@@ -98,7 +110,7 @@ warns because that path bypasses provider-specific prefixes, API keys, and
 | Helicone external gateway adapter | Working | `backend_type = "helicone"` forwards OpenAI-compatible requests to a Helicone AI Gateway while preserving Calciforge auth, routing, and command UX. |
 | Builtin HTTP upstream adapter | Compatibility path | `backend_type = "http"` uses Calciforge's minimal OpenAI-compatible HTTP client. It is useful for tests, local development, and explicit operator escape hatches, but it is not equivalent to a mature gateway engine such as Helicone or LiteLLM. |
 
-## External Gateway Engines
+## External Provider Adapters
 
 Calciforge's gateway layer is pluggable at the engine boundary. The built-in
 `mock` engine is for tests. The built-in `http` engine is a minimal upstream
@@ -109,29 +121,29 @@ operator-facing dashboards, provider registries, virtual keys, retries, load
 balancing, and provider-specific request translation without changing how
 channels and agents talk to Calciforge.
 
-Calciforge intentionally treats external gateway model IDs as opaque when the
-external gateway owns provider configuration. Helicone and LiteLLM both support
-gateway-side provider/key/model registries; Calciforge should not duplicate that
-registry when the operator has chosen that shape. In Calciforge config, set
-`credential_owner = "gateway"` on the provider route. The provider's
+Calciforge intentionally treats external provider-boundary model IDs as opaque
+when that boundary owns provider configuration. OpenRouter, Helicone, and
+LiteLLM all support provider/key/model registries; Calciforge should not
+duplicate that registry when the operator has chosen that shape. In Calciforge config, set
+`model_credential_owner = "provider"` on the provider route. The provider's
 `api_key`/`api_key_file`, if present, then authenticates Calciforge to the
-gateway process; it is not the upstream OpenAI, Anthropic, Ollama, or other
-provider key.
+provider boundary; it is not the upstream OpenAI, Anthropic, Ollama, or other
+final provider key.
 
 ```toml
 [[proxy.providers]]
 id = "managed-gateway"
 backend_type = "http"
 url = "http://127.0.0.1:4000/v1"
-credential_owner = "gateway"
+model_credential_owner = "provider"
 api_key_file = "/etc/calciforge/secrets/managed-gateway-client-key"
 models = ["managed/*"]
 ```
 
-In that shape, `backend_type = "http"` is just the transport used to reach an
-external OpenAI-compatible gateway endpoint. `credential_owner = "gateway"` is
-the important ownership boundary: `managed/default`, `managed/cheap`, or
-`managed/coding` are Calciforge-visible selectors but gateway-owned model names.
+In that shape, `backend_type = "http"` is just the transport used to reach a
+provider-owned OpenAI-compatible boundary endpoint. `model_credential_owner = "provider"`
+is the important ownership boundary: `managed/default`, `managed/cheap`, or
+`managed/coding` are Calciforge-visible selectors but provider-owned model names.
 Calciforge still owns aliases, synthetic selectors, access policy, sender
 identity, security scanning, and command UX. The external gateway owns upstream
 provider API keys, provider-specific model IDs, load balancing, and any
@@ -139,12 +151,39 @@ dashboard-native model registry. Use multiple Calciforge providers pointing at
 the same gateway URL when different public prefixes need different
 `strip_model_prefix` or `add_model_prefix` translations.
 
-Set `credential_owner = "calciforge"` only when Calciforge should resolve
-upstream provider keys from fnox, key files, or inline local config and use its
-builtin HTTP upstream adapter. That remains supported, but it is an explicit
-compatibility path: Helicone/LiteLLM observability, provider registry, virtual
-key semantics, and gateway-native retry/load-balancing do not apply to that
-route. Set `credential_owner = "none"` for local unauthenticated providers.
+Set `model_credential_owner = "calciforge"` only when Calciforge owns and presents
+the final upstream model-provider credential. That credential should normally
+live in fnox or a `model_api_key_file`, not inline TOML. Direct upstream routes
+may keep using `api_key`/`api_key_file` as a compatibility spelling when
+endpoint auth and final model auth are the same bearer token, but new configs
+should use the explicit model credential fields when those concepts differ.
+This is intentionally separate from substitution-protected fnox secrets because
+agents should never need to request these model-provider credentials directly.
+
+Current built-in HTTP/Helicone adapters have one first-class bearer credential
+slot. Do not configure both provider endpoint auth (`api_key`/`api_key_file`)
+and Calciforge-owned final model auth (`model_api_key`/`model_api_key_file`) on
+the same provider route unless that adapter has a documented second auth
+channel. For direct upstream providers, use `model_api_key_file`. For external
+gateway boundaries such as LiteLLM, OpenRouter, or Helicone, use
+`model_credential_owner = "provider"` and put the gateway/client credential in
+`api_key_file`.
+
+Set `model_credential_owner = "provider"` when the configured provider boundary owns
+upstream credentials, virtual keys, model routing, or BYOK state, such as
+Helicone, LiteLLM, or OpenRouter. In that shape, any `api_key`/`api_key_file`
+authenticates Calciforge to that boundary, not to the final upstream model
+provider.
+
+Use `model_credential_owner = "provider"` for local unauthenticated providers
+such as loopback Ollama too: the important point is that Calciforge does not own
+final upstream model credentials for that adapter route. Provider adapter
+endpoint auth remains separate and may still be absent or present.
+
+Older configs using `model_credential_owner = "gateway"`,
+`model_credential_owner = "none"`, or `credential_owner = ...` are still
+accepted as compatibility aliases, but new configs should use
+`model_credential_owner = "provider"` or `"calciforge"`.
 
 Provider routes can also set fixed upstream headers and OpenAI-compatible JSON
 body extensions. Headers are intentionally operator-controlled: some providers
@@ -160,7 +199,8 @@ also preserves unknown request fields sent by the caller, but configured
 id = "kimi-coding"
 backend_type = "http"
 url = "https://api.kimi.com/coding/v1"
-api_key_file = "/etc/calciforge/secrets/kimi-coding-key"
+model_credential_owner = "calciforge"
+model_api_key_file = "/etc/calciforge/secrets/kimi-coding-key"
 models = ["kimi-for-coding"]
 headers = { "User-Agent" = "kimi-cli/1.0" }
 
@@ -253,7 +293,7 @@ Provider routes can override both:
 [[proxy.providers]]
 id = "local-ollama"
 url = "http://127.0.0.1:11434/v1"
-credential_owner = "none"
+model_credential_owner = "provider"
 models = ["ollama/*"]
 fallback_on = [] # never fall through from this provider
 
@@ -426,7 +466,7 @@ scripts/model-gateway-provider-smoke.sh \
   opencode-go/qwen3.6-plus
 ```
 
-That script sends requests through Calciforge's gateway endpoint and fails if
+That script sends requests through Calciforge's provider boundary endpoint and fails if
 any listed model cannot return the exact expected response. Use it for operator
 validation after adding provider API-key files, model prefixes, or route blocks.
 
@@ -522,6 +562,11 @@ The gateway treats model identifiers uniformly across direct API calls,
   local model ID, or a concrete upstream model ID.
 - `[[model_shortcuts]]` may target concrete provider models, synthetic routing
   selectors such as dispatchers/cascades/alloys, or local model IDs.
+- `[[model_roles]]` are named model selectors for internal Calciforge features
+  and recipes. Roles intentionally use the same resolver as shortcuts, so
+  `security.screening`, `fast`, or `thinking` may point to a concrete provider
+  model, a shortcut, or a synthetic selector. They share the same public
+  selector namespace and cycle checks as shortcuts.
 - Shortcut aliases are themselves public model IDs. Calciforge rejects aliases
   that collide with configured synthetic routing selectors, local model IDs,
   exact provider model IDs, exact `[[proxy.model_routes]]` patterns, agent IDs,
@@ -690,13 +735,18 @@ contract.
 enabled = true
 bind = "127.0.0.1:8080"
 backend_type = "http"
-backend_url = "https://api.openai.com/v1"
-backend_api_key_file = "/etc/calciforge/secrets/openai-key"
+backend_url = ""
 
-# This compact example uses Calciforge's builtin HTTP upstream adapter. For
-# operational deployments, prefer backend_type = "helicone" or a
-# credential_owner = "gateway" provider route to LiteLLM or another external
-# gateway engine.
+# Operational deployments should prefer explicit provider adapters. The legacy
+# root adapter remains only as a compatibility fallback.
+
+[[proxy.providers]]
+id = "direct-openai"
+backend_type = "http"
+url = "https://api.openai.com/v1"
+model_credential_owner = "calciforge"
+model_api_key_file = "/etc/calciforge/secrets/openai-key"
+models = ["openai/*", "gpt-*"]
 
 [proxy.token_estimator]
 strategy = "auto"        # auto, char_ratio, byte_ratio, or tiktoken
@@ -726,6 +776,16 @@ model = "anthropic/claude-sonnet-4.6"
 [[model_shortcuts]]
 alias = "local"
 model = "local/qwen3-35b"
+
+[[model_roles]]
+role = "default"
+model = "sonnet"
+description = "General fallback for Calciforge-owned model calls"
+
+[[model_roles]]
+role = "security.screening"
+model = "local"
+description = "Model used by adversary-detector classifier checks"
 
 [local_models]
 enabled = true

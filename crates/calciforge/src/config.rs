@@ -50,6 +50,16 @@ pub struct CalciforgeConfig {
     #[serde(default)]
     pub model_shortcuts: Vec<ModelShortcutConfig>,
 
+    /// `[[model_roles]]` — named model selectors for internal Calciforge
+    /// features and operator-facing recipes.
+    ///
+    /// Roles intentionally share the same resolution path as model shortcuts:
+    /// each role maps to a concrete provider model, a shortcut, or a synthetic
+    /// selector. Use dotted names for feature-scoped roles, such as
+    /// `security.screening`.
+    #[serde(default)]
+    pub model_roles: Vec<ModelRoleConfig>,
+
     /// `[[alloys]]` — model blending/mixing groups.
     /// Use `!model <alloy-id>` to activate an alloy for an identity.
     #[serde(default)]
@@ -100,6 +110,40 @@ pub struct ModelShortcutConfig {
     /// Target model ID. This may be a concrete provider model or a synthetic
     /// routing selector such as an alloy, cascade, or dispatcher.
     pub model: String,
+}
+
+/// A model role entry (`[[model_roles]]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelRoleConfig {
+    /// Role name (e.g. "default", "fast", "thinking", "security.screening").
+    pub role: String,
+    /// Target model ID, model shortcut, or synthetic routing selector.
+    pub model: String,
+    /// Optional operator-facing explanation of this role.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl ModelRoleConfig {
+    pub fn as_shortcut(&self) -> ModelShortcutConfig {
+        ModelShortcutConfig {
+            alias: self.role.clone(),
+            model: self.model.clone(),
+        }
+    }
+}
+
+impl CalciforgeConfig {
+    /// Return the model selectors accepted by the model boundary.
+    ///
+    /// Roles are implemented as first-class aliases so internal feature
+    /// defaults and external clients use the same resolution, auth, synthetic
+    /// expansion, and provider-adapter path.
+    pub fn effective_model_shortcuts(&self) -> Vec<ModelShortcutConfig> {
+        let mut shortcuts = self.model_shortcuts.clone();
+        shortcuts.extend(self.model_roles.iter().map(ModelRoleConfig::as_shortcut));
+        shortcuts
+    }
 }
 
 /// Alloy definition (`[[alloys]]`).
@@ -639,11 +683,11 @@ pub struct ProxyConfig {
     #[serde(default = "default_proxy_default_policy")]
     pub default_policy: ProxyAccessPolicy,
 
-    /// Root gateway backend type for proxy: "http", "helicone", or "mock".
+    /// Legacy root provider adapter type for proxy: "http", "helicone", or "mock".
     ///
     /// "http" is Calciforge's minimal builtin OpenAI-compatible upstream
-    /// adapter. It is a compatibility path, not an external gateway engine
-    /// with its own provider registry or observability UI.
+    /// adapter. It is a compatibility path, not a provider-owned boundary with
+    /// its own registry or observability UI.
     ///
     /// Provider-specific routes under `[[proxy.providers]]` have their own
     /// narrower `backend_type` surface.
@@ -662,8 +706,10 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub backend_api_key: Option<String>,
 
-    /// Backend URL (for HTTP backend)
-    /// Default: "https://api.deepseek.com/v1" (DeepSeek API)
+    /// Backend URL for the legacy root provider adapter.
+    ///
+    /// Operational installs should prefer explicit `[[proxy.providers]]`
+    /// entries. There is intentionally no public provider default.
     #[serde(default = "default_proxy_backend_url")]
     pub backend_url: String,
 
@@ -761,17 +807,21 @@ impl Default for GatewayRetryConfig {
     }
 }
 
-/// Declares where provider credentials are expected to live for a provider.
+/// Declares where final upstream model-provider credentials are expected to live.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialOwner {
-    /// Calciforge resolves provider credentials from fnox/key files/config.
+    /// Calciforge resolves upstream provider credentials from fnox/key files/config.
+    ///
+    /// Providers with this owner must configure model credentials, or use the
+    /// legacy `api_key`/`api_key_file` fields when endpoint auth and upstream
+    /// model auth are the same credential.
     #[default]
     Calciforge,
-    /// The external gateway owns provider keys, for example Helicone BYOK.
-    Gateway,
-    /// No provider API key is required, typically local models.
-    None,
+    /// The upstream provider boundary owns provider keys, for example
+    /// Helicone/OpenRouter/LiteLLM BYOK or virtual-key setups.
+    #[serde(alias = "gateway", alias = "none")]
+    Provider,
 }
 
 /// Token estimation strategy for context-window routing.
@@ -977,10 +1027,10 @@ fn default_proxy_backend_type() -> String {
 }
 
 fn default_proxy_backend_url() -> String {
-    "https://api.deepseek.com/v1".to_string()
+    String::new()
 }
 
-/// A named backend provider (`[[proxy.providers]]`).
+/// A named provider adapter (`[[proxy.providers]]`).
 ///
 /// Each provider handles a set of model name patterns and has its own
 /// URL, credentials, headers, and timeout. Providers are checked in config
@@ -990,10 +1040,10 @@ pub struct ProxyProviderConfig {
     /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
     pub id: String,
 
-    /// Provider backend kind. "http" uses Calciforge's builtin
-    /// OpenAI-compatible HTTP transport. With `credential_owner = "gateway"`,
+    /// Provider adapter kind. "http" uses Calciforge's builtin
+    /// OpenAI-compatible HTTP transport. With `model_credential_owner = "provider"`,
     /// that endpoint is treated as an external OpenAI-compatible gateway such
-    /// as LiteLLM. With the default `credential_owner = "calciforge"`, it is a
+    /// as LiteLLM. With the default `model_credential_owner = "calciforge"`, it is a
     /// raw upstream-provider compatibility path. "helicone" forwards through a
     /// Helicone AI Gateway with Helicone auth headers. CLI-backed
     /// subscriptions are configured as `[[agents]]`, not gateway providers.
@@ -1004,22 +1054,42 @@ pub struct ProxyProviderConfig {
     #[serde(default)]
     pub url: String,
 
-    /// API key for this provider (inline). Prefer `api_key_file`.
+    /// API key for authenticating Calciforge to this provider adapter endpoint.
+    ///
+    /// Prefer `api_key_file`. For direct upstream providers where endpoint
+    /// auth and model-provider auth are the same bearer token, this legacy
+    /// field may also satisfy `model_credential_owner = "calciforge"`.
     #[serde(default)]
     pub api_key: Option<String>,
 
-    /// Path to file containing this provider's API key.
+    /// Path to file containing provider adapter endpoint auth.
+    ///
     /// Contents are read at startup; trailing whitespace stripped.
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
 
-    /// Declares where upstream provider credentials are expected to live.
+    /// API key for final upstream model-provider auth when Calciforge owns it.
     ///
-    /// This is intentionally separate from transport auth used to talk to an
-    /// external gateway process. The current `api_key` fields still authenticate
-    /// Calciforge to the configured endpoint when needed.
+    /// Prefer `model_api_key_file`. This is separate from provider adapter
+    /// endpoint auth because an external provider boundary may have its own
+    /// virtual key while owning final upstream model credentials itself.
     #[serde(default)]
-    pub credential_owner: CredentialOwner,
+    pub model_api_key: Option<String>,
+
+    /// Path to file containing final upstream model-provider credentials.
+    /// Contents are read at startup; trailing whitespace stripped.
+    #[serde(default)]
+    pub model_api_key_file: Option<PathBuf>,
+
+    /// Declares where final upstream model-provider credentials are expected to live.
+    ///
+    /// If `calciforge`, model credentials must be configured unless the legacy
+    /// endpoint auth fields are intentionally serving both roles. If
+    /// `provider`, the configured provider boundary owns upstream credentials
+    /// or no final model credential is required. Deprecated values `gateway`
+    /// and `none` are parsed as `provider`.
+    #[serde(default, alias = "credential_owner")]
+    pub model_credential_owner: CredentialOwner,
 
     /// Model name patterns this provider handles.
     /// Supports exact matches and glob prefix (`kimi/*`).
@@ -1098,7 +1168,9 @@ impl Default for ProxyProviderConfig {
             url: String::new(),
             api_key: None,
             api_key_file: None,
-            credential_owner: CredentialOwner::default(),
+            model_api_key: None,
+            model_api_key_file: None,
+            model_credential_owner: CredentialOwner::default(),
             models: Vec::new(),
             strip_model_prefix: None,
             add_model_prefix: None,

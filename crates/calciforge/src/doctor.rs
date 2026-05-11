@@ -765,17 +765,13 @@ fn report_model_gateway_provider_boundaries(
             continue;
         }
 
-        match provider.credential_owner {
-            crate::config::CredentialOwner::Gateway => report.ok(format!(
-                "provider '{}' uses builtin HTTP transport to an external gateway-owned endpoint",
+        match provider.model_credential_owner {
+            crate::config::CredentialOwner::Provider => report.ok(format!(
+                "provider '{}' uses builtin HTTP transport to a provider-owned endpoint",
                 provider.id
             )),
             crate::config::CredentialOwner::Calciforge => report.warn(format!(
-                "provider '{}' uses Calciforge builtin HTTP upstream adapter; this route is not handled by an external gateway engine dashboard or provider registry",
-                provider.id
-            )),
-            crate::config::CredentialOwner::None => report.ok(format!(
-                "provider '{}' uses unauthenticated builtin HTTP transport",
+                "provider '{}' uses Calciforge-owned builtin HTTP upstream credentials; this route is not handled by an external provider dashboard or registry",
                 provider.id
             )),
         }
@@ -898,7 +894,7 @@ fn agent_security_proxy_coverage(agent: &AgentConfig, proxy_bind: Option<&str>) 
         Some(AgentKind::OpenAiCompat)
             if proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind)) =>
         {
-            "gateway-owned provider path; not ambient MITM"
+            "Calciforge model-boundary path; not ambient MITM"
         }
         Some(kind) if kind.is_subprocess_agent() => {
             if has_complete_agent_proxy_env(agent) {
@@ -1885,6 +1881,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             alloys: vec![],
             cascades: vec![],
             exec_models: vec![],
@@ -2704,10 +2701,12 @@ mod tests {
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
                 && finding.message.contains("provider 'opencode-go'")
-                && finding.message.contains("builtin HTTP upstream adapter")
                 && finding
                     .message
-                    .contains("not handled by an external gateway engine")
+                    .contains("Calciforge-owned builtin HTTP upstream credentials")
+                && finding
+                    .message
+                    .contains("not handled by an external provider dashboard or registry")
         }));
     }
 

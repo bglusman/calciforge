@@ -3,7 +3,7 @@
 #
 # This intentionally uses Calciforge's OpenAI-compatible gateway endpoint, not
 # the upstream provider URL. It verifies client auth, provider route matching,
-# model prefix rewrites, provider API key files, and the gateway backend path.
+# model prefix rewrites, provider adapter key files, and the provider adapter path.
 
 set -euo pipefail
 

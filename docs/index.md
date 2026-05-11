@@ -452,14 +452,21 @@ def evaluate(ctx):
     return Verdict.allow()
 ```
 
-### Model gateway
+### Model boundary and provider adapters
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
 requests to named providers, explicit model routes, local models, and
 synthetic routing selectors. Model identifiers resolve through one path for
 gateway requests and `!model`: a name may be a concrete model, a
-`[[model_shortcuts]]` alias, or a synthetic routing selector. Shortcuts may
-point to routing selectors, and routing selector members may use shortcuts.
+`[[model_shortcuts]]` alias, a `[[model_roles]]` role, or a synthetic routing
+selector. Shortcuts and roles may point to routing selectors, and routing
+selector members may use shortcuts.
+
+Roles are named selectors for Calciforge-owned features and recipes. For
+example, the adversary-detector LLM screener can ask for `security.screening`
+while the operator maps that role to a local model, a hosted gateway route, or
+a synthetic selector. Roles share the shortcut resolver instead of creating a
+parallel routing system.
 
 The synthetic routing vocabulary is:
 
@@ -488,11 +495,10 @@ login, session state, or native workflow.
 enabled = true
 bind = "127.0.0.1:8080"
 backend_type = "http"
-backend_url = "https://api.openai.com/v1"
-backend_api_key_file = "/etc/calciforge/secrets/openai-key"
+backend_url = ""
 
-# Builtin HTTP is a minimal compatibility path. For production, prefer an
-# external gateway engine such as Helicone or a gateway-owned LiteLLM route.
+# Prefer explicit provider adapters for operational configs. The legacy root
+# adapter remains only as a compatibility fallback.
 
 [proxy.token_estimator]
 strategy = "auto"
@@ -502,14 +508,18 @@ safety_margin = 1.10
 # Pattern-based provider routing — first match wins after model_routes.
 [[proxy.providers]]
 id = "anthropic"
+backend_type = "http"
 url = "https://api.anthropic.com/v1"
-api_key_file = "/etc/calciforge/secrets/anthropic-key"
+model_credential_owner = "calciforge"
+model_api_key_file = "/etc/calciforge/secrets/anthropic-key"
 models = ["claude-*", "anthropic/*"]
 timeout_seconds = 120
 
 [[proxy.providers]]
 id = "local-ollama"
+backend_type = "http"
 url = "http://127.0.0.1:11434/v1"
+model_credential_owner = "provider"
 models = ["local/*", "qwen/*", "ollama/*"]
 # Optional request-time hook for single-resident local runtimes such as large
 # Ollama models. Calciforge runs it before forwarding to this provider. Ensure
@@ -530,6 +540,14 @@ model = "anthropic/claude-sonnet-4.6"
 [[model_shortcuts]]
 alias = "local"
 model = "local/qwen3-35b"
+
+[[model_roles]]
+role = "default"
+model = "sonnet"
+
+[[model_roles]]
+role = "security.screening"
+model = "local"
 
 # Alloys pick among equivalent models by weighted or round-robin strategy.
 [[alloys]]

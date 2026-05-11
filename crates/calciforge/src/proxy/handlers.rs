@@ -203,7 +203,7 @@ fn model_plan_error_response(error: &str) -> (&'static str, Option<&'static str>
     }
 }
 
-/// Return operator-facing metadata for the active gateway engine.
+/// Return operator-facing metadata for the active provider adapter.
 pub async fn gateway_info(State(state): State<ProxyState>) -> Response {
     Json(state.gateway.engine_info()).into_response()
 }
@@ -275,7 +275,7 @@ async fn try_provider(
     model: &str,
     req: &ChatCompletionRequest,
 ) -> Result<ChatCompletionResponse, BackendError> {
-    // Check named providers first; fall back to default gateway.
+    // Check named providers first; fall back to default provider adapter.
     let provider = routing::find_provider(&state.providers, model);
     let gateway = provider
         .map(|entry| &entry.gateway)
@@ -1064,7 +1064,7 @@ mod tests {
     use crate::providers::alloy::AlloyManager;
     use crate::proxy::ProxyState;
     use crate::proxy::backend::{BackendError, ModelInfo as BackendModelInfo};
-    use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
+    use crate::proxy::gateway::{GatewayConfig, GatewayType, ProviderAdapter};
     use crate::proxy::openai::{ChatCompletionResponse, Choice, Usage};
     use crate::sync::Arc;
     use async_trait::async_trait;
@@ -1126,7 +1126,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl GatewayBackend for RecordingGateway {
+    impl ProviderAdapter for RecordingGateway {
         fn gateway_type(&self) -> GatewayType {
             GatewayType::BuiltinHttp
         }
@@ -1199,7 +1199,7 @@ mod tests {
         }
     }
 
-    fn gateway_state(gateway: Arc<dyn GatewayBackend>, config: ProxyConfig) -> ProxyState {
+    fn gateway_state(gateway: Arc<dyn ProviderAdapter>, config: ProxyConfig) -> ProxyState {
         ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1342,7 +1342,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "empty global fallback policy should make retryable failures fatal on the default gateway"
+            "empty global fallback policy should make retryable failures fatal on the default provider adapter"
         );
         assert_eq!(recording_gateway.recorded_models(), vec!["unavailable"]);
     }
@@ -1464,7 +1464,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1522,7 +1522,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1571,8 +1571,8 @@ mod tests {
 
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let default_gateway_dyn: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let default_gateway_dyn: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1628,8 +1628,8 @@ mod tests {
     async fn provider_route_can_strip_public_model_prefix_before_upstream_request() {
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1674,7 +1674,7 @@ mod tests {
         );
         assert!(
             default_gateway.recorded_models().is_empty(),
-            "provider route should not fall through to default gateway"
+            "provider route should not fall through to default provider adapter"
         );
     }
 
@@ -1682,8 +1682,8 @@ mod tests {
     async fn provider_route_merges_configured_request_body_fields() {
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1745,8 +1745,8 @@ mod tests {
         );
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1798,8 +1798,8 @@ mod tests {
     async fn provider_route_blocks_gateway_request_when_on_switch_fails() {
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1870,7 +1870,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1938,7 +1938,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1996,7 +1996,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2067,7 +2067,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2137,7 +2137,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2175,7 +2175,7 @@ mod tests {
     #[tokio::test]
     async fn list_models_includes_model_shortcut_aliases() {
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway;
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2215,8 +2215,8 @@ mod tests {
     #[tokio::test]
     async fn list_models_includes_exact_configured_provider_models() {
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
-        let provider_gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
+        let provider_gateway: Arc<dyn ProviderAdapter> = recording_gateway;
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),

@@ -1,7 +1,7 @@
-//! Model Gateway
+//! Model access boundary
 //!
 //! OpenAI-compatible HTTP server with multi-provider routing, retries,
-//! graceful degradation, optional external gateway adapters, and synthetic
+//! graceful degradation, optional external provider adapters, and synthetic
 //! model routing.
 
 use std::net::SocketAddr;
@@ -47,8 +47,8 @@ pub struct ProxyState {
     pub config: ProxyConfig,
     /// Root-level `[[model_shortcuts]]` aliases available to direct proxy requests.
     pub model_shortcuts: Vec<ModelShortcutConfig>,
-    /// Default gateway — used when no named provider matches the model.
-    pub gateway: Arc<dyn gateway::GatewayBackend>,
+    /// Legacy root provider adapter — used only when no named provider matches the model.
+    pub gateway: Arc<dyn gateway::ProviderAdapter>,
     /// Named provider entries, in routing priority order.
     /// Entries from `model_routes` come first, then from `providers.models` patterns.
     pub providers: Vec<ProviderEntry>,
@@ -106,6 +106,24 @@ pub(crate) fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
     matches!(backend_type, "http" | "helicone")
 }
 
+fn validate_explicit_provider_selection(config: &ProxyConfig) -> anyhow::Result<()> {
+    if config.providers.is_empty() && config.backend_type == "mock" {
+        anyhow::bail!(
+            "proxy.enabled=true requires at least one explicit [[proxy.providers]] adapter or an explicit non-mock root backend_type. The mock adapter is test-only and is not a production default."
+        );
+    }
+    if config.providers.is_empty()
+        && matches!(config.backend_type.as_str(), "http" | "helicone")
+        && config.backend_url.trim().is_empty()
+    {
+        anyhow::bail!(
+            "proxy.enabled=true with root backend_type='{}' requires backend_url, or configure one or more [[proxy.providers]] adapters",
+            config.backend_type
+        );
+    }
+    Ok(())
+}
+
 /// Resolve all per-agent proxy API key files into in-memory keys before the
 /// config is shared with request handlers.
 fn resolve_proxy_agent_api_keys(config: &mut ProxyConfig) -> anyhow::Result<()> {
@@ -132,6 +150,7 @@ pub async fn start_proxy_server(
         info!("Proxy server disabled in config");
         return Ok(());
     }
+    validate_explicit_provider_selection(&config)?;
 
     let addr: SocketAddr = config
         .bind
@@ -178,7 +197,7 @@ pub async fn start_proxy_server(
             ..Default::default()
         },
         other => anyhow::bail!(
-            "Unsupported proxy backend_type '{}'. Supported root gateway backends: {}",
+            "Unsupported proxy backend_type '{}'. Supported root provider adapters: {}",
             other,
             supported_root_gateway_backend_types().join(", ")
         ),
@@ -207,7 +226,7 @@ pub async fn start_proxy_server(
         ui_url: config.gateway_ui_url.clone(),
     };
 
-    // Create default gateway
+    // Create default provider adapter
     let gateway = gateway::create_gateway(gateway_config, Some(backend))
         .map_err(|e| anyhow::anyhow!("Failed to create gateway: {}", e))?;
 
