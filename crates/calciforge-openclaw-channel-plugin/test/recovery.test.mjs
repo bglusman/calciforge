@@ -28,11 +28,23 @@ test("registers the OpenClaw HTTP route synchronously when public route API exis
   assert.equal(registered[0].auth, "plugin");
 });
 
-test("status payload reports callback URL and reply-token hash without exposing token", () => {
+test("status payload reports callback URL and reply-token hash without exposing token", async () => {
   const fixtureReplyToken = ["reply", "fixture"].join("-");
-  const payload = testInternals.buildStatusPayload({
+  const payload = await testInternals.buildStatusPayload({
     replyWebhook: "http://198.51.100.10:18797/hooks/reply",
     replyAuthToken: fixtureReplyToken,
+    config: {
+      agents: {
+        defaults: {
+          agentRuntime: { id: "pi" },
+          model: {
+            primary: "calciforge/gpt55-kimi26",
+            fallbacks: [],
+          },
+        },
+      },
+      models: { providers: { calciforge: {} } },
+    },
   });
 
   assert.deepEqual(payload, {
@@ -44,8 +56,61 @@ test("status payload reports callback URL and reply-token hash without exposing 
       .digest("hex")
       .slice(0, 16),
     egressProxy: testInternals.buildEgressProxyStatus(),
+    modelRuntime: {
+      ok: true,
+      agentRuntime: "pi",
+      primary: "calciforge/gpt55-kimi26",
+      fallbacks: [],
+      unsupported: [],
+    },
   });
   assert.equal(JSON.stringify(payload).includes(fixtureReplyToken), false);
+});
+
+test("model runtime status rejects calciforge fallback under codex runtime", async () => {
+  const status = await testInternals.buildModelRuntimeStatus({
+    config: {
+      agents: {
+        defaults: {
+          agentRuntime: { id: "codex" },
+          model: {
+            primary: "openai/gpt-5.5",
+            fallbacks: ["calciforge/gpt55-kimi26", "openai-codex/gpt-5.5"],
+          },
+        },
+      },
+      models: { providers: { calciforge: {} } },
+    },
+  });
+
+  assert.equal(status.ok, false);
+  assert.equal(status.agentRuntime, "codex");
+  assert.deepEqual(status.unsupported, [
+    {
+      model: "calciforge/gpt55-kimi26",
+      provider: "calciforge",
+      reason: "agentRuntime 'codex' cannot load configured model provider 'calciforge'",
+    },
+  ]);
+});
+
+test("model runtime status accepts OpenAI providers under codex runtime", async () => {
+  const status = await testInternals.buildModelRuntimeStatus({
+    config: {
+      agents: {
+        defaults: {
+          agentRuntime: { id: "codex" },
+          model: {
+            primary: "openai/gpt-5.5",
+            fallbacks: ["openai-codex/gpt-5.5"],
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(status.ok, true);
+  assert.deepEqual(status.unsupported, []);
 });
 
 test("egress proxy status reports proxy and CA coverage without exposing values", () => {
