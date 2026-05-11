@@ -72,11 +72,17 @@ pub enum PlaceholderEnvError {
     #[error("placeholder env secret reference in {key:?} must be the whole value")]
     PartialSecretReference { key: String },
 
-    #[error(transparent)]
-    SecretReference(#[from] crate::substitution::SubstitutionError),
+    #[error("placeholder env secret reference in {key:?} is invalid: {source}")]
+    SecretReference {
+        key: String,
+        source: crate::substitution::SubstitutionError,
+    },
 
-    #[error(transparent)]
-    PlaceholderMap(#[from] crate::substitution::PlaceholderMapError),
+    #[error("placeholder env secret reference in {key:?} could not be registered: {source}")]
+    PlaceholderMap {
+        key: String,
+        source: crate::substitution::PlaceholderMapError,
+    },
 }
 
 // ── SecurityProxy ────────────────────────────────────────────────────────────
@@ -196,13 +202,19 @@ impl SecurityProxy {
         env: &std::collections::HashMap<String, String>,
     ) -> Result<std::collections::HashMap<String, String>, PlaceholderEnvError> {
         let mut rendered = env.clone();
+        let mut planned = Vec::new();
 
         for (key, value) in env {
             if !value.contains("{{secret:") {
                 continue;
             }
 
-            let names = crate::substitution::find_refs(value)?;
+            let names = crate::substitution::find_refs(value).map_err(|source| {
+                PlaceholderEnvError::SecretReference {
+                    key: key.clone(),
+                    source,
+                }
+            })?;
             let Some(secret_name) = names.iter().next() else {
                 continue;
             };
@@ -211,7 +223,25 @@ impl SecurityProxy {
                 return Err(PlaceholderEnvError::PartialSecretReference { key: key.clone() });
             }
 
-            let placeholder = self.generate_secret_placeholder(agent_id, secret_name.clone())?;
+            planned.push((key.clone(), secret_name.clone()));
+        }
+
+        let mut registered: Vec<String> = Vec::new();
+        for (key, secret_name) in planned {
+            let placeholder = match crate::substitution::generate_placeholder_token(&secret_name)
+                .and_then(|token| {
+                    self.register_secret_placeholder(agent_id, token.clone(), secret_name.clone())?;
+                    Ok(token)
+                }) {
+                Ok(placeholder) => placeholder,
+                Err(source) => {
+                    for token in registered {
+                        self.unregister_secret_placeholder(agent_id, &token);
+                    }
+                    return Err(PlaceholderEnvError::PlaceholderMap { key, source });
+                }
+            };
+            registered.push(placeholder.clone());
             rendered.insert(key.clone(), placeholder);
         }
 
@@ -1553,6 +1583,68 @@ mod tests {
             PlaceholderEnvError::PartialSecretReference {
                 key: "DATABASE_URL".to_string(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_does_not_register_before_validation_finishes() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig::default(),
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([
+            (
+                "OPENAI_API_KEY".to_string(),
+                "{{secret:OPENAI_API_KEY}}".to_string(),
+            ),
+            (
+                "DATABASE_URL".to_string(),
+                "postgres://{{secret:DATABASE_PASSWORD}}@db.local/app".to_string(),
+            ),
+        ]);
+
+        let err = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect_err("partial env interpolation should fail before registration");
+
+        assert_eq!(
+            err,
+            PlaceholderEnvError::PartialSecretReference {
+                key: "DATABASE_URL".to_string(),
+            }
+        );
+        assert!(
+            !proxy.unregister_agent_secret_placeholders("agent-a"),
+            "failed env generation must not leave registered placeholder state"
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_reports_parse_error_key() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig::default(),
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([(
+            "BROKEN_SECRET".to_string(),
+            "{{secret:OPENAI_API_KEY".to_string(),
+        )]);
+
+        let err = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect_err("malformed env secret reference should fail closed");
+
+        assert!(matches!(
+            err,
+            PlaceholderEnvError::SecretReference { key, .. } if key == "BROKEN_SECRET"
+        ));
+        assert!(
+            !proxy.unregister_agent_secret_placeholders("agent-a"),
+            "parse failure must not leave registered placeholder state"
         );
     }
 
