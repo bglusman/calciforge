@@ -790,10 +790,10 @@ fn validate_security_config(
 ) {
     // Validate adversary detector profile
     match security.profile.as_str() {
-        "off" | "minimal" | "balanced" | "maximum" => {}
+        "off" | "open" | "minimal" | "balanced" | "hardened" | "maximum" | "paranoid" => {}
         other => {
             result.add_error(format!(
-                "Security adversary_detector_profile '{}' is invalid. Use: off, minimal, balanced, maximum",
+                "Security profile '{}' is invalid. Use: off, open, minimal, balanced, hardened, maximum, paranoid",
                 other
             ));
         }

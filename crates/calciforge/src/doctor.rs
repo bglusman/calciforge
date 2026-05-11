@@ -424,7 +424,13 @@ fn count_fnox_provider_lines(stdout: &str) -> usize {
 struct ProxyEnvironment {
     http: Option<String>,
     https: Option<String>,
+    all: Option<String>,
     no_proxy: Option<String>,
+    node_extra_ca_certs: Option<String>,
+    ssl_cert_file: Option<String>,
+    requests_ca_bundle: Option<String>,
+    curl_ca_bundle: Option<String>,
+    git_ssl_cainfo: Option<String>,
 }
 
 fn check_proxy_environment(report: &mut DoctorReport) {
@@ -598,9 +604,17 @@ fn proxy_environment_from_process() -> ProxyEnvironment {
         https: std::env::var("HTTPS_PROXY")
             .ok()
             .or_else(|| std::env::var("https_proxy").ok()),
+        all: std::env::var("ALL_PROXY")
+            .ok()
+            .or_else(|| std::env::var("all_proxy").ok()),
         no_proxy: std::env::var("NO_PROXY")
             .ok()
             .or_else(|| std::env::var("no_proxy").ok()),
+        node_extra_ca_certs: std::env::var("NODE_EXTRA_CA_CERTS").ok(),
+        ssl_cert_file: std::env::var("SSL_CERT_FILE").ok(),
+        requests_ca_bundle: std::env::var("REQUESTS_CA_BUNDLE").ok(),
+        curl_ca_bundle: std::env::var("CURL_CA_BUNDLE").ok(),
+        git_ssl_cainfo: std::env::var("GIT_SSL_CAINFO").ok(),
     }
 }
 
@@ -648,6 +662,7 @@ fn check_agent_proxy_coverage(
     env: &ProxyEnvironment,
     report: &mut DoctorReport,
 ) {
+    let strict_egress = security_requires_agent_egress_proxy(config);
     let subprocess_agents = config
         .agents
         .iter()
@@ -679,28 +694,46 @@ fn check_agent_proxy_coverage(
             .filter(|agent| has_incomplete_agent_proxy_env(agent))
             .count();
 
-        if has_http_proxy(env) {
-            report.warn(
-                "Current calciforge doctor process has ambient HTTP_PROXY; subprocess inheritance works only if the service has the same env, and it can break CLI agents that use CONNECT, WebSockets, npm, or browser-backed auth. Prefer no ambient proxy and only wrap agents through tested recipes.",
-            );
+        if has_any_forward_proxy(env) {
+            let message = "Current calciforge doctor process has ambient proxy env; subprocess inheritance works only if the service has the same env, and it can break CLI agents that use CONNECT, WebSockets, npm, or browser-backed auth. Prefer no ambient proxy and only wrap agents through tested recipes.";
+            if strict_egress {
+                report.error(message);
+            } else {
+                report.warn(message);
+            }
         }
 
         if clearing_count > 0 {
-            report.warn(format!(
+            let message = format!(
                 "{clearing_count} subprocess agent(s) set empty proxy env values; CLI/exec agents may bypass security-proxy"
-            ));
+            );
+            if strict_egress {
+                report.error(message);
+            } else {
+                report.warn(message);
+            }
         }
 
         if incomplete_count > 0 {
-            report.warn(format!(
-                "{incomplete_count} subprocess agent(s) define partial proxy env; either remove proxy env or use a tested wrapper that the agent supports"
-            ));
+            let message = format!(
+                "{incomplete_count} subprocess agent(s) define incomplete MITM proxy env; require HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, loopback NO_PROXY, and at least one runtime CA bundle env"
+            );
+            if strict_egress {
+                report.error(message);
+            } else {
+                report.warn(message);
+            }
         }
 
         if complete_count > 0 {
-            report.warn(format!(
-                "{complete_count} subprocess agent(s) define explicit HTTP_PROXY env; verify the specific CLI supports that proxy path. HTTPS_PROXY/CONNECT traffic is not inspected by security-proxy and may break streaming agents."
-            ));
+            let message = format!(
+                "{complete_count} subprocess agent(s) define complete MITM proxy env for tested runtime wrappers"
+            );
+            if strict_egress {
+                report.ok(message);
+            } else {
+                report.warn(message);
+            }
         }
 
         let missing_count = subprocess_agents
@@ -712,23 +745,49 @@ fn check_agent_proxy_coverage(
             })
             .count();
         if missing_count > 0 {
-            report.ok(format!(
-                "{missing_count} subprocess agent(s) have no explicit proxy env; use explicit tool/fetch integration or a tested wrapper for traffic that must pass through security-proxy"
-            ));
+            let message = format!(
+                "{missing_count} subprocess agent(s) have no explicit MITM proxy env; use explicit tool/fetch integration or a tested wrapper for traffic that must pass through security-proxy"
+            );
+            if strict_egress {
+                report.error(message);
+            } else {
+                report.ok(message);
+            }
         }
     }
 
-    if subprocess_count == 0 && has_http_proxy(env) {
+    if subprocess_count == 0 && has_any_forward_proxy(env) {
         report.warn(
-            "Current calciforge doctor process has ambient HTTP_PROXY but no subprocess agents need it; remove proxy env from the Calciforge service if present",
+            "Current calciforge doctor process has ambient proxy env but no subprocess agents need it; remove proxy env from the Calciforge service if present",
         );
     }
 
     if external_count > 0 {
-        report.warn(format!(
+        let message = format!(
             "{external_count} externally managed HTTP/native agent endpoint(s) configured; doctor cannot verify their process proxy environment"
-        ));
+        );
+        if strict_egress {
+            report.error(message);
+        } else {
+            report.warn(message);
+        }
     }
+}
+
+fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
+    config.security.as_ref().is_some_and(|security| {
+        let profile_requires_egress = matches!(
+            security.profile.as_str(),
+            "hardened" | "maximum" | "paranoid"
+        );
+        let scans_agent_responses = security.scan_outbound.unwrap_or(profile_requires_egress);
+        security.require_agent_egress_proxy
+            || scans_agent_responses
+            || matches!(
+                security.profile.as_str(),
+                "hardened" | "maximum" | "paranoid"
+            )
+    })
 }
 
 fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorReport) {
@@ -932,12 +991,22 @@ fn agent_proxy_environment(agent: &AgentConfig) -> ProxyEnvironment {
                 .or_else(|| env.get("https_proxy"))
                 .cloned()
         }),
+        all: env.and_then(|env| {
+            env.get("ALL_PROXY")
+                .or_else(|| env.get("all_proxy"))
+                .cloned()
+        }),
         no_proxy: env.and_then(|env| env.get("NO_PROXY").or_else(|| env.get("no_proxy")).cloned()),
+        node_extra_ca_certs: env.and_then(|env| env.get("NODE_EXTRA_CA_CERTS").cloned()),
+        ssl_cert_file: env.and_then(|env| env.get("SSL_CERT_FILE").cloned()),
+        requests_ca_bundle: env.and_then(|env| env.get("REQUESTS_CA_BUNDLE").cloned()),
+        curl_ca_bundle: env.and_then(|env| env.get("CURL_CA_BUNDLE").cloned()),
+        git_ssl_cainfo: env.and_then(|env| env.get("GIT_SSL_CAINFO").cloned()),
     }
 }
 
 fn has_complete_agent_proxy_env(agent: &AgentConfig) -> bool {
-    has_http_proxy(&agent_proxy_environment(agent))
+    has_complete_mitm_proxy_env(&agent_proxy_environment(agent))
 }
 
 fn has_incomplete_agent_proxy_env(agent: &AgentConfig) -> bool {
@@ -957,6 +1026,54 @@ fn has_http_proxy(env: &ProxyEnvironment) -> bool {
     env.http
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn has_any_forward_proxy(env: &ProxyEnvironment) -> bool {
+    [&env.http, &env.https, &env.all].into_iter().any(|value| {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn has_complete_mitm_proxy_env(env: &ProxyEnvironment) -> bool {
+    has_http_proxy(env)
+        && env
+            .https
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && env
+            .all
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && has_runtime_ca_bundle_env(env)
+        && env
+            .no_proxy
+            .as_deref()
+            .is_some_and(no_proxy_includes_loopback)
+}
+
+fn has_runtime_ca_bundle_env(env: &ProxyEnvironment) -> bool {
+    [
+        &env.node_extra_ca_certs,
+        &env.ssl_cert_file,
+        &env.requests_ca_bundle,
+        &env.curl_ca_bundle,
+        &env.git_ssl_cainfo,
+    ]
+    .into_iter()
+    .any(|value| {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn no_proxy_includes_loopback(value: &str) -> bool {
+    value
+        .split(',')
+        .map(str::trim)
+        .any(|entry| matches!(entry, "localhost" | "127.0.0.1" | "::1"))
 }
 
 fn display_proxy_value(value: &str) -> String {
@@ -1387,7 +1504,12 @@ async fn check_agent_wiring(
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
                 if agent.kind == "openclaw-channel" {
-                    check_openclaw_channel_route(agent, report).await;
+                    check_openclaw_channel_route(
+                        agent,
+                        security_requires_agent_egress_proxy(config),
+                        report,
+                    )
+                    .await;
                 }
             }
         }
@@ -1420,7 +1542,19 @@ fn clears_agent_proxy_env(agent: &AgentConfig) -> bool {
 fn is_proxy_env_key(key: &str) -> bool {
     matches!(
         key,
-        "HTTP_PROXY" | "http_proxy" | "HTTPS_PROXY" | "https_proxy"
+        "HTTP_PROXY"
+            | "http_proxy"
+            | "HTTPS_PROXY"
+            | "https_proxy"
+            | "ALL_PROXY"
+            | "all_proxy"
+            | "NO_PROXY"
+            | "no_proxy"
+            | "NODE_EXTRA_CA_CERTS"
+            | "SSL_CERT_FILE"
+            | "REQUESTS_CA_BUNDLE"
+            | "CURL_CA_BUNDLE"
+            | "GIT_SSL_CAINFO"
     )
 }
 
@@ -1466,7 +1600,11 @@ async fn check_endpoint_reachable(agent: &AgentConfig, report: &mut DoctorReport
     }
 }
 
-async fn check_openclaw_channel_route(agent: &AgentConfig, report: &mut DoctorReport) {
+async fn check_openclaw_channel_route(
+    agent: &AgentConfig,
+    strict_egress: bool,
+    report: &mut DoctorReport,
+) {
     let route = format!(
         "{}/calciforge/inbound",
         agent.endpoint.trim_end_matches('/')
@@ -1524,7 +1662,13 @@ async fn check_openclaw_channel_route(agent: &AgentConfig, report: &mut DoctorRe
                         Ok(status) => {
                             let source_ip =
                                 local_source_ip_for_endpoint_with_timeout(&agent.endpoint).await;
-                            check_openclaw_channel_status(agent, &status, source_ip, report);
+                            check_openclaw_channel_status(
+                                agent,
+                                &status,
+                                source_ip,
+                                strict_egress,
+                                report,
+                            );
                         }
                         Err(err) => report.warn(format!(
                             "agent '{}' openclaw-channel status response was not recognized: {err}",
@@ -1574,12 +1718,28 @@ struct OpenClawChannelStatus {
     plugin: Option<String>,
     reply_webhook: Option<String>,
     reply_auth_token_sha256: Option<String>,
+    egress_proxy: Option<OpenClawEgressProxyStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawEgressProxyStatus {
+    http_proxy: bool,
+    https_proxy: bool,
+    all_proxy: bool,
+    node_extra_ca_certs: bool,
+    ssl_cert_file: bool,
+    requests_ca_bundle: bool,
+    curl_ca_bundle: bool,
+    git_ssl_ca_info: bool,
+    no_proxy_loopback: bool,
 }
 
 fn check_openclaw_channel_status(
     agent: &AgentConfig,
     status: &OpenClawChannelStatus,
     source_ip: Option<IpAddr>,
+    strict_egress: bool,
     report: &mut DoctorReport,
 ) {
     if status.plugin.as_deref() != Some("calciforge-channel") {
@@ -1609,6 +1769,8 @@ fn check_openclaw_channel_status(
             Err(err) => report.error(err),
         }
     }
+
+    check_openclaw_egress_proxy_status(agent, status.egress_proxy.as_ref(), strict_egress, report);
 
     let Some(reply_webhook) = status.reply_webhook.as_deref() else {
         return;
@@ -1648,6 +1810,60 @@ fn check_openclaw_channel_status(
             "agent '{}' openclaw-channel replyWebhook host {} does not match this host's source address {} for the agent endpoint; this often means a stale callback URL from another Calciforge install",
             agent.id, reply_ip, source_ip
         ));
+    }
+}
+
+fn check_openclaw_egress_proxy_status(
+    agent: &AgentConfig,
+    status: Option<&OpenClawEgressProxyStatus>,
+    strict_egress: bool,
+    report: &mut DoctorReport,
+) {
+    let Some(status) = status else {
+        let message = format!(
+            "agent '{}' openclaw-channel did not report runtime egress proxy status; upgrade the Calciforge OpenClaw channel plugin before relying on security-gateway enforcement",
+            agent.id
+        );
+        if strict_egress {
+            report.error(message);
+        } else {
+            report.warn(message);
+        }
+        return;
+    };
+
+    let has_ca_bundle = status.node_extra_ca_certs
+        || status.ssl_cert_file
+        || status.requests_ca_bundle
+        || status.curl_ca_bundle
+        || status.git_ssl_ca_info;
+    let complete = status.http_proxy
+        && status.https_proxy
+        && status.all_proxy
+        && status.no_proxy_loopback
+        && has_ca_bundle;
+
+    if complete {
+        report.ok(format!(
+            "agent '{}' openclaw-channel reports complete MITM proxy/CA egress env",
+            agent.id
+        ));
+        return;
+    }
+
+    let message = format!(
+        "agent '{}' openclaw-channel reports incomplete MITM proxy/CA egress env: HTTP_PROXY={}, HTTPS_PROXY={}, ALL_PROXY={}, CA bundle={}, loopback NO_PROXY={}",
+        agent.id,
+        status.http_proxy,
+        status.https_proxy,
+        status.all_proxy,
+        has_ca_bundle,
+        status.no_proxy_loopback
+    );
+    if strict_egress {
+        report.error(message);
+    } else {
+        report.warn(message);
     }
 }
 
@@ -1908,6 +2124,7 @@ mod tests {
             plugin: Some("calciforge-channel".to_string()),
             reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
             reply_auth_token_sha256: Some(sha256_prefix(&["stale", "reply"].join("-"))),
+            egress_proxy: None,
         };
         let mut report = DoctorReport::default();
 
@@ -1915,6 +2132,7 @@ mod tests {
             &agent,
             &status,
             Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            false,
             &mut report,
         );
 
@@ -1939,6 +2157,7 @@ mod tests {
             plugin: Some("calciforge-channel".to_string()),
             reply_webhook: Some("http://198.51.100.30:18797/hooks/reply".to_string()),
             reply_auth_token_sha256: Some(sha256_prefix(&expected_reply)),
+            egress_proxy: None,
         };
         let mut report = DoctorReport::default();
 
@@ -1946,11 +2165,88 @@ mod tests {
             &agent,
             &status,
             Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            false,
             &mut report,
         );
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn && finding.message.contains("stale callback URL")
+        }));
+    }
+
+    #[test]
+    fn openclaw_channel_status_errors_when_strict_egress_status_missing() {
+        let agent = AgentConfig {
+            id: "custodian".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://198.51.100.20:18790".to_string(),
+            reply_port: Some(18797),
+            ..Default::default()
+        };
+        let status = OpenClawChannelStatus {
+            plugin: Some("calciforge-channel".to_string()),
+            reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
+            reply_auth_token_sha256: None,
+            egress_proxy: None,
+        };
+        let mut report = DoctorReport::default();
+
+        check_openclaw_channel_status(
+            &agent,
+            &status,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            true,
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding
+                    .message
+                    .contains("did not report runtime egress proxy status")
+        }));
+    }
+
+    #[test]
+    fn openclaw_channel_status_accepts_complete_egress_status() {
+        let agent = AgentConfig {
+            id: "custodian".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://198.51.100.20:18790".to_string(),
+            reply_port: Some(18797),
+            ..Default::default()
+        };
+        let status = OpenClawChannelStatus {
+            plugin: Some("calciforge-channel".to_string()),
+            reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
+            reply_auth_token_sha256: None,
+            egress_proxy: Some(OpenClawEgressProxyStatus {
+                http_proxy: true,
+                https_proxy: true,
+                all_proxy: true,
+                node_extra_ca_certs: true,
+                ssl_cert_file: false,
+                requests_ca_bundle: false,
+                curl_ca_bundle: false,
+                git_ssl_ca_info: false,
+                no_proxy_loopback: true,
+            }),
+        };
+        let mut report = DoctorReport::default();
+
+        check_openclaw_channel_status(
+            &agent,
+            &status,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            true,
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding
+                    .message
+                    .contains("reports complete MITM proxy/CA egress env")
         }));
     }
 
@@ -2247,7 +2543,7 @@ mod tests {
                 };
                 let mut report = DoctorReport::default();
 
-                check_openclaw_channel_route(&agent, &mut report).await;
+                check_openclaw_channel_route(&agent, false, &mut report).await;
 
                 assert!(report.findings.iter().any(|finding| {
                     finding.severity == Severity::Error
@@ -2344,6 +2640,7 @@ mod tests {
                 http: None,
                 https: None,
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
@@ -2364,6 +2661,7 @@ mod tests {
                 http: None,
                 https: None,
                 no_proxy: None,
+                ..Default::default()
             },
             &mut report,
         );
@@ -2384,6 +2682,7 @@ mod tests {
                 http: Some("http://127.0.0.1:8888".to_string()),
                 https: Some("http://127.0.0.1:8888".to_string()),
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
@@ -2513,13 +2812,14 @@ mod tests {
                 http: None,
                 https: None,
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Ok
-                && finding.message.contains("have no explicit proxy env")
+                && finding.message.contains("have no explicit MITM proxy env")
         }));
     }
 
@@ -2535,8 +2835,17 @@ mod tests {
                     "http://127.0.0.1:8888".to_string(),
                 ),
                 (
+                    "HTTPS_PROXY".to_string(),
+                    "http://127.0.0.1:8888".to_string(),
+                ),
+                ("ALL_PROXY".to_string(), "http://127.0.0.1:8888".to_string()),
+                (
                     "NO_PROXY".to_string(),
                     "localhost,127.0.0.1,::1".to_string(),
+                ),
+                (
+                    "NODE_EXTRA_CA_CERTS".to_string(),
+                    "/tmp/mitm-ca.pem".to_string(),
                 ),
             ])),
             ..Default::default()
@@ -2549,13 +2858,14 @@ mod tests {
                 http: None,
                 https: None,
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
-                && finding.message.contains("define explicit HTTP_PROXY env")
+                && finding.message.contains("define complete MITM proxy env")
         }));
     }
 
@@ -2579,13 +2889,45 @@ mod tests {
                 http: None,
                 https: None,
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
 
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
-                && finding.message.contains("define partial proxy env")
+                && finding.message.contains("define incomplete MITM proxy env")
+        }));
+    }
+
+    #[test]
+    fn subprocess_agent_proxy_coverage_errors_in_strict_security_without_proxy_env() {
+        let mut config = base_config();
+        config.security = Some(SecuritySectionConfig {
+            profile: "hardened".to_string(),
+            scan_outbound: Some(true),
+            require_agent_egress_proxy: true,
+            scanner_checks: vec![],
+        });
+        config.agents = vec![AgentConfig {
+            id: "codex".to_string(),
+            kind: "codex-cli".to_string(),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("have no explicit MITM proxy env")
         }));
     }
 
@@ -2606,6 +2948,7 @@ mod tests {
                 http: None,
                 https: None,
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
@@ -2613,6 +2956,44 @@ mod tests {
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
                 && finding.message.contains("set empty proxy env values")
+        }));
+    }
+
+    #[test]
+    fn external_agent_proxy_coverage_errors_in_strict_security() {
+        let mut config = base_config();
+        config.security = Some(SecuritySectionConfig {
+            profile: "hardened".to_string(),
+            scan_outbound: Some(true),
+            require_agent_egress_proxy: true,
+            scanner_checks: vec![],
+        });
+        config.agents = vec![AgentConfig {
+            id: "openclaw".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://127.0.0.1:18789".to_string(),
+            ..Default::default()
+        }];
+        let mut report = DoctorReport::default();
+
+        check_agent_proxy_coverage(
+            &config,
+            &ProxyEnvironment {
+                http: Some("http://127.0.0.1:8888".to_string()),
+                https: Some("http://127.0.0.1:8888".to_string()),
+                all: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+                node_extra_ca_certs: Some("/tmp/mitm-ca.pem".to_string()),
+                ..Default::default()
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding
+                    .message
+                    .contains("doctor cannot verify their process proxy environment")
         }));
     }
 
@@ -2633,6 +3014,7 @@ mod tests {
                 http: Some("http://127.0.0.1:8888".to_string()),
                 https: Some("http://127.0.0.1:8888".to_string()),
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
@@ -2776,6 +3158,7 @@ mod tests {
                 http: Some("http://127.0.0.1:8888".to_string()),
                 https: Some("http://127.0.0.1:8888".to_string()),
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
@@ -2799,6 +3182,7 @@ mod tests {
                 http: Some("http://127.0.0.1:8888".to_string()),
                 https: Some("http://127.0.0.1:8888".to_string()),
                 no_proxy: Some("localhost,127.0.0.1".to_string()),
+                ..Default::default()
             },
             &mut report,
         );
@@ -2819,7 +3203,8 @@ mod tests {
         let mut config = base_config();
         config.security = Some(SecuritySectionConfig {
             profile: "hardened".to_string(),
-            scan_outbound: true,
+            scan_outbound: Some(true),
+            require_agent_egress_proxy: false,
             scanner_checks: vec![ScannerCheckConfig::Starlark {
                 path: policy.to_string_lossy().into_owned(),
                 fail_closed: true,
@@ -2848,7 +3233,8 @@ mod tests {
         let mut config = base_config();
         config.security = Some(SecuritySectionConfig {
             profile: "hardened".to_string(),
-            scan_outbound: true,
+            scan_outbound: Some(true),
+            require_agent_egress_proxy: false,
             scanner_checks: vec![
                 ScannerCheckConfig::Starlark {
                     path: policy.to_string_lossy().into_owned(),
