@@ -112,12 +112,11 @@ fn validate_explicit_provider_selection(config: &ProxyConfig) -> anyhow::Result<
             "proxy.enabled=true requires at least one explicit [[proxy.providers]] adapter or an explicit non-mock root backend_type. The mock adapter is test-only and is not a production default."
         );
     }
-    if config.providers.is_empty()
-        && matches!(config.backend_type.as_str(), "http" | "helicone")
+    if matches!(config.backend_type.as_str(), "http" | "helicone")
         && config.backend_url.trim().is_empty()
     {
         anyhow::bail!(
-            "proxy.enabled=true with root backend_type='{}' requires backend_url, or configure one or more [[proxy.providers]] adapters",
+            "proxy.enabled=true with root backend_type='{}' requires backend_url. Use backend_type='mock' for explicit-provider-only configs where unmatched models should fail instead of falling back to a root provider.",
             config.backend_type
         );
     }

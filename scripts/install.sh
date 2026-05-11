@@ -1582,7 +1582,11 @@ import sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 
-role_names = set(re.findall(r'(?m)^role\s*=\s*"([^"]+)"', text))
+role_names = set()
+for match in re.finditer(r'(?ms)^\[\[model_roles\]\]\n(.*?)(?=^\[|\Z)', text):
+    role_match = re.search(r'(?m)^role\s*=\s*"([^"]+)"', match.group(1))
+    if role_match:
+        role_names.add(role_match.group(1))
 
 first_model = None
 for match in re.finditer(r'(?ms)^\[\[proxy\.providers\]\]\n(.*?)(?=^\[|\Z)', text):
@@ -1647,6 +1651,28 @@ if new_section != section:
 PY
 }
 
+_ensure_proxy_disabled() {
+    local config_path="$1"
+    python3 - "$config_path" <<'PY'
+import pathlib, re, sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+match = re.search(r'(?ms)^\[proxy\]\n.*?(?=^\[|\Z)', text)
+if not match:
+    raise SystemExit(0)
+
+section = match.group(0)
+if re.search(r'(?m)^enabled\s*=', section):
+    new_section = re.sub(r'(?m)^enabled\s*=.*$', 'enabled = false', section, count=1)
+else:
+    new_section = section.replace('[proxy]\n', '[proxy]\nenabled = false\n', 1)
+
+if new_section != section:
+    path.write_text(text[:match.start()] + new_section + text[match.end():])
+PY
+}
+
 if [[ ! -f "$ZC_CONFIG" ]]; then
     warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
     mkdir -p "$(dirname "$ZC_CONFIG")"
@@ -1656,7 +1682,8 @@ fi
 
 # Ensure [proxy] section has enabled = true (idempotent)
 if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
-    warn "No model provider adapter selected; leaving [proxy].enabled unchanged/disabled"
+    _ensure_proxy_disabled "$ZC_CONFIG" || warn "Could not set [proxy].enabled = false in $ZC_CONFIG"
+    warn "No model provider adapter selected; set [proxy].enabled = false"
 elif ! grep -q '^\[proxy\]' "$ZC_CONFIG" 2>/dev/null; then
     _write_proxy_section "$ZC_CONFIG" append
     ok "Added [proxy] section to config (model gateway on :${CALCIFORGE_GATEWAY_PORT})"

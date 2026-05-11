@@ -589,12 +589,11 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         );
     }
 
-    if proxy.providers.is_empty()
-        && matches!(proxy.backend_type.as_str(), "http" | "helicone")
+    if matches!(proxy.backend_type.as_str(), "http" | "helicone")
         && proxy.backend_url.trim().is_empty()
     {
         result.add_error(format!(
-            "Proxy enabled with root backend_type='{}' requires backend_url, or configure one or more [[proxy.providers]] adapters",
+            "Proxy enabled with root backend_type='{}' requires backend_url. Use backend_type='mock' for an explicit-provider-only config where unmatched models should fail instead of falling back to a root provider.",
             proxy.backend_type
         ));
     }
@@ -1343,6 +1342,42 @@ backend_type = "mock"
                 .any(|w| w.contains("backend_type='mock'") && w.contains("test-only")),
             "warning should keep mock out of production configs; warnings: {:?}",
             result.warnings
+        );
+    }
+
+    #[test]
+    fn explicit_providers_do_not_make_blank_http_root_valid() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+backend_type = "http"
+backend_url = ""
+
+[[proxy.providers]]
+id = "managed"
+backend_type = "http"
+url = "http://127.0.0.1:4000/v1"
+model_credential_owner = "provider"
+models = ["managed/default"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "blank root HTTP backend should be invalid even when providers are configured"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("backend_type='http'") && e.contains("requires backend_url")),
+            "error should identify blank root backend_url; errors: {:?}",
+            result.errors
         );
     }
 

@@ -734,11 +734,11 @@ contract.
 [proxy]
 enabled = true
 bind = "127.0.0.1:8080"
-backend_type = "http"
-backend_url = ""
+backend_type = "mock"
 
 # Operational deployments should prefer explicit provider adapters. The legacy
-# root adapter remains only as a compatibility fallback.
+# root adapter remains only as a compatibility fallback. Use backend_type =
+# "mock" only for explicit-provider-only configs where unmatched models should fail.
 
 [[proxy.providers]]
 id = "direct-openai"
