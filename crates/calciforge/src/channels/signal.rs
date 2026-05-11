@@ -222,19 +222,7 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         }
 
         // Unknown !command
-        if CommandHandler::is_command(&text)
-            && !CommandHandler::is_status_command(&text)
-            && !CommandHandler::is_gateway_command(&text)
-            && !CommandHandler::is_switch_command(&text)
-            && !CommandHandler::is_default_command(&text)
-            && !CommandHandler::is_sessions_command(&text)
-            && !CommandHandler::is_new_session_command(&text)
-            && !CommandHandler::is_btw_command(&text)
-            && !CommandHandler::is_model_command(&text)
-            && !CommandHandler::is_secure_command(&text)
-            && !CommandHandler::is_approve_command(&text)
-            && !CommandHandler::is_deny_command(&text)
-        {
+        if CommandHandler::is_unknown_channel_command(&text) {
             let reply = self.command_handler.unknown_command(&text);
             let channel = self.clone();
             let target = reply_target.clone();
@@ -392,7 +380,7 @@ impl<C: Channel + ?Sized + 'static> SignalChannel<C> {
         }
 
         // !context clear
-        if text.trim().eq_ignore_ascii_case("!context clear") {
+        if CommandHandler::is_context_clear_command(&text) {
             self.context_store.clear(&chat_key);
             let channel = self.clone();
             let target = reply_target.clone();

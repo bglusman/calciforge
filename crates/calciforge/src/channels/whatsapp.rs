@@ -232,19 +232,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             return;
         }
 
-        if CommandHandler::is_command(&text)
-            && !CommandHandler::is_status_command(&text)
-            && !CommandHandler::is_gateway_command(&text)
-            && !CommandHandler::is_switch_command(&text)
-            && !CommandHandler::is_default_command(&text)
-            && !CommandHandler::is_sessions_command(&text)
-            && !CommandHandler::is_new_session_command(&text)
-            && !CommandHandler::is_btw_command(&text)
-            && !CommandHandler::is_model_command(&text)
-            && !CommandHandler::is_secure_command(&text)
-            && !CommandHandler::is_approve_command(&text)
-            && !CommandHandler::is_deny_command(&text)
-        {
+        if CommandHandler::is_unknown_channel_command(&text) {
             let command_start = std::time::Instant::now();
             let reply = self.command_handler.unknown_command(&text);
             self.command_reply_ready(
@@ -481,7 +469,7 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             return;
         }
 
-        if text.trim().eq_ignore_ascii_case("!context clear") {
+        if CommandHandler::is_context_clear_command(&text) {
             self.context_store.clear(&chat_key);
             self.command_reply_ready(
                 &identity.id,

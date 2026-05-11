@@ -288,19 +288,7 @@ async fn route_mock_message(
         return Ok(reply);
     }
 
-    if CommandHandler::is_command(&text)
-        && !CommandHandler::is_status_command(&text)
-        && !CommandHandler::is_gateway_command(&text)
-        && !CommandHandler::is_switch_command(&text)
-        && !CommandHandler::is_default_command(&text)
-        && !CommandHandler::is_sessions_command(&text)
-        && !CommandHandler::is_new_session_command(&text)
-        && !CommandHandler::is_btw_command(&text)
-        && !CommandHandler::is_model_command(&text)
-        && !CommandHandler::is_secure_command(&text)
-        && !CommandHandler::is_approve_command(&text)
-        && !CommandHandler::is_deny_command(&text)
-    {
+    if CommandHandler::is_unknown_channel_command(&text) {
         return Ok(state.command_handler.unknown_command(&text));
     }
 
@@ -387,7 +375,7 @@ async fn route_mock_message(
             .await);
     }
 
-    if text.trim().eq_ignore_ascii_case("!context clear") {
+    if CommandHandler::is_context_clear_command(&text) {
         state.context_store.clear(&chat_key);
         return Ok("Conversation context cleared.".to_string());
     }
@@ -702,6 +690,17 @@ mod tests {
             response.contains("active agent: echo"),
             "status should be evaluated with brian's routing context: {response}"
         );
+    }
+
+    #[tokio::test]
+    async fn mock_api_handles_context_clear_before_unknown_command_fallback() {
+        let state = state(config_with_mock_identity());
+
+        let response = route_mock_message(&state, "mock-brian", "!context clear")
+            .await
+            .expect("context clear should be handled by the channel layer");
+
+        assert_eq!(response, "Conversation context cleared.");
     }
 
     #[tokio::test]
