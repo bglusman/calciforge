@@ -5,6 +5,7 @@
 # Options:
 #   -b, --bind ADDR       Bind address (default: 0.0.0.0:18443)
 #   -c, --config PATH     Config file path (default: /etc/clash/host-agent.toml)
+#   --client-cn NAME      Client certificate common name (default: calciforge-agent)
 #   -d, --debug           Enable debug logging
 #   -h, --help            Show this help message
 
@@ -13,6 +14,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIND_ADDR="0.0.0.0:18443"
 CONFIG_PATH="/etc/clash/host-agent.toml"
+CLIENT_CN="calciforge-agent"
+CLIENT_CERT_BUNDLE="/etc/clash/certs/client-bundle.pem"
 DEBUG=false
 
 # Colors for output
@@ -44,6 +47,10 @@ while [[ $# -gt 0 ]]; do
             CONFIG_PATH="$2"
             shift 2
             ;;
+        --client-cn)
+            CLIENT_CN="$2"
+            shift 2
+            ;;
         -d|--debug)
             DEBUG=true
             shift
@@ -56,6 +63,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -b, --bind ADDR       Bind address (default: 0.0.0.0:18443)"
             echo "  -c, --config PATH     Config file path (default: /etc/clash/host-agent.toml)"
+            echo "  --client-cn NAME      Client certificate common name (default: calciforge-agent)"
             echo "  -d, --debug           Enable debug logging"
             echo "  -h, --help            Show this help message"
             exit 0
@@ -66,6 +74,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ ! "$CLIENT_CN" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+    log_error "Invalid --client-cn: use only letters, numbers, '.', '_', '-', or ':'"
+    exit 1
+fi
 
 # Check prerequisites
 check_prerequisites() {
@@ -123,39 +136,51 @@ generate_certs() {
     
     local CERT_DIR="/etc/clash/certs"
     
+    cd "$CERT_DIR"
+
     if [[ -f "$CERT_DIR/server.crt" ]]; then
-        log_warn "Certificates already exist. Skipping generation."
-        log_info "Delete $CERT_DIR to regenerate certificates."
+        log_warn "Server certificates already exist. Skipping server certificate generation."
+    else
+        # Generate CA
+        openssl genrsa -out ca.key 4096 2>/dev/null
+        openssl req -new -x509 -key ca.key -sha256 \
+            -subj '/C=US/O=Calciforge/CN=Calciforge CA' \
+            -days 3650 -out ca.crt 2>/dev/null
+
+        # Generate server cert
+        openssl genrsa -out server.key 4096 2>/dev/null
+        openssl req -subj '/CN=host-agent' -sha256 \
+            -key server.key -out server.csr 2>/dev/null
+        openssl x509 -req -in server.csr \
+            -CA ca.crt -CAkey ca.key -CAcreateserial \
+            -out server.crt -days 365 -sha256 2>/dev/null
+    fi
+
+    if [[ -f "$CLIENT_CERT_BUNDLE" ]]; then
+        log_warn "Client certificate bundle already exists at $CLIENT_CERT_BUNDLE. Skipping client certificate generation."
+        chmod 600 "$CLIENT_CERT_BUNDLE"
+        chown clash-agent:clash-agent "$CLIENT_CERT_BUNDLE"
         return
     fi
-    
-    cd "$CERT_DIR"
-    
-    # Generate CA
-    openssl genrsa -out ca.key 4096 2>/dev/null
-    openssl req -new -x509 -key ca.key -sha256 \
-        -subj '/C=US/O=Calciforge/CN=Calciforge CA' \
-        -days 3650 -out ca.crt 2>/dev/null
-    
-    # Generate server cert
-    openssl genrsa -out server.key 4096 2>/dev/null
-    openssl req -subj '/CN=host-agent' -sha256 \
-        -key server.key -out server.csr 2>/dev/null
-    openssl x509 -req -in server.csr \
+
+    if [[ ! -f ca.crt || ! -f ca.key ]]; then
+        log_error "Cannot generate client certificate because $CERT_DIR/ca.crt or ca.key is missing."
+        log_info "Delete $CERT_DIR to regenerate the certificate authority and server/client certificates."
+        exit 1
+    fi
+
+    # Generate a generic client cert used by Calciforge or an agent-side caller.
+    openssl genrsa -out client.key 4096 2>/dev/null
+    openssl req -subj "/CN=${CLIENT_CN}" -sha256 \
+        -key client.key -out client.csr 2>/dev/null
+    openssl x509 -req -in client.csr \
         -CA ca.crt -CAkey ca.key -CAcreateserial \
-        -out server.crt -days 365 -sha256 2>/dev/null
-    
-    # Generate client cert for librarian
-    openssl genrsa -out librarian.key 4096 2>/dev/null
-    openssl req -subj '/CN=librarian' -sha256 \
-        -key librarian.key -out librarian.csr 2>/dev/null
-    openssl x509 -req -in librarian.csr \
-        -CA ca.crt -CAkey ca.key -CAcreateserial \
-        -out librarian.crt -days 365 -sha256 2>/dev/null
-    cat librarian.crt librarian.key > librarian-bundle.pem
+        -out client.crt -days 365 -sha256 2>/dev/null
+    cat client.crt client.key > "$(basename "$CLIENT_CERT_BUNDLE")"
     
     # Set permissions
     chmod 600 *.key
+    chmod 600 "$(basename "$CLIENT_CERT_BUNDLE")"
     chmod 644 *.crt
     chown -R clash-agent:clash-agent .
     
@@ -202,9 +227,9 @@ enabled = true
 bind = "127.0.0.1:19090"
 
 [[agent]]
-cn_pattern = "librarian*"
-agent_type = "librarian"
-unix_user = "root"
+cn_pattern = "$CLIENT_CN"
+agent_type = "generic"
+unix_user = "clash-agent"
 autonomy = "supervised"
 allowed_operations = ["zfs-list", "zfs-snapshot"]
 requires_approval_for = ["zfs-destroy"]
@@ -377,7 +402,7 @@ test_installation() {
     log_info "Testing installation..."
     
     # Test health endpoint
-    if curl -sfk --cert /etc/clash/certs/librarian-bundle.pem \
+    if curl -sfk --cert "$CLIENT_CERT_BUNDLE" \
         https://localhost:18443/health > /dev/null 2>&1; then
         log_info "Health check passed"
     else
@@ -385,7 +410,7 @@ test_installation() {
     fi
     
     # Test ZFS list
-    if curl -sfk --cert /etc/clash/certs/librarian-bundle.pem \
+    if curl -sfk --cert "$CLIENT_CERT_BUNDLE" \
         -X POST -H "Content-Type: application/json" \
         -d '{"dataset": "tank"}' \
         https://localhost:18443/zfs/list > /dev/null 2>&1; then
@@ -418,14 +443,14 @@ main() {
     log_info "Service status:"
     systemctl status clash-host-agent --no-pager -l
     log_info ""
-    log_info "Client certificate for librarian:"
-    log_info "  /etc/clash/certs/librarian-bundle.pem"
+    log_info "Client certificate for $CLIENT_CN:"
+    log_info "  $CLIENT_CERT_BUNDLE"
     log_info ""
     log_info "To fetch the client certificate to your machine:"
-    log_info "  scp root@<host>:/etc/clash/certs/librarian-bundle.pem ./"
+    log_info "  scp root@<host>:$CLIENT_CERT_BUNDLE ./"
     log_info ""
     log_info "Test the service:"
-    log_info "  curl -k --cert librarian-bundle.pem https://<host>:18443/health"
+    log_info "  curl -k --cert client-bundle.pem https://<host>:18443/health"
 }
 
 main "$@"

@@ -149,9 +149,9 @@ pub struct MetricsConfig {
 /// Agent identity configuration (P3-17)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// Pattern to match certificate CN (e.g., "librarian*" or "claude-code-*")
+    /// Pattern to match certificate CN (e.g., "calciforge-agent" or "claude-code-*")
     pub cn_pattern: String,
-    /// Agent type: librarian, lucien, zeroclaw, acp_harness, etc.
+    /// Agent type: generic, zeroclaw, acp_harness, etc.
     pub agent_type: String,
     /// Unix user to run operations as
     pub unix_user: String,
@@ -251,9 +251,9 @@ impl Default for Config {
             rate_limit: RateLimitConfig::default(),
             agents: vec![
                 AgentConfig {
-                    cn_pattern: "librarian*".to_string(),
-                    agent_type: "librarian".to_string(),
-                    unix_user: "librarian".to_string(),
+                    cn_pattern: "calciforge-agent".to_string(),
+                    agent_type: "generic".to_string(),
+                    unix_user: "clash-agent".to_string(),
                     autonomy: AutonomyLevel::Supervised,
                     allowed_operations: vec!["zfs-list".to_string(), "zfs-snapshot".to_string()],
                     requires_approval_for: vec!["zfs-destroy".to_string()],
@@ -540,13 +540,13 @@ mod tests {
     fn test_find_agent() {
         let config = Config::default();
 
-        // Should find librarian config
-        let agent = config.find_agent("librarian");
+        // Should find the generic Calciforge client config
+        let agent = config.find_agent("calciforge-agent");
         assert!(agent.is_some());
-        assert_eq!(agent.unwrap().agent_type, "librarian");
+        assert_eq!(agent.unwrap().agent_type, "generic");
 
-        // Should find librarian-main via wildcard
-        let agent = config.find_agent("librarian-main");
+        // Should find claude-code-main via wildcard
+        let agent = config.find_agent("claude-code-main");
         assert!(agent.is_some());
 
         // Should not find unknown agent
