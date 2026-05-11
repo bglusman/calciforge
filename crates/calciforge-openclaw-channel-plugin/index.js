@@ -84,11 +84,21 @@ function getGatewayScopeBridge() {
   return gatewayScopeBridgePromise;
 }
 
+function buildTrustedCalciforgeGatewayClient() {
+  return {
+    connect: {
+      role: "operator",
+      scopes: ["operator.admin"],
+    },
+  };
+}
+
 async function runWithSyntheticGatewayClient(work) {
   const { withGatewayScope } = await getGatewayScopeBridge();
   return withGatewayScope(
     {
       pluginId: "calciforge-channel",
+      client: buildTrustedCalciforgeGatewayClient(),
       isWebchatConnect: () => false,
     },
     work,
