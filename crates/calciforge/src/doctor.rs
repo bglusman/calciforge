@@ -797,7 +797,8 @@ fn check_model_gateway_route_graph(
             return;
         }
     };
-    let resolver = ModelResolver::new(&config.model_shortcuts, &alloy_manager);
+    let effective_shortcuts = config.effective_model_shortcuts();
+    let resolver = ModelResolver::new(&effective_shortcuts, &alloy_manager);
     let mut selectors: Vec<_> = gateway_model_selector_ids(config).into_iter().collect();
     selectors.sort();
 
@@ -1818,9 +1819,9 @@ fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<String> {
         .map(|model| model.id)
         .chain(
             config
-                .model_shortcuts
-                .iter()
-                .map(|shortcut| shortcut.alias.clone()),
+                .effective_model_shortcuts()
+                .into_iter()
+                .map(|shortcut| shortcut.alias),
         )
         .collect()
 }
@@ -1831,8 +1832,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use crate::config::{
-        CalciforgeHeader, ProxyConfig, ProxyModelRoute, ProxyProviderConfig, RoutingRule,
-        SecuritySectionConfig, SyntheticModelConfig,
+        CalciforgeHeader, ModelRoleConfig, ProxyConfig, ProxyModelRoute, ProxyProviderConfig,
+        RoutingRule, SecuritySectionConfig, SyntheticModelConfig,
     };
 
     fn base_config() -> CalciforgeConfig {
@@ -2145,12 +2146,11 @@ mod tests {
     #[test]
     fn validates_persisted_active_state_against_config() {
         let mut config = base_config();
-        config
-            .model_shortcuts
-            .push(crate::config::ModelShortcutConfig {
-                alias: "balanced".to_string(),
-                model: "local-kimi-gpt55".to_string(),
-            });
+        config.model_roles.push(ModelRoleConfig {
+            role: "balanced".to_string(),
+            model: "local-kimi-gpt55".to_string(),
+            description: None,
+        });
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path()).unwrap();
         std::fs::write(

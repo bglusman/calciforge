@@ -386,6 +386,7 @@ def main() -> int:
             if proc is not None:
                 stop_process(proc)
             upstream.shutdown()
+            upstream.server_close()
 
     print("model gateway synthetic E2E passed")
     return 0

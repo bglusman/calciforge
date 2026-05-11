@@ -1674,16 +1674,24 @@ PY
 }
 
 if [[ ! -f "$ZC_CONFIG" ]]; then
-    warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
+    if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
+        warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway disabled because no provider adapter was selected"
+    else
+        warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
+    fi
     mkdir -p "$(dirname "$ZC_CONFIG")"
     _write_proxy_section "$ZC_CONFIG" overwrite
-    ok "Created config at $ZC_CONFIG with model gateway on :${CALCIFORGE_GATEWAY_PORT}"
+    if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
+        ok "Created config at $ZC_CONFIG with model gateway disabled"
+    else
+        ok "Created config at $ZC_CONFIG with model gateway on :${CALCIFORGE_GATEWAY_PORT}"
+    fi
 fi
 
-# Ensure [proxy] section has enabled = true (idempotent)
+# Ensure [proxy] section state matches the selected provider-adapter mode (idempotent).
 if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
     _ensure_proxy_disabled "$ZC_CONFIG" || warn "Could not set [proxy].enabled = false in $ZC_CONFIG"
-    warn "No model provider adapter selected; set [proxy].enabled = false"
+    warn "No model provider adapter selected; forced [proxy].enabled = false so Calciforge does not start an invalid or unbacked model gateway"
 elif ! grep -q '^\[proxy\]' "$ZC_CONFIG" 2>/dev/null; then
     _write_proxy_section "$ZC_CONFIG" append
     ok "Added [proxy] section to config (model gateway on :${CALCIFORGE_GATEWAY_PORT})"

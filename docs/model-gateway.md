@@ -3,6 +3,8 @@ layout: default
 title: Model Gateway
 ---
 
+Status: Implemented
+
 # Model Boundary And Provider Adapters
 
 Calciforge can expose an OpenAI-compatible local endpoint while routing
