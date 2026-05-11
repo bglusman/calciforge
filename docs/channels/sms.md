@@ -5,13 +5,16 @@ title: Text/iMessage Channel Setup
 
 # Text/iMessage Channel
 
-Calciforge exposes text/iMessage routing as `kind = "sms"`. Under the hood it uses
-the `zeroclawlabs::LinqChannel` transport, which can send and receive
-iMessage, RCS, and SMS through the Linq Partner API.
+Calciforge exposes text/iMessage routing as `kind = "sms"`. Under the hood it
+uses the `zeroclawlabs::LinqChannel` transport, which can send and receive
+iMessage, RCS, and SMS through the Linq Partner API. RCS is the richer carrier
+messaging format that can support more app-like features when the provider and
+device both support them.
 
-Inbound messages arrive as Linq webhooks. Outbound replies go through the Linq
-API, but still pass through Calciforge identity resolution, routing, security
-scan settings, and artifact fallback rendering.
+Inbound messages arrive as Linq webhooks: HTTP calls Linq sends to your
+Calciforge listener. Outbound replies go through the Linq API, but still pass
+through Calciforge identity resolution, routing, security scan settings, and
+artifact fallback rendering.
 
 ```text
 phone user  ->  Linq webhook  ->  Calciforge  ->  agent

@@ -5,8 +5,10 @@ title: Telegram Channel Setup
 
 # Telegram Channel
 
-Calciforge connects to Telegram via the [Telegram Bot API](https://core.telegram.org/bots/api)
-using **long-polling** — no public webhook endpoint or open firewall port required.
+Calciforge connects to Telegram through the [Telegram Bot API](https://core.telegram.org/bots/api)
+using **long-polling**. Long-polling means Calciforge asks Telegram for new
+messages in a loop, so you do not need a public webhook endpoint or an open
+firewall port.
 
 ## Architecture
 
@@ -21,8 +23,8 @@ Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply/media
 
 ## Prerequisites
 
-- **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`, follow the
-  prompts, copy the token it returns (format: `1234567890:ABCDEFghijklmnopqrstuvwxyz01234567`).
+- **Create a bot** via [@BotFather](https://t.me/BotFather): send `/newbot`,
+  follow the prompts, copy the token it returns, and store it like a password.
 - **Find your Telegram user ID** (numeric, not your username):
   send any message to your new bot, then run `calciforge` and read the user ID
   from the first unrecognised-message log, or send a message to
@@ -30,8 +32,8 @@ Telegram user  ←──  Telegram Bot API  ←──  Calciforge reply/media
 
 ## Step 1: Save the bot token
 
-Write the raw token string (no extra whitespace) to a file readable only by the Calciforge
-process:
+Write the raw token string, with no extra whitespace, to a file readable only
+by the Calciforge process:
 
 ```bash
 install -m 600 /dev/null ~/.config/calciforge/secrets/telegram-token
@@ -105,7 +107,7 @@ session buttons run `!switch <agent> <session>`, and approval buttons run
 `!approve <id>` / `!deny <id>`. `!secret input NAME` / `!secret bulk` replies
 include an `Open paste form` URL button. The plain text command remains in
 every reply so operators can disable buttons with `ui_mode = "text"` without
-losing functionality.
+losing functionality. Buttons are convenience, not the security boundary.
 
 Telegram also works well as a Calciforge control surface even if the main agent
 conversation happens somewhere else. Because active agent/model choices are

@@ -5,13 +5,16 @@ title: Matrix Channel Setup
 
 # Matrix Channel
 
-Calciforge connects to Matrix via the [Client-Server API v3](https://spec.matrix.org/v1.9/client-server-api/)
-using **HTTP long-polling** (`/sync`). No webhook endpoint or open firewall port required.
+Calciforge connects to Matrix through the [Client-Server API v3](https://spec.matrix.org/v1.9/client-server-api/)
+using **HTTP long-polling** (`/sync`). Long-polling means Calciforge keeps
+asking the homeserver for new events, so no webhook endpoint or open firewall
+port is required.
 
 > **No end-to-end encryption.** The Matrix channel receives plaintext `m.text`
 > events and can send plaintext replies plus native media events for agent
-> artifacts. E2EE is not supported due to compile-time dependency conflicts in
-> the current workspace. Do not use this channel in rooms where E2EE is required.
+> artifacts. End-to-end encryption (E2EE) is not supported due to compile-time
+> dependency conflicts in the current workspace. Do not use this channel in
+> rooms where E2EE is required.
 
 ## Architecture
 
@@ -42,7 +45,9 @@ curl -s -X POST 'https://matrix.example.com/_matrix/client/v3/login' \
   }' | grep access_token
 ```
 
-   Copy the `access_token` value from the response.
+   Copy the `access_token` value from the response and store it like a
+   password. Access tokens are not decorative boilerplate; they are the key to
+   the bot account.
 
 3. **Find the room ID** for the room you want the bot to listen in:
    - In most clients: room settings → Advanced → Internal room ID
@@ -126,7 +131,8 @@ Some Matrix clients and bridges expose buttons or polls differently, and
 bridges such as Beeper may not support the downstream app's native controls.
 Use `ui_mode = "text"` in `[[channels]]` to force plain text for a channel;
 `ui_mode = "auto"` is reserved for channel-native affordances once the Matrix
-adapter can expose them without breaking bridged clients.
+adapter can expose them without breaking bridged clients. Plain text is not as
+flashy, but it behaves predictably across the moving castle of Matrix clients.
 
 You can still use a richer channel, such as Telegram, as the Calciforge control
 surface for agent/model selection while keeping Matrix as the main chat room.

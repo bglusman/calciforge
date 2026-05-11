@@ -60,9 +60,10 @@ aliases = [
 ## Pair
 
 Start Calciforge with the channel enabled. On first run, the embedded transport
-will create or open the configured session database and initiate WhatsApp Web
+creates or opens the configured session database and starts WhatsApp Web
 pairing. Keep `whatsapp_session_path` on durable storage so restarts reuse the
-same linked session.
+same linked session. If that file disappears, WhatsApp treats the castle door
+as a new device and you will need to pair again.
 
 ## Verify
 

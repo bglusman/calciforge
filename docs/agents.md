@@ -8,9 +8,14 @@ title: Agents, Identities, and Routing
 This page covers the three configuration sections that together control who
 can talk to Calciforge and which AI backend handles their messages:
 
-- `[[agents]]` — AI backends Calciforge dispatches to
-- `[[identities]]` — users and their per-channel aliases
-- `[[routing]]` — maps identities to agents
+- `[[agents]]` — the AI backends Calciforge can call
+- `[[identities]]` — the people or service accounts Calciforge recognizes,
+  plus their per-channel aliases
+- `[[routing]]` — the rules that map identities to agents
+
+The short version: an incoming chat message becomes an identity, the identity
+chooses a route, and the route chooses an agent. It is a little like Howl's
+door dial, but with fewer colors and more audit logs.
 
 ## Architecture
 
@@ -35,15 +40,17 @@ Channel message arrives
 ## Agents (`[[agents]]`)
 
 Each `[[agents]]` entry defines one AI backend. The `kind` field selects the
-adapter. All other fields are adapter-specific.
+adapter, which is the small piece of Calciforge that knows how to talk to that
+backend. All other fields are adapter-specific.
 
 First-class adapters carry a stronger maintenance promise than generic
-wrappers: Calciforge should document how user ingress, callback auth, model
-egress, and tool/web egress are protected for that adapter, and regressions in
-those paths are Calciforge bugs where the upstream runtime gives us enough
-control to fix them. Generic CLI, generic ACP, and recipe adapters remain
-best-effort unless their recipe documents a tested boundary. In hardened
-profiles, prefer first-class adapters or explicitly verified recipes.
+wrappers: Calciforge should document how user messages arrive, how callbacks
+are authenticated, and how model/tool/web traffic is protected for that
+adapter. Regressions in those paths are Calciforge bugs when the upstream
+runtime gives us enough control to fix them. Generic command-line, generic ACP
+(Agent Client Protocol), and recipe adapters remain best-effort unless their
+recipe documents a tested boundary. In hardened profiles, prefer first-class
+adapters or explicitly verified recipes.
 
 ### Common fields
 
@@ -63,7 +70,8 @@ profiles, prefer first-class adapters or explicitly verified recipes.
 ### `kind = "openclaw-channel"`
 
 HTTP adapter for an OpenClaw gateway that has the Calciforge bridge plugin
-installed. The plugin package is still named `calciforge-channel` for
+installed. HTTP is the web protocol used for the request between the two
+services. The plugin package is still named `calciforge-channel` for
 compatibility, but Calciforge owns the user-facing channel. Calciforge POSTs
 each routed message to the plugin's
 `/calciforge/inbound` route, OpenClaw runs the selected agent lane with its own
@@ -79,8 +87,9 @@ Calciforge controls identity routing, channel access, callback authentication,
 and artifact delivery for this path. OpenClaw's outbound model/tool traffic is
 only covered by Calciforge's security layers when you configure the OpenClaw
 service to use a tested proxy/tool/policy integration; installing the channel
-plugin alone does not prove outbound egress enforcement. In managed MITM mode,
-prompt-injection response blocking is the default safety gate. Outbound
+plugin alone does not prove outbound egress enforcement. In managed
+inspecting-proxy mode, prompt-injection response blocking is the default safety
+gate. Outbound
 exfiltration heuristics and high-entropy response secret-leak detection are
 operator opt-ins because they can be noisy on provider/tool transcripts.
 
@@ -152,7 +161,7 @@ and the same reply token in `reply_auth_token_file`/`reply_auth_token`.
 ### `kind = "openai-compat"`
 
 Generic OpenAI-compatible HTTP endpoint (Ollama, LM Studio, Anthropic,
-Together, any endpoint that accepts `/v1/chat/completions`).
+Together, or any endpoint that accepts `/v1/chat/completions`).
 
 Required: `endpoint`. Recommended: `model`.
 
@@ -229,8 +238,9 @@ timeout_ms = 300000
 
 ### `kind = "cli"`
 
-Spawns a subprocess for each message. The command receives the message via
-the argument template: `{message}` in `args` is replaced at dispatch time.
+Spawns a command-line subprocess for each message. The command receives the
+message via the argument template: `{message}` in `args` is replaced at
+dispatch time.
 
 Required: `command`.
 
