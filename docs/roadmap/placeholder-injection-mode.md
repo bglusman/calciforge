@@ -90,6 +90,18 @@ single-token or whole-agent retirement is called. Live substitution
 should remain disabled until that owner can deterministically register
 and retire tokens.
 
+That boundary is explicit: `calciforge` currently owns agent config and
+adapter construction, while `security-proxy` owns the in-memory
+placeholder registry. `AgentConfig.env` is cloned into concrete
+subprocess adapters at adapter construction time, and installer-managed
+wrappers separately export `CALCIFORGE_AGENT_ID` for central secret
+helper calls. Do not hide placeholder generation inside an adapter
+constructor by making adapters reach into `SecurityProxy`; that would
+make lifecycle ownership and retirement ambiguous. The next
+implementation should either move the placeholder lifecycle API into a
+shared crate used by both sides, or add an explicit Calciforge-owned
+registration channel/client before adapter env maps are rewritten.
+
 ## What we'd build
 
 Per-agent state in security-proxy:
@@ -168,6 +180,12 @@ secret value.
 - **Multiple agents, same secret name.** Two agents both wanting
   `OPENAI_API_KEY` get different placeholders pointing to the same
   real value. Keeps per-agent isolation.
+- **Lifecycle boundary.** Calciforge-side code must own the decision to
+  generate and inject placeholder-backed env because it owns
+  `AgentConfig.env` and supervised process construction. Security-proxy
+  must own the authoritative token registry and value-substitution
+  policy. A shared lifecycle API or explicit registration client should
+  connect those two responsibilities.
 - **Combine with current {{secret:NAME}} mode.** Both can coexist —
   agents that know about Calciforge use the explicit syntax, agents
   that don't get placeholder injection. Recognizer scans for both
@@ -184,7 +202,8 @@ secret value.
 
 ~1 week for a working prototype:
 - 2 days: PlaceholderMap data structure + lifecycle hooks in security-proxy
-- 2 days: spawn integration in calciforge router (which agents get which placeholders)
+- 1 day: define shared lifecycle API or explicit registration client between Calciforge and security-proxy
+- 2 days: spawn integration in calciforge router/adapters (which agents get which placeholders)
 - 1 day: recognizer + substitution in proxy hot path
 - 1 day: tests + docs
 
