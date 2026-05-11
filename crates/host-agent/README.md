@@ -137,8 +137,8 @@ cargo build --release -p host-agent
 
 ```bash
 cd /root/projects/calciforge/crates/host-agent
-scp target/release/clash-host-agent root@10.0.0.80:/tmp/
-ssh root@10.0.0.80
+scp target/release/clash-host-agent root@host.example.invalid:/tmp/
+ssh root@host.example.invalid
 cd /tmp
 ./clash-host-agent --help
 
@@ -182,9 +182,9 @@ enabled = true
 bind = "127.0.0.1:19090"
 
 [[agent]]
-cn_pattern = "librarian*"
-agent_type = "librarian"
-unix_user = "librarian"
+cn_pattern = "calciforge-agent"
+agent_type = "generic"
+unix_user = "clash-agent"
 autonomy = "supervised"
 allowed_operations = ["zfs-list", "zfs-snapshot"]
 requires_approval_for = ["zfs-destroy"]
@@ -226,18 +226,18 @@ curl -k --cert client.pem -X POST \
   -d '{"dataset": "tank/media@old", "approval_token": null}' \
   https://host:18443/zfs/destroy
 
-# Response: {"pending_approval": true, "approval_id": "...", "message": "Reply CONFIRM X7K9****"}
+# Response: {"pending_approval": true, "approval_id": "...", "message": "Reply CONFIRM <code>"}
 
 # Confirm via API (or Signal webhook)
 curl -k --cert client.pem -X POST \
   -H "Content-Type: application/json" \
-  -d '{"approval_id": "...", "token": "X7K9M2P4Q8R5N6V3"}' \
+  -d '{"approval_id": "...", "token": "<approval-token>"}' \
   https://host:18443/approve
 
 # Execute with token
 curl -k --cert client.pem -X POST \
   -H "Content-Type: application/json" \
-  -d '{"dataset": "tank/media@old", "approval_token": "X7K9M2P4Q8R5N6V3"}' \
+  -d '{"dataset": "tank/media@old", "approval_token": "<approval-token>"}' \
   https://host:18443/zfs/destroy
 ```
 
@@ -279,16 +279,16 @@ cargo test -p host-agent
 ansible-playbook -i inventories/toy-vm.yml playbooks/host-agent-deploy.yml
 
 # Copy client cert locally
-scp root@10.0.0.80:/etc/clash/certs/librarian-bundle.pem ./
+scp root@host.example.invalid:/etc/clash/certs/client-bundle.pem ./
 
 # Test health
-curl -k --cert librarian-bundle.pem https://10.0.0.80:18443/health
+curl -k --cert client-bundle.pem https://host.example.invalid:18443/health
 
 # Test ZFS operations
-curl -k --cert librarian-bundle.pem -X POST \
+curl -k --cert client-bundle.pem -X POST \
   -H "Content-Type: application/json" \
   -d '{"dataset": "tank"}' \
-  https://10.0.0.80:18443/zfs/list
+  https://host.example.invalid:18443/zfs/list
 ```
 
 ## Architecture

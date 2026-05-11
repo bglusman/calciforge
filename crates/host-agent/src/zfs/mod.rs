@@ -217,7 +217,7 @@ async fn run_with_sudo_as_user(
     );
 
     // Run sudo -u <user> <cmd> to execute as the specific user
-    // This requires: clash-agent ALL=(librarian,lucien) NOPASSWD: /sbin/zfs
+    // This requires a sudoers rule for the Unix users that may run ZFS operations.
     let output = Command::new("sudo")
         .args([&["-u", &identity.username, cmd], args].concat())
         .output()
