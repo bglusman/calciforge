@@ -1,9 +1,12 @@
-//! GatewayBackend trait for abstracting different LLM gateway implementations.
+//! ProviderAdapter trait for model-provider boundaries.
 //!
-//! This module provides a unified interface for gateway engines. The shipped
-//! root gateway engines are builtin HTTP, Helicone, and Mock.
+//! Calciforge should not assume there is one installed "model gateway". It owns
+//! a policy/audit/auth boundary, then routes to one or more configured provider
+//! adapters such as builtin OpenAI-compatible HTTP, Helicone, LiteLLM,
+//! OpenRouter, Ollama, or mock test adapters.
 //!
-//! Each backend can be enabled via feature flags and selected via configuration.
+//! The older config field names still say `backend_type` for compatibility, but
+//! runtime code should treat these as adapter kinds.
 
 use async_trait::async_trait;
 use std::fmt::Debug;
@@ -16,8 +19,8 @@ use crate::proxy::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, MessageContent, Usage,
 };
 
-/// High-level capability flags used to compare builtin and external gateway
-/// engines without committing Calciforge to one implementation.
+/// High-level capability flags used to compare builtin and external provider
+/// adapters without committing Calciforge to one implementation.
 #[derive(Debug, Clone, Default, serde::Serialize, PartialEq, Eq)]
 pub struct GatewayCapabilities {
     pub openai_chat_completions: bool,
@@ -28,7 +31,7 @@ pub struct GatewayCapabilities {
     pub operator_ui: bool,
 }
 
-/// Operator-facing metadata for the active gateway engine.
+/// Operator-facing metadata for a provider adapter.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct GatewayEngineInfo {
     pub id: String,
@@ -37,15 +40,15 @@ pub struct GatewayEngineInfo {
     pub capabilities: GatewayCapabilities,
 }
 
-/// Configuration for a gateway backend
+/// Configuration for a provider adapter.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
-    /// Type of gateway backend
+    /// Type of provider adapter
     pub backend_type: GatewayType,
-    /// Base URL for the gateway (if applicable)
+    /// Base URL for the provider adapter (if applicable).
     #[allow(dead_code)]
     pub base_url: Option<String>,
-    /// API key for the gateway (if applicable)
+    /// API key used by Calciforge to authenticate to the provider adapter.
     #[allow(dead_code)]
     pub api_key: Option<String>,
     /// Timeout in seconds
@@ -59,10 +62,10 @@ pub struct GatewayConfig {
     #[allow(dead_code)]
     pub headers: Option<std::collections::HashMap<String, String>>,
 
-    /// Retry policy for each concrete gateway attempt.
+    /// Retry policy for each concrete adapter attempt.
     pub retry: GatewayRetryConfig,
 
-    /// Optional operator UI or dashboard URL for this gateway engine.
+    /// Optional operator UI or dashboard URL for this provider adapter.
     pub ui_url: Option<String>,
 }
 
@@ -81,14 +84,14 @@ impl Default for GatewayConfig {
     }
 }
 
-/// Type of gateway backend
+/// Type of provider adapter
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayType {
-    /// Helicone AI Gateway (HTTP-based)
+    /// Helicone AI Gateway (HTTP-based).
     Helicone,
     /// Calciforge's minimal builtin OpenAI-compatible HTTP upstream adapter.
     BuiltinHttp,
-    /// Mock gateway for testing
+    /// Mock adapter for tests only.
     Mock,
 }
 
@@ -120,7 +123,7 @@ impl GatewayType {
         match self {
             GatewayType::Helicone => "Helicone AI Gateway",
             GatewayType::BuiltinHttp => "Calciforge builtin HTTP upstream adapter",
-            GatewayType::Mock => "Mock gateway",
+            GatewayType::Mock => "Mock provider adapter",
         }
     }
 
@@ -165,11 +168,11 @@ impl GatewayConfig {
     }
 }
 
-/// Main trait for gateway backends
+/// Main trait for provider adapters
 #[async_trait]
 #[allow(dead_code)]
-pub trait GatewayBackend: Send + Sync + Debug {
-    /// Get the type of this gateway
+pub trait ProviderAdapter: Send + Sync + Debug {
+    /// Get the type of this provider adapter.
     fn gateway_type(&self) -> GatewayType;
 
     /// Make a chat completion request
@@ -181,21 +184,20 @@ pub trait GatewayBackend: Send + Sync + Debug {
     /// List available models
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError>;
 
-    /// Get gateway configuration
+    /// Get provider adapter configuration.
     fn config(&self) -> &GatewayConfig;
 
-    /// Return operator-facing engine metadata. External gateway spikes should
-    /// make this accurate before becoming supported options.
+    /// Return operator-facing adapter metadata.
     fn engine_info(&self) -> GatewayEngineInfo {
         self.config().engine_info(self.gateway_type())
     }
 }
 
-/// Create a gateway backend from configuration
+/// Create a provider adapter from configuration
 pub fn create_gateway(
     config: GatewayConfig,
     backend: Option<Arc<dyn SecretsBackend>>,
-) -> Result<Arc<dyn GatewayBackend>, BackendError> {
+) -> Result<Arc<dyn ProviderAdapter>, BackendError> {
     match config.backend_type {
         #[cfg(feature = "helicone")]
         GatewayType::Helicone => {
@@ -271,7 +273,7 @@ pub struct HeliconeGateway {
 
 #[cfg(feature = "helicone")]
 #[async_trait]
-impl GatewayBackend for HeliconeGateway {
+impl ProviderAdapter for HeliconeGateway {
     fn gateway_type(&self) -> GatewayType {
         GatewayType::Helicone
     }
@@ -301,17 +303,17 @@ impl GatewayBackend for HeliconeGateway {
 #[allow(dead_code)]
 pub struct LoggingGateway {
     config: GatewayConfig,
-    inner: Arc<dyn GatewayBackend>,
+    inner: Arc<dyn ProviderAdapter>,
 }
 
 impl LoggingGateway {
-    pub fn new(config: GatewayConfig, inner: Arc<dyn GatewayBackend>) -> Self {
+    pub fn new(config: GatewayConfig, inner: Arc<dyn ProviderAdapter>) -> Self {
         Self { config, inner }
     }
 }
 
 #[async_trait]
-impl GatewayBackend for LoggingGateway {
+impl ProviderAdapter for LoggingGateway {
     fn gateway_type(&self) -> GatewayType {
         self.inner.gateway_type()
     }
@@ -470,7 +472,7 @@ fn should_retry_locally(
     attempt: u32,
 ) -> bool {
     if gateway_type == GatewayType::Helicone {
-        // Helicone retry policy is passed to the gateway engine as request
+        // Helicone retry policy is passed to the provider adapter as request
         // headers. Retrying again here would multiply attempts and costs.
         return false;
     }
@@ -520,7 +522,7 @@ impl BuiltinHttpGateway {
 }
 
 #[async_trait]
-impl GatewayBackend for BuiltinHttpGateway {
+impl ProviderAdapter for BuiltinHttpGateway {
     fn gateway_type(&self) -> GatewayType {
         GatewayType::BuiltinHttp
     }
@@ -557,7 +559,7 @@ impl MockGateway {
 }
 
 #[async_trait]
-impl GatewayBackend for MockGateway {
+impl ProviderAdapter for MockGateway {
     fn gateway_type(&self) -> GatewayType {
         GatewayType::Mock
     }

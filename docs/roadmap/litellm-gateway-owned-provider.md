@@ -10,7 +10,7 @@ Status: recipe/proof path.
 Calciforge does not need a LiteLLM-specific adapter to exercise the external
 gateway contract. LiteLLM's proxy is an OpenAI-compatible gateway process, so
 Calciforge can route to it with the existing builtin HTTP transport and mark
-the custody boundary with `credential_owner = "gateway"`. In this recipe,
+the custody boundary with `model_credential_owner = "provider"`. In this recipe,
 `backend_type = "http"` is only the transport from Calciforge to LiteLLM; it is
 not a raw upstream-provider route.
 
@@ -55,7 +55,7 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 ```
 
-The `model_name` values are the gateway-owned selectors Calciforge should send
+The `model_name` values are the provider-owned selectors Calciforge should send
 after any Calciforge prefix rewrite. The `litellm_params.model` values and
 provider API keys remain inside LiteLLM.
 
@@ -86,7 +86,7 @@ timeout_seconds = 60
 id = "litellm-managed"
 backend_type = "http"
 url = "http://127.0.0.1:4000/v1"
-credential_owner = "gateway"
+model_credential_owner = "provider"
 api_key_file = "/etc/calciforge/secrets/litellm-virtual-key"
 models = ["managed/*"]
 strip_model_prefix = "managed/"
@@ -127,7 +127,7 @@ dashboard. The likely split is:
   observability, and debugging provider traffic.
 
 LiteLLM can also log to observability callbacks, including Helicone, but this
-recipe treats LiteLLM as the gateway-owned model/key/routing process. If an
+recipe treats LiteLLM as the provider-owned model/key/routing process. If an
 operator wants Helicone-grade request observability, use Helicone directly or
 wire LiteLLM's logging callbacks as a separate observability concern.
 
@@ -154,8 +154,8 @@ mode, then sends a request to Calciforge for `managed/default`.
 It proves:
 
 - Calciforge routes a namespaced model selector through its builtin HTTP
-  transport to an external gateway-owned endpoint.
-- `credential_owner = "gateway"` can be used without a Helicone adapter.
+  transport to an external provider-owned endpoint.
+- `model_credential_owner = "provider"` can be used without a Helicone adapter.
 - Calciforge authenticates to LiteLLM with a gateway key, while LiteLLM holds
   the upstream provider key and upstream model mapping.
 - Calciforge-visible `managed/default` is not the upstream provider model.
@@ -174,12 +174,12 @@ deployment.
   model access, aliases, retries, load balancing, and fallbacks live in the
   external process.
 - model-gateway-rs is a Rust library for model gateway abstractions, not
-  primarily an external OpenAI-compatible gateway process. It may be useful for
+  primarily a provider-owned OpenAI-compatible boundary process. It may be useful for
   future Rust-side experiments, but it is weaker evidence for process-boundary
   key custody.
 - Noveum ai-gateway is a Rust OpenAI-compatible gateway candidate, but its
   public examples pass provider choice and provider credentials in request
-  headers. That is less aligned with gateway-owned upstream keys unless a
+  headers. That is less aligned with provider-owned upstream keys unless a
   deployment recipe moves those credentials behind the gateway.
 - AISIX/APISIX AI Gateway is interesting for broader API gateway governance,
   per-key model access, moderation, PII redaction, and audit logging. It looks
@@ -187,7 +187,7 @@ deployment.
 - agentgateway is broader than a model proxy: LLM gateway, MCP gateway, A2A,
   RBAC, policy, telemetry, and Kubernetes/service-mesh integration. It is a
   plausible future adapter/recipe, but LiteLLM is the more direct low-friction
-  proof for gateway-owned model and key registries.
+  proof for provider-owned model and key registries.
 
 Sources checked during this spike:
 

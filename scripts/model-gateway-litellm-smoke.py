@@ -4,7 +4,7 @@
 This starts a deterministic mock OpenAI-compatible upstream, starts a LiteLLM
 proxy that owns the upstream model/key mapping, then starts Calciforge with a
 builtin HTTP transport pointed at LiteLLM and marked
-`credential_owner = "gateway"`. That distinction matters: the HTTP adapter is
+`model_credential_owner = "provider"`. That distinction matters: the HTTP adapter is
 only Calciforge's transport to the external gateway process, not a raw upstream
 provider route.
 
@@ -248,7 +248,7 @@ timeout_seconds = 20
 id = "litellm-local"
 backend_type = "http"
 url = "http://127.0.0.1:{litellm_port}/v1"
-credential_owner = "gateway"
+model_credential_owner = "provider"
 api_key = "{LITELLM_GATEWAY_KEY}"
 models = ["managed/*"]
 strip_model_prefix = "managed/"

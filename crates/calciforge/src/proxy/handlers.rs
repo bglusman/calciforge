@@ -203,7 +203,7 @@ fn model_plan_error_response(error: &str) -> (&'static str, Option<&'static str>
     }
 }
 
-/// Return operator-facing metadata for the active gateway engine.
+/// Return operator-facing metadata for the active provider adapter.
 pub async fn gateway_info(State(state): State<ProxyState>) -> Response {
     Json(state.gateway.engine_info()).into_response()
 }
@@ -275,11 +275,16 @@ async fn try_provider(
     model: &str,
     req: &ChatCompletionRequest,
 ) -> Result<ChatCompletionResponse, BackendError> {
-    // Check named providers first; fall back to default gateway.
+    // Check named providers first; fall back to default provider adapter.
     let provider = routing::find_provider(&state.providers, model);
     let gateway = provider
         .map(|entry| &entry.gateway)
         .unwrap_or(&state.gateway);
+    if provider.is_none() && root_mock_is_non_serving_fallback(state) {
+        return Err(BackendError::ConfigError(format!(
+            "model '{model}' did not match any explicit provider adapter; root mock adapter is non-serving"
+        )));
+    }
     let mut gateway_req = req.clone();
     gateway_req.model = provider
         .map(|entry| entry.upstream_model_name(model))
@@ -293,6 +298,10 @@ async fn try_provider(
     }
 
     gateway.chat_completion(gateway_req).await
+}
+
+fn root_mock_is_non_serving_fallback(state: &ProxyState) -> bool {
+    state.config.backend_type == "mock" && !state.providers.is_empty()
 }
 
 fn fallback_policy_for_model(
@@ -779,54 +788,57 @@ pub async fn list_models(State(state): State<ProxyState>, headers: HeaderMap) ->
         }
     }
 
-    // Try to get models from gateway
-    match state.gateway.list_models().await {
-        Ok(gateway_models) => {
-            for model_info in gateway_models {
-                push_model(
-                    &mut models,
-                    ModelInfo {
-                        id: model_info.id,
-                        object: "model".to_string(),
-                        created: now,
-                        owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
-                    },
-                );
+    // Try to get models from the root adapter unless the configured root is a
+    // deliberate non-serving mock fallback behind explicit providers.
+    if !root_mock_is_non_serving_fallback(&state) {
+        match state.gateway.list_models().await {
+            Ok(gateway_models) => {
+                for model_info in gateway_models {
+                    push_model(
+                        &mut models,
+                        ModelInfo {
+                            id: model_info.id,
+                            object: "model".to_string(),
+                            created: now,
+                            owned_by: model_info.provider.unwrap_or_else(|| "unknown".to_string()),
+                        },
+                    );
+                }
             }
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to get models from gateway, using fallback");
-            // Fallback to hardcoded models
-            models.push(ModelInfo {
-                id: "gpt-4".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "openai".to_string(),
-            });
-            models.push(ModelInfo {
-                id: "claude-3-5-sonnet".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "anthropic".to_string(),
-            });
-            models.push(ModelInfo {
-                id: "deepseek-chat".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "deepseek".to_string(),
-            });
-            models.push(ModelInfo {
-                id: "kimi-free".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "kimi".to_string(),
-            });
-            models.push(ModelInfo {
-                id: "kimi/kimi-for-coding".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "kimi".to_string(),
-            });
+            Err(e) => {
+                warn!(error = %e, "Failed to get models from gateway, using fallback");
+                // Fallback to hardcoded models
+                models.push(ModelInfo {
+                    id: "gpt-4".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "openai".to_string(),
+                });
+                models.push(ModelInfo {
+                    id: "claude-3-5-sonnet".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "anthropic".to_string(),
+                });
+                models.push(ModelInfo {
+                    id: "deepseek-chat".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "deepseek".to_string(),
+                });
+                models.push(ModelInfo {
+                    id: "kimi-free".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "kimi".to_string(),
+                });
+                models.push(ModelInfo {
+                    id: "kimi/kimi-for-coding".to_string(),
+                    object: "model".to_string(),
+                    created: now,
+                    owned_by: "kimi".to_string(),
+                });
+            }
         }
     }
 
@@ -1064,7 +1076,7 @@ mod tests {
     use crate::providers::alloy::AlloyManager;
     use crate::proxy::ProxyState;
     use crate::proxy::backend::{BackendError, ModelInfo as BackendModelInfo};
-    use crate::proxy::gateway::{GatewayBackend, GatewayConfig, GatewayType};
+    use crate::proxy::gateway::{GatewayConfig, GatewayType, ProviderAdapter};
     use crate::proxy::openai::{ChatCompletionResponse, Choice, Usage};
     use crate::sync::Arc;
     use async_trait::async_trait;
@@ -1126,7 +1138,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl GatewayBackend for RecordingGateway {
+    impl ProviderAdapter for RecordingGateway {
         fn gateway_type(&self) -> GatewayType {
             GatewayType::BuiltinHttp
         }
@@ -1177,7 +1189,12 @@ mod tests {
         }
 
         async fn list_models(&self) -> Result<Vec<BackendModelInfo>, BackendError> {
-            Ok(Vec::new())
+            Ok(vec![BackendModelInfo {
+                id: "root-only-model".to_string(),
+                name: Some("Root Only Model".to_string()),
+                provider: Some("root".to_string()),
+                capabilities: vec!["chat".to_string()],
+            }])
         }
 
         fn config(&self) -> &GatewayConfig {
@@ -1199,7 +1216,7 @@ mod tests {
         }
     }
 
-    fn gateway_state(gateway: Arc<dyn GatewayBackend>, config: ProxyConfig) -> ProxyState {
+    fn gateway_state(gateway: Arc<dyn ProviderAdapter>, config: ProxyConfig) -> ProxyState {
         ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1342,7 +1359,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "empty global fallback policy should make retryable failures fatal on the default gateway"
+            "empty global fallback policy should make retryable failures fatal on the default provider adapter"
         );
         assert_eq!(recording_gateway.recorded_models(), vec!["unavailable"]);
     }
@@ -1464,7 +1481,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1522,7 +1539,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1571,8 +1588,8 @@ mod tests {
 
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let default_gateway_dyn: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let default_gateway_dyn: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1628,8 +1645,8 @@ mod tests {
     async fn provider_route_can_strip_public_model_prefix_before_upstream_request() {
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1674,7 +1691,7 @@ mod tests {
         );
         assert!(
             default_gateway.recorded_models().is_empty(),
-            "provider route should not fall through to default gateway"
+            "provider route should not fall through to default provider adapter"
         );
     }
 
@@ -1682,8 +1699,8 @@ mod tests {
     async fn provider_route_merges_configured_request_body_fields() {
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1745,8 +1762,8 @@ mod tests {
         );
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1798,8 +1815,8 @@ mod tests {
     async fn provider_route_blocks_gateway_request_when_on_switch_fails() {
         let default_gateway = Arc::new(RecordingGateway::new());
         let provider_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = default_gateway.clone();
-        let provider_gateway_dyn: Arc<dyn GatewayBackend> = provider_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1870,7 +1887,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1938,7 +1955,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -1996,7 +2013,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2067,7 +2084,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2137,7 +2154,7 @@ mod tests {
         .unwrap();
 
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
         let state = ProxyState {
             alloy_manager: Arc::new(alloy_manager),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2175,7 +2192,7 @@ mod tests {
     #[tokio::test]
     async fn list_models_includes_model_shortcut_aliases() {
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway;
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2215,8 +2232,8 @@ mod tests {
     #[tokio::test]
     async fn list_models_includes_exact_configured_provider_models() {
         let recording_gateway = Arc::new(RecordingGateway::new());
-        let gateway: Arc<dyn GatewayBackend> = recording_gateway.clone();
-        let provider_gateway: Arc<dyn GatewayBackend> = recording_gateway;
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
+        let provider_gateway: Arc<dyn ProviderAdapter> = recording_gateway;
         let state = ProxyState {
             alloy_manager: Arc::new(AlloyManager::empty()),
             provider_registry: Arc::new(ProviderRegistry::new()),
@@ -2266,6 +2283,104 @@ mod tests {
         assert!(
             !model_ids.contains(&"codex/*") && !model_ids.contains(&"*"),
             "wildcard provider patterns are route patterns, not selectable model IDs: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_root_does_not_serve_unmatched_models_when_providers_exist() {
+        let default_gateway = Arc::new(RecordingGateway::new());
+        let provider_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn ProviderAdapter> = default_gateway.clone();
+        let provider_gateway_dyn: Arc<dyn ProviderAdapter> = provider_gateway;
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "mock".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "explicit".to_string(),
+                patterns: vec!["managed/*".to_string()],
+                gateway: provider_gateway_dyn,
+                on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
+                strip_model_prefix: None,
+                add_model_prefix: None,
+                fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let response = chat_completions(
+            State(state),
+            HeaderMap::new(),
+            Json(request_for_model("gpt-4")),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            default_gateway.recorded_models().is_empty(),
+            "unmatched requests must not fall through to mock root"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_models_skips_non_serving_mock_root_when_providers_exist() {
+        let recording_gateway = Arc::new(RecordingGateway::new());
+        let gateway: Arc<dyn ProviderAdapter> = recording_gateway.clone();
+        let provider_gateway: Arc<dyn ProviderAdapter> = recording_gateway;
+        let state = ProxyState {
+            alloy_manager: Arc::new(AlloyManager::empty()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
+            config: ProxyConfig {
+                backend_type: "mock".to_string(),
+                ..Default::default()
+            },
+            model_shortcuts: Vec::new(),
+            gateway,
+            providers: vec![routing::ProviderEntry {
+                id: "subscription".to_string(),
+                patterns: vec!["managed/default".to_string()],
+                gateway: provider_gateway,
+                on_switch: None,
+                switch_state: Arc::new(routing::ProviderSwitchState::default()),
+                strip_model_prefix: None,
+                add_model_prefix: None,
+                fallback_on: ProxyConfig::default().fallback_on,
+                request_body: serde_json::Map::new(),
+            }],
+            local_manager: None,
+            voice: None,
+        };
+
+        let response = list_models(State(state), HeaderMap::new())
+            .await
+            .into_response();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        let model_ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["id"].as_str())
+            .collect();
+        assert!(
+            model_ids.contains(&"managed/default"),
+            "exact provider model should still be listed: {body}"
+        );
+        assert!(
+            !model_ids.contains(&"root-only-model"),
+            "non-serving mock root models must not be advertised: {body}"
         );
     }
 }

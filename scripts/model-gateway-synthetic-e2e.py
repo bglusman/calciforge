@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -74,7 +75,62 @@ def http_json(
         return exc.code, json.loads(data.decode("utf-8")) if data else {}
 
 
-def write_config(tmp: Path, port: int) -> Path:
+class MockOpenAIHandler(BaseHTTPRequestHandler):
+    """Small OpenAI-compatible upstream for explicit provider-route E2E tests."""
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+    def do_GET(self) -> None:
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status":"healthy"}')
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.end_headers()
+            return
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        model = payload.get("model", "unknown")
+        body = {
+            "id": "chatcmpl-synthetic-e2e",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"mock response for {model}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        data = json.dumps(body).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def start_mock_upstream(port: int) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", port), MockOpenAIHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def write_config(tmp: Path, port: int, upstream_port: int) -> Path:
     config = f"""
 [calciforge]
 version = 2
@@ -82,8 +138,24 @@ version = 2
 [proxy]
 enabled = true
 bind = "127.0.0.1:{port}"
-backend_type = "mock"
+backend_type = "http"
+backend_url = "http://127.0.0.1:{upstream_port}/v1"
 timeout_seconds = 30
+
+[[proxy.providers]]
+id = "synthetic-openai"
+backend_type = "http"
+url = "http://127.0.0.1:{upstream_port}/v1"
+model_credential_owner = "provider"
+models = ["gpt-4", "claude-3-5-sonnet"]
+
+[[proxy.providers]]
+id = "synthetic-kimi"
+backend_type = "http"
+url = "http://127.0.0.1:{upstream_port}/v1"
+model_credential_owner = "provider"
+models = ["kimi-free"]
+add_model_prefix = "kimi/"
 
 [proxy.token_estimator]
 strategy = "char_ratio"
@@ -295,11 +367,13 @@ def main() -> int:
     args = parser.parse_args()
 
     port = args.port or find_free_port()
+    upstream_port = find_free_port()
     base_url = f"http://127.0.0.1:{port}"
+    upstream = start_mock_upstream(upstream_port)
 
     with tempfile.TemporaryDirectory(prefix="calciforge-synthetic-e2e-") as tmp_raw:
         tmp = Path(tmp_raw)
-        config_path = write_config(tmp, port)
+        config_path = write_config(tmp, port, upstream_port)
         command = calciforge_command(config_path)
         if command and command[0] == "cargo" and shutil.which("cargo") is None:
             raise RuntimeError("cargo or CALCIFORGE_BIN is required")
@@ -311,6 +385,8 @@ def main() -> int:
         finally:
             if proc is not None:
                 stop_process(proc)
+            upstream.shutdown()
+            upstream.server_close()
 
     print("model gateway synthetic E2E passed")
     return 0
