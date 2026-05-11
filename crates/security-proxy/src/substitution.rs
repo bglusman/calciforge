@@ -149,6 +149,24 @@ impl PlaceholderMap {
     }
 }
 
+/// Generate an opaque placeholder token for a validated secret name.
+///
+/// The embedded secret name is only a diagnostic hint. Runtime substitution
+/// must still resolve the full token through [`PlaceholderMap`] before loading
+/// any secret value.
+pub fn generate_placeholder_token(secret_name: &str) -> Result<String, PlaceholderMapError> {
+    if let Err(error) = validate_name(secret_name) {
+        return Err(PlaceholderMapError::InvalidSecretName(error.to_string()));
+    }
+
+    Ok(format!(
+        "{}{}_{}",
+        PLACEHOLDER_PREFIX,
+        secret_name,
+        uuid::Uuid::new_v4().as_simple()
+    ))
+}
+
 /// Parse `input` and return the set of unique reference names it
 /// contains. Caller typically resolves these (possibly in parallel)
 /// before calling [`substitute`].
@@ -461,6 +479,33 @@ mod tests {
     fn placeholder_name_hint_accepts_valid_shape() {
         let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
         assert_eq!(placeholder_name_hint(token), Some("OPENAI_KEY"));
+    }
+
+    /// Given a valid secret name,
+    /// when generate_placeholder_token is called,
+    /// then it returns a syntactically valid opaque token with the secret
+    /// name only as a diagnostic hint.
+    #[test]
+    fn generate_placeholder_token_returns_valid_opaque_token() {
+        let token = generate_placeholder_token("OPENAI_API_KEY").unwrap();
+
+        assert_eq!(placeholder_name_hint(&token), Some("OPENAI_API_KEY"));
+        assert!(find_placeholder_tokens(&token).contains(&token));
+        assert_eq!(
+            token.rsplit_once('_').map(|(_, suffix)| suffix.len()),
+            Some(PLACEHOLDER_RANDOM_HEX_LEN)
+        );
+    }
+
+    /// Given an invalid secret name,
+    /// when generate_placeholder_token is called,
+    /// then it fails before creating a token that cannot be registered.
+    #[test]
+    fn generate_placeholder_token_rejects_invalid_secret_name() {
+        assert!(matches!(
+            generate_placeholder_token("OPENAI.API.KEY"),
+            Err(PlaceholderMapError::InvalidSecretName(_))
+        ));
     }
 
     /// Given cfg-prefixed strings that do not match the generated
