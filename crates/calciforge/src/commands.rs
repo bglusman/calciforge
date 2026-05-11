@@ -72,9 +72,9 @@ fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<String> {
         .map(|model| model.id)
         .chain(
             config
-                .model_shortcuts
-                .iter()
-                .map(|shortcut| shortcut.alias.clone()),
+                .effective_model_shortcuts()
+                .into_iter()
+                .map(|shortcut| shortcut.alias),
         )
         .collect()
 }
@@ -499,12 +499,17 @@ impl CommandHandler {
     /// Return model choices that can be activated with `!model use <id>`.
     pub fn activatable_model_choices(&self) -> Vec<(String, String)> {
         let mut choices = Vec::new();
-        choices.extend(self.config.model_shortcuts.iter().map(|shortcut| {
-            (
-                shortcut.alias.clone(),
-                format!("{} → {}", shortcut.alias, shortcut.model),
-            )
-        }));
+        choices.extend(
+            self.config
+                .effective_model_shortcuts()
+                .iter()
+                .map(|shortcut| {
+                    (
+                        shortcut.alias.clone(),
+                        format!("{} → {}", shortcut.alias, shortcut.model),
+                    )
+                }),
+        );
         if let Some(manager) = self.alloy_manager.as_ref() {
             choices.extend(
                 manager
@@ -1961,11 +1966,12 @@ impl CommandHandler {
         if list_requested {
             // No argument — list all shortcuts and alloys
             let mut lines = vec![];
+            let effective_shortcuts = self.config.effective_model_shortcuts();
 
-            // Model shortcuts section
-            if !self.config.model_shortcuts.is_empty() {
-                lines.push("Model shortcuts:".to_string());
-                for shortcut in &self.config.model_shortcuts {
+            // Model selector aliases include explicit shortcuts plus model roles.
+            if !effective_shortcuts.is_empty() {
+                lines.push("Model selector aliases:".to_string());
+                for shortcut in &effective_shortcuts {
                     lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
                 }
             }
@@ -2087,8 +2093,9 @@ impl CommandHandler {
         }
 
         let requested_model_id = args[0];
+        let effective_shortcuts = self.config.effective_model_shortcuts();
         let resolved_model_id = match crate::model_names::resolve_model_alias_chain(
-            &self.config.model_shortcuts,
+            &effective_shortcuts,
             requested_model_id,
         ) {
             Ok(model_id) => model_id,
@@ -2231,11 +2238,8 @@ impl CommandHandler {
 
         // 4. Unknown model — show what's available.
         let mut available = vec![];
-        for shortcut in &self.config.model_shortcuts {
-            available.push(format!(
-                "  {} → {} (shortcut)",
-                shortcut.alias, shortcut.model
-            ));
+        for shortcut in &effective_shortcuts {
+            available.push(format!("  {} → {} (alias)", shortcut.alias, shortcut.model));
         }
         if let Some(ref mgr) = self.alloy_manager {
             for a in mgr.list() {
@@ -2669,7 +2673,7 @@ mod tests {
     use crate::config::{
         AgentConfig, AgentRegistry, AlloyConfig, AlloyConstituentConfig, CalciforgeConfig,
         CalciforgeHeader, CascadeConfig, ChannelAlias, ChannelConfig, DispatcherConfig, Identity,
-        ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
+        ModelRoleConfig, ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
 
@@ -2899,6 +2903,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
@@ -3545,6 +3550,41 @@ mod tests {
     }
 
     #[test]
+    fn model_role_alias_lists_and_activates_synthetic_target() {
+        let mut config = make_config();
+        config.model_roles.push(ModelRoleConfig {
+            role: "security.screening".to_string(),
+            model: "dispatcher-test".to_string(),
+            description: Some("security scan role".to_string()),
+        });
+        let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
+        let h = CommandHandler::with_state_dir(Arc::new(config), tmp.path().to_path_buf())
+            .with_alloy_manager(synthetic_manager());
+        h.handle_switch("!switch gateway", "brian");
+
+        let choices = h.activatable_model_choices();
+        assert!(
+            choices
+                .iter()
+                .any(|(id, label)| id == "security.screening" && label.contains("dispatcher-test")),
+            "model role should be listed as an activatable model choice: {choices:?}"
+        );
+        let list = h.handle("!model list").unwrap();
+        assert!(
+            list.contains("security.screening → dispatcher-test"),
+            "model role should appear in !model list: {list}"
+        );
+
+        let reply = h.handle_model("!model security.screening", "brian");
+        assert!(reply.contains("Activated dispatcher"), "{reply}");
+        assert!(reply.contains("via alias 'security.screening'"), "{reply}");
+        assert_eq!(
+            h.active_model_for_identity("brian").as_deref(),
+            Some("dispatcher-test")
+        );
+    }
+
+    #[test]
     fn model_shortcut_alias_chain_activates_synthetic_target() {
         let mut config = make_config();
         config.model_shortcuts.push(ModelShortcutConfig {
@@ -3780,6 +3820,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],

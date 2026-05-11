@@ -6,16 +6,17 @@ contract that adversary-detector uses for remote checks and calls an
 OpenAI-compatible chat-completions endpoint for borderline policy decisions.
 
 Environment:
-  REMOTE_SCANNER_API_KEY      API key for the model provider.
-  REMOTE_SCANNER_API_KEY_FILE File containing the model provider API key.
-  REMOTE_SCANNER_API_BASE     Base URL, default https://api.openai.com/v1.
-  REMOTE_SCANNER_MODEL        Model name, default gpt-5.4-mini.
+  REMOTE_SCANNER_API_KEY      API key for the Calciforge model boundary.
+  REMOTE_SCANNER_API_KEY_FILE File containing the Calciforge model boundary key.
+  REMOTE_SCANNER_API_BASE     Base URL, default http://127.0.0.1:18083/v1.
+  REMOTE_SCANNER_MODEL        Model selector, default adversary/default.
   REMOTE_SCANNER_PROMPT       Inline classifier prompt override.
   REMOTE_SCANNER_PROMPT_FILE  File containing classifier prompt override.
   REMOTE_SCANNER_PORT         Listen port, default 9801.
 
 Run:
-  REMOTE_SCANNER_API_KEY=... ./scripts/remote-llm-scanner.py
+  REMOTE_SCANNER_API_KEY_FILE=~/.config/calciforge/secrets/model-gateway-client-key \
+    ./scripts/remote-llm-scanner.py
 """
 
 from __future__ import annotations
@@ -111,8 +112,8 @@ def classify(content: str, url: str, context: str) -> dict[str, str]:
     if not api_key:
         return {"verdict": "unsafe", "reason": "remote scanner API key is not configured"}
 
-    base = os.environ.get("REMOTE_SCANNER_API_BASE", "https://api.openai.com/v1").rstrip("/")
-    model = os.environ.get("REMOTE_SCANNER_MODEL", "gpt-5.4-mini")
+    base = os.environ.get("REMOTE_SCANNER_API_BASE", "http://127.0.0.1:18083/v1").rstrip("/")
+    model = os.environ.get("REMOTE_SCANNER_MODEL", "adversary/default")
     endpoint = f"{base}/chat/completions"
     user_prompt = json.dumps(
         {"url": url, "context": context, "content": content},

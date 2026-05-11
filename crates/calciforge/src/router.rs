@@ -365,6 +365,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             security: None,
             proxy: None,
             local_models: None,

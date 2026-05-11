@@ -824,17 +824,13 @@ fn report_model_gateway_provider_boundaries(
             continue;
         }
 
-        match provider.credential_owner {
-            crate::config::CredentialOwner::Gateway => report.ok(format!(
-                "provider '{}' uses builtin HTTP transport to an external gateway-owned endpoint",
+        match provider.model_credential_owner {
+            crate::config::CredentialOwner::Provider => report.ok(format!(
+                "provider '{}' uses builtin HTTP transport to a provider-owned endpoint",
                 provider.id
             )),
             crate::config::CredentialOwner::Calciforge => report.warn(format!(
-                "provider '{}' uses Calciforge builtin HTTP upstream adapter; this route is not handled by an external gateway engine dashboard or provider registry",
-                provider.id
-            )),
-            crate::config::CredentialOwner::None => report.ok(format!(
-                "provider '{}' uses unauthenticated builtin HTTP transport",
+                "provider '{}' uses Calciforge-owned builtin HTTP upstream credentials; this route is not handled by an external provider dashboard or registry",
                 provider.id
             )),
         }
@@ -860,7 +856,8 @@ fn check_model_gateway_route_graph(
             return;
         }
     };
-    let resolver = ModelResolver::new(&config.model_shortcuts, &alloy_manager);
+    let effective_shortcuts = config.effective_model_shortcuts();
+    let resolver = ModelResolver::new(&effective_shortcuts, &alloy_manager);
     let mut selectors: Vec<_> = gateway_model_selector_ids(config).into_iter().collect();
     selectors.sort();
 
@@ -957,7 +954,7 @@ fn agent_security_proxy_coverage(agent: &AgentConfig, proxy_bind: Option<&str>) 
         Some(AgentKind::OpenAiCompat)
             if proxy_bind.is_some_and(|bind| endpoint_matches_bind(&agent.endpoint, bind)) =>
         {
-            "gateway-owned provider path; not ambient MITM"
+            "Calciforge model-boundary path; not ambient MITM"
         }
         Some(kind) if kind.is_subprocess_agent() => {
             if has_complete_agent_proxy_env(agent) {
@@ -2038,9 +2035,9 @@ fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<String> {
         .map(|model| model.id)
         .chain(
             config
-                .model_shortcuts
-                .iter()
-                .map(|shortcut| shortcut.alias.clone()),
+                .effective_model_shortcuts()
+                .into_iter()
+                .map(|shortcut| shortcut.alias),
         )
         .collect()
 }
@@ -2051,8 +2048,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use crate::config::{
-        CalciforgeHeader, ProxyConfig, ProxyModelRoute, ProxyProviderConfig, RoutingRule,
-        SecuritySectionConfig, SyntheticModelConfig,
+        CalciforgeHeader, ModelRoleConfig, ProxyConfig, ProxyModelRoute, ProxyProviderConfig,
+        RoutingRule, SecuritySectionConfig, SyntheticModelConfig,
     };
 
     fn base_config() -> CalciforgeConfig {
@@ -2101,6 +2098,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             alloys: vec![],
             cascades: vec![],
             exec_models: vec![],
@@ -2444,12 +2442,11 @@ mod tests {
     #[test]
     fn validates_persisted_active_state_against_config() {
         let mut config = base_config();
-        config
-            .model_shortcuts
-            .push(crate::config::ModelShortcutConfig {
-                alias: "balanced".to_string(),
-                model: "local-kimi-gpt55".to_string(),
-            });
+        config.model_roles.push(ModelRoleConfig {
+            role: "balanced".to_string(),
+            model: "local-kimi-gpt55".to_string(),
+            description: None,
+        });
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path()).unwrap();
         std::fs::write(
@@ -3086,10 +3083,12 @@ mod tests {
         assert!(report.findings.iter().any(|finding| {
             finding.severity == Severity::Warn
                 && finding.message.contains("provider 'opencode-go'")
-                && finding.message.contains("builtin HTTP upstream adapter")
                 && finding
                     .message
-                    .contains("not handled by an external gateway engine")
+                    .contains("Calciforge-owned builtin HTTP upstream credentials")
+                && finding
+                    .message
+                    .contains("not handled by an external provider dashboard or registry")
         }));
     }
 

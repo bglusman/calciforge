@@ -468,12 +468,13 @@ They return:
 ```
 
 `scripts/remote-llm-scanner.py` is a built-in example. It exposes `/scan` and
-uses an OpenAI-compatible model with a strict security-classifier prompt:
+uses the local Calciforge model boundary by default with a strict
+security-classifier prompt:
 
 ```sh
-REMOTE_SCANNER_API_KEY=... \
-REMOTE_SCANNER_API_BASE=https://api.openai.com/v1 \
-REMOTE_SCANNER_MODEL=gpt-5.4-mini \
+REMOTE_SCANNER_API_KEY_FILE=~/.config/calciforge/secrets/model-gateway-client-key \
+REMOTE_SCANNER_API_BASE=http://127.0.0.1:18083/v1 \
+REMOTE_SCANNER_MODEL=adversary/default \
 REMOTE_SCANNER_PROMPT_FILE=./scripts/remote-llm-scanner-prompt.txt \
 ./scripts/remote-llm-scanner.py
 ```

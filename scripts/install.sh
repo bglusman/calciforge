@@ -71,10 +71,11 @@ fi
 CALCIFORGE_HERMES_INSTALL_DIR="${CALCIFORGE_HERMES_INSTALL_DIR:-$_HERMES_DEFAULT_DIR}"
 CALCIFORGE_HERMES_DEFAULT_MODEL="${CALCIFORGE_HERMES_DEFAULT_MODEL:-${CALCIFORGE_IRONCLAW_DEFAULT_MODEL:-kimi-k2.5}}"
 CALCIFORGE_GATEWAY_PORT="${CALCIFORGE_GATEWAY_PORT:-18083}"
-CALCIFORGE_GATEWAY_BACKEND_TYPE="${CALCIFORGE_GATEWAY_BACKEND_TYPE:-http}"
-CALCIFORGE_GATEWAY_BACKEND_URL="${CALCIFORGE_GATEWAY_BACKEND_URL:-http://127.0.0.1:18801/v1}"
-CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/gateway-backend-key}"
+CALCIFORGE_GATEWAY_BACKEND_TYPE="${CALCIFORGE_GATEWAY_BACKEND_TYPE:-mock}"
+CALCIFORGE_GATEWAY_BACKEND_URL="${CALCIFORGE_GATEWAY_BACKEND_URL:-}"
+CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE="${CALCIFORGE_GATEWAY_BACKEND_API_KEY_FILE:-}"
 CALCIFORGE_GATEWAY_UI_URL="${CALCIFORGE_GATEWAY_UI_URL:-}"
+CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER="${CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER:-false}"
 CALCIFORGE_HELICONE_ENABLED="${CALCIFORGE_HELICONE_ENABLED:-false}"
 CALCIFORGE_HELICONE_DASHBOARD_ENABLED="${CALCIFORGE_HELICONE_DASHBOARD_ENABLED:-$CALCIFORGE_HELICONE_ENABLED}"
 CALCIFORGE_HELICONE_DASHBOARD_BIND="${CALCIFORGE_HELICONE_DASHBOARD_BIND:-127.0.0.1}"
@@ -121,9 +122,9 @@ REMOTE_SCANNER_ENABLED="${CALCIFORGE_REMOTE_SCANNER_ENABLED:-${REMOTE_SCANNER_EN
 REMOTE_SCANNER_PORT="${REMOTE_SCANNER_PORT:-9801}"
 REMOTE_SCANNER_URL=""
 REMOTE_SCANNER_FAIL_CLOSED="${REMOTE_SCANNER_FAIL_CLOSED:-true}"
-REMOTE_SCANNER_API_KEY_FILE="${REMOTE_SCANNER_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/remote-scanner-api-key}"
-REMOTE_SCANNER_API_BASE="${REMOTE_SCANNER_API_BASE:-https://api.openai.com/v1}"
-REMOTE_SCANNER_MODEL="${REMOTE_SCANNER_MODEL:-gpt-5.4-mini}"
+REMOTE_SCANNER_API_KEY_FILE="${REMOTE_SCANNER_API_KEY_FILE:-$CALCIFORGE_CONFIG_HOME/secrets/model-gateway-client-key}"
+REMOTE_SCANNER_API_BASE="${REMOTE_SCANNER_API_BASE:-http://127.0.0.1:${CALCIFORGE_GATEWAY_PORT}/v1}"
+REMOTE_SCANNER_MODEL="${REMOTE_SCANNER_MODEL:-adversary/default}"
 REMOTE_SCANNER_PROMPT_FILE="${REMOTE_SCANNER_PROMPT_FILE:-$CALCIFORGE_CONFIG_HOME/remote-llm-scanner-prompt.txt}"
 LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
@@ -1363,11 +1364,27 @@ hdr "calciforge"
 mkdir -p "$ZC_LOG_DIR"
 disable_legacy_local_service "calciforge" "${LEGACY_SERVICE_PREFIX}"
 
+_provider_adapter_choice_configured() {
+    truthy "$CALCIFORGE_HELICONE_ENABLED" && return 0
+    truthy "$CALCIFORGE_OPENCODE_GO_ENABLED" && return 0
+    truthy "$CALCIFORGE_OPENCODE_ZEN_ENABLED" && return 0
+    [[ -n "$CALCIFORGE_GATEWAY_BACKEND_URL" && "$CALCIFORGE_GATEWAY_BACKEND_TYPE" != "mock" ]] && return 0
+    return 1
+}
+
+if ! _provider_adapter_choice_configured && ! truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER"; then
+    die "No model provider adapter selected. Choose at least one during install, for example CALCIFORGE_HELICONE_ENABLED=true, CALCIFORGE_OPENCODE_GO_ENABLED=true, CALCIFORGE_OPENCODE_ZEN_ENABLED=true, or set CALCIFORGE_GATEWAY_BACKEND_TYPE=http with CALCIFORGE_GATEWAY_BACKEND_URL for an explicit OpenAI-compatible endpoint. Set CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER=true only for channel/security installs that intentionally do not serve model calls."
+fi
+
 _write_proxy_section() {
     local dest="$1" mode="${2:-overwrite}"
-    local content
+    local content proxy_enabled
+    proxy_enabled="true"
+    if ! _provider_adapter_choice_configured && truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER"; then
+        proxy_enabled="false"
+    fi
     content="[proxy]
-enabled = true
+enabled = ${proxy_enabled}
 bind = \"127.0.0.1:${CALCIFORGE_GATEWAY_PORT}\"
 backend_type = \"${CALCIFORGE_GATEWAY_BACKEND_TYPE}\"
 timeout_seconds = 300"
@@ -1468,6 +1485,7 @@ provider_block = (
     'id = "helicone-ollama"\n'
     'backend_type = "helicone"\n'
     f'url = "http://127.0.0.1:{port}/ai"\n'
+    'model_credential_owner = "provider"\n'
     f'api_key_file = "{api_key_file}"\n'
     "models = []\n"
     'add_model_prefix = "ollama/"\n'
@@ -1537,6 +1555,7 @@ provider_block = (
     '# Builtin HTTP upstream adapter; requests do not appear in external gateway dashboards unless url points at one.\n'
     'backend_type = "http"\n'
     f'url = "{q(url)}"\n'
+    'model_credential_owner = "provider"\n'
     f'api_key_file = "{q(api_key_file)}"\n'
     f'models = {models_toml}\n'
     f'strip_model_prefix = "{q(public_prefix)}"\n'
@@ -1549,6 +1568,64 @@ else:
     text = text.rstrip() + "\n\n" + provider_block
 
 path.write_text(text + ("\n" if not text.endswith("\n") else ""))
+PY
+}
+
+_ensure_default_model_roles() {
+    local config_path="$1"
+    python3 - "$config_path" <<'PY'
+import ast
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+
+role_names = set()
+for match in re.finditer(r'(?ms)^\[\[model_roles\]\]\n(.*?)(?=^\[|\Z)', text):
+    role_match = re.search(r'(?m)^role\s*=\s*"([^"]+)"', match.group(1))
+    if role_match:
+        role_names.add(role_match.group(1))
+
+first_model = None
+for match in re.finditer(r'(?ms)^\[\[proxy\.providers\]\]\n(.*?)(?=^\[|\Z)', text):
+    block = match.group(1)
+    models_match = re.search(r'(?m)^models\s*=\s*(\[[^\n]*\])', block)
+    if not models_match:
+        continue
+    try:
+        models = ast.literal_eval(models_match.group(1))
+    except Exception:
+        continue
+    for model in models:
+        if isinstance(model, str) and model.strip() and "*" not in model:
+            first_model = model.strip()
+            break
+    if first_model:
+        break
+
+if not first_model:
+    raise SystemExit(0)
+
+blocks = []
+for role, description in [
+    ("default", "Default Calciforge-owned model calls"),
+    ("fast", "Low-friction default for lightweight model calls"),
+    ("security.screening", "Adversary-detector classifier and security screening"),
+]:
+    if role in role_names:
+        continue
+    blocks.append(
+        "\n[[model_roles]]\n"
+        f'role = "{role}"\n'
+        f'model = "{first_model}"\n'
+        f'description = "{description}"\n'
+    )
+
+if blocks:
+    text = text.rstrip() + "\n" + "\n".join(blocks)
+    path.write_text(text + "\n")
 PY
 }
 
@@ -1574,15 +1651,48 @@ if new_section != section:
 PY
 }
 
+_ensure_proxy_disabled() {
+    local config_path="$1"
+    python3 - "$config_path" <<'PY'
+import pathlib, re, sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+match = re.search(r'(?ms)^\[proxy\]\n.*?(?=^\[|\Z)', text)
+if not match:
+    raise SystemExit(0)
+
+section = match.group(0)
+if re.search(r'(?m)^enabled\s*=', section):
+    new_section = re.sub(r'(?m)^enabled\s*=.*$', 'enabled = false', section, count=1)
+else:
+    new_section = section.replace('[proxy]\n', '[proxy]\nenabled = false\n', 1)
+
+if new_section != section:
+    path.write_text(text[:match.start()] + new_section + text[match.end():])
+PY
+}
+
 if [[ ! -f "$ZC_CONFIG" ]]; then
-    warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
+    if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
+        warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway disabled because no provider adapter was selected"
+    else
+        warn "Config not found at $ZC_CONFIG — creating minimal config with model gateway enabled"
+    fi
     mkdir -p "$(dirname "$ZC_CONFIG")"
     _write_proxy_section "$ZC_CONFIG" overwrite
-    ok "Created config at $ZC_CONFIG with model gateway on :${CALCIFORGE_GATEWAY_PORT}"
+    if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
+        ok "Created config at $ZC_CONFIG with model gateway disabled"
+    else
+        ok "Created config at $ZC_CONFIG with model gateway on :${CALCIFORGE_GATEWAY_PORT}"
+    fi
 fi
 
-# Ensure [proxy] section has enabled = true (idempotent)
-if ! grep -q '^\[proxy\]' "$ZC_CONFIG" 2>/dev/null; then
+# Ensure [proxy] section state matches the selected provider-adapter mode (idempotent).
+if truthy "$CALCIFORGE_ALLOW_NO_PROVIDER_ADAPTER" && ! _provider_adapter_choice_configured; then
+    _ensure_proxy_disabled "$ZC_CONFIG" || warn "Could not set [proxy].enabled = false in $ZC_CONFIG"
+    warn "No model provider adapter selected; forced [proxy].enabled = false so Calciforge does not start an invalid or unbacked model gateway"
+elif ! grep -q '^\[proxy\]' "$ZC_CONFIG" 2>/dev/null; then
     _write_proxy_section "$ZC_CONFIG" append
     ok "Added [proxy] section to config (model gateway on :${CALCIFORGE_GATEWAY_PORT})"
 elif ! python3 -c "
@@ -1621,6 +1731,10 @@ if truthy "$CALCIFORGE_OPENCODE_ZEN_ENABLED"; then
         "$CALCIFORGE_OPENCODE_ZEN_MODELS" \
         "$CALCIFORGE_OPENCODE_API_KEY_FILE" \
         300 || warn "Could not add OpenCode Zen provider entries in $ZC_CONFIG"
+fi
+
+if _provider_adapter_choice_configured; then
+    _ensure_default_model_roles "$ZC_CONFIG" || warn "Could not add default model roles in $ZC_CONFIG"
 fi
 
 _xml_escape() {

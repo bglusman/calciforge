@@ -898,6 +898,7 @@ mod tests {
             memory: None,
             context: Default::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
