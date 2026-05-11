@@ -7,9 +7,9 @@
 //!   never values)
 //! - **build canonical references** to secrets they want to use in
 //!   outbound requests (`secret_reference(name) → "{{secret:NAME}}"`)
-//! - **kick off the user-facing add flow** for secrets they need but
-//!   that aren't configured yet (`add_secret_request`, currently
-//!   returns safe operator instructions while daemon integration lands)
+//! - **guide the user-facing add flow** for secrets they need but
+//!   that aren't configured yet (`add_secret_request` returns safe
+//!   operator instructions)
 //!
 //! Critically, this server does **NOT** expose `get_secret`. Doing so
 //! would defeat the threat model — any agent that connects to MCP
@@ -282,7 +282,7 @@ impl CalciforgeMcp {
             "description": description,
             "retention_ok": retention_ok,
             "instructions": suggestion,
-            "status": "stub",
+            "status": "operator_action_required",
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&payload).unwrap_or_default(),
@@ -527,6 +527,7 @@ OUT"#,
         let body = result.content[0].raw.as_text().unwrap().text.clone();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let inst = parsed["instructions"].as_str().unwrap();
+        assert_eq!(parsed["status"], "operator_action_required");
         assert!(inst.contains("paste-server"));
         assert!(inst.contains("fnox set"));
         assert!(!inst.contains("!secure set"));
@@ -553,6 +554,7 @@ OUT"#,
         let body = result.content[0].raw.as_text().unwrap().text.clone();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let inst = parsed["instructions"].as_str().unwrap();
+        assert_eq!(parsed["status"], "operator_action_required");
         assert!(
             inst.contains("NOT acceptable"),
             "must explicitly reject the chat path for non-retention-ok"
