@@ -1779,6 +1779,7 @@ printf 'mock-agent saw: %s\n' "$1"
             memory: None,
             context: ContextConfig::default(),
             model_shortcuts: vec![],
+            model_roles: vec![],
             alloys: vec![],
             cascades: vec![],
             dispatchers: vec![],
