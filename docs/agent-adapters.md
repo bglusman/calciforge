@@ -216,6 +216,10 @@ Operational guidance:
   plugin gets messages into OpenClaw and replies back out; OpenClaw's own
   provider/tool egress still needs a tested proxy, MCP/fetch/tool integration,
   or container/VM boundary when network enforcement matters.
+- Do not implement provider authentication handling as a brittle provider-host
+  whitelist. Transport auth headers should be sanitized before manual-credential
+  scanning; Calciforge secret movement should be controlled by placeholder
+  resolution and destination allowlists.
 - Use live OpenClaw gateway tests for command behavior. Mock adapter tests are
   not enough because command parsing depends on enabled gateway endpoints,
   channel/plugin surface, session key shape, and authorization context.

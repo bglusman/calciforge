@@ -84,11 +84,21 @@ function getGatewayScopeBridge() {
   return gatewayScopeBridgePromise;
 }
 
+function buildTrustedCalciforgeGatewayClient() {
+  return {
+    connect: {
+      role: "operator",
+      scopes: ["operator.admin"],
+    },
+  };
+}
+
 async function runWithSyntheticGatewayClient(work) {
   const { withGatewayScope } = await getGatewayScopeBridge();
   return withGatewayScope(
     {
       pluginId: "calciforge-channel",
+      client: buildTrustedCalciforgeGatewayClient(),
       isWebchatConnect: () => false,
     },
     work,
@@ -725,7 +735,31 @@ function buildStatusPayload({ replyWebhook, replyAuthToken }) {
     plugin: "calciforge-channel",
     replyWebhook,
     replyAuthTokenSha256: sha256Hex(replyAuthToken).slice(0, 16),
+    egressProxy: buildEgressProxyStatus(),
   };
+}
+
+function buildEgressProxyStatus() {
+  const env = process.env;
+  const noProxy = env.NO_PROXY || env.no_proxy || "";
+  return {
+    httpProxy: nonEmpty(env.HTTP_PROXY || env.http_proxy),
+    httpsProxy: nonEmpty(env.HTTPS_PROXY || env.https_proxy),
+    allProxy: nonEmpty(env.ALL_PROXY || env.all_proxy),
+    nodeExtraCaCerts: nonEmpty(env.NODE_EXTRA_CA_CERTS),
+    sslCertFile: nonEmpty(env.SSL_CERT_FILE),
+    requestsCaBundle: nonEmpty(env.REQUESTS_CA_BUNDLE),
+    curlCaBundle: nonEmpty(env.CURL_CA_BUNDLE),
+    gitSslCaInfo: nonEmpty(env.GIT_SSL_CAINFO),
+    noProxyLoopback: noProxy
+      .split(",")
+      .map((part) => part.trim())
+      .some((part) => part === "localhost" || part === "127.0.0.1" || part === "::1"),
+  };
+}
+
+function nonEmpty(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function sha256Hex(value) {
@@ -1062,6 +1096,7 @@ export const testInternals = {
   recoverReplyAfterRunError,
   buildCalciforgeChannelContext,
   buildStatusPayload,
+  buildEgressProxyStatus,
   validateInboundRoute,
   stringSet,
   createSingleReplyDispatcher,

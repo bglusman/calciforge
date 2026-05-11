@@ -273,7 +273,9 @@ async fn main() -> Result<()> {
     let mut security_config = SecurityConfig::from_profile(security_profile);
     // Apply optional config overrides
     if let Some(cfg) = security_cfg {
-        security_config.scan_outbound = cfg.scan_outbound;
+        if let Some(scan_outbound) = cfg.scan_outbound {
+            security_config.scan_outbound = scan_outbound;
+        }
         if !cfg.scanner_checks.is_empty() {
             security_config.scanner.checks = cfg.scanner_checks.clone();
         }
@@ -318,7 +320,7 @@ async fn main() -> Result<()> {
     );
 
     let config = Arc::new(config);
-    let router = Arc::new(Router::new());
+    let router = Arc::new(Router::new().with_response_scanner(channel_scanner.clone()));
 
     // Initialize model-gateway synthetic routing if configured.
     let has_synthetic_models =

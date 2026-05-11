@@ -125,6 +125,11 @@ asynchronously, so it is not a reliable inline reply adapter by itself.
 
 OpenClaw owns the Codex provider configuration; Calciforge owns the
 identity, channel, secret-substitution, and policy boundaries.
+When the OpenClaw host is configured for Calciforge MITM egress, prompt-injection
+response blocking remains default-on. Outbound exfiltration heuristics and
+high-entropy response secret-leak scans are opt-in so normal Codex/OpenClaw
+provider transport does not fail on benign opaque IDs, hashes, or tool
+transcripts.
 
 ### Callback attachments
 

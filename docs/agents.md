@@ -37,6 +37,14 @@ Channel message arrives
 Each `[[agents]]` entry defines one AI backend. The `kind` field selects the
 adapter. All other fields are adapter-specific.
 
+First-class adapters carry a stronger maintenance promise than generic
+wrappers: Calciforge should document how user ingress, callback auth, model
+egress, and tool/web egress are protected for that adapter, and regressions in
+those paths are Calciforge bugs where the upstream runtime gives us enough
+control to fix them. Generic CLI, generic ACP, and recipe adapters remain
+best-effort unless their recipe documents a tested boundary. In hardened
+profiles, prefer first-class adapters or explicitly verified recipes.
+
 ### Common fields
 
 | Field | Required | Default | Description |
@@ -71,7 +79,10 @@ Calciforge controls identity routing, channel access, callback authentication,
 and artifact delivery for this path. OpenClaw's outbound model/tool traffic is
 only covered by Calciforge's security layers when you configure the OpenClaw
 service to use a tested proxy/tool/policy integration; installing the channel
-plugin alone does not prove outbound egress enforcement.
+plugin alone does not prove outbound egress enforcement. In managed MITM mode,
+prompt-injection response blocking is the default safety gate. Outbound
+exfiltration heuristics and high-entropy response secret-leak detection are
+operator opt-ins because they can be noisy on provider/tool transcripts.
 
 Required at runtime: `endpoint`, plus `api_key` or `api_key_file` unless the
 deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`. Use

@@ -600,12 +600,17 @@ pub struct MemoryConfig {
 /// `[security]` section — adversary detector settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecuritySectionConfig {
-    /// Security profile: open, balanced, hardened, paranoid
+    /// Security profile: off, open, minimal, balanced, hardened, maximum, paranoid.
     #[serde(default = "default_security_profile")]
     pub profile: String,
-    /// Enable outbound message scanning
-    #[serde(default = "default_scan_outbound")]
-    pub scan_outbound: bool,
+    /// Override outbound agent-response scanning. When unset, the selected
+    /// security profile default applies.
+    #[serde(default)]
+    pub scan_outbound: Option<bool>,
+    /// Require first-class agent runtimes to prove model/tool egress is routed
+    /// through Calciforge-managed boundaries before doctor reports healthy.
+    #[serde(default)]
+    pub require_agent_egress_proxy: bool,
     /// Ordered scanner checks. Empty uses the profile default built-in
     /// Starlark scanner policy. Add `remote_http` entries to call custom
     /// policy services or an LLM classifier.
@@ -617,15 +622,12 @@ fn default_security_profile() -> String {
     "balanced".to_string()
 }
 
-fn default_scan_outbound() -> bool {
-    false
-}
-
 impl Default for SecuritySectionConfig {
     fn default() -> Self {
         Self {
             profile: default_security_profile(),
-            scan_outbound: default_scan_outbound(),
+            scan_outbound: None,
+            require_agent_egress_proxy: false,
             scanner_checks: Vec::new(),
         }
     }
@@ -1609,7 +1611,7 @@ max_callstack = 32
 
         let security = cfg.security.expect("security section");
         assert_eq!(security.profile, "hardened");
-        assert!(security.scan_outbound);
+        assert_eq!(security.scan_outbound, Some(true));
         assert_eq!(security.scanner_checks.len(), 2);
         assert_eq!(
             security.scanner_checks[0],

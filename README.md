@@ -29,7 +29,7 @@ being treated as daily-driver infrastructure.
 | Helicone-backed gateway observability with dashboard-visible doctor checks | Working | [Model gateway](docs/model-gateway.md#external-gateway-engines) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
-| Inbound prompt-injection scanning and outbound exfiltration-pattern scanning via editable default Starlark policy | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
+| Default-on inbound prompt-injection scanning, with opt-in outbound exfiltration and response secret-leak heuristics via editable policy | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | Configurable scanner checks with editable Starlark policy, Rust-backed `regex_match`, and remote HTTP/LLM extension points | Working | [Security gateway](docs/security-gateway.md) |
 | Contributor red-team fixtures for prompt-injection, encoding, Unicode, and tool-policy bypass cases | Working | [Security gateway](docs/security-gateway.md#testing) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
@@ -95,6 +95,11 @@ that path provides model aliases, alloys, cascades, dispatchers, provider
 routing, and observability. Route agent tool/web traffic through
 `security-proxy` or a Calciforge fetch/tool integration when returned
 content needs scanning or `{{secret:NAME}}` substitution.
+
+First-class adapters are expected to document and test their Calciforge ingress
+and egress paths. Generic CLI, generic ACP, and recipe adapters are useful but
+best effort unless their recipe proves a network boundary; hardened deployments
+should disable unverified adapters rather than assuming proxy env is enough.
 
 For externally managed agent daemons that Calciforge does not launch, proxying
 has to be configured on that daemon or its service manager and validated

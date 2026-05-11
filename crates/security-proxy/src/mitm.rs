@@ -634,10 +634,15 @@ impl CalciforgeMitmHandler {
             && looks_like_scannable_content_type(&content_type)
             && let Ok(body_str) = std::str::from_utf8(&body_bytes)
         {
-            // IronClaw leak detection (runs before adversary-detector scan)
+            // Optional IronClaw leak detection (runs before adversary-detector scan).
+            // Keep this separate from prompt-injection scanning: provider
+            // responses routinely contain opaque IDs and hashes that are
+            // not user-data exfiltration.
             #[cfg(feature = "ironclaw-safety")]
             {
-                if let Err(reason) = self.state.ironclaw.scan_response_body(body_str) {
+                if self.state.config.scan_response_secrets
+                    && let Err(reason) = self.state.ironclaw.scan_response_body(body_str)
+                {
                     warn!(
                         "BLOCKED MITM response from {}: {}",
                         redact_url_for_log(target_url),
@@ -1183,6 +1188,9 @@ fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serd
         if name == header::PROXY_AUTHORIZATION || name.as_str().starts_with("x-calciforge-") {
             continue;
         }
+        if is_transport_secret_header(name.as_str()) {
+            continue;
+        }
         if let Ok(v) = value.to_str() {
             // Skip only fully proxy-managed credential header values. Mixed
             // manual+placeholder values stay visible to IronClaw.
@@ -1199,6 +1207,21 @@ fn build_credential_check_params(url: &str, headers: &header::HeaderMap) -> serd
         "url": credential_check_url,
         "headers": header_map,
     })
+}
+
+#[cfg(feature = "ironclaw-safety")]
+fn is_transport_secret_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "cookie"
+            | "x-api-key"
+            | "api-key"
+            | "openai-organization"
+            | "openai-project"
+            | "anthropic-version"
+            | "anthropic-beta"
+    )
 }
 
 #[cfg(feature = "ironclaw-safety")]
@@ -1333,6 +1356,42 @@ mod credential_check_tests {
         assert!(!header_value_is_proxy_managed_secret(
             "Bearer manual-prefix-{{secret:EXAMPLE_API_KEY}}"
         ));
+    }
+
+    #[test]
+    fn credential_check_sanitizes_transport_auth_headers() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer provider-token".parse().unwrap(),
+        );
+        headers.insert(
+            header::COOKIE,
+            "auth_session=provider-cookie".parse().unwrap(),
+        );
+
+        let params = build_credential_check_params(
+            "https://chatgpt.com/backend-api/accounts/check/v4-2024-04-27",
+            &headers,
+        );
+
+        assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[test]
+    fn credential_check_sanitizes_transport_auth_headers_without_host_allowlist() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer local-provider-token".parse().unwrap(),
+        );
+
+        let params = build_credential_check_params(
+            "http://192.168.1.175:18083/v1/chat/completions",
+            &headers,
+        );
+
+        assert!(!ironclaw_safety::params_contain_manual_credentials(&params));
     }
 
     #[test]
