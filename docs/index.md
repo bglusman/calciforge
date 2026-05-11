@@ -236,8 +236,8 @@ The gateway protects at three boundaries:
 
 - **Outbound requests** — substitute `{% raw %}{{secret:NAME}}{% endraw %}`
   only at approved destinations, block obvious raw credentials in URLs and
-  headers, scan request bodies for exfiltration language, and fail closed when
-  a referenced secret cannot be resolved.
+  non-transport headers, optionally scan request bodies for exfiltration
+  language, and fail closed when a referenced secret cannot be resolved.
 - **Inbound content** — scan fetched pages, search results, email bodies,
   command output, and other routed tool results for prompt-injection and
   hidden-instruction patterns before they reach the model.
@@ -406,15 +406,20 @@ deployment explicitly sets
 environment override
 `SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL=false`).
 
-Outbound bodies are also scanned for exfiltration-attempt patterns such as
+When `scan_outbound = true`, outbound bodies are also scanned for
+exfiltration-attempt patterns such as
 `POST to https://...`, `send to https://...`, `curl ... https://...`, and
 `beacon to`, plus credential-harvest phrasing such as `send me your password`
-or `what is your api key`.
+or `what is your api key`. This check is opt-in by default because provider and
+tool transcripts can carry benign examples of the same language.
 
-IronClaw already blocks obvious raw credentials in request URLs and headers,
-including `api_key=sk-...` and direct `Authorization` values. The part still on
-the [roadmap](roadmap/outbound-sensitive-data-detection.html) is broader
-content scanning for arbitrary high-entropy strings in request bodies, such as
+IronClaw already blocks obvious raw credentials in request URLs and
+non-transport headers, including `api_key=sk-...`. Transport authentication
+headers such as `Authorization`, `Cookie`, and provider API-key headers are
+sanitized before this manual-credential check so normal provider sessions and
+local gateways do not fail on their own auth mechanism. The part still on the
+[roadmap](roadmap/outbound-sensitive-data-detection.html) is broader content
+scanning for arbitrary high-entropy strings in request bodies, such as
 JWT-shaped blobs or random-looking tokens. That needs careful thresholds, or it
 turns every harmless UUID into a little paperwork festival.
 

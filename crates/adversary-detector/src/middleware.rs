@@ -158,6 +158,12 @@ impl ChannelScanner {
         verdict
     }
 
+    /// Returns `true` when agent-to-user / agent-to-channel responses should be
+    /// scanned before Calciforge stores or relays them.
+    pub fn scan_outbound_enabled(&self) -> bool {
+        self.config.scan_outbound
+    }
+
     /// Returns `true` if this tool's results should be scanned according to the profile.
     pub fn should_intercept(&self, tool_name: &str) -> bool {
         self.config.intercepted_tools.intercepts(tool_name)

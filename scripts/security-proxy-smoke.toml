@@ -1,0 +1,6 @@
+# Docker smoke intentionally exercises outbound request blocking. Production
+# defaults keep outbound/exfil scanning opt-in because normal agent and model
+# traffic can contain benign prompt-injection examples, high-entropy IDs, and
+# tool transcripts.
+scan_outbound = true
+scan_inbound = true

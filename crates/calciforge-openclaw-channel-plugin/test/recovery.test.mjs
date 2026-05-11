@@ -43,8 +43,44 @@ test("status payload reports callback URL and reply-token hash without exposing 
       .update(fixtureReplyToken, "utf8")
       .digest("hex")
       .slice(0, 16),
+    egressProxy: testInternals.buildEgressProxyStatus(),
   });
   assert.equal(JSON.stringify(payload).includes(fixtureReplyToken), false);
+});
+
+test("egress proxy status reports proxy and CA coverage without exposing values", () => {
+  const keys = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "NO_PROXY",
+  ];
+  const oldEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.HTTP_PROXY = "http://127.0.0.1:8888";
+    process.env.HTTPS_PROXY = "http://127.0.0.1:8888";
+    process.env.ALL_PROXY = "http://127.0.0.1:8888";
+    process.env.NODE_EXTRA_CA_CERTS = "/tmp/mitm-ca.pem";
+    process.env.NO_PROXY = "localhost,127.0.0.1,::1";
+
+    const status = testInternals.buildEgressProxyStatus();
+    assert.equal(status.httpProxy, true);
+    assert.equal(status.httpsProxy, true);
+    assert.equal(status.allProxy, true);
+    assert.equal(status.nodeExtraCaCerts, true);
+    assert.equal(status.noProxyLoopback, true);
+    assert.equal(JSON.stringify(status).includes("127.0.0.1:8888"), false);
+    assert.equal(JSON.stringify(status).includes("/tmp/mitm-ca.pem"), false);
+  } finally {
+    for (const key of keys) {
+      if (oldEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = oldEnv[key];
+      }
+    }
+  }
 });
 
 test("validates Calciforge route identity from token-authenticated bodies", () => {
