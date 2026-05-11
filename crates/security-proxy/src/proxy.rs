@@ -86,7 +86,6 @@ pub struct SecurityProxy {
     /// HTTP client for forwarding requests upstream.
     http_client: reqwest::Client,
     /// Per-agent placeholder registry for roadmap #151 placeholder injection.
-    #[allow(dead_code)]
     pub(crate) placeholder_map: crate::substitution::PlaceholderMap,
     /// IronClaw safety layer (leak detection + credential-injection detection).
     #[cfg(feature = "ironclaw-safety")]
@@ -131,6 +130,20 @@ impl SecurityProxy {
             #[cfg(feature = "ironclaw-safety")]
             ironclaw: IronclawSafety::new(),
         }
+    }
+
+    /// Register one lifecycle-owned placeholder token for a specific agent.
+    ///
+    /// This only records the authoritative token -> secret-name mapping. It
+    /// does not resolve secret values and does not bypass the identity ACL or
+    /// destination allowlist enforced by placeholder substitution.
+    pub fn register_secret_placeholder(
+        &mut self,
+        agent_id: impl Into<String>,
+        token: impl Into<String>,
+        secret_name: impl Into<String>,
+    ) -> Result<(), crate::substitution::PlaceholderMapError> {
+        self.placeholder_map.insert(agent_id, token, secret_name)
     }
 
     // ── Fetch mode ───────────────────────────────────────────────────────
@@ -1318,8 +1331,7 @@ mod tests {
         .await;
         let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
         proxy
-            .placeholder_map
-            .insert("agent-a", token, "OPENAI_API_KEY")
+            .register_secret_placeholder("agent-a", token, "OPENAI_API_KEY")
             .unwrap();
         let identity = secrets_client::SecretAccessIdentity {
             agent_id: Some("agent-a".to_string()),
@@ -1361,8 +1373,7 @@ mod tests {
         .await;
         let token = "cfg_DENIED_KEY_0123456789abcdef0123456789abcdef";
         proxy
-            .placeholder_map
-            .insert("agent-a", token, "DENIED_KEY")
+            .register_secret_placeholder("agent-a", token, "DENIED_KEY")
             .unwrap();
         let identity = secrets_client::SecretAccessIdentity {
             agent_id: Some("agent-a".to_string()),
