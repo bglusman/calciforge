@@ -151,6 +151,11 @@ impl SecurityProxy {
         self.placeholder_map.remove(agent_id, token)
     }
 
+    /// Retire all lifecycle-owned placeholder tokens for a specific agent.
+    pub fn unregister_agent_secret_placeholders(&mut self, agent_id: &str) -> bool {
+        self.placeholder_map.remove_agent(agent_id)
+    }
+
     /// Generate and register one lifecycle-owned placeholder token.
     ///
     /// The returned token is safe to pass to an agent as an opaque stand-in,
@@ -1455,6 +1460,51 @@ mod tests {
         assert!(
             err.contains("not registered for the current agent"),
             "retired placeholder must fail closed before value resolution; got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_agent_placeholders_fails_closed_for_all_agent_tokens() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string(), "DATABASE_URL".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let openai = proxy
+            .generate_secret_placeholder("agent-a", "OPENAI_API_KEY")
+            .unwrap();
+        let db = proxy
+            .generate_secret_placeholder("agent-a", "DATABASE_URL")
+            .unwrap();
+        assert!(proxy.unregister_agent_secret_placeholders("agent-a"));
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let err = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {openai}; Database: {db}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .expect_err("retired agent placeholders should not resolve");
+
+        assert!(
+            err.contains("not registered for the current agent"),
+            "retired agent placeholders must fail closed before value resolution; got {err}"
         );
     }
 

@@ -145,6 +145,10 @@ impl PlaceholderMap {
         removed
     }
 
+    pub fn remove_agent(&mut self, agent_id: &str) -> bool {
+        self.by_agent.remove(agent_id).is_some()
+    }
+
     pub fn resolve_tokens(
         &self,
         identity: &secrets_client::SecretAccessIdentity,
@@ -655,6 +659,35 @@ mod tests {
         assert!(map.remove("agent-a", token));
         assert_eq!(map.resolve(&identity, token), None);
         assert!(!map.remove("agent-a", token));
+    }
+
+    /// Given all placeholders for an agent are retired,
+    /// when that agent tries to resolve any previous token,
+    /// then no secret name is returned.
+    #[test]
+    fn placeholder_map_remove_agent_retires_all_tokens() {
+        let openai = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let db = "cfg_DATABASE-URL_ffffffffffffffffffffffffffffffff";
+        let other = "cfg_OTHER_KEY_11111111111111111111111111111111";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let other_identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-b".to_string()),
+            ..Default::default()
+        };
+        let mut map = PlaceholderMap::default();
+
+        map.insert("agent-a", openai, "OPENAI_API_KEY").unwrap();
+        map.insert("agent-a", db, "DATABASE_URL").unwrap();
+        map.insert("agent-b", other, "OTHER_API_KEY").unwrap();
+
+        assert!(map.remove_agent("agent-a"));
+        assert_eq!(map.resolve(&identity, openai), None);
+        assert_eq!(map.resolve(&identity, db), None);
+        assert_eq!(map.resolve(&other_identity, other), Some("OTHER_API_KEY"));
+        assert!(!map.remove_agent("agent-a"));
     }
 
     /// Given a set of placeholder tokens registered for the current agent,
