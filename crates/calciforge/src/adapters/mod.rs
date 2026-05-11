@@ -249,7 +249,7 @@ pub fn find_executable_for_agent(
     env: Option<&HashMap<String, String>>,
 ) -> Option<PathBuf> {
     let binary_path = Path::new(binary);
-    if binary_path.is_absolute() || binary.contains(std::path::MAIN_SEPARATOR) {
+    if binary_path.is_absolute() || binary.contains('/') || binary.contains('\\') {
         return is_executable_file(binary_path).then(|| binary_path.to_path_buf());
     }
 

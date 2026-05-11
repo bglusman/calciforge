@@ -2757,9 +2757,24 @@ mod tests {
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
     }
 
+    fn test_executable_name(name: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{name}.cmd")
+        }
+        #[cfg(not(windows))]
+        {
+            name.to_string()
+        }
+    }
+
     fn write_test_executable(dir: &Path, name: &str) {
-        let path = dir.join(name);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write test executable");
+        let path = dir.join(test_executable_name(name));
+        #[cfg(windows)]
+        let contents = "@echo off\r\nexit /b 0\r\n";
+        #[cfg(not(windows))]
+        let contents = "#!/bin/sh\nexit 0\n";
+        std::fs::write(&path, contents).expect("write test executable");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

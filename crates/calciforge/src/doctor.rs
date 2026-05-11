@@ -2467,15 +2467,7 @@ mod tests {
     #[test]
     fn check_agent_wiring_reports_missing_acpx_agent_command() {
         let bin_dir = tempfile::tempdir().expect("bin dir");
-        let acpx_path = bin_dir.path().join("acpx");
-        std::fs::write(&acpx_path, "#!/bin/sh\nexit 0\n").expect("write acpx");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&acpx_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&acpx_path, permissions).unwrap();
-        }
+        write_test_executable(bin_dir.path(), "acpx");
         let mut config = base_config();
         config.agents = vec![AgentConfig {
             id: "opencode".to_string(),
@@ -3362,6 +3354,34 @@ mod tests {
                     .message
                     .contains("remote_http URL must use http or https")
         }));
+    }
+
+    fn test_executable_name(name: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{name}.cmd")
+        }
+        #[cfg(not(windows))]
+        {
+            name.to_string()
+        }
+    }
+
+    fn write_test_executable(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(test_executable_name(name));
+        #[cfg(windows)]
+        let contents = "@echo off\r\nexit /b 0\r\n";
+        #[cfg(not(windows))]
+        let contents = "#!/bin/sh\nexit 0\n";
+        std::fs::write(&path, contents).expect("write test executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
+        path
     }
 
     #[cfg(unix)]
