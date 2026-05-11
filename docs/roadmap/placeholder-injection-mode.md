@@ -63,10 +63,14 @@ Implemented pieces:
 - Placeholder token recognition for `cfg_<NAME>_<32-hex>`.
 - Placeholder rendering keyed by the full opaque token, not by the
   embedded name hint.
+- Placeholder token generation from validated secret names.
 - Per-agent `PlaceholderMap` that resolves `agent_id + token` to an
   authoritative secret name.
 - Fail-closed token-set resolution when any discovered placeholder is
   not registered for the current agent.
+- Security-proxy lifecycle helpers to register generated placeholders,
+  generate-and-register a placeholder in one step, retire one
+  placeholder, or retire all placeholders for an agent.
 - A shared identity/destination policy gate that placeholder
   substitution can reuse before any real secret value is loaded.
 - An inert `SecurityProxy` placeholder-name resolution helper that
@@ -74,14 +78,17 @@ Implemented pieces:
   same policy gate as explicit `{{secret:NAME}}` references.
 
 Not yet wired:
-- Agent lifecycle registration of generated placeholders.
+- A runtime source that calls the lifecycle helpers from supervised
+  agent spawn/shutdown or equivalent channel lifecycle code.
 - Passing generated placeholders into agent env vars at spawn time.
 - Live request rewriting from placeholder token -> real secret value.
 
-The next safe implementation slice is lifecycle registration: create a
-source of truth for which placeholders exist for a running agent, then
-wire live substitution only after that source can register and retire
-tokens deterministically.
+The next safe implementation slice is Calciforge-side lifecycle
+wiring: decide which supervised agent runtime owns placeholder
+creation, where generated env values are injected, and where
+single-token or whole-agent retirement is called. Live substitution
+should remain disabled until that owner can deterministically register
+and retire tokens.
 
 ## What we'd build
 
