@@ -223,8 +223,9 @@ pub fn inspect_browsing_body(
 
 /// (D) Walk a JSON LLM-request body and collect URLs from user/model text
 /// surfaces. Handles Chat Completions `messages[].content`, Anthropic content
-/// arrays, and OpenAI Responses-style top-level `input`; optionally scans tool
-/// descriptions too. Returns the offending host if any URL is on the denylist.
+/// arrays, OpenAI Responses-style top-level `input`, provider-specific nested
+/// envelopes, and optionally tool descriptions. Returns the offending host if
+/// any URL is on the denylist.
 pub fn preflight_message_urls(body: &[u8], policy: &AgentWebPolicy) -> Option<String> {
     if !policy.preflight_message_urls {
         return None;
@@ -257,7 +258,7 @@ pub fn preflight_message_urls(body: &[u8], policy: &AgentWebPolicy) -> Option<St
         return Some(host);
     }
 
-    None
+    denied_url_in_json_text(&json, denylist)
 }
 
 fn denied_url_in_json_text(value: &Value, denylist: &[String]) -> Option<String> {
@@ -519,6 +520,28 @@ mod tests {
                     {"type": "input_text", "text": "summarize https://blocked.example.com/x"}
                 ]}
             ]
+        })
+        .to_string();
+        let policy = policy_with_denylist(&["blocked.example.com"]);
+        assert_eq!(
+            preflight_message_urls(body.as_bytes(), &policy).as_deref(),
+            Some("blocked.example.com")
+        );
+    }
+
+    #[test]
+    fn preflight_finds_url_in_provider_specific_nested_envelope() {
+        let body = serde_json::json!({
+            "conversation": {
+                "current_node": "abc",
+                "nodes": {
+                    "abc": {
+                        "message": {
+                            "parts": ["fresh context: summarize https://blocked.example.com/x"]
+                        }
+                    }
+                }
+            }
         })
         .to_string();
         let policy = policy_with_denylist(&["blocked.example.com"]);

@@ -72,6 +72,8 @@ pub fn default_forbidden_browsing_models() -> Vec<String> {
 pub fn default_known_llm_apis() -> Vec<String> {
     vec![
         "api.openai.com".into(),
+        "chatgpt.com".into(),
+        "chat.openai.com".into(),
         "openai.azure.com".into(),
         "api.anthropic.com".into(),
         "generativelanguage.googleapis.com".into(),
@@ -598,7 +600,13 @@ mod tests {
     #[test]
     fn default_known_llm_apis_cover_configured_remote_providers() {
         let hosts = default_known_llm_apis();
-        for host in ["api.moonshot.cn", "api.deepseek.com", "openrouter.ai"] {
+        for host in [
+            "api.moonshot.cn",
+            "api.deepseek.com",
+            "openrouter.ai",
+            "chatgpt.com",
+            "chat.openai.com",
+        ] {
             assert!(
                 hosts.iter().any(|h| h == host),
                 "{host} must be in known_llm_apis so provider-side browsing and URL preflight apply to Calciforge-supported remote providers"
