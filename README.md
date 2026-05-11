@@ -96,6 +96,11 @@ routing, and observability. Route agent tool/web traffic through
 `security-proxy` or a Calciforge fetch/tool integration when returned
 content needs scanning or `{{secret:NAME}}` substitution.
 
+First-class adapters are expected to document and test their Calciforge ingress
+and egress paths. Generic CLI, generic ACP, and recipe adapters are useful but
+best effort unless their recipe proves a network boundary; hardened deployments
+should disable unverified adapters rather than assuming proxy env is enough.
+
 For externally managed agent daemons that Calciforge does not launch, proxying
 has to be configured on that daemon or its service manager and validated
 against `security-proxy` logs:
