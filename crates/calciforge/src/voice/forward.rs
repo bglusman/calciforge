@@ -75,12 +75,9 @@ pub async fn run_hook(hook_path: Option<&str>, input: Bytes) -> Bytes {
                 .spawn()
                 .with_context(|| format!("failed to spawn hook {path}"))?;
 
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(&input)
-                .context("writing hook stdin")?;
+            let mut stdin = child.stdin.take().context("hook stdin was not available")?;
+            stdin.write_all(&input).context("writing hook stdin")?;
+            drop(stdin);
 
             let out = child.wait_with_output().context("waiting for hook")?;
 
@@ -175,4 +172,57 @@ async fn forward_raw(
     );
 
     Ok((resp_body, resp_content_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hook_absent_passes_original_body_through() {
+        let input = Bytes::from_static(b"hello");
+
+        let output = run_hook(None, input.clone()).await;
+
+        assert_eq!(output, input);
+    }
+
+    #[tokio::test]
+    async fn hook_stdout_replaces_body() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hook = dir.path().join("voice-hook.sh");
+        std::fs::write(&hook, "#!/bin/sh\ntr a-z A-Z\n").expect("write hook");
+        make_executable(&hook);
+
+        let output = run_hook(hook.to_str(), Bytes::from_static(b"voice")).await;
+
+        assert_eq!(output, Bytes::from_static(b"VOICE"));
+    }
+
+    #[tokio::test]
+    async fn hook_failure_passes_original_body_through() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hook = dir.path().join("voice-hook-fails.sh");
+        std::fs::write(&hook, "#!/bin/sh\ncat >&2\nexit 42\n").expect("write hook");
+        make_executable(&hook);
+        let input = Bytes::from_static(b"keep me");
+
+        let output = run_hook(hook.to_str(), input.clone()).await;
+
+        assert_eq!(output, input);
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = std::fs::metadata(path)
+            .expect("hook metadata")
+            .permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(path, perms).expect("chmod hook");
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &std::path::Path) {}
 }
