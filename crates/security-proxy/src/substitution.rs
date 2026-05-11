@@ -99,7 +99,8 @@ impl PlaceholderMap {
         secret_name: impl Into<String>,
     ) -> Result<(), PlaceholderMapError> {
         let agent_id = agent_id.into();
-        if agent_id.trim().is_empty() {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
             return Err(PlaceholderMapError::EmptyAgentId);
         }
 
@@ -110,10 +111,10 @@ impl PlaceholderMap {
 
         let secret_name = secret_name.into();
         if let Err(error) = validate_name(&secret_name) {
-            return Err(PlaceholderMapError::InvalidSecretName(error.to_string()));
+            return Err(placeholder_secret_name_error(error));
         }
 
-        let agent_tokens = self.by_agent.entry(agent_id).or_default();
+        let agent_tokens = self.by_agent.entry(agent_id.to_string()).or_default();
         if let Some(existing) = agent_tokens.get(&token) {
             if existing != &secret_name {
                 return Err(PlaceholderMapError::ConflictingToken { token });
@@ -134,19 +135,19 @@ impl PlaceholderMap {
     }
 
     pub fn remove(&mut self, agent_id: &str, token: &str) -> bool {
-        let Some(agent_tokens) = self.by_agent.get_mut(agent_id) else {
+        let Some(agent_tokens) = self.by_agent.get_mut(agent_id.trim()) else {
             return false;
         };
 
         let removed = agent_tokens.remove(token).is_some();
         if agent_tokens.is_empty() {
-            self.by_agent.remove(agent_id);
+            self.by_agent.remove(agent_id.trim());
         }
         removed
     }
 
     pub fn remove_agent(&mut self, agent_id: &str) -> bool {
-        self.by_agent.remove(agent_id).is_some()
+        self.by_agent.remove(agent_id.trim()).is_some()
     }
 
     pub fn resolve_tokens(
@@ -172,7 +173,7 @@ impl PlaceholderMap {
 /// any secret value.
 pub fn generate_placeholder_token(secret_name: &str) -> Result<String, PlaceholderMapError> {
     if let Err(error) = validate_name(secret_name) {
-        return Err(PlaceholderMapError::InvalidSecretName(error.to_string()));
+        return Err(placeholder_secret_name_error(error));
     }
 
     Ok(format!(
@@ -181,6 +182,13 @@ pub fn generate_placeholder_token(secret_name: &str) -> Result<String, Placehold
         secret_name,
         uuid::Uuid::new_v4().as_simple()
     ))
+}
+
+fn placeholder_secret_name_error(error: SubstitutionError) -> PlaceholderMapError {
+    match error {
+        SubstitutionError::Malformed(message) => PlaceholderMapError::InvalidSecretName(message),
+        other => PlaceholderMapError::InvalidSecretName(other.to_string()),
+    }
 }
 
 /// Parse `input` and return the set of unique reference names it
@@ -566,6 +574,26 @@ mod tests {
         assert_eq!(map.resolve(&identity, token), Some("OPENAI_API_KEY"));
     }
 
+    /// Given an agent id with surrounding transport whitespace,
+    /// when registering a placeholder,
+    /// then the map stores the same canonical id that request identities use.
+    #[test]
+    fn placeholder_map_normalizes_agent_id_on_insert() {
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            user_id: None,
+            channel: None,
+        };
+        let mut map = PlaceholderMap::default();
+
+        map.insert(" agent-a ", token, "OPENAI_API_KEY").unwrap();
+
+        assert_eq!(map.resolve(&identity, token), Some("OPENAI_API_KEY"));
+        assert!(map.remove(" agent-a ", token));
+        assert_eq!(map.resolve(&identity, token), None);
+    }
+
     /// Given the same opaque placeholder token is registered under another
     /// agent,
     /// when a different agent tries to resolve it,
@@ -621,6 +649,12 @@ mod tests {
             map.insert("agent-a", token, "OPENAI.API.KEY"),
             Err(PlaceholderMapError::InvalidSecretName(_))
         ));
+        assert_eq!(
+            map.insert("agent-a", token, "OPENAI.API.KEY")
+                .expect_err("invalid secret names should fail")
+                .to_string(),
+            "invalid placeholder secret name: secret name \"OPENAI.API.KEY\" contains invalid characters (allowed: A-Z a-z 0-9 _ -)"
+        );
     }
 
     /// Given a placeholder token is already registered for one secret,

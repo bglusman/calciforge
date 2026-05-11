@@ -918,7 +918,13 @@ impl SecurityProxy {
             .map_err(|e| e.to_string())
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "staged placeholder resolver is wired after Calciforge lifecycle registration"
+        )
+    )]
     pub(crate) fn resolve_placeholder_secret_names(
         &self,
         input: &str,

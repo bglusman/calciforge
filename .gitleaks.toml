@@ -126,4 +126,7 @@ regexes = [
     '''10\.0\.0\.20''',
     '''10\.0\.0\.40''',
     '''192\.168\.1\.49''',
+    # Deterministic placeholder-injection fixtures. These are opaque test
+    # handles, not real registered runtime placeholders.
+    '''cfg_[A-Za-z0-9_-]+_(?:0123456789abcdef0123456789abcdef|ffffffffffffffffffffffffffffffff|11111111111111111111111111111111)''',
 ]
