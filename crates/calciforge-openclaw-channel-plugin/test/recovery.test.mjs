@@ -100,6 +100,17 @@ test("validates Calciforge route identity from token-authenticated bodies", () =
   );
   assert.equal(
     testInternals.validateInboundRoute({
+      sessionKey: "calciforge:librarian:+15555550001:review-thread",
+      agentId: "librarian",
+      sender: "+15555550001",
+      channel: "signal",
+      allowedAgentIds,
+      allowedChannels,
+    }),
+    null,
+  );
+  assert.equal(
+    testInternals.validateInboundRoute({
       sessionKey: "calciforge:custodian:+15555550001",
       agentId: "custodian",
       sender: "+15555550001",

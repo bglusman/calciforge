@@ -701,7 +701,11 @@ function validateInboundRoute({
   }
   const normalizedSender = normalizeString(sender);
   if (!normalizedSender) return "sender is required";
-  if (sessionKey !== `calciforge:${parsedAgentId}:${normalizedSender}`) {
+  const expectedSessionPrefix = `calciforge:${parsedAgentId}:${normalizedSender}`;
+  if (
+    sessionKey !== expectedSessionPrefix &&
+    !sessionKey.startsWith(`${expectedSessionPrefix}:`)
+  ) {
     return "sessionKey must match sender";
   }
   const normalizedChannel = normalizeString(channel);

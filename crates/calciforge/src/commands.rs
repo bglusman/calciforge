@@ -73,7 +73,7 @@ fn session_runtime_readiness_error(agent_cfg: &crate::config::AgentConfig) -> Op
             };
             if find_executable_for_agent(command, agent_cfg.env.as_ref()).is_none() {
                 return Some(format!(
-                    "configured ACP agent command '{}' was not found on Calciforge's service PATH or this agent's configured env.PATH",
+                    "configured ACPX downstream command '{}' was not found on Calciforge's service PATH or this agent's configured env.PATH",
                     command
                 ));
             }
@@ -4356,7 +4356,7 @@ mod tests {
         let reply = h.handle_new_session("!new scratch", "brian");
         assert!(
             reply.contains("Cannot start a session")
-                && reply.contains("configured ACP agent command 'claude'"),
+                && reply.contains("configured ACPX downstream command 'claude'"),
             "missing acpx-managed agent command should be reported before session is persisted: {reply}"
         );
         assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
