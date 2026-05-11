@@ -56,7 +56,7 @@ credentials from env vars.
 ## Current staged implementation
 
 Status as of 2026-05-10: the security-proxy-local primitives are
-implemented on the issue #151 work branch, but live placeholder
+implemented in the staged placeholder-injection work, but live placeholder
 substitution is intentionally not enabled yet.
 
 Implemented pieces:

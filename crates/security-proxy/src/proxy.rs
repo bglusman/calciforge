@@ -20,6 +20,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -104,7 +105,7 @@ pub struct SecurityProxy {
     /// HTTP client for forwarding requests upstream.
     http_client: reqwest::Client,
     /// Per-agent placeholder registry for roadmap #151 placeholder injection.
-    pub(crate) placeholder_map: crate::substitution::PlaceholderMap,
+    pub(crate) placeholder_map: RwLock<crate::substitution::PlaceholderMap>,
     /// IronClaw safety layer (leak detection + credential-injection detection).
     #[cfg(feature = "ironclaw-safety")]
     pub(crate) ironclaw: IronclawSafety,
@@ -144,7 +145,7 @@ impl SecurityProxy {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("security proxy reqwest client"),
-            placeholder_map: crate::substitution::PlaceholderMap::default(),
+            placeholder_map: RwLock::new(crate::substitution::PlaceholderMap::default()),
             #[cfg(feature = "ironclaw-safety")]
             ironclaw: IronclawSafety::new(),
         }
@@ -156,22 +157,31 @@ impl SecurityProxy {
     /// does not resolve secret values and does not bypass the identity ACL or
     /// destination allowlist enforced by placeholder substitution.
     pub fn register_secret_placeholder(
-        &mut self,
+        &self,
         agent_id: impl Into<String>,
         token: impl Into<String>,
         secret_name: impl Into<String>,
     ) -> Result<(), crate::substitution::PlaceholderMapError> {
-        self.placeholder_map.insert(agent_id, token, secret_name)
+        self.placeholder_map
+            .write()
+            .expect("placeholder map lock poisoned")
+            .insert(agent_id, token, secret_name)
     }
 
     /// Retire one lifecycle-owned placeholder token for a specific agent.
-    pub fn unregister_secret_placeholder(&mut self, agent_id: &str, token: &str) -> bool {
-        self.placeholder_map.remove(agent_id, token)
+    pub fn unregister_secret_placeholder(&self, agent_id: &str, token: &str) -> bool {
+        self.placeholder_map
+            .write()
+            .expect("placeholder map lock poisoned")
+            .remove(agent_id, token)
     }
 
     /// Retire all lifecycle-owned placeholder tokens for a specific agent.
-    pub fn unregister_agent_secret_placeholders(&mut self, agent_id: &str) -> bool {
-        self.placeholder_map.remove_agent(agent_id)
+    pub fn unregister_agent_secret_placeholders(&self, agent_id: &str) -> bool {
+        self.placeholder_map
+            .write()
+            .expect("placeholder map lock poisoned")
+            .remove_agent(agent_id)
     }
 
     /// Generate and register one lifecycle-owned placeholder token.
@@ -180,7 +190,7 @@ impl SecurityProxy {
     /// but it is still only useful if a later outbound request presents the
     /// same agent identity and passes the normal policy gate.
     pub fn generate_secret_placeholder(
-        &mut self,
+        &self,
         agent_id: impl Into<String>,
         secret_name: impl Into<String>,
     ) -> Result<String, crate::substitution::PlaceholderMapError> {
@@ -197,7 +207,7 @@ impl SecurityProxy {
     /// references are preserved. Partial interpolation is rejected so the agent
     /// never receives strings that mix literals with secret-bearing material.
     pub fn generate_secret_placeholder_env(
-        &mut self,
+        &self,
         agent_id: &str,
         env: &std::collections::HashMap<String, String>,
     ) -> Result<std::collections::HashMap<String, String>, PlaceholderEnvError> {
@@ -969,6 +979,8 @@ impl SecurityProxy {
 
         let resolved = self
             .placeholder_map
+            .read()
+            .expect("placeholder map lock poisoned")
             .resolve_tokens(access_identity, &tokens)
             .map_err(|error| error.to_string())?;
 
@@ -1422,7 +1434,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_secret_names_use_identity_and_destination_policy_gate() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig {
                 secret_access: secrets_client::SecretAccessPolicy {
                     rules: vec![secrets_client::SecretAccessRule {
@@ -1464,7 +1476,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_placeholder_registers_for_policy_gated_resolution() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig {
                 secret_access: secrets_client::SecretAccessPolicy {
                     rules: vec![secrets_client::SecretAccessRule {
@@ -1505,7 +1517,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_env_generation_replaces_exact_secret_refs() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig {
                 secret_access: secrets_client::SecretAccessPolicy {
                     rules: vec![secrets_client::SecretAccessRule {
@@ -1563,7 +1575,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_env_generation_rejects_partial_secret_refs() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig::default(),
             ScannerConfig::default(),
             RateLimitConfig::default(),
@@ -1588,7 +1600,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_env_generation_does_not_register_before_validation_finishes() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig::default(),
             ScannerConfig::default(),
             RateLimitConfig::default(),
@@ -1623,7 +1635,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_env_generation_reports_parse_error_key() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig::default(),
             ScannerConfig::default(),
             RateLimitConfig::default(),
@@ -1650,7 +1662,7 @@ mod tests {
 
     #[tokio::test]
     async fn unregistered_placeholder_fails_closed() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig {
                 secret_access: secrets_client::SecretAccessPolicy {
                     rules: vec![secrets_client::SecretAccessRule {
@@ -1692,7 +1704,7 @@ mod tests {
 
     #[tokio::test]
     async fn unregister_agent_placeholders_fails_closed_for_all_agent_tokens() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig {
                 secret_access: secrets_client::SecretAccessPolicy {
                     rules: vec![secrets_client::SecretAccessRule {
@@ -1737,7 +1749,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_secret_names_fail_closed_before_value_resolution() {
-        let mut proxy = SecurityProxy::new(
+        let proxy = SecurityProxy::new(
             GatewayConfig {
                 secret_access: secrets_client::SecretAccessPolicy {
                     rules: vec![secrets_client::SecretAccessRule {
