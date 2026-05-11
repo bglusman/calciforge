@@ -621,8 +621,13 @@ fn proxy_environment_from_process() -> ProxyEnvironment {
 }
 
 fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) {
-    match (&env.http, &env.https) {
-        (Some(http), Some(https)) => {
+    let active_proxy = env
+        .http
+        .as_ref()
+        .or(env.https.as_ref())
+        .or(env.all.as_ref());
+    match (&env.http, &env.https, &env.all) {
+        (Some(http), Some(https), _) => {
             if http == https {
                 report.warn(format!(
                     "Current calciforge doctor process has ambient HTTP(S)_PROXY configured ({}); if the service runs with the same env, model-provider, channel, and control-plane traffic can route through security-proxy. Prefer no ambient proxy on the Calciforge service.",
@@ -636,20 +641,23 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
                 ));
             }
         }
-        (Some(http), None) => report.warn(format!(
+        (Some(http), None, _) => report.warn(format!(
             "Current calciforge doctor process has ambient HTTP_PROXY set ({}). Prefer no ambient proxy on the Calciforge service.",
             display_proxy_value(http)
         )),
-        (None, Some(https)) => report.warn(format!(
+        (None, Some(https), _) => report.warn(format!(
             "Current calciforge doctor process has ambient HTTPS_PROXY set ({}) but HTTP_PROXY is not set. Prefer no ambient proxy on the Calciforge service.",
             display_proxy_value(https)
         )),
-        (None, None) => report.ok(
-            "Current calciforge doctor process has no ambient HTTP_PROXY/HTTPS_PROXY",
-        ),
+        (None, None, Some(all)) => report.warn(format!(
+            "Current calciforge doctor process has ambient ALL_PROXY set ({}). Prefer no ambient proxy on the Calciforge service.",
+            display_proxy_value(all)
+        )),
+        (None, None, None) => report
+            .ok("Current calciforge doctor process has no ambient HTTP_PROXY/HTTPS_PROXY/ALL_PROXY"),
     }
 
-    if env.http.is_some() || env.https.is_some() {
+    if active_proxy.is_some() {
         let no_proxy = env.no_proxy.unwrap_or_default();
         if no_proxy.contains("127.0.0.1") || no_proxy.contains("localhost") {
             report.ok("NO_PROXY includes local loopback");
@@ -783,12 +791,7 @@ fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
             "hardened" | "maximum" | "paranoid"
         );
         let scans_agent_responses = security.scan_outbound.unwrap_or(profile_requires_egress);
-        security.require_agent_egress_proxy
-            || scans_agent_responses
-            || matches!(
-                security.profile.as_str(),
-                "hardened" | "maximum" | "paranoid"
-            )
+        security.require_agent_egress_proxy || scans_agent_responses
     })
 }
 
@@ -2856,7 +2859,7 @@ mod tests {
             finding.severity == Severity::Ok
                 && finding
                     .message
-                    .contains("no ambient HTTP_PROXY/HTTPS_PROXY")
+                    .contains("no ambient HTTP_PROXY/HTTPS_PROXY/ALL_PROXY")
         }));
     }
 
@@ -2898,6 +2901,29 @@ mod tests {
             finding.severity == Severity::Warn
                 && finding.message.contains("ambient HTTP(S)_PROXY configured")
         }));
+    }
+
+    #[test]
+    fn proxy_environment_warns_on_all_proxy_only_and_checks_no_proxy() {
+        let mut report = DoctorReport::default();
+        check_proxy_environment_in(
+            ProxyEnvironment {
+                all: Some("http://127.0.0.1:8888".to_string()),
+                no_proxy: None,
+                ..Default::default()
+            },
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn && finding.message.contains("ambient ALL_PROXY set")
+        }));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.message.contains("NO_PROXY does not include"))
+        );
     }
 
     #[test]
@@ -3136,6 +3162,19 @@ mod tests {
             finding.severity == Severity::Error
                 && finding.message.contains("have no explicit MITM proxy env")
         }));
+    }
+
+    #[test]
+    fn scan_outbound_false_relaxes_profile_default_strict_egress() {
+        let mut config = base_config();
+        config.security = Some(SecuritySectionConfig {
+            profile: "hardened".to_string(),
+            scan_outbound: Some(false),
+            require_agent_egress_proxy: false,
+            scanner_checks: vec![],
+        });
+
+        assert!(!security_requires_agent_egress_proxy(&config));
     }
 
     #[test]
