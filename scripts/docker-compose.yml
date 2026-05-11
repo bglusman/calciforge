@@ -51,6 +51,8 @@ services:
     image: calciforge-smoke:latest
     container_name: test-security-proxy
     entrypoint: ["/usr/local/bin/security-proxy"]
+    volumes:
+      - ./security-proxy-smoke.toml:/etc/calciforge/security-proxy.toml:ro
     environment:
       - RUST_LOG=security_proxy=debug,adversary_detector=debug
       - SECURITY_PROXY_BIND=0.0.0.0
