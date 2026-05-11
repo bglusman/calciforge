@@ -12,8 +12,9 @@ Date: 2026-05-08
 ## Context
 
 Calciforge now sits between human chat channels, downstream agents, a local
-model gateway, a security proxy, and optional external gateway engines such as
-Helicone. The same words have been used for several different boundaries:
+model gateway, a security proxy, and optional provider-owned boundaries such as
+Helicone, LiteLLM, or OpenRouter. The same words have been used for several
+different boundaries:
 
 - A channel receives a human message and sends replies.
 - An agent adapter controls or talks to a downstream agent runtime.
@@ -22,8 +23,8 @@ Helicone. The same words have been used for several different boundaries:
   dispatchers, and provider routes.
 - The security proxy is an HTTP(S) proxy/MITM path for tool and web traffic
   that is explicitly configured to use it.
-- An external gateway engine, currently Helicone, can sit behind Calciforge's
-  model gateway for observability and provider routing.
+- A provider-owned boundary, such as Helicone or LiteLLM, can sit behind
+  Calciforge's model gateway for observability and provider routing.
 
 Those surfaces overlap, but they are not interchangeable. A normal
 channel-to-agent dispatch does not automatically pass through the model gateway.
@@ -39,7 +40,7 @@ flowchart TD
   User["Human channel"] --> Router["Calciforge channel/router"]
   Router --> Adapter["Agent adapter"]
   Adapter -->|"only when runtime is configured for it"| Gateway["Calciforge model gateway"]
-  Gateway --> Engine["Gateway engine: builtin HTTP, Helicone, external HTTP gateway, or mock"]
+  Gateway --> Engine["ProviderAdapter: builtin HTTP, Helicone, external HTTP boundary, or mock"]
   Engine --> Provider["Model provider"]
 
   Adapter -->|"otherwise"| AgentEgress["Agent-owned model/tool egress"]
@@ -48,13 +49,13 @@ flowchart TD
 The root model gateway has a small supported backend set:
 
 - `http`: Calciforge's builtin HTTP upstream adapter. It is a minimal
-  compatibility path for OpenAI-compatible endpoints, not a mature external
-  gateway engine.
+  compatibility path for OpenAI-compatible endpoints, not a provider-owned
+  boundary.
 - `helicone`: Calciforge forwards through a Helicone AI Gateway process.
-- External OpenAI-compatible gateway endpoints such as LiteLLM are currently
+- External OpenAI-compatible provider boundary endpoints such as LiteLLM are currently
   configured as provider routes with `backend_type = "http"` and
-  `credential_owner = "gateway"`. In that shape, the builtin HTTP adapter is
-  only the transport to the gateway process; the external gateway owns its
+  `model_credential_owner = "provider"`. In that shape, the builtin HTTP adapter is
+  only the transport to the provider boundary; that boundary owns its
   model/provider registry and upstream keys.
 - `mock`: deterministic local/test behavior.
 

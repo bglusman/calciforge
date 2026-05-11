@@ -366,12 +366,15 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
         }
     }
 
-    // Check duplicate model shortcut aliases
+    let effective_shortcuts = config.effective_model_shortcuts();
+
+    // Check duplicate model shortcut aliases and model roles. Roles share the
+    // public model-selector namespace with shortcuts by design.
     let mut shortcut_aliases = HashSet::new();
-    for shortcut in &config.model_shortcuts {
+    for shortcut in &effective_shortcuts {
         if !shortcut_aliases.insert(&shortcut.alias) {
             result.add_error(format!(
-                "Duplicate model shortcut alias: '{}'",
+                "Duplicate model shortcut alias or role: '{}'",
                 shortcut.alias
             ));
         }
@@ -397,8 +400,8 @@ fn validate_no_duplicate_ids(config: &CalciforgeConfig, result: &mut ValidationR
             ));
         }
     }
-    for shortcut in &config.model_shortcuts {
-        if let Err(e) = resolve_model_alias_chain(&config.model_shortcuts, &shortcut.alias) {
+    for shortcut in &effective_shortcuts {
+        if let Err(e) = resolve_model_alias_chain(&effective_shortcuts, &shortcut.alias) {
             result.add_error(e);
         }
     }
@@ -579,13 +582,29 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         ));
     }
 
+    if proxy.providers.is_empty() && proxy.backend_type == "mock" {
+        result.add_error(
+            "Proxy enabled with no [[proxy.providers]] uses the mock provider adapter. Configure one or more explicit provider adapters, or set an explicit non-mock root backend_type for compatibility."
+                .to_string(),
+        );
+    }
+
+    if matches!(proxy.backend_type.as_str(), "http" | "helicone")
+        && proxy.backend_url.trim().is_empty()
+    {
+        result.add_error(format!(
+            "Proxy enabled with root backend_type='{}' requires backend_url. Use backend_type='mock' for an explicit-provider-only config where unmatched models should fail instead of falling back to a root provider.",
+            proxy.backend_type
+        ));
+    }
+
     // Validate backend_type against the same allowlist the runtime uses.
     if !crate::proxy::supported_root_gateway_backend_types()
         .iter()
         .any(|backend_type| *backend_type == proxy.backend_type)
     {
         result.add_error(format!(
-            "Proxy backend_type '{}' is unsupported. Use one of: {}. CLI-backed agents and experimental external gateways must be configured outside the root model gateway until their adapters are production-ready.",
+            "Proxy backend_type '{}' is unsupported. Use one of: {}. CLI-backed agents and experimental external gateways must be configured as agents or explicit provider adapters.",
             proxy.backend_type,
             crate::proxy::supported_root_gateway_backend_types().join(", ")
         ));
@@ -593,13 +612,13 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
 
     if proxy.backend_type == "http" {
         result.add_warning(
-            "Proxy backend_type='http' uses Calciforge's builtin HTTP upstream adapter. Use this as a compatibility or development path; prefer an external gateway engine such as Helicone or LiteLLM when gateway-owned provider routing, observability, or mature retry/key management are required."
+            "Proxy backend_type='http' uses Calciforge's legacy root builtin HTTP adapter. Prefer explicit [[proxy.providers]] adapters so model routing, aliases, credentials, and audit boundaries are scoped per provider."
                 .to_string(),
         );
     }
     if proxy.backend_type == "mock" {
         result.add_warning(
-            "Proxy backend_type='mock' returns deterministic local test responses and must not be used for a real agent deployment."
+            "Proxy backend_type='mock' returns deterministic local test responses and is test-only. Operational installs must choose explicit provider adapters."
                 .to_string(),
         );
     }
@@ -639,16 +658,15 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         }
 
         if provider.backend_type == "http" {
-            match provider.credential_owner {
-                CredentialOwner::Gateway => result.add_warning(format!(
-                    "Proxy provider '{}' uses backend_type='http' with credential_owner='gateway'; treating the endpoint as an external OpenAI-compatible gateway such as LiteLLM. Upstream model/provider keys are expected to live in that gateway, not Calciforge.",
+            match provider.model_credential_owner {
+                CredentialOwner::Provider => result.add_warning(format!(
+                    "Proxy provider '{}' uses backend_type='http' with model_credential_owner='provider'; treating the endpoint as a provider-owned OpenAI-compatible boundary such as LiteLLM. Upstream model/provider keys are expected to live in that provider boundary, not Calciforge.",
                     provider.id
                 )),
                 CredentialOwner::Calciforge => result.add_warning(format!(
-                    "Proxy provider '{}' uses Calciforge's builtin HTTP upstream adapter. This is a minimal compatibility path, not an external gateway engine; Helicone/LiteLLM observability, provider registry, and gateway-owned retry/key behavior will not apply to this route.",
+                    "Proxy provider '{}' uses Calciforge's builtin HTTP upstream adapter. This is a minimal compatibility path, not a provider-owned boundary; Helicone/LiteLLM observability, provider registry, and provider-owned retry/key behavior will not apply to this route.",
                     provider.id
                 )),
-                CredentialOwner::None => {}
             }
         }
 
@@ -693,32 +711,48 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
             );
         }
 
-        match provider.credential_owner {
-            CredentialOwner::Calciforge => {}
-            CredentialOwner::Gateway => {
-                if provider
-                    .api_key
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|key| !key.is_empty())
-                    || provider.api_key_file.is_some()
-                {
+        let has_provider_auth = provider
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty())
+            || provider.api_key_file.is_some();
+        let has_model_auth = provider
+            .model_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty())
+            || provider.model_api_key_file.is_some();
+
+        match provider.model_credential_owner {
+            CredentialOwner::Calciforge => {
+                if !has_model_auth && !has_provider_auth {
+                    result.add_error(format!(
+                        "Proxy provider '{}' has model_credential_owner='calciforge' but no model_api_key/model_api_key_file or legacy api_key/api_key_file. Calciforge-owned model credentials must be explicit; use model_credential_owner='provider' when the upstream provider boundary owns model credentials or no final model credential is required.",
+                        provider.id
+                    ));
+                } else if has_model_auth && has_provider_auth {
+                    result.add_error(format!(
+                        "Proxy provider '{}' configures both provider adapter auth (api_key/api_key_file) and Calciforge-owned model auth (model_api_key/model_api_key_file). The current builtin provider adapters send one bearer credential per request; use model_api_key/model_api_key_file for direct upstream model auth, or model_credential_owner='provider' when the provider boundary owns final model credentials.",
+                        provider.id
+                    ));
+                } else if !has_model_auth && has_provider_auth {
                     result.add_warning(format!(
-                        "Proxy provider '{}' has credential_owner='gateway'; api_key/api_key_file authenticate Calciforge to the gateway endpoint, not to the upstream model provider",
+                        "Proxy provider '{}' uses legacy api_key/api_key_file as both provider endpoint auth and Calciforge-owned model auth; prefer model_api_key/model_api_key_file when those credentials are conceptually separate",
                         provider.id
                     ));
                 }
             }
-            CredentialOwner::None => {
-                if provider
-                    .api_key
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|key| !key.is_empty())
-                    || provider.api_key_file.is_some()
-                {
+            CredentialOwner::Provider => {
+                if has_provider_auth {
                     result.add_warning(format!(
-                        "Proxy provider '{}' has credential_owner='none' but also configures api_key/api_key_file",
+                        "Proxy provider '{}' has model_credential_owner='provider'; api_key/api_key_file authenticate Calciforge to the provider boundary endpoint, not to the upstream model provider",
+                        provider.id
+                    ));
+                }
+                if has_model_auth {
+                    result.add_error(format!(
+                        "Proxy provider '{}' has model_credential_owner='provider' but also configures model_api_key/model_api_key_file; final model credentials are owned by the provider boundary, not Calciforge",
                         provider.id
                     ));
                 }
@@ -917,6 +951,72 @@ model = "local"
     }
 
     #[test]
+    fn model_roles_share_shortcut_resolution_and_cycle_checks() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[model_roles]]
+role = "fast"
+model = "balanced"
+
+[[model_shortcuts]]
+alias = "balanced"
+model = "fast"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "roles must share shortcut cycle validation"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("model shortcut cycle")
+                    && e.contains("fast -> balanced -> fast")),
+            "error should identify role/shortcut cycle; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn duplicate_model_role_and_shortcut_names_are_config_errors() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[[model_roles]]
+role = "security.screening"
+model = "local/qwen"
+
+[[model_shortcuts]]
+alias = "security.screening"
+model = "cloud/gpt"
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "roles and shortcuts share one public selector namespace"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("Duplicate model shortcut alias or role")
+                    && e.contains("security.screening")),
+            "error should identify duplicate role/shortcut name; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
     fn model_shortcut_alias_cannot_shadow_synthetic_model_id() {
         let fixture = format!(
             r#"
@@ -1068,6 +1168,7 @@ enabled = true
 id = "opencode-go"
 backend_type = "http"
 url = "https://opencode.ai/zen/go/v1"
+api_key = "test-provider-key"
 models = ["kimi-k2.6"]
 strip_model_prefix = "opencode-go/"
 "#
@@ -1128,7 +1229,7 @@ factor = 0
     }
 
     #[test]
-    fn gateway_owned_provider_key_is_endpoint_auth_warning_not_error() {
+    fn provider_owned_provider_key_is_endpoint_auth_warning_not_error() {
         let fixture = format!(
             r#"
 {MIN_VALID}
@@ -1140,7 +1241,7 @@ enabled = true
 id = "managed-gateway"
 backend_type = "http"
 url = "http://127.0.0.1:4000/v1"
-credential_owner = "gateway"
+model_credential_owner = "provider"
 api_key = "sk-local-gateway-client"
 models = ["gateway/default"]
 "#
@@ -1150,31 +1251,31 @@ models = ["gateway/default"]
 
         assert!(
             result.is_valid(),
-            "gateway-owned provider keys should be a supported config shape; errors: {:?}",
+            "provider-owned provider keys should be a supported config shape; errors: {:?}",
             result.errors
         );
         assert!(
             result.warnings.iter().any(|w| {
                 w.contains("managed-gateway")
-                    && w.contains("credential_owner='gateway'")
-                    && w.contains("gateway endpoint")
+                    && w.contains("model_credential_owner='provider'")
+                    && w.contains("provider boundary endpoint")
             }),
-            "warning should clarify api_key is gateway transport auth; warnings: {:?}",
+            "warning should clarify api_key is provider-boundary transport auth; warnings: {:?}",
             result.warnings
         );
         assert!(
             result.warnings.iter().any(|w| {
                 w.contains("managed-gateway")
-                    && w.contains("external OpenAI-compatible gateway")
+                    && w.contains("provider-owned OpenAI-compatible boundary")
                     && w.contains("LiteLLM")
             }),
-            "warning should distinguish gateway-owned HTTP endpoints from raw upstream providers; warnings: {:?}",
+            "warning should distinguish provider-owned HTTP endpoints from raw upstream providers; warnings: {:?}",
             result.warnings
         );
     }
 
     #[test]
-    fn builtin_http_provider_warns_that_it_is_not_external_gateway_engine() {
+    fn builtin_http_provider_warns_that_it_is_not_provider_owned_boundary() {
         let fixture = format!(
             r#"
 {MIN_VALID}
@@ -1188,6 +1289,7 @@ backend_url = "http://127.0.0.1:8787/ai"
 id = "raw-upstream"
 backend_type = "http"
 url = "https://example.invalid/v1"
+api_key = "test-provider-key"
 models = ["raw/model"]
 "#
         );
@@ -1203,7 +1305,7 @@ models = ["raw/model"]
             result.warnings.iter().any(|w| {
                 w.contains("raw-upstream")
                     && w.contains("builtin HTTP upstream adapter")
-                    && w.contains("not an external gateway engine")
+                    && w.contains("not a provider-owned boundary")
             }),
             "warning should prevent treating raw HTTP provider routes as equal to Helicone/LiteLLM; warnings: {:?}",
             result.warnings
@@ -1224,22 +1326,207 @@ backend_type = "mock"
         let config = parse(&fixture);
         let result = validate_config(&config);
 
+        assert!(!result.is_valid(), "mock without providers must fail now");
         assert!(
-            result.is_valid(),
-            "mock remains valid for smoke tests and local harnesses"
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("mock provider adapter")),
+            "error should make mock/no-provider invalid; errors: {:?}",
+            result.errors
         );
         assert!(
             result
                 .warnings
                 .iter()
-                .any(|w| w.contains("backend_type='mock'") && w.contains("real agent deployment")),
+                .any(|w| w.contains("backend_type='mock'") && w.contains("test-only")),
             "warning should keep mock out of production configs; warnings: {:?}",
             result.warnings
         );
     }
 
     #[test]
-    fn credential_owner_none_warns_when_key_is_configured() {
+    fn explicit_providers_do_not_make_blank_http_root_valid() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+backend_type = "http"
+backend_url = ""
+
+[[proxy.providers]]
+id = "managed"
+backend_type = "http"
+url = "http://127.0.0.1:4000/v1"
+model_credential_owner = "provider"
+models = ["managed/default"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "blank root HTTP backend should be invalid even when providers are configured"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("backend_type='http'") && e.contains("requires backend_url")),
+            "error should identify blank root backend_url; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn calciforge_owned_provider_requires_key_or_file() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "raw-upstream"
+backend_type = "http"
+url = "https://example.invalid/v1"
+model_credential_owner = "calciforge"
+models = ["raw/model"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "Calciforge-owned provider credentials must be explicit"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("raw-upstream")
+                    && e.contains("model_credential_owner='calciforge'")
+                    && e.contains("model_api_key/model_api_key_file")
+            }),
+            "error should identify provider and missing credential; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn calciforge_owned_provider_accepts_model_key_without_endpoint_key() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "raw-upstream"
+backend_type = "http"
+url = "https://example.invalid/v1"
+model_credential_owner = "calciforge"
+model_api_key = "upstream-model-key"
+models = ["raw/model"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            result.is_valid(),
+            "separate provider-auth and model-auth credentials should be valid; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.contains("legacy api_key/api_key_file as both")),
+            "explicit model credentials should avoid legacy dual-use warning; warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn calciforge_owned_provider_rejects_two_bearer_credentials() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "raw-upstream"
+backend_type = "http"
+url = "https://example.invalid/v1"
+api_key = "endpoint-virtual-key"
+model_credential_owner = "calciforge"
+model_api_key = "upstream-model-key"
+models = ["raw/model"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "current provider adapters cannot send two independent bearer credentials"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                e.contains("raw-upstream")
+                    && e.contains("both provider adapter auth")
+                    && e.contains("one bearer credential")
+            }),
+            "error should identify the two-credential conflict; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn provider_owned_model_credentials_reject_model_key() {
+        let fixture = format!(
+            r#"
+{MIN_VALID}
+
+[proxy]
+enabled = true
+
+[[proxy.providers]]
+id = "managed"
+backend_type = "http"
+url = "https://managed.example.invalid/v1"
+api_key = "adapter-client-key"
+model_credential_owner = "provider"
+model_api_key = "wrong-place"
+models = ["managed/default"]
+"#
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+
+        assert!(
+            !result.is_valid(),
+            "provider-owned final model credentials must not also configure model_api_key"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("managed") && e.contains("model_api_key")),
+            "error should identify provider-owned/model-key conflict; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn deprecated_model_credential_owner_none_aliases_to_provider() {
         let fixture = format!(
             r#"
 {MIN_VALID}
@@ -1251,25 +1538,23 @@ enabled = true
 id = "local"
 backend_type = "http"
 url = "http://127.0.0.1:11434/v1"
-credential_owner = "none"
-api_key = "unexpected"
+model_credential_owner = "none"
 models = ["ollama/qwen3.6:27b"]
 "#
         );
         let config = parse(&fixture);
+        let owner = config
+            .proxy
+            .as_ref()
+            .and_then(|proxy| proxy.providers.first())
+            .map(|provider| provider.model_credential_owner);
+        assert_eq!(owner, Some(CredentialOwner::Provider));
+
         let result = validate_config(&config);
 
         assert!(
             result.is_valid(),
-            "credential_owner='none' with a key is suspicious but not necessarily fatal"
-        );
-        assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("credential_owner='none'")),
-            "warning should identify key custody mismatch; warnings: {:?}",
-            result.warnings
+            "deprecated model_credential_owner='none' should parse as provider-owned/no Calciforge model credentials"
         );
     }
 
