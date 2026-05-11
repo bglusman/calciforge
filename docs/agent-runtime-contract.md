@@ -155,6 +155,11 @@ Every first-class adapter and documented recipe should answer these questions:
 
 - Which Calciforge capabilities are wired: MCP, CLI helper, proxy, artifact
   directory, channel plugin, callback, or model gateway?
+- Which ingress path receives user messages, and can the agent receive
+  equivalent operator input from any path Calciforge cannot see?
+- Which egress path carries model calls, browser/search/fetch tools, and
+  callback traffic, and is that path Calciforge-owned, proxy-tested, or only
+  cooperative?
 - Which instruction file or runtime setting teaches the agent to use those
   capabilities?
 - How can the operator verify the agent saw the instructions?
@@ -163,3 +168,9 @@ Every first-class adapter and documented recipe should answer these questions:
 
 If those answers are unknown, ship the integration as experimental and keep the
 recipe explicit about the gap.
+
+First-class adapters have a higher bar than recipes. A first-class adapter
+should either prove its protected ingress and egress paths or document the exact
+upstream limitation that prevents that proof. Generic CLI, generic ACP, and
+recipe adapters can still be useful, but they should not inherit the same
+security claim by name alone.

@@ -37,6 +37,14 @@ Channel message arrives
 Each `[[agents]]` entry defines one AI backend. The `kind` field selects the
 adapter. All other fields are adapter-specific.
 
+First-class adapters carry a stronger maintenance promise than generic
+wrappers: Calciforge should document how user ingress, callback auth, model
+egress, and tool/web egress are protected for that adapter, and regressions in
+those paths are Calciforge bugs where the upstream runtime gives us enough
+control to fix them. Generic CLI, generic ACP, and recipe adapters remain
+best-effort unless their recipe documents a tested boundary. In hardened
+profiles, prefer first-class adapters or explicitly verified recipes.
+
 ### Common fields
 
 | Field | Required | Default | Description |

@@ -556,7 +556,7 @@ pub struct MemoryConfig {
 /// `[security]` section — adversary detector settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecuritySectionConfig {
-    /// Security profile: open, balanced, hardened, paranoid
+    /// Security profile: off, open, minimal, balanced, hardened, maximum, paranoid.
     #[serde(default = "default_security_profile")]
     pub profile: String,
     /// Override outbound agent-response scanning. When unset, the selected

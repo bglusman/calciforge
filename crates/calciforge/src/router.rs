@@ -255,24 +255,24 @@ impl Router {
         match scanner.scan_text(&rendered, ScanContext::Api).await {
             ScanVerdict::Clean => response,
             ScanVerdict::Review { reason } => {
+                let reason_summary = scanner_reason_summary(&reason);
                 warn!(
                     agent_id = %agent.id,
-                    reason = %reason,
+                    reason = %reason_summary,
                     "agent response held for operator review by adversary scan"
                 );
-                OutboundMessage::text(format!(
-                    "Agent response held for operator review by Calciforge security gateway: {reason}"
-                ))
+                OutboundMessage::text(
+                    "Agent response held for operator review by Calciforge security gateway.",
+                )
             }
             ScanVerdict::Unsafe { reason } => {
+                let reason_summary = scanner_reason_summary(&reason);
                 warn!(
                     agent_id = %agent.id,
-                    reason = %reason,
+                    reason = %reason_summary,
                     "agent response BLOCKED by adversary scan"
                 );
-                OutboundMessage::text(format!(
-                    "Page blocked by Calciforge security gateway: {reason}"
-                ))
+                OutboundMessage::text("Page blocked by Calciforge security gateway.")
             }
         }
     }
@@ -316,6 +316,24 @@ impl Default for Router {
     }
 }
 
+fn scanner_reason_summary(reason: &str) -> String {
+    const MAX_REASON_CHARS: usize = 160;
+
+    let mut summary = String::new();
+    for (chars_seen, ch) in reason.chars().enumerate() {
+        if chars_seen >= MAX_REASON_CHARS {
+            summary.push_str("...");
+            break;
+        }
+        if ch.is_control() {
+            summary.push(' ');
+        } else {
+            summary.push(ch);
+        }
+    }
+    summary
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -325,8 +343,10 @@ mod tests {
     use super::*;
     use crate::config::{AgentConfig, CalciforgeConfig, CalciforgeHeader};
     use adversary_detector::{
-        audit::AuditLogger, middleware::ChannelScanner, profiles::SecurityConfig,
-        scanner::AdversaryScanner,
+        audit::AuditLogger,
+        middleware::ChannelScanner,
+        profiles::SecurityConfig,
+        scanner::{AdversaryScanner, ScannerCheckConfig, ScannerConfig},
     };
     use std::collections::HashMap;
 
@@ -429,6 +449,35 @@ mod tests {
         ))
     }
 
+    fn response_scanner_with_reason_echo_policy(
+        temp_dir: &tempfile::TempDir,
+    ) -> Arc<ChannelScanner> {
+        let policy = temp_dir.path().join("scanner.star");
+        std::fs::write(
+            &policy,
+            r#"
+def scan(input):
+    return {"verdict": "unsafe", "reason": input["content"]}
+"#,
+        )
+        .expect("write scanner policy");
+
+        let mut security_config = SecurityConfig::hardened();
+        security_config.scanner = ScannerConfig {
+            checks: vec![ScannerCheckConfig::Starlark {
+                path: policy.to_string_lossy().into_owned(),
+                fail_closed: true,
+                max_callstack: 64,
+            }],
+            ..Default::default()
+        };
+        Arc::new(ChannelScanner::new(
+            AdversaryScanner::new(security_config.scanner.clone()),
+            AuditLogger::new("calciforge-router-test"),
+            security_config,
+        ))
+    }
+
     #[test]
     fn test_router_creates() {
         let _r = Router::new();
@@ -506,6 +555,44 @@ mod tests {
         assert!(
             !result.contains("IGNORE ALL PREVIOUS INSTRUCTIONS"),
             "blocked payload must not be returned to the channel: {result}"
+        );
+        assert!(
+            !result.contains("reveal secrets"),
+            "scanner reasons must not echo blocked content to the channel: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_does_not_echo_untrusted_scanner_reason() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let router = Router::new()
+            .with_response_scanner(response_scanner_with_reason_echo_policy(&temp_dir));
+        let agent = cli_echo_agent();
+        let cfg = base_config();
+        let payload = "secret canary phrase from scanner reason";
+
+        let result = router.dispatch(payload, &agent, &cfg).await.unwrap();
+
+        assert_eq!(result, "Page blocked by Calciforge security gateway.");
+    }
+
+    #[test]
+    fn test_scanner_reason_summary_is_bounded_and_log_safe() {
+        let reason = format!("first line\nsecond line\r\n{}", "x".repeat(200));
+
+        let summary = scanner_reason_summary(&reason);
+
+        assert!(
+            summary.len() <= 163,
+            "summary should be capped plus ellipsis: {summary:?}"
+        );
+        assert!(
+            !summary.contains('\n') && !summary.contains('\r'),
+            "control characters should not be copied into structured logs: {summary:?}"
+        );
+        assert!(
+            summary.ends_with("..."),
+            "long reasons should make truncation obvious: {summary:?}"
         );
     }
 

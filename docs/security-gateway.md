@@ -7,10 +7,26 @@ title: Security Gateway
 
 The `security-gateway` checks agent tool and provider traffic that actually
 enters Calciforge-controlled paths. It is not automatic coverage for every
-process on the host. For stronger guarantees, route model calls through
-Calciforge's model gateway, give agents explicit Calciforge fetch/tool
-wrappers, or run the agent under a host/container boundary that prevents
-bypass.
+process on the host.
+
+Calciforge treats this as a support-tier question:
+
+- **First-class agents** should have tested ingress and egress contracts. If a
+  first-class adapter can receive user messages or send model/tool traffic
+  around Calciforge in a protected profile, treat that as a Calciforge bug or
+  an upstream limitation that needs a documented workaround.
+- **Recipe, generic CLI, and generic ACP agents** are best effort unless the
+  recipe documents a tested network boundary. Calciforge can give them safer
+  defaults, wrapper scripts, CLI helpers, and proxy env, but it cannot prove an
+  arbitrary agent runtime will not open another network path.
+- **Hardened deployments** should be able to reject or disable adapters whose
+  ingress, egress, or instruction path cannot be verified. That is the target
+  shape for release-hardening work; for now, `calciforge doctor` reports the
+  gaps it can see.
+
+For stronger guarantees, route model calls through Calciforge's model gateway,
+give agents explicit Calciforge fetch/tool wrappers, or run the agent under a
+host/container boundary that prevents bypass.
 
 ## 🛡️ Traffic Flow
 
@@ -52,7 +68,8 @@ recursively.
 ## 🚀 Deployment & Enforcement
 
 The gateway has several enforcement modes. They are not interchangeable; pick
-the strongest mode the target agent can actually run under.
+the strongest mode the target agent can actually run under, then verify that
+the selected agent adapter actually uses it.
 
 | Mode | Level | Status | Description |
 |------|-------|--------|-------------|
