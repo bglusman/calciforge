@@ -67,6 +67,18 @@ pub(crate) fn secret_access_identity_from_headers(
     }
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PlaceholderEnvError {
+    #[error("placeholder env secret reference in {key:?} must be the whole value")]
+    PartialSecretReference { key: String },
+
+    #[error(transparent)]
+    SecretReference(#[from] crate::substitution::SubstitutionError),
+
+    #[error(transparent)]
+    PlaceholderMap(#[from] crate::substitution::PlaceholderMapError),
+}
+
 // ── SecurityProxy ────────────────────────────────────────────────────────────
 
 /// Unified security proxy for all agent traffic.
@@ -170,6 +182,40 @@ impl SecurityProxy {
         let token = crate::substitution::generate_placeholder_token(&secret_name)?;
         self.register_secret_placeholder(agent_id, token.clone(), secret_name)?;
         Ok(token)
+    }
+
+    /// Generate placeholder-backed env for a lifecycle-managed agent.
+    ///
+    /// Values that are exactly `{{secret:NAME}}` are replaced with generated
+    /// opaque placeholders and registered for `agent_id`. Values without secret
+    /// references are preserved. Partial interpolation is rejected so the agent
+    /// never receives strings that mix literals with secret-bearing material.
+    pub fn generate_secret_placeholder_env(
+        &mut self,
+        agent_id: &str,
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<std::collections::HashMap<String, String>, PlaceholderEnvError> {
+        let mut rendered = env.clone();
+
+        for (key, value) in env {
+            if !value.contains("{{secret:") {
+                continue;
+            }
+
+            let names = crate::substitution::find_refs(value)?;
+            let Some(secret_name) = names.iter().next() else {
+                continue;
+            };
+            let exact_reference = format!("{{{{secret:{secret_name}}}}}");
+            if names.len() != 1 || value != &exact_reference {
+                return Err(PlaceholderEnvError::PartialSecretReference { key: key.clone() });
+            }
+
+            let placeholder = self.generate_secret_placeholder(agent_id, secret_name.clone())?;
+            rendered.insert(key.clone(), placeholder);
+        }
+
+        Ok(rendered)
     }
 
     // ── Fetch mode ───────────────────────────────────────────────────────
@@ -1418,6 +1464,89 @@ mod tests {
         assert_eq!(
             resolved.get(&token).map(String::as_str),
             Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_replaces_exact_secret_refs() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([
+            (
+                "OPENAI_API_KEY".to_string(),
+                "{{secret:OPENAI_API_KEY}}".to_string(),
+            ),
+            ("MODEL".to_string(), "gpt-test".to_string()),
+        ]);
+
+        let rendered = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect("exact env secret reference should render as a placeholder");
+        let token = rendered
+            .get("OPENAI_API_KEY")
+            .expect("secret env should be rendered");
+
+        assert_ne!(token, "{{secret:OPENAI_API_KEY}}");
+        assert_eq!(rendered.get("MODEL").map(String::as_str), Some("gpt-test"));
+        assert_eq!(
+            crate::substitution::placeholder_name_hint(token),
+            Some("OPENAI_API_KEY")
+        );
+
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let resolved = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                None,
+                None,
+                &identity,
+            )
+            .expect("generated env placeholder should be registered");
+
+        assert_eq!(
+            resolved.get(token).map(String::as_str),
+            Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_rejects_partial_secret_refs() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig::default(),
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([(
+            "DATABASE_URL".to_string(),
+            "postgres://{{secret:DATABASE_PASSWORD}}@db.local/app".to_string(),
+        )]);
+
+        let err = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect_err("partial env interpolation should fail closed");
+
+        assert_eq!(
+            err,
+            PlaceholderEnvError::PartialSecretReference {
+                key: "DATABASE_URL".to_string(),
+            }
         );
     }
 
