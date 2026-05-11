@@ -58,7 +58,7 @@ fn active_session_state_file_path_for(state_dir: &Path) -> PathBuf {
 
 fn acpx_binary_for_agent(agent_cfg: &crate::config::AgentConfig) -> Result<PathBuf, String> {
     find_executable_for_agent("acpx", agent_cfg.env.as_ref()).ok_or_else(|| {
-        "acpx executable was not found on Calciforge's service PATH or this agent's configured env.PATH; install acpx or set PATH for this agent".to_string()
+        "acpx executable was not found on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH".to_string()
     })
 }
 
@@ -73,22 +73,18 @@ fn session_runtime_readiness_error(agent_cfg: &crate::config::AgentConfig) -> Op
             };
             if find_executable_for_agent(command, agent_cfg.env.as_ref()).is_none() {
                 return Some(format!(
-                    "configured ACPX downstream command '{}' was not found on Calciforge's service PATH or this agent's configured env.PATH",
+                    "configured ACPX downstream command '{}' was not found on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH",
                     command
                 ));
             }
             None
         }
         "codex-cli" | "claude-cli" | "kimi-cli" => {
-            let Some(command) = subprocess_command_for_agent(agent_cfg) else {
-                return Some(format!(
-                    "{} agent is missing a command and has no default command",
-                    agent_cfg.kind
-                ));
-            };
+            let command = subprocess_command_for_agent(agent_cfg)
+                .expect("cli session-capable agents have default commands");
             if find_executable_for_agent(command, agent_cfg.env.as_ref()).is_none() {
                 return Some(format!(
-                    "configured command '{}' was not found on Calciforge's service PATH or this agent's configured env.PATH",
+                    "configured command '{}' was not found on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH",
                     command
                 ));
             }

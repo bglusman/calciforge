@@ -1358,7 +1358,7 @@ fn check_agent_runtime_dependencies(agent: &AgentConfig, report: &mut DoctorRepo
                 path.display()
             )),
             None => report.error(format!(
-                "agent '{}' kind 'acpx' requires acpx on Calciforge's service PATH or this agent's env.PATH; install acpx before using !sessions, !new, or message dispatch",
+                "agent '{}' kind 'acpx' requires acpx on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH",
                 agent.id
             )),
         }
@@ -1373,7 +1373,7 @@ fn check_agent_runtime_dependencies(agent: &AgentConfig, report: &mut DoctorRepo
                 path.display()
             )),
             None => report.error(format!(
-                "agent '{}' kind '{}' command '{}' is not on Calciforge's service PATH or this agent's env.PATH; install the client in the same runtime that runs Calciforge",
+                "agent '{}' kind '{}' command '{}' is not on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH",
                 agent.id, agent.kind, command
             )),
         },
