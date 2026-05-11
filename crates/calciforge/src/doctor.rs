@@ -1712,6 +1712,7 @@ struct OpenClawChannelStatus {
     reply_webhook: Option<String>,
     reply_auth_token_sha256: Option<String>,
     egress_proxy: Option<OpenClawEgressProxyStatus>,
+    model_runtime: Option<OpenClawModelRuntimeStatus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1726,6 +1727,24 @@ struct OpenClawEgressProxyStatus {
     curl_ca_bundle: bool,
     git_ssl_ca_info: bool,
     no_proxy_loopback: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawModelRuntimeStatus {
+    ok: bool,
+    agent_runtime: Option<String>,
+    primary: Option<String>,
+    fallbacks: Vec<String>,
+    unsupported: Vec<OpenClawUnsupportedModelProvider>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawUnsupportedModelProvider {
+    model: Option<String>,
+    provider: Option<String>,
+    reason: String,
 }
 
 fn check_openclaw_channel_status(
@@ -1764,6 +1783,7 @@ fn check_openclaw_channel_status(
     }
 
     check_openclaw_egress_proxy_status(agent, status.egress_proxy.as_ref(), strict_egress, report);
+    check_openclaw_model_runtime_status(agent, status.model_runtime.as_ref(), report);
 
     let Some(reply_webhook) = status.reply_webhook.as_deref() else {
         return;
@@ -1804,6 +1824,53 @@ fn check_openclaw_channel_status(
             agent.id, reply_ip, source_ip
         ));
     }
+}
+
+fn check_openclaw_model_runtime_status(
+    agent: &AgentConfig,
+    status: Option<&OpenClawModelRuntimeStatus>,
+    report: &mut DoctorReport,
+) {
+    let Some(status) = status else {
+        report.warn(format!(
+            "agent '{}' openclaw-channel did not report model runtime compatibility; upgrade the Calciforge OpenClaw channel plugin before relying on deployment preflight",
+            agent.id
+        ));
+        return;
+    };
+
+    if status.ok {
+        let primary = status.primary.as_deref().unwrap_or("(none)");
+        report.ok(format!(
+            "agent '{}' openclaw-channel model route is compatible with runtime '{}': primary={}, fallbacks={}",
+            agent.id,
+            status.agent_runtime.as_deref().unwrap_or("(unknown)"),
+            primary,
+            status.fallbacks.len()
+        ));
+        return;
+    }
+
+    let details = status
+        .unsupported
+        .iter()
+        .map(|entry| {
+            let model = entry.model.as_deref().unwrap_or("(unknown model)");
+            let provider = entry.provider.as_deref().unwrap_or("(unknown provider)");
+            format!("{model} via {provider}: {}", entry.reason)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    report.error(format!(
+        "agent '{}' openclaw-channel model route is incompatible with runtime '{}': {}; fix agents.defaults.model or agents.defaults.agentRuntime before deployment",
+        agent.id,
+        status.agent_runtime.as_deref().unwrap_or("(unknown)"),
+        if details.is_empty() {
+            "no compatible configured model route reported".to_string()
+        } else {
+            details
+        }
+    ));
 }
 
 fn check_openclaw_egress_proxy_status(
@@ -2119,6 +2186,7 @@ mod tests {
             reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
             reply_auth_token_sha256: Some(sha256_prefix(&["stale", "reply"].join("-"))),
             egress_proxy: None,
+            model_runtime: None,
         };
         let mut report = DoctorReport::default();
 
@@ -2152,6 +2220,7 @@ mod tests {
             reply_webhook: Some("http://198.51.100.30:18797/hooks/reply".to_string()),
             reply_auth_token_sha256: Some(sha256_prefix(&expected_reply)),
             egress_proxy: None,
+            model_runtime: None,
         };
         let mut report = DoctorReport::default();
 
@@ -2182,6 +2251,7 @@ mod tests {
             reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
             reply_auth_token_sha256: None,
             egress_proxy: None,
+            model_runtime: None,
         };
         let mut report = DoctorReport::default();
 
@@ -2225,6 +2295,13 @@ mod tests {
                 git_ssl_ca_info: false,
                 no_proxy_loopback: true,
             }),
+            model_runtime: Some(OpenClawModelRuntimeStatus {
+                ok: true,
+                agent_runtime: Some("pi".to_string()),
+                primary: Some("calciforge/gpt55-kimi26".to_string()),
+                fallbacks: vec![],
+                unsupported: vec![],
+            }),
         };
         let mut report = DoctorReport::default();
 
@@ -2241,6 +2318,51 @@ mod tests {
                 && finding
                     .message
                     .contains("reports complete MITM proxy/CA egress env")
+        }));
+    }
+
+    #[test]
+    fn openclaw_channel_status_errors_on_incompatible_model_runtime() {
+        let agent = AgentConfig {
+            id: "custodian".to_string(),
+            kind: "openclaw-channel".to_string(),
+            endpoint: "http://198.51.100.20:18790".to_string(),
+            reply_port: Some(18797),
+            ..Default::default()
+        };
+        let status = OpenClawChannelStatus {
+            plugin: Some("calciforge-channel".to_string()),
+            reply_webhook: Some("http://198.51.100.10:18797/hooks/reply".to_string()),
+            reply_auth_token_sha256: None,
+            egress_proxy: None,
+            model_runtime: Some(OpenClawModelRuntimeStatus {
+                ok: false,
+                agent_runtime: Some("codex".to_string()),
+                primary: Some("openai/gpt-5.5".to_string()),
+                fallbacks: vec!["calciforge/gpt55-kimi26".to_string()],
+                unsupported: vec![OpenClawUnsupportedModelProvider {
+                    model: Some("calciforge/gpt55-kimi26".to_string()),
+                    provider: Some("calciforge".to_string()),
+                    reason:
+                        "agentRuntime 'codex' cannot load configured model provider 'calciforge'"
+                            .to_string(),
+                }],
+            }),
+        };
+        let mut report = DoctorReport::default();
+
+        check_openclaw_channel_status(
+            &agent,
+            &status,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10))),
+            false,
+            &mut report,
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Error
+                && finding.message.contains("model route is incompatible")
+                && finding.message.contains("calciforge/gpt55-kimi26")
         }));
     }
 

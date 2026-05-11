@@ -181,7 +181,7 @@ async function handleInboundRequest({
       json(res, 401, { error: "Unauthorized" });
       return true;
     }
-    json(res, 200, buildStatusPayload({ replyWebhook, replyAuthToken }));
+    json(res, 200, await buildStatusPayload({ getRuntime, replyWebhook, replyAuthToken, log }));
     return true;
   }
 
@@ -733,15 +733,119 @@ function isAuthorized(req, expectedToken) {
   return token === expectedToken;
 }
 
-function buildStatusPayload({ replyWebhook, replyAuthToken }) {
+async function buildStatusPayload({ getRuntime, replyWebhook, replyAuthToken, log, config }) {
+  const modelRuntime = await buildModelRuntimeStatus({ getRuntime, log, config });
   return {
     ok: true,
     plugin: "calciforge-channel",
     replyWebhook,
     replyAuthTokenSha256: sha256Hex(replyAuthToken).slice(0, 16),
     egressProxy: buildEgressProxyStatus(),
+    modelRuntime,
   };
 }
+
+async function buildModelRuntimeStatus({ getRuntime, log, config } = {}) {
+  let cfg = config;
+  if (!cfg && typeof getRuntime === "function") {
+    try {
+      const runtime = await getRuntime();
+      cfg = runtime?.config?.current?.();
+    } catch (err) {
+      const reason = `failed to inspect OpenClaw runtime config: ${err.message}`;
+      log?.warn?.(`[calciforge-channel] ${reason}`);
+      return {
+        ok: false,
+        agentRuntime: null,
+        primary: null,
+        fallbacks: [],
+        unsupported: [{ model: null, provider: null, reason }],
+      };
+    }
+  }
+
+  const route = normalizeModelRoute(cfg?.agents?.defaults?.model);
+  const agentRuntime = resolveAgentRuntimeId(cfg);
+  const unsupported = [];
+
+  for (const model of [route.primary, ...route.fallbacks].filter(Boolean)) {
+    const provider = parseModelProvider(model);
+    if (!provider) continue;
+    const reason = unsupportedModelProviderReason({
+      agentRuntime,
+      provider,
+      configuredProviders: cfg?.models?.providers,
+    });
+    if (reason) {
+      unsupported.push({ model, provider, reason });
+    }
+  }
+
+  return {
+    ok: unsupported.length === 0,
+    agentRuntime,
+    primary: route.primary,
+    fallbacks: route.fallbacks,
+    unsupported,
+  };
+}
+
+function normalizeModelRoute(value) {
+  if (typeof value === "string") {
+    return { primary: normalizeString(value) || null, fallbacks: [] };
+  }
+  if (!value || typeof value !== "object") {
+    return { primary: null, fallbacks: [] };
+  }
+  return {
+    primary: normalizeString(value.primary) || null,
+    fallbacks: Array.isArray(value.fallbacks)
+      ? value.fallbacks.map((entry) => normalizeString(entry)).filter(Boolean)
+      : [],
+  };
+}
+
+function resolveAgentRuntimeId(cfg) {
+  return (
+    normalizeString(process.env.OPENCLAW_AGENT_RUNTIME) ||
+    normalizeString(cfg?.agents?.defaults?.agentRuntime?.id) ||
+    "pi"
+  );
+}
+
+function parseModelProvider(modelRef) {
+  const model = normalizeString(modelRef);
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash);
+}
+
+function unsupportedModelProviderReason({
+  agentRuntime,
+  provider,
+  configuredProviders,
+}) {
+  if (!provider) return null;
+  if (agentRuntime === "codex" && !CODEX_RUNTIME_PROVIDER_ALLOWLIST.has(provider)) {
+    return `agentRuntime '${agentRuntime}' cannot load configured model provider '${provider}'`;
+  }
+  if (
+    agentRuntime !== "codex" &&
+    !BUILTIN_MODEL_PROVIDERS.has(provider) &&
+    !Object.prototype.hasOwnProperty.call(configuredProviders ?? {}, provider)
+  ) {
+    return `model provider '${provider}' is not present in OpenClaw config`;
+  }
+  return null;
+}
+
+const CODEX_RUNTIME_PROVIDER_ALLOWLIST = new Set(["openai", "openai-codex"]);
+const BUILTIN_MODEL_PROVIDERS = new Set([
+  "anthropic",
+  "google",
+  "openai",
+  "openai-codex",
+]);
 
 function buildEgressProxyStatus() {
   const env = process.env;
@@ -1100,6 +1204,7 @@ export const testInternals = {
   recoverReplyAfterRunError,
   buildCalciforgeChannelContext,
   buildStatusPayload,
+  buildModelRuntimeStatus,
   buildEgressProxyStatus,
   validateInboundRoute,
   stringSet,

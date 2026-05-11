@@ -105,6 +105,12 @@ OpenClaw channel delivery configured on the same node. The native OpenClaw
 channel runtime remains available only when the plugin config sets
 `useNativeChannelRuntime: true`.
 
+The plugin status endpoint also reports the OpenClaw default agent runtime and
+the configured primary/fallback model route. `calciforge doctor` fails the
+agent check when the selected runtime cannot load one of those providers, so a
+broken fallback cannot pass deployment preflight and later surface as a generic
+`OpenClaw run error`.
+
 ```toml
 [[agents]]
 id = "primary-agent"
@@ -430,7 +436,9 @@ calciforge doctor   # checks agent reachability and identity/routing consistency
 calciforge          # start; send a message from a configured alias
 ```
 
-`calciforge doctor` warns on common misconfigurations: missing `api_key` on
-`openclaw-channel` agents, `openai-compat` without `model`, subprocess agents
-whose command is not visible to the Calciforge runtime, identities with no
-routing rule, and routing rules that reference undefined agents.
+`calciforge doctor` warns or fails on common misconfigurations: missing
+`api_key` on `openclaw-channel` agents, stale reply callback tokens or hosts,
+OpenClaw runtime/model incompatibilities, `openai-compat` without `model`,
+subprocess agents whose command is not visible to the Calciforge runtime,
+identities with no routing rule, and routing rules that reference undefined
+agents.
