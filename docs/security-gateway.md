@@ -5,12 +5,12 @@ title: Security Gateway
 
 # Security Gateway Architecture
 
-The `security-gateway` is an enforcement point for agent tool and provider
-traffic that actually enters Calciforge-controlled paths. It is not automatic
-coverage for every process on the host. For strong guarantees, route model
-calls through Calciforge's model gateway, give agents explicit Calciforge
-fetch/tool wrappers, or run the agent under a host/container boundary that
-prevents bypass.
+The `security-gateway` checks agent tool and provider traffic that actually
+enters Calciforge-controlled paths. It is not automatic coverage for every
+process on the host. For stronger guarantees, route model calls through
+Calciforge's model gateway, give agents explicit Calciforge fetch/tool
+wrappers, or run the agent under a host/container boundary that prevents
+bypass.
 
 ## 🛡️ Traffic Flow
 
@@ -21,15 +21,33 @@ checks, and LAN control-plane traffic should not use ambient
 requests and internal webhooks through the security proxy unnecessarily or
 recursively.
 
-**Outbound Pipeline:**
-1. **Manual Credential Check**: Before Calciforge substitutes any secrets, IronClaw checks the original agent-supplied URL and headers for raw credentials such as `api_key=sk-...` or direct `Authorization` values. Exact proxy-managed placeholders such as `{% raw %}{{secret:NAME}}{% endraw %}` and `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are treated as safe control syntax; mixed manual+placeholder values still remain visible to the check.
-2. **Exfiltration Scan**: Outgoing request bodies are analyzed by the `adversary-detector` for secrets, PII, or adversarial patterns.
-3. **Secret Substitution and Credential Injection**: When the request is visible to Calciforge, the gateway can substitute placeholders such as `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported bodies, and inject provider `Authorization` headers from the vault.
-4. **Control Header Strip and Forwarding**: Calciforge strips `X-Calciforge-*` control headers, then forwards the request to the destination.
+**Outbound pipeline:**
 
-**Inbound Pipeline:**
-1. **Injection Scan**: Incoming response bodies are scanned for prompt injection or adversarial payloads.
-2. **Enforcement**: If the response is deemed `unsafe`, the gateway blocks the content and returns a `403 Forbidden` to the agent.
+1. **Manual credential check:** Before Calciforge substitutes any secrets,
+   IronClaw checks the original agent-supplied URL and headers for raw
+   credentials such as `api_key=sk-...` or direct `Authorization` values. Exact
+   proxy-managed placeholders such as
+   `{% raw %}{{secret:NAME}}{% endraw %}` and
+   `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are safe control syntax;
+   mixed manual-plus-placeholder values still remain visible to the check.
+2. **Exfiltration scan:** Outgoing request bodies are analyzed by the
+   `adversary-detector` for exfiltration language, credential-harvest phrasing,
+   and adversarial patterns. Broad high-entropy body scanning is still roadmap
+   work.
+3. **Secret substitution and credential injection:** When the request is
+   visible to Calciforge, the gateway can substitute placeholders such as
+   `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported
+   bodies, and inject provider `Authorization` headers from the vault.
+4. **Control header strip and forwarding:** Calciforge strips
+   `X-Calciforge-*` control headers, then forwards the request to the
+   destination.
+
+**Inbound pipeline:**
+
+1. **Injection scan:** Incoming text-like response bodies are scanned for
+   prompt injection or adversarial payloads.
+2. **Enforcement:** If the response is deemed `unsafe`, the gateway blocks the
+   content and returns `403 Forbidden` to the agent.
 
 ## 🚀 Deployment & Enforcement
 
@@ -511,7 +529,7 @@ gates.
 [security.secret_access]
 [[security.secret_access.rules]]
 agents = ["research-*"]
-users = ["brian"]
+users = ["owner"]
 channels = ["signal"]
 secrets = ["BRAVE_*", "SEARCH_*"]
 ```

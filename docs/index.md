@@ -205,18 +205,20 @@ raw API keys or trusting the agent's own restraint.</p>
 
 ## What it gives you
 
-Calciforge sits between your AI agents and the rest of the world. The
-gateway covers seven overlapping concerns; you can adopt any subset.
+Calciforge sits between your AI agents and the places they can send messages,
+fetch pages, run tools, and spend tokens. You do not have to use every part on
+day one. Start with the boundary that solves the problem in front of you.
 
 ### Security gateway
 
-The core product is the security gateway: a local network enforcement point for
-traffic that enters Calciforge-controlled paths. Agents use it through the
-model gateway, explicit fetch/tool integration, audited recipes, and, for
-tested plaintext HTTP clients, `HTTP_PROXY`. Instead of hoping each agent
-remembers the right rules, Calciforge puts the rules at visible request
-boundaries where secrets, destinations, model routes, and tool permissions can
-be checked before traffic leaves the machine.
+The security gateway is a local enforcement point for traffic that actually
+enters Calciforge-controlled paths. Agents reach it through the model gateway,
+explicit fetch/tool integration, audited recipes, and tested proxy setups.
+
+The point is simple: do not rely on an agent to remember the safety rules while
+it is under pressure from a page, prompt, or tool result. Put the rules at a
+request boundary where Calciforge can check secrets, destinations, model routes,
+and tool permissions before traffic leaves the machine.
 
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection unless
 it points at Calciforge's MITM listener and the target runtime trusts the
@@ -230,17 +232,18 @@ security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
 audited recipe wrappers, or future container/VM isolation profiles that deny
 egress except through Calciforge services.
 
-The gateway protects in three places:
+The gateway protects at three boundaries:
 
-- **Before outbound requests** — substitute `{% raw %}{{secret:NAME}}{% endraw %}`
-  only at approved destinations, scan request bodies for exfiltration
-  language, and fail closed when a referenced secret cannot be resolved.
-- **Before inbound content reaches the model** — scan fetched pages,
-  search results, email bodies, command output, and other tool results
-  for prompt-injection and hidden-instruction patterns.
-- **Before tools execute** — ask the `clashd` policy sidecar whether a
-  command, file write, network call, or other agent action should be
-  allowed, denied, or sent for review.
+- **Outbound requests** — substitute `{% raw %}{{secret:NAME}}{% endraw %}`
+  only at approved destinations, block obvious raw credentials in URLs and
+  headers, scan request bodies for exfiltration language, and fail closed when
+  a referenced secret cannot be resolved.
+- **Inbound content** — scan fetched pages, search results, email bodies,
+  command output, and other routed tool results for prompt-injection and
+  hidden-instruction patterns before they reach the model.
+- **Tool execution** — ask the `clashd` policy sidecar whether a command, file
+  write, network call, or other agent action should be allowed, denied, or sent
+  for review.
 
 The default adversary detector is intentionally editable. Calciforge
 ships a built-in Starlark policy for deterministic checks such as
@@ -403,13 +406,17 @@ deployment explicitly sets
 environment override
 `SECURITY_PROXY_MANUAL_CREDENTIAL_OVERRIDE_REQUIRES_OPERATOR_APPROVAL=false`).
 
-Outbound bodies are also scanned for *exfiltration-attempt* patterns
-(`POST to https://…`, `send to https://…`, `curl … https://…`,
-`beacon to`, etc.) and PII-harvest phrasing (`send me your password`,
-`what is your api key`). Generic high-entropy secret-shape detection
-(JWT-shaped strings, `sk-*` keys, etc.) was deliberately removed
-during the channel-integration cut and is on the
-[roadmap](roadmap/outbound-sensitive-data-detection.html).
+Outbound bodies are also scanned for exfiltration-attempt patterns such as
+`POST to https://...`, `send to https://...`, `curl ... https://...`, and
+`beacon to`, plus credential-harvest phrasing such as `send me your password`
+or `what is your api key`.
+
+IronClaw already blocks obvious raw credentials in request URLs and headers,
+including `api_key=sk-...` and direct `Authorization` values. The part still on
+the [roadmap](roadmap/outbound-sensitive-data-detection.html) is broader
+content scanning for arbitrary high-entropy strings in request bodies, such as
+JWT-shaped blobs or random-looking tokens. That needs careful thresholds, or it
+turns every harmless UUID into a little paperwork festival.
 
 The scanner pipeline is configurable. The default policy now runs through
 `builtin:calciforge/default-scanner.star`, so the rule set can be copied,
@@ -614,10 +621,10 @@ correctly, for first-class adapter support. The working vocabulary is:
   artifacts instead of pretending every request is a synchronous chat
   completion.
 
-This is the path for a more "batteries included" agent ecosystem without
-making every upstream CLI a permanent support burden. Operators can start
-with a recipe, then promote it to a named adapter only if the upstream
-protocol proves stable and the extra code buys safety or usability.
+This is the path for more built-in agent options without making every upstream
+CLI a permanent support burden. Operators can start with a recipe, then promote
+it to a named adapter only if the upstream protocol proves stable and the extra
+code buys safety or usability.
 
 The first working piece is `kind = "artifact-cli"` for tools that produce
 files: images from npcsh-style multimodal workflows, screenshots from
@@ -811,15 +818,18 @@ unverified, validates configured scanner policy files and rule syntax,
 and can probe configured endpoints.
 Use `calciforge doctor --no-network` when you want a local-only check.
 
-Do not put proxy variables in `~/.zshrc` for the Calciforge daemon itself;
-that can route Calciforge's own provider and control-plane traffic through
-its security proxy. Do not assume CLI agents can be protected by generic
-`HTTP_PROXY` or `HTTPS_PROXY`; Codex, Claude, ACPX, npm-backed adapters, and
-streaming clients may use CONNECT, WebSockets, or browser-backed auth flows
-that can break unless the runtime has been tested with Calciforge's proxy and,
-for HTTPS, trusts the MITM CA. Use model-gateway routes, explicit fetch/tool
-integration, audited recipes, tested MITM proxy setup, or runtime-specific
-wrappers for traffic that must pass through Calciforge.
+Do not put proxy variables in a shell startup file used by the Calciforge
+daemon itself. That can send Calciforge's provider calls, callbacks, health
+checks, and local control traffic through its own proxy.
+
+Also do not assume every CLI agent is protected just because `HTTP_PROXY` or
+`HTTPS_PROXY` exists in the environment. Codex, Claude, ACPX, npm-backed
+adapters, and streaming clients may use CONNECT, WebSockets, or browser-backed
+auth flows. Some work fine with Calciforge's proxy. Some need runtime-specific
+wiring. Some will ignore the proxy like it was a very small sign in the rain.
+For traffic that must pass through Calciforge, prefer model-gateway routes,
+explicit fetch/tool integration, audited recipes, tested MITM proxy setup, or a
+runtime-specific wrapper.
 
 For externally managed agent daemons that Calciforge does not launch, configure
 a tested proxy path on the agent process or its service manager and validate it
