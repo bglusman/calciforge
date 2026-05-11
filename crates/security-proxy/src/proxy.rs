@@ -146,6 +146,22 @@ impl SecurityProxy {
         self.placeholder_map.insert(agent_id, token, secret_name)
     }
 
+    /// Generate and register one lifecycle-owned placeholder token.
+    ///
+    /// The returned token is safe to pass to an agent as an opaque stand-in,
+    /// but it is still only useful if a later outbound request presents the
+    /// same agent identity and passes the normal policy gate.
+    pub fn generate_secret_placeholder(
+        &mut self,
+        agent_id: impl Into<String>,
+        secret_name: impl Into<String>,
+    ) -> Result<String, crate::substitution::PlaceholderMapError> {
+        let secret_name = secret_name.into();
+        let token = crate::substitution::generate_placeholder_token(&secret_name)?;
+        self.register_secret_placeholder(agent_id, token.clone(), secret_name)?;
+        Ok(token)
+    }
+
     // ── Fetch mode ───────────────────────────────────────────────────────
 
     /// Fetch a URL through the security proxy.
@@ -1350,6 +1366,47 @@ mod tests {
 
         assert_eq!(
             resolved.get(token).map(String::as_str),
+            Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn generated_placeholder_registers_for_policy_gated_resolution() {
+        let mut proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let token = proxy
+            .generate_secret_placeholder("agent-a", "OPENAI_API_KEY")
+            .unwrap();
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let resolved = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolved.get(&token).map(String::as_str),
             Some("OPENAI_API_KEY")
         );
     }
