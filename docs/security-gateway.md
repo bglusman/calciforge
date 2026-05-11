@@ -40,16 +40,19 @@ recursively.
 **Outbound pipeline:**
 
 1. **Manual credential check:** Before Calciforge substitutes any secrets,
-   IronClaw checks the original agent-supplied URL and headers for raw
-   credentials such as `api_key=sk-...` or direct `Authorization` values. Exact
+   IronClaw checks the original agent-supplied URL and non-transport headers
+   for raw credentials such as `api_key=sk-...`. Transport-auth headers such
+   as `Authorization`, `Cookie`, and provider API-key headers are sanitized
+   before this check; otherwise normal model/provider sessions and local
+   gateways generate false positives. Exact
    proxy-managed placeholders such as
    `{% raw %}{{secret:NAME}}{% endraw %}` and
    `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are safe control syntax;
    mixed manual-plus-placeholder values still remain visible to the check.
-2. **Exfiltration scan:** Outgoing request bodies are analyzed by the
+2. **Optional exfiltration scan:** When `scan_outbound = true`, outgoing request bodies are analyzed by the
    `adversary-detector` for exfiltration language, credential-harvest phrasing,
-   and adversarial patterns. Broad high-entropy body scanning is still roadmap
-   work.
+   and adversarial patterns. This is opt-in by default because provider/tool
+   transcripts often include benign prompt-injection examples and opaque IDs.
 3. **Secret substitution and credential injection:** When the request is
    visible to Calciforge, the gateway can substitute placeholders such as
    `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported
@@ -61,8 +64,12 @@ recursively.
 **Inbound pipeline:**
 
 1. **Injection scan:** Incoming text-like response bodies are scanned for
-   prompt injection or adversarial payloads.
-2. **Enforcement:** If the response is deemed `unsafe`, the gateway blocks the
+   prompt injection or adversarial payloads. This remains default-on.
+2. **Optional response secret-leak scan:** When `scan_response_secrets = true`,
+   response bodies are also checked for high-entropy and secret-shaped values.
+   This is opt-in by default because provider APIs commonly return opaque IDs
+   and hashes as normal transport data.
+3. **Enforcement:** If the response is deemed `unsafe`, the gateway blocks the
    content and returns `403 Forbidden` to the agent.
 
 ## 🚀 Deployment & Enforcement
@@ -293,13 +300,18 @@ Not every gateway denial should be equally overrideable. Recommended defaults:
 | `agent_web.scan_search_responses` blocked result | Yes | Prefer config only | Operator config change required |
 | Provider-side browsing tool stripped/blocked | Yes | Prefer config only | Operator config change required |
 | Inbound prompt-injection / unsafe response scan | Yes, scanner policy | Not by agent header | Operator policy/config change required |
-| Outbound exfiltration scan | Yes, scanner policy | Not by agent header | Operator policy/config change required |
+| Outbound exfiltration scan | Yes, scanner policy; default off | Not by agent header | Operator policy/config change required |
+| Response secret-leak scan | Yes; default off | Not by agent header | Operator policy/config change required |
 
 The reason for the split is blast radius. Manual-credential detection can be a
 false positive for legacy APIs that use unfortunate parameter names, so a
-scoped override is useful. Destination allowlists, prompt-injection blocks, and
-exfiltration blocks are higher-risk policy boundaries; an agent should receive
-a clear explanation and ask for operator help rather than self-override.
+scoped override is useful. Transport authentication is not governed by a
+provider-host whitelist; known auth headers are sanitized before the
+manual-credential scanner, and real secret movement is governed by placeholder
+resolution plus destination allowlists. Destination allowlists, prompt-injection
+blocks, and opt-in exfiltration/secret-leak blocks are higher-risk policy
+boundaries; an agent should receive a clear explanation and ask for operator
+help rather than self-override.
 
 Calciforge can still make these policies configurable for operators. The key
 rule is that configuration changes should happen in `security-proxy.toml`,

@@ -79,7 +79,10 @@ Calciforge controls identity routing, channel access, callback authentication,
 and artifact delivery for this path. OpenClaw's outbound model/tool traffic is
 only covered by Calciforge's security layers when you configure the OpenClaw
 service to use a tested proxy/tool/policy integration; installing the channel
-plugin alone does not prove outbound egress enforcement.
+plugin alone does not prove outbound egress enforcement. In managed MITM mode,
+prompt-injection response blocking is the default safety gate. Outbound
+exfiltration heuristics and high-entropy response secret-leak detection are
+operator opt-ins because they can be noisy on provider/tool transcripts.
 
 Required at runtime: `endpoint`, plus `api_key` or `api_key_file` unless the
 deployment intentionally relies on `CALCIFORGE_AGENT_TOKEN`. Use
