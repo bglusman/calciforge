@@ -125,6 +125,11 @@ asynchronously, so it is not a reliable inline reply adapter by itself.
 
 OpenClaw owns the Codex provider configuration; Calciforge owns the
 identity, channel, secret-substitution, and policy boundaries.
+When the OpenClaw host is configured for Calciforge MITM egress, prompt-injection
+response blocking remains default-on. Outbound exfiltration heuristics and
+high-entropy response secret-leak scans are opt-in so normal Codex/OpenClaw
+provider transport does not fail on benign opaque IDs, hashes, or tool
+transcripts.
 
 ### Callback attachments
 
@@ -133,6 +138,10 @@ The `openclaw-channel` reply webhook accepts the original text-only callback:
 ```json
 { "sessionKey": "calciforge:codex:brian", "message": "done" }
 ```
+
+When a user selects a named Calciforge session with `!new <name>` or
+`!switch <agent> <name>`, Calciforge appends that name to the OpenClaw
+`sessionKey`, for example `calciforge:codex:brian:review-thread`.
 
 It also accepts inline attachment payloads for generated images, diagrams,
 reports, or other files:

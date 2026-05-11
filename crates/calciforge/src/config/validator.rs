@@ -824,10 +824,10 @@ fn validate_security_config(
 ) {
     // Validate adversary detector profile
     match security.profile.as_str() {
-        "off" | "minimal" | "balanced" | "maximum" => {}
+        "open" | "balanced" | "hardened" | "maximum" | "paranoid" => {}
         other => {
             result.add_error(format!(
-                "Security adversary_detector_profile '{}' is invalid. Use: off, minimal, balanced, maximum",
+                "Security profile '{}' is invalid. Use: open, balanced, hardened, paranoid (or maximum as an alias for paranoid)",
                 other
             ));
         }
@@ -914,6 +914,28 @@ bot_token_file = "/tmp/nope"
             result.is_valid(),
             "baseline fixture should validate clean; errors: {:?}",
             result.errors
+        );
+    }
+
+    #[test]
+    fn security_profile_validation_matches_runtime_parser() {
+        let invalid = parse(&format!("{MIN_VALID}\n[security]\nprofile = \"minimal\"\n"));
+        let invalid_result = validate_config(&invalid);
+        assert!(
+            invalid_result
+                .errors
+                .iter()
+                .any(|error| error.contains("Security profile 'minimal' is invalid")),
+            "unsupported profile must fail validation before runtime fallback; errors: {:?}",
+            invalid_result.errors
+        );
+
+        let maximum = parse(&format!("{MIN_VALID}\n[security]\nprofile = \"maximum\"\n"));
+        let maximum_result = validate_config(&maximum);
+        assert!(
+            maximum_result.is_valid(),
+            "maximum is a runtime-supported alias for paranoid; errors: {:?}",
+            maximum_result.errors
         );
     }
 

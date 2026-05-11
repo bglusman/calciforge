@@ -84,11 +84,21 @@ function getGatewayScopeBridge() {
   return gatewayScopeBridgePromise;
 }
 
+function buildTrustedCalciforgeGatewayClient() {
+  return {
+    connect: {
+      role: "operator",
+      scopes: ["operator.admin"],
+    },
+  };
+}
+
 async function runWithSyntheticGatewayClient(work) {
   const { withGatewayScope } = await getGatewayScopeBridge();
   return withGatewayScope(
     {
       pluginId: "calciforge-channel",
+      client: buildTrustedCalciforgeGatewayClient(),
       isWebchatConnect: () => false,
     },
     work,
@@ -171,7 +181,7 @@ async function handleInboundRequest({
       json(res, 401, { error: "Unauthorized" });
       return true;
     }
-    json(res, 200, buildStatusPayload({ replyWebhook, replyAuthToken }));
+    json(res, 200, await buildStatusPayload({ getRuntime, replyWebhook, replyAuthToken, log }));
     return true;
   }
 
@@ -691,7 +701,11 @@ function validateInboundRoute({
   }
   const normalizedSender = normalizeString(sender);
   if (!normalizedSender) return "sender is required";
-  if (sessionKey !== `calciforge:${parsedAgentId}:${normalizedSender}`) {
+  const expectedSessionPrefix = `calciforge:${parsedAgentId}:${normalizedSender}`;
+  if (
+    sessionKey !== expectedSessionPrefix &&
+    !sessionKey.startsWith(`${expectedSessionPrefix}:`)
+  ) {
     return "sessionKey must match sender";
   }
   const normalizedChannel = normalizeString(channel);
@@ -719,13 +733,141 @@ function isAuthorized(req, expectedToken) {
   return token === expectedToken;
 }
 
-function buildStatusPayload({ replyWebhook, replyAuthToken }) {
+async function buildStatusPayload({ getRuntime, replyWebhook, replyAuthToken, log, config }) {
+  const modelRuntime = await buildModelRuntimeStatus({ getRuntime, log, config });
   return {
     ok: true,
     plugin: "calciforge-channel",
     replyWebhook,
     replyAuthTokenSha256: sha256Hex(replyAuthToken).slice(0, 16),
+    egressProxy: buildEgressProxyStatus(),
+    modelRuntime,
   };
+}
+
+async function buildModelRuntimeStatus({ getRuntime, log, config } = {}) {
+  let cfg = config;
+  if (!cfg && typeof getRuntime === "function") {
+    try {
+      const runtime = await getRuntime();
+      cfg = runtime?.config?.current?.();
+    } catch (err) {
+      const reason = `failed to inspect OpenClaw runtime config: ${err.message}`;
+      log?.warn?.(`[calciforge-channel] ${reason}`);
+      return {
+        ok: false,
+        agentRuntime: null,
+        primary: null,
+        fallbacks: [],
+        unsupported: [{ model: null, provider: null, reason }],
+      };
+    }
+  }
+
+  const route = normalizeModelRoute(cfg?.agents?.defaults?.model);
+  const agentRuntime = resolveAgentRuntimeId(cfg);
+  const unsupported = [];
+
+  for (const model of [route.primary, ...route.fallbacks].filter(Boolean)) {
+    const provider = parseModelProvider(model);
+    if (!provider) continue;
+    const reason = unsupportedModelProviderReason({
+      agentRuntime,
+      provider,
+      configuredProviders: cfg?.models?.providers,
+    });
+    if (reason) {
+      unsupported.push({ model, provider, reason });
+    }
+  }
+
+  return {
+    ok: unsupported.length === 0,
+    agentRuntime,
+    primary: route.primary,
+    fallbacks: route.fallbacks,
+    unsupported,
+  };
+}
+
+function normalizeModelRoute(value) {
+  if (typeof value === "string") {
+    return { primary: normalizeString(value) || null, fallbacks: [] };
+  }
+  if (!value || typeof value !== "object") {
+    return { primary: null, fallbacks: [] };
+  }
+  return {
+    primary: normalizeString(value.primary) || null,
+    fallbacks: Array.isArray(value.fallbacks)
+      ? value.fallbacks.map((entry) => normalizeString(entry)).filter(Boolean)
+      : [],
+  };
+}
+
+function resolveAgentRuntimeId(cfg) {
+  return (
+    normalizeString(process.env.OPENCLAW_AGENT_RUNTIME) ||
+    normalizeString(cfg?.agents?.defaults?.agentRuntime?.id) ||
+    "pi"
+  );
+}
+
+function parseModelProvider(modelRef) {
+  const model = normalizeString(modelRef);
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash);
+}
+
+function unsupportedModelProviderReason({
+  agentRuntime,
+  provider,
+  configuredProviders,
+}) {
+  if (!provider) return null;
+  if (agentRuntime === "codex" && !CODEX_RUNTIME_PROVIDER_ALLOWLIST.has(provider)) {
+    return `agentRuntime '${agentRuntime}' cannot load configured model provider '${provider}'`;
+  }
+  if (
+    agentRuntime !== "codex" &&
+    !BUILTIN_MODEL_PROVIDERS.has(provider) &&
+    !Object.prototype.hasOwnProperty.call(configuredProviders ?? {}, provider)
+  ) {
+    return `model provider '${provider}' is not present in OpenClaw config`;
+  }
+  return null;
+}
+
+const CODEX_RUNTIME_PROVIDER_ALLOWLIST = new Set(["openai", "openai-codex"]);
+const BUILTIN_MODEL_PROVIDERS = new Set([
+  "anthropic",
+  "google",
+  "openai",
+  "openai-codex",
+]);
+
+function buildEgressProxyStatus() {
+  const env = process.env;
+  const noProxy = env.NO_PROXY || env.no_proxy || "";
+  return {
+    httpProxy: nonEmpty(env.HTTP_PROXY || env.http_proxy),
+    httpsProxy: nonEmpty(env.HTTPS_PROXY || env.https_proxy),
+    allProxy: nonEmpty(env.ALL_PROXY || env.all_proxy),
+    nodeExtraCaCerts: nonEmpty(env.NODE_EXTRA_CA_CERTS),
+    sslCertFile: nonEmpty(env.SSL_CERT_FILE),
+    requestsCaBundle: nonEmpty(env.REQUESTS_CA_BUNDLE),
+    curlCaBundle: nonEmpty(env.CURL_CA_BUNDLE),
+    gitSslCaInfo: nonEmpty(env.GIT_SSL_CAINFO),
+    noProxyLoopback: noProxy
+      .split(",")
+      .map((part) => part.trim())
+      .some((part) => part === "localhost" || part === "127.0.0.1" || part === "::1"),
+  };
+}
+
+function nonEmpty(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function sha256Hex(value) {
@@ -1062,6 +1204,8 @@ export const testInternals = {
   recoverReplyAfterRunError,
   buildCalciforgeChannelContext,
   buildStatusPayload,
+  buildModelRuntimeStatus,
+  buildEgressProxyStatus,
   validateInboundRoute,
   stringSet,
   createSingleReplyDispatcher,

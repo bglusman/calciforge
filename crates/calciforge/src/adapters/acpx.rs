@@ -12,7 +12,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{debug, info};
 
-use crate::adapters::{AdapterError, AgentAdapter, DispatchContext};
+use crate::adapters::{AdapterError, AgentAdapter, DispatchContext, find_executable_for_agent};
 
 /// Shared cwd for ACPX sessions created through Calciforge.
 pub const ACPX_SESSION_DIR: &str = "/tmp/acpx-sessions";
@@ -50,11 +50,15 @@ impl AcpxAdapter {
             .map_err(|e| AdapterError::Unavailable(format!("Failed to create session dir: {}", e)))
     }
 
+    fn acpx_binary(&self) -> PathBuf {
+        find_executable_for_agent("acpx", Some(&self.env)).unwrap_or_else(|| PathBuf::from("acpx"))
+    }
+
     /// List existing sessions for this agent
     async fn list_sessions(&self) -> Result<Vec<String>, AdapterError> {
         self.ensure_session_dir().await?;
 
-        let output = Command::new("acpx")
+        let output = Command::new(self.acpx_binary())
             .arg(&self.agent_name)
             .arg("sessions")
             .arg("list")
@@ -92,7 +96,7 @@ impl AcpxAdapter {
 
         // Create new session
         info!(session = %session_name, "Creating new acpx session");
-        let output = Command::new("acpx")
+        let output = Command::new(self.acpx_binary())
             .arg(&self.agent_name)
             .arg("sessions")
             .arg("ensure")
@@ -152,7 +156,7 @@ impl AcpxAdapter {
         message: &str,
         session: Option<&str>,
     ) -> Result<std::process::Output, AdapterError> {
-        let mut cmd = Command::new("acpx");
+        let mut cmd = Command::new(self.acpx_binary());
         cmd.arg("--format").arg("text").arg(&self.agent_name);
         if let Some(session) = session {
             cmd.arg("--session").arg(session);
@@ -182,7 +186,7 @@ impl AcpxAdapter {
 
         info!(agent = %self.agent_name, "Running acpx exec");
 
-        let mut cmd = Command::new("acpx");
+        let mut cmd = Command::new(self.acpx_binary());
         cmd.arg("--format")
             .arg("text")
             .arg(&self.agent_name)

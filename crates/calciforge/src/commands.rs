@@ -25,7 +25,9 @@ use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::{
     AgentSessionCapability, agent_session_capability, agent_supports_model_override,
+    find_executable_for_agent,
     openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter},
+    subprocess_command_for_agent,
 };
 use crate::config::{CalciforgeConfig, calciforge_config_home};
 use crate::messages::{ChoiceControl, ChoiceOption, Match, OutboundMessage};
@@ -52,6 +54,44 @@ fn active_model_state_file_path_for(state_dir: &Path) -> PathBuf {
 /// Path to the active downstream session selections within `state_dir`.
 fn active_session_state_file_path_for(state_dir: &Path) -> PathBuf {
     state_dir.join("active-agent-sessions.json")
+}
+
+fn acpx_binary_for_agent(agent_cfg: &crate::config::AgentConfig) -> Result<PathBuf, String> {
+    find_executable_for_agent("acpx", agent_cfg.env.as_ref()).ok_or_else(|| {
+        "acpx executable was not found on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH".to_string()
+    })
+}
+
+fn session_runtime_readiness_error(agent_cfg: &crate::config::AgentConfig) -> Option<String> {
+    match agent_cfg.kind.as_str() {
+        "acpx" => {
+            if let Err(error) = acpx_binary_for_agent(agent_cfg) {
+                return Some(error);
+            }
+            let Some(command) = subprocess_command_for_agent(agent_cfg) else {
+                return Some("acpx agent is missing required command".to_string());
+            };
+            if find_executable_for_agent(command, agent_cfg.env.as_ref()).is_none() {
+                return Some(format!(
+                    "configured ACPX downstream command '{}' was not found on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH",
+                    command
+                ));
+            }
+            None
+        }
+        "codex-cli" | "claude-cli" | "kimi-cli" => {
+            let command = subprocess_command_for_agent(agent_cfg)
+                .expect("cli session-capable agents have default commands");
+            if find_executable_for_agent(command, agent_cfg.env.as_ref()).is_none() {
+                return Some(format!(
+                    "configured command '{}' was not found on the effective PATH used for this agent; when env.PATH is configured it replaces Calciforge's service PATH",
+                    command
+                ));
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn first_arg(text: &str) -> Option<&str> {
@@ -1460,7 +1500,7 @@ impl CommandHandler {
     ///
     /// Validates the requested agent against the identity's `allowed_agents`,
     /// updates the active-agent map, and returns a confirmation message.
-    /// For acpx-type agents, an optional session name can be specified.
+    /// For session-capable agents, an optional session name can be specified.
     ///
     /// Returns an error string (to be sent back to the user) on any validation
     /// failure — never panics.
@@ -1481,7 +1521,7 @@ impl CommandHandler {
         }
 
         if args.is_empty() {
-            return "Usage: !switch <agent> [session]\nAlias: !agent switch <agent> [session]\n\nUse !agent list to see available agents.\nUse !session list <agent> to list available sessions for acpx agents.".to_string();
+            return "Usage: !switch <agent> [session]\nAlias: !agent switch <agent> [session]\n\nUse !agent list to see available agents.\nUse !session list <agent> to list available sessions when an adapter can expose them.".to_string();
         }
 
         let agent_arg = args[0].to_string();
@@ -1558,6 +1598,11 @@ impl CommandHandler {
                 {
                     return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash.".to_string();
                 }
+                if session_capability != AgentSessionCapability::None
+                    && let Some(error) = agent_cfg.and_then(session_runtime_readiness_error)
+                {
+                    return format!("⚠️ Cannot switch to '{}': {}", agent_id, error);
+                }
                 let session_info = if session_capability != AgentSessionCapability::None {
                     if let Some(session) = session_arg.as_ref() {
                         format!(" (session: {})", session)
@@ -1565,7 +1610,7 @@ impl CommandHandler {
                         " (default session)".to_string()
                     }
                 } else if session_arg.is_some() {
-                    " (note: session parameter ignored for non-acpx agents)".to_string()
+                    " (note: session parameter ignored for agents without Calciforge session support)".to_string()
                 } else {
                     String::new()
                 };
@@ -1656,6 +1701,12 @@ impl CommandHandler {
                 agent_cfg.id, agent_cfg.kind
             );
         }
+        if let Some(error) = session_runtime_readiness_error(agent_cfg) {
+            return format!(
+                "⚠️ Cannot start a session for '{}': {}",
+                agent_cfg.id, error
+            );
+        }
 
         let session = args
             .first()
@@ -1675,7 +1726,7 @@ impl CommandHandler {
 
     /// Handle a `!sessions` command for an authenticated identity.
     ///
-    /// Lists ACP sessions for the specified agent (for acpx-type agents).
+    /// Lists downstream sessions for the specified agent when the adapter supports it.
     /// Returns a channel-agnostic message with selectable session choices when
     /// the ACPX backend reports active sessions.
     pub async fn handle_sessions_message(&self, text: &str, identity_id: &str) -> OutboundMessage {
@@ -1693,7 +1744,7 @@ impl CommandHandler {
 
         if agent_arg.is_empty() {
             return OutboundMessage::text(
-                "Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available ACP sessions for an agent.\nUse !agent list to see available agents.",
+                "Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available downstream sessions when the adapter can expose them.\nUse !agent list to see available agents.",
             );
         }
 
@@ -1771,7 +1822,7 @@ impl CommandHandler {
             )),
             AgentSessionCapability::Listable => {
                 let agent_name = agent_cfg.command.as_deref().unwrap_or(agent_id);
-                match self.list_acpx_sessions(agent_name).await {
+                match self.list_acpx_sessions(agent_name, agent_cfg).await {
                     Ok(sessions) if sessions.is_empty() => OutboundMessage::text(format!(
                         "ℹ️ No active sessions for '{}'.\n\nUse !new while '{}' is active to create a new session.",
                         agent_id, agent_id
@@ -1787,16 +1838,26 @@ impl CommandHandler {
     }
 
     /// List ACPX sessions for an agent using the acpx CLI.
-    async fn list_acpx_sessions(&self, agent_name: &str) -> Result<Vec<String>, String> {
+    async fn list_acpx_sessions(
+        &self,
+        agent_name: &str,
+        agent_cfg: &crate::config::AgentConfig,
+    ) -> Result<Vec<String>, String> {
         tokio::fs::create_dir_all(crate::adapters::acpx::ACPX_SESSION_DIR)
             .await
             .map_err(|e| format!("Failed to create acpx session dir: {}", e))?;
 
-        let output = tokio::process::Command::new("acpx")
+        let acpx_binary = acpx_binary_for_agent(agent_cfg)?;
+        let mut command = tokio::process::Command::new(acpx_binary);
+        command
             .arg(agent_name)
             .arg("sessions")
             .arg("list")
-            .current_dir(crate::adapters::acpx::ACPX_SESSION_DIR)
+            .current_dir(crate::adapters::acpx::ACPX_SESSION_DIR);
+        if let Some(env) = agent_cfg.env.as_ref() {
+            command.envs(env);
+        }
+        let output = command
             .output()
             .await
             .map_err(|e| format!("Failed to run acpx: {}", e))?;
@@ -2690,6 +2751,53 @@ mod tests {
         // the leftover switch state.
         let tmp = tempfile::tempdir().expect("tempdir for test state isolation");
         CommandHandler::with_state_dir(config, tmp.path().to_path_buf())
+    }
+
+    fn test_executable_name(name: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{name}.cmd")
+        }
+        #[cfg(not(windows))]
+        {
+            name.to_string()
+        }
+    }
+
+    fn write_test_executable(dir: &Path, name: &str) {
+        let path = dir.join(test_executable_name(name));
+        #[cfg(windows)]
+        let contents = "@echo off\r\nexit /b 0\r\n";
+        #[cfg(not(windows))]
+        let contents = "#!/bin/sh\nexit 0\n";
+        std::fs::write(&path, contents).expect("write test executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    fn set_agent_path(config: &mut CalciforgeConfig, agent_id: &str, path: &Path) {
+        let agent = config
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == agent_id)
+            .unwrap_or_else(|| panic!("test config has agent {agent_id}"));
+        agent.env = Some(HashMap::from([(
+            "PATH".to_string(),
+            path.display().to_string(),
+        )]));
+    }
+
+    fn force_active_agent(handler: &CommandHandler, identity_id: &str, agent_id: &str) {
+        handler
+            .active_agents
+            .lock()
+            .unwrap()
+            .insert(identity_id.to_string(), agent_id.to_string());
     }
 
     fn synthetic_manager() -> AlloyManager {
@@ -4149,7 +4257,13 @@ mod tests {
 
     #[test]
     fn test_switch_records_acpx_session_selection() {
-        let h = make_handler();
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        write_test_executable(bin_dir.path(), "acpx");
+        write_test_executable(bin_dir.path(), "claude");
+        let mut config = make_config();
+        set_agent_path(&mut config, "claude-acpx", bin_dir.path());
+
+        let h = make_handler_with_config(Arc::new(config));
         let reply = h.handle_switch("!switch claude-acpx backend", "brian");
         assert!(
             reply.contains("session: backend"),
@@ -4165,7 +4279,12 @@ mod tests {
 
     #[test]
     fn test_switch_records_named_session_for_session_capable_cli_agent() {
-        let h = make_handler();
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        write_test_executable(bin_dir.path(), "codex");
+        let mut config = make_config();
+        set_agent_path(&mut config, "codex", bin_dir.path());
+
+        let h = make_handler_with_config(Arc::new(config));
         let reply = h.handle_switch("!switch codex work-thread", "brian");
         assert!(
             reply.contains("session: work-thread"),
@@ -4180,19 +4299,73 @@ mod tests {
     }
 
     #[test]
-    fn test_new_session_requires_session_capable_active_agent() {
+    fn test_new_session_sets_named_session_for_openclaw_channel_agent() {
         let h = make_handler();
         let reply = h.handle_new_session("!new scratch", "brian");
         assert!(
-            reply.contains("does not expose downstream sessions"),
-            "default openclaw-channel test agent should reject !new: {reply}"
+            reply.contains("Started session 'scratch' for librarian"),
+            "default openclaw-channel test agent should accept !new: {reply}"
         );
-        assert_eq!(h.active_session_for("brian", "librarian"), None);
+        assert_eq!(
+            h.active_session_for("brian", "librarian"),
+            Some("scratch".to_string())
+        );
+    }
+
+    #[test]
+    fn test_new_session_requires_session_capable_active_agent() {
+        let h = make_handler();
+        h.handle_switch("!switch gateway", "brian");
+        let reply = h.handle_new_session("!new scratch", "brian");
+        assert!(
+            reply.contains("does not expose downstream sessions"),
+            "openai-compat agent should reject !new: {reply}"
+        );
+        assert_eq!(h.active_session_for("brian", "gateway"), None);
+    }
+
+    #[test]
+    fn test_new_session_reports_missing_acpx_before_recording_session() {
+        let empty_path = tempfile::tempdir().expect("empty path dir");
+        let mut config = make_config();
+        set_agent_path(&mut config, "claude-acpx", empty_path.path());
+
+        let h = make_handler_with_config(Arc::new(config));
+        force_active_agent(&h, "brian", "claude-acpx");
+        let reply = h.handle_new_session("!new scratch", "brian");
+        assert!(
+            reply.contains("Cannot start a session") && reply.contains("acpx executable"),
+            "missing acpx should be reported before session is persisted: {reply}"
+        );
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
+    }
+
+    #[test]
+    fn test_new_session_reports_missing_acpx_agent_command_before_recording_session() {
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        write_test_executable(bin_dir.path(), "acpx");
+        let mut config = make_config();
+        set_agent_path(&mut config, "claude-acpx", bin_dir.path());
+
+        let h = make_handler_with_config(Arc::new(config));
+        force_active_agent(&h, "brian", "claude-acpx");
+        let reply = h.handle_new_session("!new scratch", "brian");
+        assert!(
+            reply.contains("Cannot start a session")
+                && reply.contains("configured ACPX downstream command 'claude'"),
+            "missing acpx-managed agent command should be reported before session is persisted: {reply}"
+        );
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
     }
 
     #[test]
     fn test_new_session_sets_named_session_for_current_agent() {
-        let h = make_handler();
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        write_test_executable(bin_dir.path(), "codex");
+        let mut config = make_config();
+        set_agent_path(&mut config, "codex", bin_dir.path());
+
+        let h = make_handler_with_config(Arc::new(config));
         h.handle_switch("!switch codex", "brian");
         let reply = h.handle_new_session("!new scratch", "brian");
         assert!(
@@ -4206,8 +4379,47 @@ mod tests {
     }
 
     #[test]
+    fn test_new_session_reports_missing_named_cli_command_before_recording_session() {
+        let empty_path = tempfile::tempdir().expect("empty path dir");
+        let mut config = make_config();
+        set_agent_path(&mut config, "codex", empty_path.path());
+
+        let h = make_handler_with_config(Arc::new(config));
+        force_active_agent(&h, "brian", "codex");
+        let reply = h.handle_new_session("!new scratch", "brian");
+        assert!(
+            reply.contains("Cannot start a session")
+                && reply.contains("configured command 'codex'"),
+            "missing named CLI command should be reported before session is persisted: {reply}"
+        );
+        assert_eq!(h.active_session_for("brian", "codex"), None);
+    }
+
+    #[test]
+    fn test_switch_with_session_reports_missing_runtime_before_recording_session() {
+        let empty_path = tempfile::tempdir().expect("empty path dir");
+        let mut config = make_config();
+        set_agent_path(&mut config, "claude-acpx", empty_path.path());
+
+        let h = make_handler_with_config(Arc::new(config));
+        let reply = h.handle_switch("!switch claude-acpx backend", "brian");
+        assert!(
+            reply.contains("Cannot switch") && reply.contains("acpx executable"),
+            "missing runtime should block session switch before state changes: {reply}"
+        );
+        assert_eq!(h.active_agent_for("brian"), Some("librarian".to_string()));
+        assert_eq!(h.active_session_for("brian", "claude-acpx"), None);
+    }
+
+    #[test]
     fn test_switch_acpx_without_session_clears_prior_session() {
-        let h = make_handler();
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        write_test_executable(bin_dir.path(), "acpx");
+        write_test_executable(bin_dir.path(), "claude");
+        let mut config = make_config();
+        set_agent_path(&mut config, "claude-acpx", bin_dir.path());
+
+        let h = make_handler_with_config(Arc::new(config));
         h.handle_switch("!switch claude-acpx backend", "brian");
         assert_eq!(
             h.active_session_for("brian", "claude-acpx"),
@@ -4249,7 +4461,13 @@ mod tests {
 
     #[test]
     fn test_default_clears_acpx_session_selection() {
-        let h = make_handler();
+        let bin_dir = tempfile::tempdir().expect("bin dir");
+        write_test_executable(bin_dir.path(), "acpx");
+        write_test_executable(bin_dir.path(), "claude");
+        let mut config = make_config();
+        set_agent_path(&mut config, "claude-acpx", bin_dir.path());
+
+        let h = make_handler_with_config(Arc::new(config));
         h.handle_switch("!switch claude-acpx backend", "brian");
         assert_eq!(
             h.active_session_for("brian", "claude-acpx"),

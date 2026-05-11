@@ -98,6 +98,8 @@ cd packaging/docker
 cp calciforge.env.example .env
 mkdir -p data
 docker compose --env-file .env up -d
+docker compose --env-file .env exec calciforge \
+  calciforge --config /config/config.toml doctor --no-network
 ```
 
 The Compose example runs Calciforge, `security-proxy`, and `clashd` from the
@@ -119,6 +121,12 @@ scripts/packaging-docker-smoke.sh
 That smoke script overlays the packaged Compose file with a mock
 OpenAI-compatible backend and checks Calciforge, `security-proxy`, `clashd`,
 model listing, and a chat completion.
+
+For CLI-backed agents in Compose, install or mount the agent binaries inside
+the Calciforge container. Host-level tools are not visible to Docker by
+default. `doctor` checks configured subprocess commands such as `acpx`,
+`opencode`, `codex`, and `claude` from the same runtime that will dispatch chat
+messages.
 
 ## Choosing an Install Shape
 

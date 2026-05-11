@@ -7,10 +7,26 @@ title: Security Gateway
 
 The `security-gateway` checks agent tool and provider traffic that actually
 enters Calciforge-controlled paths. It is not automatic coverage for every
-process on the host. For stronger guarantees, route model calls through
-Calciforge's model gateway, give agents explicit Calciforge fetch/tool
-wrappers, or run the agent under a host/container boundary that prevents
-bypass.
+process on the host.
+
+Calciforge treats this as a support-tier question:
+
+- **First-class agents** should have tested ingress and egress contracts. If a
+  first-class adapter can receive user messages or send model/tool traffic
+  around Calciforge in a protected profile, treat that as a Calciforge bug or
+  an upstream limitation that needs a documented workaround.
+- **Recipe, generic CLI, and generic ACP agents** are best effort unless the
+  recipe documents a tested network boundary. Calciforge can give them safer
+  defaults, wrapper scripts, CLI helpers, and proxy env, but it cannot prove an
+  arbitrary agent runtime will not open another network path.
+- **Hardened deployments** should be able to reject or disable adapters whose
+  ingress, egress, or instruction path cannot be verified. That is the target
+  shape for release-hardening work; for now, `calciforge doctor` reports the
+  gaps it can see.
+
+For stronger guarantees, route model calls through Calciforge's model gateway,
+give agents explicit Calciforge fetch/tool wrappers, or run the agent under a
+host/container boundary that prevents bypass.
 
 ## 🛡️ Traffic Flow
 
@@ -24,16 +40,19 @@ recursively.
 **Outbound pipeline:**
 
 1. **Manual credential check:** Before Calciforge substitutes any secrets,
-   IronClaw checks the original agent-supplied URL and headers for raw
-   credentials such as `api_key=sk-...` or direct `Authorization` values. Exact
+   IronClaw checks the original agent-supplied URL and non-transport headers
+   for raw credentials such as `api_key=sk-...`. Transport-auth headers such
+   as `Authorization`, `Cookie`, and provider API-key headers are sanitized
+   before this check; otherwise normal model/provider sessions and local
+   gateways generate false positives. Exact
    proxy-managed placeholders such as
    `{% raw %}{{secret:NAME}}{% endraw %}` and
    `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are safe control syntax;
    mixed manual-plus-placeholder values still remain visible to the check.
-2. **Exfiltration scan:** Outgoing request bodies are analyzed by the
+2. **Optional exfiltration scan:** When `scan_outbound = true`, outgoing request bodies are analyzed by the
    `adversary-detector` for exfiltration language, credential-harvest phrasing,
-   and adversarial patterns. Broad high-entropy body scanning is still roadmap
-   work.
+   and adversarial patterns. This is opt-in by default because provider/tool
+   transcripts often include benign prompt-injection examples and opaque IDs.
 3. **Secret substitution and credential injection:** When the request is
    visible to Calciforge, the gateway can substitute placeholders such as
    `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported
@@ -45,14 +64,19 @@ recursively.
 **Inbound pipeline:**
 
 1. **Injection scan:** Incoming text-like response bodies are scanned for
-   prompt injection or adversarial payloads.
-2. **Enforcement:** If the response is deemed `unsafe`, the gateway blocks the
+   prompt injection or adversarial payloads. This remains default-on.
+2. **Optional response secret-leak scan:** When `scan_response_secrets = true`,
+   response bodies are also checked for high-entropy and secret-shaped values.
+   This is opt-in by default because provider APIs commonly return opaque IDs
+   and hashes as normal transport data.
+3. **Enforcement:** If the response is deemed `unsafe`, the gateway blocks the
    content and returns `403 Forbidden` to the agent.
 
 ## 🚀 Deployment & Enforcement
 
 The gateway has several enforcement modes. They are not interchangeable; pick
-the strongest mode the target agent can actually run under.
+the strongest mode the target agent can actually run under, then verify that
+the selected agent adapter actually uses it.
 
 | Mode | Level | Status | Description |
 |------|-------|--------|-------------|
@@ -210,8 +234,12 @@ egress limited to Calciforge services.
 ## ⚙️ Configuration
 
 The gateway is configured via `GatewayConfig`:
-- `scan_outbound`: Toggle exfiltration detection.
+- `scan_outbound`: Toggle outbound adversary/exfiltration detection. Defaults
+  off while this policy matures; enable only for deployments that have tuned
+  false positives on provider/tool transcripts.
 - `scan_inbound`: Toggle injection detection.
+- `scan_response_secrets`: Toggle high-entropy/secret-pattern response leak
+  detection. Defaults off independently from prompt-injection scanning.
 - `inject_credentials`: Toggle automatic API key injection.
 - `manual_credential_override_requires_operator_approval`: Require an operator token for `ironclaw.manual_credential` override headers. Default: `true`.
 - `bypass_domains`: List of domains that skip scanning (e.g., internal services).
@@ -272,13 +300,18 @@ Not every gateway denial should be equally overrideable. Recommended defaults:
 | `agent_web.scan_search_responses` blocked result | Yes | Prefer config only | Operator config change required |
 | Provider-side browsing tool stripped/blocked | Yes | Prefer config only | Operator config change required |
 | Inbound prompt-injection / unsafe response scan | Yes, scanner policy | Not by agent header | Operator policy/config change required |
-| Outbound exfiltration scan | Yes, scanner policy | Not by agent header | Operator policy/config change required |
+| Outbound exfiltration scan | Yes, scanner policy; default off | Not by agent header | Operator policy/config change required |
+| Response secret-leak scan | Yes; default off | Not by agent header | Operator policy/config change required |
 
 The reason for the split is blast radius. Manual-credential detection can be a
 false positive for legacy APIs that use unfortunate parameter names, so a
-scoped override is useful. Destination allowlists, prompt-injection blocks, and
-exfiltration blocks are higher-risk policy boundaries; an agent should receive
-a clear explanation and ask for operator help rather than self-override.
+scoped override is useful. Transport authentication is not governed by a
+provider-host whitelist; known auth headers are sanitized before the
+manual-credential scanner, and real secret movement is governed by placeholder
+resolution plus destination allowlists. Destination allowlists, prompt-injection
+blocks, and opt-in exfiltration/secret-leak blocks are higher-risk policy
+boundaries; an agent should receive a clear explanation and ask for operator
+help rather than self-override.
 
 Calciforge can still make these policies configurable for operators. The key
 rule is that configuration changes should happen in `security-proxy.toml`,
@@ -352,7 +385,8 @@ Or configure checks directly in `config.toml`:
 ```toml
 [security]
 profile = "balanced"
-scan_outbound = true
+scan_outbound = false
+scan_response_secrets = false
 
 # Empty scanner_checks uses the built-in Starlark default:
 # builtin:calciforge/default-scanner.star
@@ -621,6 +655,8 @@ forbidden_browsing_tools = ["web_search", "web_search_20250305", "google_search"
 forbidden_browsing_models = ["gpt-4o-search-preview"]
 known_llm_apis = [
     "api.openai.com",
+    "chatgpt.com",
+    "chat.openai.com",
     "api.anthropic.com",
     "openrouter.ai",
     "generativelanguage.googleapis.com",
@@ -630,13 +666,15 @@ known_llm_apis = [
 
 ### (D) `preflight_message_urls`
 
-Extract `https?://…` URLs from outbound LLM `messages[].content` (string AND Anthropic content-array shape) and from `tools[].description` (when `preflight_tool_descriptions = true`); test each against `url_destination_denylist`. If any URL would be blocked at fetch time, the LLM request is refused before forwarding to the provider.
+Extract `https?://...` URLs from outbound LLM request bodies for hosts in `known_llm_apis`; test each against `url_destination_denylist`. The scanner covers common shapes such as `messages[].content`, Anthropic content arrays, OpenAI Responses `input`, provider-specific nested JSON envelopes, and `tools[].description` when `preflight_tool_descriptions = true`.
+
+If any URL would be blocked at fetch time, the LLM request is refused before forwarding to the provider. This is separate from content scanning: response scanners still inspect raw content that crosses the gateway, while URL preflight prevents opaque provider-side browsing from fetching denied origins where the gateway would otherwise only see a synthesized model summary.
 
 ```toml
 [security.agent_web]
 preflight_message_urls = true
 preflight_tool_descriptions = true
-url_destination_denylist = ["leaked-corp-docs.example.com"]
+url_destination_denylist = ["leaked-corp-docs.example.com", "ref.jock.pl"]
 ```
 
 ### Audit
