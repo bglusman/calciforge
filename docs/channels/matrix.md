@@ -10,13 +10,12 @@ using **HTTP long-polling** (`/sync`). Long-polling means Calciforge keeps
 asking the homeserver for new events, so no webhook endpoint or open firewall
 port is required.
 
-> **No end-to-end encryption yet.** The Matrix channel currently uses the raw
-> Matrix Client-Server API, so it receives plaintext `m.text` events and sends
-> plaintext replies plus native media events for agent artifacts. Matrix itself
-> supports end-to-end encryption, and the Matrix Rust SDK has crypto support,
-> but Calciforge has not yet wired the required encrypted-room client state,
-> device trust, and persistent crypto store. Do not use this channel in rooms
-> where E2EE is required.
+> **No end-to-end encryption in the default channel.** Calciforge currently
+> receives plaintext `m.text` events and sends plaintext replies plus native
+> media events for agent artifacts. The current Matrix Rust SDK can compile in
+> this workspace with E2EE support behind an experimental feature, but the
+> channel loop is not SDK-backed yet. Do not use this channel in rooms where
+> E2EE is required unless you enable an SDK-backed E2EE mode described below.
 
 ## Architecture
 
@@ -75,6 +74,8 @@ homeserver = "https://matrix.example.com"
 access_token_file = "~/.config/calciforge/secrets/matrix-token"
 room_id = "!abc123def456:example.com"
 allowed_users = ["@operator:example.com"]
+# Optional policy gate; default is "warn".
+matrix_e2ee = "warn"
 ```
 
 | Field | Required | Description |
@@ -83,6 +84,9 @@ allowed_users = ["@operator:example.com"]
 | `access_token_file` | yes | Path to file containing the bot's access token |
 | `room_id` | yes | Internal room ID (starts with `!`) |
 | `allowed_users` | yes | Matrix user IDs permitted to send commands; use `["*"]` to allow all room members; empty list is rejected at startup |
+| `matrix_e2ee` | no (`"warn"`) | `"off"` skips encrypted-room checks, `"warn"` keeps today's plaintext behavior and warns on encrypted rooms, `"require"` fails closed instead of using plaintext runtime, and `"experimental-sdk"` is reserved for the SDK prototype build |
+| `matrix_e2ee_store_path` | only for prototype | Persistent Matrix SDK state and crypto-store path for `matrix_e2ee = "experimental-sdk"` |
+| `matrix_e2ee_store_passphrase_file` | no | Optional file containing the Matrix SDK store passphrase |
 | `ui_mode` | no | `"auto"` by default; set `"text"` to disable channel-native UI experiments and keep text-only replies for bridged clients |
 | `scan_messages` | no (`false`) | Enable inbound adversarial content scanning |
 | `allow_chat_secret_set` | no (`false`) | Allow `!secret set` / `!secure set` via Matrix (not recommended) |
@@ -158,3 +162,17 @@ Agent replies that include artifacts are uploaded through the Matrix media API
 and sent as native `m.image`, `m.audio`, `m.video`, or `m.file` events. If media
 upload fails, Calciforge sends the safe text fallback with artifact names and
 sizes instead of exposing local artifact paths.
+
+## E2EE Prototype Status
+
+`matrix_e2ee = "require"` is a safety gate, not E2EE support: it prevents a
+configured encrypted room from silently falling back to the raw HTTP runtime.
+`matrix_e2ee = "experimental-sdk"` is for prototype builds compiled with
+`--features channel-matrix-e2ee`; those builds prove that `matrix-sdk` can be
+linked with E2EE and a persistent SQLite crypto store, but they still do not
+replace the production Matrix channel loop.
+
+The remaining work is to move sync, invite handling, plaintext event handling,
+encrypted event decryption, encrypted sends, and encrypted media through
+`matrix-sdk`, then add a real homeserver integration test. Until that lands,
+encrypted Matrix rooms should be treated as unsupported.

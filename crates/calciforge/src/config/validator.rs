@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use url::Url;
 
 use crate::agent_kinds::{AgentKind, parse_agent_kind};
-use crate::config::{CalciforgeConfig, CredentialOwner, GatewayRetryConfig};
+use crate::config::{CalciforgeConfig, CredentialOwner, GatewayRetryConfig, MatrixE2eeMode};
 use crate::model_names::{
     configured_agent_selectors, configured_first_class_model_ids, resolve_model_alias_chain,
 };
@@ -256,6 +256,60 @@ fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     result.add_error(
                         "Signal channel requires signal_account when enabled".to_string(),
                     );
+                }
+            }
+            "matrix" => {
+                if channel.enabled && channel.homeserver.is_none() {
+                    result.add_error("Matrix channel requires homeserver when enabled".to_string());
+                }
+                if channel.enabled && channel.access_token_file.is_none() {
+                    result.add_error(
+                        "Matrix channel requires access_token_file when enabled".to_string(),
+                    );
+                }
+                if channel.enabled && channel.allowed_users.is_empty() {
+                    result.add_error(
+                        "Matrix channel requires at least one allowed_user when enabled"
+                            .to_string(),
+                    );
+                }
+                match channel.matrix_e2ee {
+                    MatrixE2eeMode::Off | MatrixE2eeMode::Warn => {
+                        if channel.matrix_e2ee_store_path.is_some() {
+                            result.add_warning(
+                                "Matrix channel sets matrix_e2ee_store_path, but matrix_e2ee is not experimental-sdk; the store path will be ignored"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    MatrixE2eeMode::Require => {
+                        if channel.enabled && channel.room_id.is_none() {
+                            result.add_error(
+                                "Matrix channel matrix_e2ee='require' needs room_id so Calciforge can fail closed on encrypted-room state"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    MatrixE2eeMode::ExperimentalSdk => {
+                        if channel.enabled && channel.room_id.is_none() {
+                            result.add_error(
+                                "Matrix channel matrix_e2ee='experimental-sdk' needs room_id for the prototype; joined-room autodiscovery is not implemented"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.enabled && channel.matrix_e2ee_store_path.is_none() {
+                            result.add_error(
+                                "Matrix channel matrix_e2ee='experimental-sdk' requires matrix_e2ee_store_path for persistent crypto state"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.enabled && !cfg!(feature = "channel-matrix-e2ee") {
+                            result.add_error(
+                                "Matrix channel matrix_e2ee='experimental-sdk' requires a calciforge build with --features channel-matrix-e2ee"
+                                    .to_string(),
+                            );
+                        }
+                    }
                 }
             }
             _ => {}

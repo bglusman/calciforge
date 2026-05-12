@@ -524,3 +524,49 @@ fn routing_rule_allowed_list_with_nonexistent_agent_is_an_error() {
         result.errors
     );
 }
+
+#[test]
+fn matrix_experimental_e2ee_requires_persistent_store() {
+    let fixture = format!(
+        "{MIN_VALID}\n[[channels]]\nkind = \"matrix\"\nenabled = true\nhomeserver = \"https://matrix.example.com\"\naccess_token_file = \"/tmp/matrix-token\"\nroom_id = \"!room:example.com\"\nallowed_users = [\"@alice:example.com\"]\nmatrix_e2ee = \"experimental-sdk\"\n"
+    );
+    let config = parse(&fixture);
+    let result = validate_config(&config);
+
+    assert!(
+        !result.is_valid(),
+        "experimental Matrix E2EE without persistent crypto store must fail; errors: {:?}",
+        result.errors
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.contains("matrix_e2ee_store_path")),
+        "error should name missing matrix_e2ee_store_path; errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn matrix_require_e2ee_needs_configured_room() {
+    let fixture = format!(
+        "{MIN_VALID}\n[[channels]]\nkind = \"matrix\"\nenabled = true\nhomeserver = \"https://matrix.example.com\"\naccess_token_file = \"/tmp/matrix-token\"\nallowed_users = [\"@alice:example.com\"]\nmatrix_e2ee = \"require\"\n"
+    );
+    let config = parse(&fixture);
+    let result = validate_config(&config);
+
+    assert!(
+        !result.is_valid(),
+        "required Matrix E2EE without room_id must fail closed; errors: {:?}",
+        result.errors
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.contains("matrix_e2ee='require'") && error.contains("room_id")),
+        "error should name matrix_e2ee='require' and room_id; errors: {:?}",
+        result.errors
+    );
+}

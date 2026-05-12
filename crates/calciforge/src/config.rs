@@ -395,6 +395,22 @@ pub struct ChannelConfig {
     /// Matrix room ID the bot should join and listen in, e.g. `"!abc123:matrix.org"`.
     pub room_id: Option<String>,
 
+    /// Matrix end-to-end encryption handling.
+    ///
+    /// The production Matrix channel is still raw Client-Server API. Use
+    /// `warn` to keep today's behavior, `require` to fail closed when the
+    /// configured room is not encrypted, or `experimental-sdk` only on builds
+    /// compiled with `channel-matrix-e2ee`.
+    #[serde(default)]
+    pub matrix_e2ee: MatrixE2eeMode,
+
+    /// Path to persistent Matrix SDK state and crypto-store files when
+    /// `matrix_e2ee = "experimental-sdk"`.
+    pub matrix_e2ee_store_path: Option<String>,
+
+    /// Optional file containing a passphrase for the Matrix SDK store.
+    pub matrix_e2ee_store_passphrase_file: Option<String>,
+
     /// List of Matrix user IDs allowed to send commands, e.g. `["@operator:matrix.org"]`.
     /// If empty, all room members can interact (not recommended).
     #[serde(default)]
@@ -533,6 +549,23 @@ pub enum ChannelUiMode {
     #[default]
     Auto,
     Text,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MatrixE2eeMode {
+    /// Keep the raw HTTP Matrix channel on plaintext rooms only; warn if a
+    /// configured room advertises `m.room.encryption`.
+    #[default]
+    Warn,
+    /// Do not attempt E2EE and do not perform an encrypted-room policy check.
+    Off,
+    /// Fail startup unless the configured room is encrypted and the channel has
+    /// an E2EE-capable implementation.
+    Require,
+    /// Experimental SDK-backed path. This proves dependency/config wiring only;
+    /// the Matrix channel loop is not yet replaced by matrix-sdk.
+    ExperimentalSdk,
 }
 
 /// Returns true when exactly one enabled channel of this kind allows native
@@ -2168,6 +2201,9 @@ enabled = true
 homeserver = "https://matrix.example.com"
 access_token_file = "~/.config/calciforge/secrets/matrix-token"
 room_id = "!abc123def456:example.com"
+matrix_e2ee = "experimental-sdk"
+matrix_e2ee_store_path = "~/.config/calciforge/matrix-e2ee"
+matrix_e2ee_store_passphrase_file = "~/.config/calciforge/secrets/matrix-e2ee-passphrase"
 allowed_users = ["@operator:example.com"]
 "#;
         let cfg: CalciforgeConfig = toml::from_str(raw).expect("matrix channel config");
@@ -2175,6 +2211,11 @@ allowed_users = ["@operator:example.com"]
         assert_eq!(
             cfg.channels[0].homeserver.as_deref(),
             Some("https://matrix.example.com")
+        );
+        assert_eq!(cfg.channels[0].matrix_e2ee, MatrixE2eeMode::ExperimentalSdk);
+        assert_eq!(
+            cfg.channels[0].matrix_e2ee_store_path.as_deref(),
+            Some("~/.config/calciforge/matrix-e2ee")
         );
         assert_eq!(
             cfg.channels[0].allowed_users,

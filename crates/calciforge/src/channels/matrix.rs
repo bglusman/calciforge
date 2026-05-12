@@ -1,9 +1,9 @@
 //! Matrix channel adapter for Calciforge.
 //!
 //! Uses raw Matrix Client-Server API (HTTP long-polling / /sync).
-//! No E2EE — matrix-sdk 0.16 has irreconcilable compile-time dependency
-//! conflicts in this workspace (libsqlite3-sys version + recursion limit).
-//! Plain-text messages only.
+//! The default runtime remains plaintext only. The `channel-matrix-e2ee`
+//! feature proves that the current matrix-sdk can build with E2EE and a
+//! persistent crypto store, but the channel loop has not been replaced yet.
 //!
 //! ## Authentication model
 //!
@@ -26,7 +26,7 @@ use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{CalciforgeConfig, expand_tilde},
+    config::{CalciforgeConfig, MatrixE2eeMode, expand_tilde},
     context::ContextStore,
     messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
@@ -463,6 +463,50 @@ fn matrix_retry_after_ms(body_text: &str) -> u64 {
         .min(MAX_RETRY_AFTER_MS)
 }
 
+fn matrix_e2ee_startup_error(
+    mode: MatrixE2eeMode,
+    has_target_room: bool,
+    room_is_encrypted: bool,
+) -> Option<&'static str> {
+    match mode {
+        MatrixE2eeMode::Off | MatrixE2eeMode::Warn => None,
+        MatrixE2eeMode::Require => {
+            if !has_target_room {
+                Some(
+                    "Matrix E2EE is required, but no room_id is configured to verify room encryption state",
+                )
+            } else if !room_is_encrypted {
+                Some(
+                    "Matrix E2EE is required, but the configured room does not advertise m.room.encryption",
+                )
+            } else {
+                Some(
+                    "Matrix E2EE is required, but the Matrix channel still uses the raw HTTP runtime; enable the SDK runtime before using encrypted rooms",
+                )
+            }
+        }
+        MatrixE2eeMode::ExperimentalSdk => {
+            if !cfg!(feature = "channel-matrix-e2ee") {
+                Some(
+                    "Matrix experimental E2EE requires a calciforge build with --features channel-matrix-e2ee",
+                )
+            } else if !has_target_room {
+                Some(
+                    "Matrix experimental E2EE currently requires room_id; joined-room autodiscovery is not implemented",
+                )
+            } else if !room_is_encrypted {
+                Some(
+                    "Matrix experimental E2EE was requested, but the configured room does not advertise m.room.encryption",
+                )
+            } else {
+                Some(
+                    "Matrix SDK E2EE dependencies are available, but the Matrix channel loop is not yet SDK-backed",
+                )
+            }
+        }
+    }
+}
+
 async fn send_matrix_outbound_message(
     homeserver: &str,
     http: &reqwest::Client,
@@ -612,7 +656,10 @@ pub async fn run(
 
         let is_encrypted =
             check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
-        if is_encrypted {
+        if let Some(error) = matrix_e2ee_startup_error(channel.matrix_e2ee, true, is_encrypted) {
+            anyhow::bail!("{error}");
+        }
+        if is_encrypted && channel.matrix_e2ee == MatrixE2eeMode::Warn {
             warn!(
                 room_id = %room_id_str,
                 "Matrix room has E2EE enabled, but this build uses plain-text messaging only. \
@@ -621,6 +668,9 @@ pub async fn run(
         }
         Some(room_id_str)
     } else {
+        if let Some(error) = matrix_e2ee_startup_error(channel.matrix_e2ee, false, false) {
+            anyhow::bail!("{error}");
+        }
         info!("Matrix: no room_id configured — accepting messages from any joined room");
         None
     };
@@ -1236,6 +1286,44 @@ mod tests {
             30_000
         );
         assert_eq!(matrix_retry_after_ms(r#"{}"#), 1_000);
+    }
+
+    #[test]
+    fn matrix_e2ee_warn_mode_preserves_plaintext_runtime() {
+        assert_eq!(
+            matrix_e2ee_startup_error(MatrixE2eeMode::Warn, true, true),
+            None
+        );
+        assert_eq!(
+            matrix_e2ee_startup_error(MatrixE2eeMode::Off, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn matrix_e2ee_require_mode_fails_closed() {
+        let no_room = matrix_e2ee_startup_error(MatrixE2eeMode::Require, false, false)
+            .expect("require mode should reject missing room_id");
+        assert!(no_room.contains("no room_id"));
+
+        let unencrypted = matrix_e2ee_startup_error(MatrixE2eeMode::Require, true, false)
+            .expect("require mode should reject unencrypted rooms");
+        assert!(unencrypted.contains("does not advertise"));
+
+        let encrypted = matrix_e2ee_startup_error(MatrixE2eeMode::Require, true, true)
+            .expect("require mode should reject raw HTTP runtime");
+        assert!(encrypted.contains("raw HTTP runtime"));
+    }
+
+    #[test]
+    fn matrix_e2ee_experimental_mode_never_silently_uses_raw_http() {
+        let error = matrix_e2ee_startup_error(MatrixE2eeMode::ExperimentalSdk, true, true)
+            .expect("experimental SDK mode should not fall through to raw HTTP");
+        if cfg!(feature = "channel-matrix-e2ee") {
+            assert!(error.contains("not yet SDK-backed"));
+        } else {
+            assert!(error.contains("requires a calciforge build"));
+        }
     }
 
     #[test]
