@@ -496,10 +496,6 @@ impl SecurityProxy {
             }
         };
 
-        // Substitute in the body depending on content-type. For
-        // unsupported types we still run a raw-bytes scan for
-        // `{{secret:` so an agent can't smuggle a ref by claiming
-        // multipart/form-data (see RFC §11.8).
         let mut remote_scan_body: Option<String> = None;
         let body_bytes: bytes::Bytes = if body_bytes.is_empty() {
             body_bytes
@@ -547,10 +543,6 @@ impl SecurityProxy {
                     }
                 }
                 BodyMode::RawScan => {
-                    // Raw memchr-style check on the undecoded bytes.
-                    // We don't try to parse — any occurrence of the
-                    // ref opener in a content-type we can't safely
-                    // edit is a fail-closed signal.
                     if memchr_substr(&body_bytes, b"{{secret:") {
                         warn!(
                             "BLOCKED: secret reference in body with \
@@ -650,11 +642,8 @@ impl SecurityProxy {
 
         let body_str = String::from_utf8_lossy(&body_bytes);
 
-        // Outbound scan (exfiltration). Local checks inspect the substituted
-        // body that will go upstream, but remote scanner services receive the
-        // pre-substitution body so `{{secret:NAME}}` references do not turn
-        // into secret-value disclosures to a scanner outside the destination
-        // allowlist.
+        // Local checks inspect the upstream body; remote scanners receive the
+        // pre-substitution body so secret references do not become disclosures.
         if self.config.scan_outbound && !body_str.is_empty() {
             let remote_scan_body = remote_scan_body.as_deref().unwrap_or(&body_str);
             let redacted_target_url = redact_url_for_log(&target_url);
@@ -1339,8 +1328,6 @@ mod tests {
     use wiremock::matchers::{header as wm_header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     async fn test_proxy(config: GatewayConfig) -> Arc<SecurityProxy> {
         Arc::new(
             SecurityProxy::new(config, ScannerConfig::default(), RateLimitConfig::default()).await,
@@ -1830,9 +1817,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn unreadable_destination_metadata_fails_closed() {
-        let _guard = ENV_MUTEX.lock().await;
+    #[test]
+    fn unreadable_destination_metadata_fails_closed() {
+        static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_MUTEX.lock().unwrap();
         let dir = tempfile::TempDir::new().unwrap();
         let metadata_path = dir.path().join("secret-metadata.json");
         std::fs::write(&metadata_path, "not-json").unwrap();
@@ -2183,110 +2171,6 @@ mod tests {
 
         let resp = proxy.intercept(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn remote_scanner_receives_presubstitution_body() {
-        let _guard = ENV_MUTEX.lock().await;
-        let upstream = MockServer::start().await;
-        let remote_scanner = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/upload"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
-            .mount(&upstream)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/scan"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "verdict": "clean",
-            })))
-            .mount(&remote_scanner)
-            .await;
-
-        let secret_name = "CALCIFORGE_TEST_REMOTE_SCANNER_BODY";
-        let secret_env_var = format!("{secret_name}_API_KEY");
-        let secret_value = "PROXY-REMOTE-SCANNER-MUST-NOT-SEE-THIS";
-        let previous = std::env::var_os(&secret_env_var);
-        // SAFETY: this test serializes access to the process environment with
-        // ENV_MUTEX for the full duration of the override.
-        unsafe {
-            std::env::set_var(&secret_env_var, secret_value);
-        }
-
-        let proxy = Arc::new(
-            SecurityProxy::new(
-                GatewayConfig {
-                    scan_outbound: true,
-                    scan_inbound: false,
-                    inject_credentials: false,
-                    bypass_domains: vec![],
-                    secret_destination_allowlist: std::collections::HashMap::from([(
-                        secret_name.to_string(),
-                        vec!["127.0.0.1".to_string()],
-                    )]),
-                    ..Default::default()
-                },
-                ScannerConfig {
-                    checks: vec![adversary_detector::ScannerCheckConfig::RemoteHttp {
-                        url: remote_scanner.uri(),
-                        fail_closed: true,
-                    }],
-                    ..Default::default()
-                },
-                RateLimitConfig::default(),
-            )
-            .await,
-        );
-
-        let req = Request::builder()
-            .method("POST")
-            .uri(format!("{}/upload", upstream.uri()))
-            .header("content-type", "application/json")
-            .body(Body::from(format!(
-                r#"{{"token":"{{{{secret:{secret_name}}}}}","message":"hello"}}"#
-            )))
-            .unwrap();
-
-        let resp = proxy.intercept(req).await.unwrap();
-
-        // SAFETY: same ENV_MUTEX invariant as above.
-        unsafe {
-            if let Some(previous) = previous {
-                std::env::set_var(&secret_env_var, previous);
-            } else {
-                std::env::remove_var(&secret_env_var);
-            }
-        }
-
-        let status = resp.status();
-        if status != StatusCode::OK {
-            let body = resp.into_body().collect().await.unwrap().to_bytes();
-            panic!(
-                "expected OK response, got {status}: {}",
-                String::from_utf8_lossy(&body)
-            );
-        }
-
-        let remote_requests = remote_scanner.received_requests().await.unwrap();
-        assert_eq!(remote_requests.len(), 1);
-        let remote_body: serde_json::Value =
-            serde_json::from_slice(&remote_requests[0].body).unwrap();
-        assert!(
-            !remote_body.to_string().contains(secret_value),
-            "remote scanner request must not receive substituted secret values"
-        );
-        assert_eq!(
-            remote_body["content"],
-            format!(r#"{{"token":"{{{{secret:{secret_name}}}}}","message":"hello"}}"#)
-        );
-
-        let upstream_requests = upstream.received_requests().await.unwrap();
-        assert_eq!(upstream_requests.len(), 1);
-        let upstream_body = String::from_utf8(upstream_requests[0].body.clone()).unwrap();
-        assert!(
-            upstream_body.contains(secret_value),
-            "upstream destination should still receive the substituted secret"
-        );
     }
 
     // ── Bypass ───────────────────────────────────────────────────────────

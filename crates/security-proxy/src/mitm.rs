@@ -364,6 +364,13 @@ impl CalciforgeMitmHandler {
                 ));
             }
         };
+        let remote_scan_body = match SecurityProxy::body_substitution_mode(content_type.as_deref())
+        {
+            BodyMode::FullSubstitute if !body_bytes.is_empty() => {
+                Some(String::from_utf8_lossy(&body_bytes).into_owned())
+            }
+            _ => None,
+        };
         let body_bytes = match substitute_body(
             &self.state,
             body_bytes,
@@ -455,12 +462,16 @@ impl CalciforgeMitmHandler {
 
         if self.state.config.scan_outbound && !body_bytes.is_empty() {
             let body_text = String::from_utf8_lossy(&body_bytes);
+            let remote_body = remote_scan_body.as_deref().unwrap_or(&body_text);
+            let redacted_target_url = redact_url_for_log(&target_url);
             let verdict = self
                 .state
                 .scanner
-                .scan(
-                    &redact_url_for_log(&target_url),
+                .scan_with_remote_payload(
+                    &redacted_target_url,
                     &body_text,
+                    &redacted_target_url,
+                    remote_body,
                     ScanContext::Api,
                 )
                 .await;
