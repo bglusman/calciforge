@@ -17,7 +17,7 @@ jobs:
   test:
     name: Integration Tests
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -50,6 +50,11 @@ jobs:
           # Skip tests that require running services in CI
           SKIP_LIVE_TESTS: 1
 
+      - name: Run artifact recipe mock E2E
+        run: python3 scripts/artifact-recipe-mock-e2e.py
+        env:
+          CALCIFORGE_BIN: target/debug/calciforge
+
   docker-gateway-smoke:
     name: Docker Gateway Smoke
     runs-on: ubuntu-latest
@@ -77,7 +82,7 @@ jobs:
   lint:
     name: Lint and Format
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
