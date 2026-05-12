@@ -146,7 +146,7 @@ Do not publish `signal-cli-rest-api` on a routable interface unless you put it
 behind a trusted reverse proxy, firewall, or authentication layer. Calciforge's
 `allowed_numbers`, identity routing, and message-scanning controls apply after
 Calciforge receives events; they do not protect clients that can talk directly
-to the Signal backend.
+to the `signal-cli-rest-api` session API.
 
 `MODE=json-rpc` is required — Calciforge talks JSON-RPC + SSE, not the
 older REST endpoints.
