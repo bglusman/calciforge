@@ -50,18 +50,21 @@ recursively.
    for raw credentials such as `api_key=sk-...`. Transport-auth headers, such
    as `Authorization`, `Cookie`, and provider API-key headers, are sanitized
    before this check; otherwise normal model/provider sessions and local
-   gateways would look suspicious. Exact proxy-managed placeholders such as
+   gateways would look suspicious. Exact proxy-managed explicit references such as
    `{% raw %}{{secret:NAME}}{% endraw %}` and
    `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are safe control syntax;
-   mixed manual-plus-placeholder values still remain visible to the check.
+   mixed manual-plus-reference values still remain visible to the check.
 2. **Optional exfiltration scan:** When `scan_outbound = true`, outgoing request bodies are analyzed by the
    `adversary-detector` for exfiltration language, credential-harvest phrasing,
    and adversarial patterns. This is opt-in by default because provider/tool
    transcripts often include benign prompt-injection examples and opaque IDs.
 3. **Secret substitution and credential injection:** When the request is
-   visible to Calciforge, the gateway can substitute placeholders such as
+   visible to Calciforge, the gateway can substitute explicit references such as
    `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported
-   bodies, and inject provider `Authorization` headers from the vault.
+   bodies, and inject provider `Authorization` headers from the vault. The
+   staged placeholder path will use this same step to replace registered opaque
+   credentials such as `cfg_OPENAI_API_KEY_<random>` once lifecycle wiring is
+   enabled.
 4. **Control header strip and forwarding:** Calciforge strips
    `X-Calciforge-*` control headers, then forwards the request to the
    destination.
@@ -91,7 +94,45 @@ the selected agent adapter actually uses it.
 | HTTPS inspecting proxy | App/host trust | Experimental | Trust a Calciforge CA and terminate CONNECT traffic for clients that support custom trust stores. CA means certificate authority: a local certificate issuer your runtime agrees to trust. The hudsucker-backed prototype runs the existing scan/substitution pipeline over decrypted requests and responses. |
 | OS redirect | Host | Roadmap | Use firewall rules such as Linux `iptables`/`nftables` or macOS `pf` to redirect outbound traffic from a controlled UID/process group to the gateway. |
 | Container or VM isolation | Runtime | Roadmap | Run the agent in Docker, a Linux namespace, LXC, or a VM where egress is denied except through Calciforge-managed gateways. This is the likely path for agents that ignore proxy env or use complex transports. |
-| Placeholder injection | Secret boundary | Roadmap | Give off-the-shelf agents fake env credentials and substitute real secrets only at the gateway. This keeps raw secrets out of agent memory but still needs a network enforcement path. |
+| Placeholder injection | Secret boundary | Staged primitives | Give off-the-shelf agents fake env credentials or managed credential files and substitute real secrets only at the gateway. This keeps raw secrets out of agent memory but still needs agent lifecycle wiring, live request rewriting, and a network enforcement path. |
+
+## Secret References And Opaque Placeholder Credentials
+
+Calciforge now has two related secret-use shapes:
+
+- **Explicit secret references** are the working path:
+  `{% raw %}{{secret:NAME}}{% endraw %}`. Agents that know about Calciforge can
+  ask `calciforge-secrets ref NAME` or use the MCP tool, place that reference
+  into a visible outbound request, and let the gateway resolve it.
+- **Opaque placeholder credentials** are the staged next path:
+  `cfg_<NAME>_<random>`. Calciforge generates the token, registers the full
+  token against an authoritative secret name for one agent, then provides the
+  token through a supervised surface such as an environment variable, wrapper,
+  or managed credential file. The embedded `<NAME>` is only a hint for humans;
+  policy must resolve the full token through the per-agent registry.
+
+The second path exists because many agents and tools do not know Calciforge's
+mustache-style syntax. They expect `OPENAI_API_KEY`, a credentials directory,
+or a provider config file. For example, an OpenClaw lane may already have a
+plaintext credentials folder. In a managed placeholder setup, Calciforge should
+write placeholder values there instead of real keys, register those values with
+the security proxy, and retire them when that managed runtime stops or rotates.
+
+Do not mark explicit references deprecated yet. They remain the only fully
+wired path, they are simple to audit, and they work for agents that can follow
+Calciforge's CLI/MCP guidance. Placeholder credentials may become the default
+for some supervised first-class agents once generation, delivery,
+registration, live replacement, and retirement are all end-to-end tested. Even
+then, both mechanisms may remain supported: explicit references are clearer for
+agent-aware workflows, while opaque placeholders are better for ordinary tools
+that expect env vars or credential files.
+
+There is also a scanner compatibility reason to keep both. Opaque placeholders
+are deliberately random and secret-shaped. If IronClaw-style exfiltration
+detection is enabled, those stand-ins may look like credentials unless the
+scanner learns Calciforge's placeholder registry or allowlist. That is solvable,
+but it means placeholder injection and aggressive exfil detection should be
+treated as separate knobs until the integration is proven.
 
 The unified installer starts `security-proxy`, but it does not put
 `HTTP_PROXY`/`HTTPS_PROXY` on the Calciforge service itself. Do not assume

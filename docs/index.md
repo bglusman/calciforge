@@ -360,16 +360,29 @@ with a temporary secret by default so macOS Keychain or provider approval
 prompts happen during setup instead of the first chat-driven paste. Set
 `CALCIFORGE_FNOX_WARMUP=false` to skip that preflight.
 
-### Outbound traffic gating
+### Outbound Traffic Gating
 
-The gateway substitutes `{% raw %}{{secret:NAME}}{% endraw %}`
-references at the moment of forwarding — and only if the destination
-is on the per-secret allowlist. Placeholders are allowed in URLs,
-headers, and supported request bodies, including query parameters such
-as `?api_key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`. The
-gateway runs manual-credential detection before substitution, so raw
-agent-supplied credentials such as `?api_key=sk-...` are blocked while
-proxy-managed placeholders can still be resolved safely.
+The working path today is explicit secret references. The agent writes
+`{% raw %}{{secret:NAME}}{% endraw %}`, and the gateway substitutes that
+reference at the moment of forwarding — and only if the destination is on the
+per-secret allowlist. References are allowed in URLs, headers, and supported
+request bodies, including query parameters such as
+`?api_key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`. The gateway runs
+manual-credential detection before substitution, so raw agent-supplied
+credentials such as `?api_key=sk-...` are blocked while Calciforge-managed
+references can still be resolved safely.
+
+Calciforge is also growing an opaque placeholder credential path. Instead of
+teaching an agent to write `{% raw %}{{secret:NAME}}{% endraw %}`, Calciforge
+will be able to generate a random stand-in such as
+`cfg_OPENAI_API_KEY_<random>`, register that token with the
+security proxy, and put the stand-in where the agent already expects a
+credential: an env var, a wrapper-provided file, or eventually a managed
+credential folder. The agent never receives the real key. When a visible
+outbound request carries the stand-in, the gateway resolves the full opaque
+token to the real secret name, checks the same identity and destination policy,
+and only then loads the value. The primitives for that path are staged, but
+agent lifecycle wiring and live request rewriting are not enabled yet.
 
 ```toml
 # /etc/calciforge/security-proxy.toml
@@ -693,11 +706,16 @@ proxy/model surfaces, and future agent-facing APIs.
 
 A small command-line tool and optional MCP server expose secret *names* to
 agents but never return values. MCP means Model Context Protocol, a way for
-tools to expose structured capabilities to an agent. In Calciforge, the only
-way for an agent to use a secret is to emit
+tools to expose structured capabilities to an agent. Today, the portable way
+for an agent to use a secret is to emit
 `{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve it on the
 way out. A compromised agent may learn that a key exists, but it still cannot
 ask Calciforge to hand over the value.
+
+For agents that cannot be taught Calciforge syntax, the planned placeholder
+credential path gives them fake credential values instead. Those stand-ins must
+be generated and provided by Calciforge or an installer-managed wrapper; an
+agent cannot safely invent one.
 
 Calciforge's default agent guidance should be command-line first:
 `calciforge-secrets list` and `calciforge-secrets ref NAME` work for any

@@ -21,7 +21,8 @@ potions than Howl would tolerate.
 
 | Area | Status | Where to read more |
 |---|---:|---|
-| `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Explicit `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Opaque placeholder credentials for supervised agent env vars or managed credential files | Staged primitives | [Placeholder injection mode](https://calciforge.org/roadmap/placeholder-injection-mode.html) |
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | Local paste form for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
 | Command-line and optional MCP tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
@@ -126,6 +127,17 @@ generates a persistent local CA by default; manual deployments can set
 Calciforge-owned model gateway, fetch/tool path, audited recipe, or tested
 inspecting-proxy setup when HTTPS content needs scanning or secret
 substitution.
+
+Secret handling is in a transition period. The working path today is explicit
+reference syntax: an agent emits `{{secret:NAME}}`, and Calciforge resolves it
+only at an approved destination. The next path is opaque placeholder
+credentials: Calciforge will generate fake-looking random values such as
+`cfg_OPENAI_API_KEY_<random>`, register them with the security proxy, then
+provide them to supervised agents through env vars or managed credential files.
+That matters for agents like OpenClaw lanes that expect plaintext credential
+files or ordinary `*_API_KEY` variables. They can receive stand-ins instead of
+real secrets, while the gateway swaps in the real value only during an allowed
+outbound request. That path is not the default yet.
 
 ## Tiny Config Sketch
 

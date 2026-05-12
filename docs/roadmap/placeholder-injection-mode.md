@@ -55,9 +55,8 @@ credentials from env vars.
 
 ## Current staged implementation
 
-Status as of 2026-05-10: the security-proxy-local primitives are
-implemented in the staged placeholder-injection work, but live placeholder
-substitution is intentionally not enabled yet.
+Status as of 2026-05-12: the security-proxy-local primitives are merged, but
+live placeholder substitution is intentionally not enabled yet.
 
 Implemented pieces:
 - Placeholder token recognition for `cfg_<NAME>_<32-hex>`.
@@ -80,15 +79,17 @@ Implemented pieces:
 Not yet wired:
 - A runtime source that calls the lifecycle helpers from supervised
   agent spawn/shutdown or equivalent channel lifecycle code.
-- Passing generated placeholders into agent env vars at spawn time.
+- Passing generated placeholders into agent env vars, wrapper files, or
+  managed credential directories at spawn/install time.
 - Live request rewriting from placeholder token -> real secret value.
 
-The next safe implementation slice is Calciforge-side lifecycle
-wiring: decide which supervised agent runtime owns placeholder
-creation, where generated env values are injected, and where
-single-token or whole-agent retirement is called. Live substitution
-should remain disabled until that owner can deterministically register
-and retire tokens.
+The next safe implementation slice is Calciforge-side lifecycle wiring:
+decide which supervised agent runtime owns placeholder creation, where
+generated values are injected, and where single-token or whole-agent
+retirement is called. That delivery surface may be an env var for CLI agents,
+a wrapper-generated config file, or a managed credentials folder for agents
+that already expect plaintext files. Live substitution should remain disabled
+until that owner can deterministically register and retire tokens.
 
 That boundary is explicit: `calciforge` currently owns agent config and
 adapter construction, while `security-proxy` owns the in-memory
@@ -186,10 +187,16 @@ secret value.
   must own the authoritative token registry and value-substitution
   policy. A shared lifecycle API or explicit registration client should
   connect those two responsibilities.
-- **Combine with current {{secret:NAME}} mode.** Both can coexist —
-  agents that know about Calciforge use the explicit syntax, agents
-  that don't get placeholder injection. Recognizer scans for both
-  patterns.
+- **Combine with current {{secret:NAME}} mode.** Both can coexist
+  indefinitely. Operators may prefer explicit references for agent-aware
+  workflows because they are easy to audit, and placeholder injection for
+  ordinary tools that only understand env vars or credential files. Recognizer
+  scans for both patterns.
+- **Coordinate with exfil scanners.** Opaque placeholders are intentionally
+  random and may look like real API keys to IronClaw-style exfil detection.
+  Until scanners can consult the placeholder registry or an equivalent
+  allowlist, operators may need to choose between strict exfil scanning and
+  placeholder injection for a given runtime.
 
 ## Out of scope for first cut
 
