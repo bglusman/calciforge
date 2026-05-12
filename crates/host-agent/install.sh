@@ -320,7 +320,6 @@ install_sudoers() {
 # Calciforge Host-Agent sudoers — minimal fallback
 ${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/pct-create-wrapper
 ${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/zfs-destroy-wrapper
-${agent_user} ALL=(root) NOPASSWD: /usr/local/sbin/git-safe-wrapper
 ${agent_user} ALL=(root) NOPASSWD: /usr/sbin/pct status *
 ${agent_user} ALL=(root) NOPASSWD: /sbin/zfs list *
 ${agent_user} ALL=(root) NOPASSWD: /sbin/zfs get *

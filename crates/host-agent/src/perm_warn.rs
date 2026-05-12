@@ -131,15 +131,22 @@ fn detect_bare_pct(line: &str) -> Option<String> {
 }
 
 fn detect_bare_git(line: &str) -> Option<String> {
-    if line.contains("git-safe-wrapper") {
+    if line.contains("!/usr/bin/git") || line.contains("!/bin/git") {
         return None;
+    }
+    if line.contains("git-safe-wrapper") {
+        return Some(
+            "Do not grant sudo access to /usr/local/sbin/git-safe-wrapper; \
+             git repository config and hooks are not safe to execute as root"
+                .to_string(),
+        );
     }
     let bare = ["/usr/bin/git", "/bin/git"];
     for b in &bare {
         if line.contains(b) {
             return Some(format!(
-                "Direct access to '{}' granted; use /usr/local/sbin/git-safe-wrapper instead \
-                 to restrict to allowlisted repos and safe sub-commands",
+                "Direct root access to '{}' granted; git operations must run as the \
+                 unprivileged host-agent service account, not through sudoers",
                 b
             ));
         }
@@ -353,8 +360,13 @@ mod tests {
     }
 
     #[test]
-    fn test_git_safe_wrapper_not_flagged() {
-        assert!(!check(
+    fn test_negated_bare_git_not_flagged() {
+        assert!(!check("clash-agent ALL=(root) NOPASSWD: !/usr/bin/git *"));
+    }
+
+    #[test]
+    fn test_git_safe_wrapper_flagged() {
+        assert!(check(
             "clash-agent ALL=(root) NOPASSWD: /usr/local/sbin/git-safe-wrapper"
         ));
     }
@@ -393,8 +405,8 @@ mod tests {
         assert!(r.is_some());
         let msg = r.unwrap();
         assert!(
-            msg.contains("git-safe-wrapper"),
-            "should mention the wrapper"
+            msg.contains("unprivileged host-agent service account"),
+            "should explain git must not run through sudoers"
         );
     }
 }
