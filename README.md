@@ -54,7 +54,7 @@ After install, the default local pieces are:
 - `calciforge` — channel router, commands, identity, model gateway
 - `security-proxy` on `127.0.0.1:8888` — substitution, destination checks, scanning, credential injection
 - `clashd` on `127.0.0.1:9001` — small HTTP adapter around the `clash` policy engine
-- `secrets-client` — env → fnox → Vaultwarden secret resolver
+- `secrets-client` — env → fnox secret resolver
 - `calciforge-secrets` — command-line secret-name discovery and `{{secret:NAME}}` reference helper
 - `paste-server` — short-lived local/LAN forms for adding secrets without putting values in chat history
 

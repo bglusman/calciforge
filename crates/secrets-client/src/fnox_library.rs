@@ -20,7 +20,7 @@
 //! The fnox crate pulls ~30 transitive dependencies (AWS SDK, GCP SDK,
 //! keyring, age, etc.) and adds ~1m 39s to a cold workspace build.
 //! Most consumers of `secrets-client` don't need fnox at all — they get
-//! credentials from env or vaultwarden. Hiding library mode behind a
+//! credentials from env or fnox's configured providers. Hiding library mode behind a
 //! cargo feature keeps the workspace lean for them.
 //!
 //! ## Upstream

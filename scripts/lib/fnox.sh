@@ -190,7 +190,7 @@ ensure_fnox() {
         fi
         warn "cargo install fnox failed (exit $cargo_rc) — see output above"
     fi
-    warn "fnox not installed — secret lookup will skip the fnox layer (env → vaultwarden still works)"
+    warn "fnox not installed — secret lookup will only use env vars"
     return 1
 }
 

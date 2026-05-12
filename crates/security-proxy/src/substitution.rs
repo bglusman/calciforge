@@ -16,8 +16,8 @@
 //!    malformed or nested refs.
 //! 2. [`substitute`] — sync render pass that consumes a `(name →
 //!    value)` map from the caller and produces the final string. The
-//!    caller is responsible for resolving names (env, fnox,
-//!    vaultwarden) between the two calls; that resolution can be
+//!    caller is responsible for resolving names (env, fnox) between
+//!    the two calls; that resolution can be
 //!    parallel, cached, policy-checked, etc., independent of this
 //!    module.
 //!

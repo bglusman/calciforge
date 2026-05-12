@@ -19,7 +19,7 @@ http-body-util = "0.1"
 hudsucker = { version = "0.24.0", features = ["http2"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 adversary-detector = { path = "../adversary-detector" }
-# Shared secret-resolver library (env → fnox → vaultwarden). The secrets
+# Shared secret-resolver library (env → fnox). The secrets
 # binary itself is slated for removal in the #28 consolidation, but the
 # library stays (likely to be renamed to secret-proxy-client).
 secrets-client = { path = "../secrets-client" }

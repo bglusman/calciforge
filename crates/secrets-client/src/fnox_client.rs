@@ -5,7 +5,7 @@
 //!
 //! Three call-sites in this workspace shell out to `fnox`:
 //!
-//! - `vault.rs::get_secret` (read path, hot)
+//! - `resolver.rs::get_secret` (read path, hot)
 //! - `commands.rs::secure_set` (write path, `!secure set`)
 //! - `commands.rs::secure_list` (enumerate names, `!secure list`)
 //!

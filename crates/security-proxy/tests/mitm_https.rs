@@ -215,8 +215,6 @@ async fn start_mitm_proxy_with_config(
 #[tokio::test]
 async fn https_mitm_substitutes_header_and_json_body_before_forwarding() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("SECRETS_VAULT_TOKEN");
-    remove_env("SECRETS_VAULT_URL");
     set_env("SECURITY_PROXY_VAULT_TOKEN", "mitm-vault-token");
     set_env("MITM_TEST_API_KEY", "super-secret");
 
@@ -339,8 +337,6 @@ async fn https_mitm_blocks_prompt_injection_response_body() {
 #[tokio::test]
 async fn https_mitm_destination_allowlist_blocks_disallowed_host() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("SECRETS_VAULT_TOKEN");
-    remove_env("SECRETS_VAULT_URL");
     set_env("MITM_LOCKED_API_KEY", "should-never-leave-the-process");
 
     let (ca_cert, ca_key) = make_test_ca();
@@ -413,8 +409,6 @@ async fn https_mitm_destination_allowlist_blocks_disallowed_host() {
 #[tokio::test]
 async fn https_mitm_blocks_ref_in_unsupported_content_type() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    remove_env("SECRETS_VAULT_TOKEN");
-    remove_env("SECRETS_VAULT_URL");
     remove_env("MITM_RAW_API_KEY");
 
     let (ca_cert, ca_key) = make_test_ca();

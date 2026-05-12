@@ -36,7 +36,7 @@ pub struct CredentialMapping {
     /// - "openai.com" matches openai.com and *.openai.com
     /// - "*.corp.example.com" matches any subdomain of corp.example.com
     pub hosts: Vec<String>,
-    /// Secret name passed to `secrets_client::vault::get_secret`
+    /// Secret name passed to `secrets_client::resolver::get_secret`
     pub secret_name: String,
     /// How to inject the resolved secret
     pub injection: InjectionMethod,
@@ -140,7 +140,7 @@ impl CredentialInjector {
 
     /// Inject credentials into request headers based on target host.
     ///
-    /// Resolves secrets on-demand from the vault with TTL-based caching.
+    /// Resolves secrets on-demand from the shared resolver with TTL-based caching.
     pub async fn inject(&self, headers: &mut Vec<(String, String)>, target_host: &str) {
         for injection in self.injections_for_host(target_host).await {
             match injection {
@@ -206,7 +206,7 @@ impl CredentialInjector {
         );
     }
 
-    /// Ensure a secret is cached (resolve from vault if missing or expired).
+    /// Ensure a secret is cached (resolve if missing or expired).
     pub async fn ensure_cached(&self, secret_name: &str) -> bool {
         self.resolve_secret(secret_name).await.is_some()
     }
@@ -222,10 +222,10 @@ impl CredentialInjector {
         }
         // Expired — fall through to re-resolve
 
-        // Resolve from vault
-        match secrets_client::vault::get_secret(&key).await {
+        // Resolve from the shared env/fnox resolver.
+        match secrets_client::resolver::get_secret(&key).await {
             Ok(secret) => {
-                debug!(secret_name = %secret_name, "credential resolved from vault");
+                debug!(secret_name = %secret_name, "credential resolved");
                 self.cache.insert(
                     key,
                     CachedSecret {
@@ -241,7 +241,7 @@ impl CredentialInjector {
                     warn!(
                         secret_name = %secret_name,
                         error = %e,
-                        "vault refresh failed, using stale cached value"
+                        "credential refresh failed, using stale cached value"
                     );
                     return Some(entry.value.clone());
                 }
@@ -605,10 +605,6 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
 
     #[tokio::test]
     async fn ensure_cached_returns_false_when_nothing_resolves() {
-        unsafe {
-            std::env::remove_var("SECRETS_VAULT_TOKEN");
-            std::env::remove_var("SECRETS_VAULT_URL");
-        }
         let provider_name = format!("nosuchprovider_pid_{}", std::process::id());
         let injector = CredentialInjector::new();
         let resolved = injector.ensure_cached(&provider_name).await;
@@ -642,9 +638,16 @@ injection = { type = "header", name = "X-Corp-Key", prefix = "" }
 
     #[tokio::test]
     async fn inject_no_credential_no_header() {
-        let injector = CredentialInjector::new();
+        let injector = CredentialInjector::with_config(Some(CredentialsConfig {
+            mappings: vec![CredentialMapping {
+                hosts: vec!["api.test.invalid".into()],
+                secret_name: format!("missing_test_provider_{}", std::process::id()),
+                injection: InjectionMethod::Bearer,
+            }],
+            cache_ttl_secs: 0,
+        }));
         let mut headers = vec![];
-        injector.inject(&mut headers, "api.openai.com").await;
+        injector.inject(&mut headers, "api.test.invalid").await;
         assert!(headers.is_empty());
     }
 

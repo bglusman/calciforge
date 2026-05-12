@@ -1,7 +1,7 @@
 //! Secrets client for Calciforge.
 //!
 //! Provides:
-//! - [`vault::get_secret`] — env → fnox → vaultwarden resolver chain
+//! - [`resolver::get_secret`] — env → fnox resolver chain
 //!   (read-only)
 //! - [`FnoxClient`] — subprocess wrapper around the `fnox` CLI
 //!   (read + write)
@@ -21,8 +21,8 @@ pub mod config;
 pub mod fnox_client;
 pub mod fnox_library;
 pub mod metadata;
+pub mod resolver;
 pub mod secret_refs;
-pub mod vault;
 
 pub use access_policy::{
     SecretAccessIdentity, SecretAccessPolicy, SecretAccessRule, load_default_access_policy,
