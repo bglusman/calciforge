@@ -174,6 +174,14 @@ recipe should not be described as known working until it has a reproducible
 smoke that produces the expected artifact or work-status event through
 Calciforge's adapter path.
 
+The deterministic `examples/agent-recipes/media-brief-demo` recipe is the
+baseline artifact plumbing check. It produces a cover PNG, intro WAV, and text
+brief for a support-training or product-announcement prompt without calling an
+external provider. `scripts/artifact-recipe-mock-e2e.py` runs that recipe
+through the mock channel and verifies the safe channel fallback. Use that before
+manual testing a real media agent such as npcsh image generation, OpenAI image
+generation, or a text-to-speech backend.
+
 ## OpenClaw Integration Findings
 
 OpenClaw exposes several surfaces that look similar but behave differently:

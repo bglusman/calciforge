@@ -103,12 +103,52 @@ EOF
 file "$tmp"/npcsh-vixynt.png
 ```
 
+## Media Brief Demo Recipe
+
+`media-brief-demo` is the deterministic recipe to use before trying a real
+multimodal backend. It reads a prompt from stdin and writes a small media kit:
+
+- `cover.png`, a generated image
+- `intro.wav`, a generated audio chime
+- `brief.md`, a short text brief
+
+It performs no network calls and requires only Python 3, so it is safe for CI
+and useful for manual channel checks. The PR CI script
+`scripts/artifact-recipe-mock-e2e.py` starts Calciforge with the mock channel,
+routes a prompt to this recipe, and verifies all three artifact types appear in
+the channel-safe fallback without exposing local artifact paths.
+
+Example agent config:
+
+```toml
+[[agents]]
+id = "media-brief"
+kind = "artifact-cli"
+command = "/opt/calciforge/examples/agent-recipes/media-brief-demo"
+timeout_ms = 30000
+aliases = ["media"]
+registry = { display_name = "Media Brief Demo", specialties = ["images", "audio", "briefs"] }
+```
+
+Manual test prompt:
+
+```text
+Create a voice-support training media kit for handling a delayed order.
+```
+
+This is intentionally less game-specific than the original npcsh/rpgsh
+inspiration: a support-training or product-announcement media kit exercises the
+same artifact path while giving the operator a concrete voice-agent-adjacent
+workflow to inspect.
+
 ## Promotion Checklist
 
 Before a recipe becomes recommended documentation:
 
 - Verify installability in `scripts/agent-recipe-smoke.sh`.
 - Smoke the wrapper against an installed local target.
+- Add or update a mock-channel E2E when the recipe is meant to prove Calciforge
+  artifact plumbing rather than an upstream provider.
 - Confirm failures are explicit and nonzero.
 - Confirm no prompt text leaks through argv when avoidable.
 - Confirm artifacts are useful on Telegram and Matrix text fallback paths.

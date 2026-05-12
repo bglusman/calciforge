@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Deterministic artifact-cli recipe for media-brief smoke tests.
+
+Reads a user task from stdin and writes three local artifacts into
+CALCIFORGE_ARTIFACT_DIR:
+
+- cover.png: a deterministic generated image
+- intro.wav: a short generated chime
+- brief.md: a short text brief echoing the task
+
+This intentionally performs no network calls. It is useful for validating
+Calciforge's recipe, artifact collection, and channel fallback plumbing before
+trying a real image/audio provider.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import os
+import struct
+import sys
+import textwrap
+import wave
+import zlib
+from pathlib import Path
+
+
+def png_chunk(kind: bytes, data: bytes) -> bytes:
+    body = kind + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+
+def write_png(path: Path, prompt: str) -> None:
+    width, height = 640, 360
+    seed = hashlib.sha256(prompt.encode("utf-8")).digest()
+    color_a = tuple(32 + (seed[i] % 96) for i in range(3))
+    color_b = tuple(150 + (seed[i + 3] % 80) for i in range(3))
+    accent = tuple(210 + (seed[i + 6] % 36) for i in range(3))
+
+    rows: list[bytes] = []
+    for y in range(height):
+        row = bytearray([0])
+        for x in range(width):
+            diagonal = ((x + y) // 44) % 2
+            ring = ((x - width // 2) ** 2 + (y - height // 2) ** 2) // 2200
+            base = color_b if diagonal else color_a
+            if ring % 5 == 0:
+                base = accent
+            pulse = (x * seed[9] + y * seed[10]) % 31
+            row.extend(min(255, channel + pulse) for channel in base)
+        rows.append(bytes(row))
+
+    image = (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + png_chunk(b"tEXt", b"Comment\0Calciforge media brief demo")
+        + png_chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
+        + png_chunk(b"IEND", b"")
+    )
+    path.write_bytes(image)
+
+
+def write_wav(path: Path, prompt: str) -> None:
+    seed = hashlib.sha256(prompt.encode("utf-8")).digest()
+    sample_rate = 16_000
+    duration_seconds = 0.65
+    frequency = 330 + (seed[0] % 220)
+    frames = int(sample_rate * duration_seconds)
+
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(sample_rate)
+        for index in range(frames):
+            t = index / sample_rate
+            envelope = max(0.0, 1.0 - t / duration_seconds)
+            tone = math.sin(2 * math.pi * frequency * t)
+            overtone = 0.35 * math.sin(2 * math.pi * frequency * 1.5 * t)
+            value = int(12000 * envelope * (tone + overtone))
+            out.writeframes(struct.pack("<h", max(-32768, min(32767, value))))
+
+
+def write_brief(path: Path, prompt: str) -> None:
+    wrapped = "\n".join(textwrap.wrap(prompt.strip() or "Untitled media brief", width=88))
+    path.write_text(
+        "\n".join(
+            [
+                "# Media Brief",
+                "",
+                "## Request",
+                wrapped,
+                "",
+                "## Deliverables",
+                "- `cover.png`: deterministic visual direction",
+                "- `intro.wav`: short generated intro chime",
+                "- `brief.md`: this planning brief",
+                "",
+                "## Manual Test Prompt",
+                "Ask Calciforge for a media kit around a concrete announcement, incident recap,",
+                "or support-training scenario, then confirm the channel shows all attachments",
+                "without exposing local artifact paths.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def main() -> int:
+    artifact_dir = os.environ.get("CALCIFORGE_ARTIFACT_DIR")
+    if not artifact_dir:
+        print("CALCIFORGE_ARTIFACT_DIR is required", file=sys.stderr)
+        return 2
+
+    prompt = sys.stdin.read()
+    out = Path(artifact_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    write_png(out / "cover.png", prompt)
+    write_wav(out / "intro.wav", prompt)
+    write_brief(out / "brief.md", prompt)
+
+    topic = " ".join((prompt.strip() or "media brief").split())[:96]
+    print(f"Media brief ready for: {topic}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
