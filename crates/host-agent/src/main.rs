@@ -1100,11 +1100,13 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = config.server.bind.parse()?;
     info!("Setting up mTLS on {}", addr);
 
+    let crl_data = tls::load_crl_data(config.server.crl_file.as_ref())
+        .with_context(|| "Failed to load configured CRL for mTLS acceptor")?;
+
     let tls_config = tls::create_mtls_config(
         &config.server.cert,
         &config.server.key,
         &config.server.client_ca,
-        config.server.crl_file.as_ref(),
     )
     .with_context(|| "Failed to create mTLS configuration")?;
 
@@ -1121,9 +1123,7 @@ async fn main() -> Result<()> {
     // request extensions (P0-A1 fix). We drive our own accept loop so we can call
     // acceptor.accept() which returns (ClientIdentity, TlsStream) and inject the
     // identity into the request extensions before dispatching to the axum router.
-    let acceptor = Arc::new(IdentityExtractingAcceptor::new(
-        tls_config, None, // CRL already checked in create_mtls_config
-    ));
+    let acceptor = Arc::new(IdentityExtractingAcceptor::new(tls_config, crl_data));
 
     info!("Host-Agent ready with mTLS enforcement + identity injection");
 

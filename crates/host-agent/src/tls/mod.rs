@@ -15,7 +15,6 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     cert_path: P,
     key_path: P,
     client_ca_path: P,
-    crl_path: Option<P>,
 ) -> Result<Arc<ServerConfig>> {
     let cert_path = cert_path.as_ref();
     let key_path = key_path.as_ref();
@@ -32,13 +31,6 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     // Load client CA
     let client_ca = load_certs(client_ca_path)
         .with_context(|| format!("Failed to load client CA: {:?}", client_ca_path))?;
-
-    // Load CRL if provided
-    let _crl_data = if let Some(crl_path) = crl_path {
-        Some(fs::read(crl_path).with_context(|| "Failed to read CRL file")?)
-    } else {
-        None
-    };
 
     // Create root certificate store
     let mut root_store = rustls::RootCertStore::empty();
@@ -62,6 +54,16 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     info!("mTLS configuration created successfully");
 
     Ok(Arc::new(rustls_config))
+}
+
+/// Load the optional certificate revocation list used by the identity-extracting acceptor.
+pub fn load_crl_data<P: AsRef<Path>>(crl_path: Option<P>) -> Result<Option<Vec<u8>>> {
+    crl_path
+        .map(|path| {
+            let path = path.as_ref();
+            fs::read(path).with_context(|| format!("Failed to read CRL file: {:?}", path))
+        })
+        .transpose()
 }
 
 /// Load certificates from PEM file
@@ -167,5 +169,43 @@ impl IdentityExtractingAcceptor {
         }
 
         anyhow::bail!("No client certificate presented (mTLS required)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn load_crl_data_returns_configured_contents() {
+        let mut file = tempfile::NamedTempFile::new().expect("create temporary CRL");
+        file.write_all(b"revoked-fingerprint\n")
+            .expect("write temporary CRL");
+
+        let crl_data = load_crl_data(Some(file.path()))
+            .expect("load configured CRL")
+            .expect("CRL should be present");
+
+        assert_eq!(crl_data, b"revoked-fingerprint\n");
+    }
+
+    #[test]
+    fn load_crl_data_allows_absent_crl() {
+        let crl_data = load_crl_data::<&Path>(None).expect("absent CRL should be accepted");
+
+        assert!(crl_data.is_none());
+    }
+
+    #[test]
+    fn load_crl_data_reports_unreadable_path() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let missing_path = temp_dir.path().join("missing-crl.pem");
+        let err = load_crl_data(Some(&missing_path)).expect_err("missing CRL should fail");
+
+        assert!(
+            format!("{err:#}").contains(missing_path.to_string_lossy().as_ref()),
+            "error should identify the unreadable CRL path: {err:#}"
+        );
     }
 }
