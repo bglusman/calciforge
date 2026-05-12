@@ -109,7 +109,7 @@ if not run_doctor:
 body = run_doctor.group('body')
 if 'CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY=1' not in body:
     raise SystemExit("installer doctor must enable strict agent egress proxy checks")
-if 'die "calciforge doctor found security-proxy coverage errors' not in body:
+if 'die "calciforge doctor reported errors under strict egress-proxy enforcement' not in body:
     raise SystemExit("installer must fail closed when strict egress proxy doctor checks fail")
 PY
 

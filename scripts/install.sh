@@ -1292,7 +1292,9 @@ run_calciforge_doctor() {
             doctor_args+=(--no-network)
         fi
         local doctor_env=(env)
-        if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES"; then
+        if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" \
+            || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES" \
+            || truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
             doctor_env+=(-u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
         fi
         if truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
@@ -1300,7 +1302,7 @@ run_calciforge_doctor() {
         fi
         if ! "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}"; then
             if truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
-                die "calciforge doctor found security-proxy coverage errors; add complete per-agent proxy env for subprocess agents or set CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY=false to opt out"
+                die "calciforge doctor reported errors under strict egress-proxy enforcement; see output above. Add complete per-agent proxy env for subprocess agents or set CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY=false to opt out"
             fi
             warn "calciforge doctor reported issues; see output above"
         fi

@@ -35,6 +35,20 @@ mod agent_adapter_doctor;
 mod security_proxy_runtime;
 
 const DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV: &str = "CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY";
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DoctorOptions {
+    pub no_network: bool,
+    pub require_agent_egress_proxy: Option<bool>,
+}
+
+pub fn require_agent_egress_proxy_override_from_env() -> Option<bool> {
+    std::env::var(DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV)
+        .ok()
+        .as_deref()
+        .map(truthy_env_value)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Ok,
@@ -97,7 +111,7 @@ impl DoctorReport {
     }
 }
 
-pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
+pub async fn run_with_options(config_path: &Path, options: DoctorOptions) -> Result<DoctorReport> {
     let mut report = DoctorReport::default();
 
     match config::validator::validate_config_file(&config_path.to_path_buf()) {
@@ -146,14 +160,28 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_secret_files(&config, &mut report);
     check_model_gateway_config(&config, &mut report);
     check_secret_tooling(&mut report);
-    check_scanner_config(&config, no_network, &mut report).await;
+    check_scanner_config(&config, options.no_network, &mut report).await;
     check_proxy_environment(&mut report);
     security_proxy_runtime::check(&mut report).await;
     check_security_proxy_ca_trust(&mut report);
-    check_install_node_metadata(no_network, &mut report).await;
-    check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
+    check_install_node_metadata(options.no_network, &mut report).await;
+    let strict_egress_proxy = options
+        .require_agent_egress_proxy
+        .unwrap_or_else(|| security_requires_agent_egress_proxy(&config));
+    check_agent_proxy_coverage_with_strict(
+        &config,
+        &proxy_environment_from_process(),
+        strict_egress_proxy,
+        &mut report,
+    );
     report_agent_protection_summary(&config, &mut report);
-    check_agent_wiring(&config, no_network, &mut report).await;
+    check_agent_wiring_with_strict(
+        &config,
+        options.no_network,
+        strict_egress_proxy,
+        &mut report,
+    )
+    .await;
     check_persisted_state(&config, &mut report);
 
     Ok(report)
@@ -672,12 +700,22 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
     }
 }
 
+#[cfg(test)]
 fn check_agent_proxy_coverage(
     config: &CalciforgeConfig,
     env: &ProxyEnvironment,
     report: &mut DoctorReport,
 ) {
     let strict_egress = security_requires_agent_egress_proxy(config);
+    check_agent_proxy_coverage_with_strict(config, env, strict_egress, report);
+}
+
+fn check_agent_proxy_coverage_with_strict(
+    config: &CalciforgeConfig,
+    env: &ProxyEnvironment,
+    strict_egress: bool,
+    report: &mut DoctorReport,
+) {
     let subprocess_agents = config
         .agents
         .iter()
@@ -790,8 +828,7 @@ fn check_agent_proxy_coverage(
 }
 
 fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
-    let install_override = std::env::var(DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV).ok();
-    security_requires_agent_egress_proxy_with_override(config, install_override.as_deref())
+    security_requires_agent_egress_proxy_with_override(config, None)
 }
 
 fn security_requires_agent_egress_proxy_with_override(
@@ -1405,9 +1442,25 @@ fn check_agent_runtime_dependencies(agent: &AgentConfig, report: &mut DoctorRepo
     }
 }
 
+#[cfg(test)]
 async fn check_agent_wiring(
     config: &CalciforgeConfig,
     no_network: bool,
+    report: &mut DoctorReport,
+) {
+    check_agent_wiring_with_strict(
+        config,
+        no_network,
+        security_requires_agent_egress_proxy(config),
+        report,
+    )
+    .await;
+}
+
+async fn check_agent_wiring_with_strict(
+    config: &CalciforgeConfig,
+    no_network: bool,
+    strict_egress_proxy: bool,
     report: &mut DoctorReport,
 ) {
     let proxy_bind = config.proxy.as_ref().map(|proxy| proxy.bind.as_str());
@@ -1520,6 +1573,9 @@ async fn check_agent_wiring(
 
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
+                if agent.kind == "openclaw-channel" {
+                    check_openclaw_channel_route(agent, strict_egress_proxy, report).await;
+                }
             }
         }
 

@@ -125,7 +125,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| config::config_path().expect("Failed to determine default config path"));
 
     if let Some(CliCommand::Doctor { no_network }) = args.command {
-        let report = doctor::run(&config_path, no_network).await?;
+        let report = doctor::run_with_options(
+            &config_path,
+            doctor::DoctorOptions {
+                no_network,
+                require_agent_egress_proxy: doctor::require_agent_egress_proxy_override_from_env(),
+            },
+        )
+        .await?;
         let has_errors = report.has_errors();
         report.print();
         std::process::exit(if has_errors { 1 } else { 0 });
