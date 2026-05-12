@@ -34,19 +34,20 @@ pub(super) fn command_token(text: &str) -> &str {
 }
 
 pub(super) fn command_suggestion(cmd: &str) -> Option<&'static str> {
-    let lower = cmd.to_lowercase();
-    let without_bang = lower.trim_start_matches('!');
-    if without_bang.chars().count() > MAX_FUZZY_COMMAND_CHARS {
+    let raw_without_bang = cmd.trim_start_matches('!');
+    if raw_without_bang.chars().count() > MAX_FUZZY_COMMAND_CHARS {
         return None;
     }
+
+    let lower = raw_without_bang.to_lowercase();
 
     COMMANDS
         .iter()
         .copied()
-        .find(|candidate| candidate.trim_start_matches('!') == without_bang)
+        .find(|candidate| candidate.trim_start_matches('!') == lower)
         .or_else(|| {
             COMMANDS.iter().copied().find(|candidate| {
-                levenshtein_distance(without_bang, candidate.trim_start_matches('!')) <= 2
+                levenshtein_distance(&lower, candidate.trim_start_matches('!')) <= 2
             })
         })
 }
