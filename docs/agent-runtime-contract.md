@@ -150,10 +150,12 @@ The Rust `calciforge install` subcommand installs a central-store
 `--agent-helper-base-url` is configured. The wrapper sets
 `CALCIFORGE_SECRETS_BASE_URL` and `CALCIFORGE_SECRETS_TOKEN`, then runs
 the helper binary from `~/.local/libexec/calciforge`. The token must be the
-privileged secret-control token configured on the gateway as
-`[proxy].secret_control_api_key` or `secret_control_api_key_file`; do not reuse
-the model gateway `proxy.api_key` for managed secret helpers. The install step
-must smoke-test `calciforge-secrets list` from the agent host and report whether
+read-only secret-discovery token configured on the gateway as
+`[proxy].secret_discovery_api_key` or `secret_discovery_api_key_file`; never
+deploy the privileged `[proxy].secret_control_api_key` to managed agent hosts.
+Remote helpers are discovery-only (`list`/`ref`) and must use HTTPS except for
+loopback HTTP development URLs. The install step must smoke-test
+`calciforge-secrets list` from the agent host and report whether
 `~/.local/bin` is actually visible in `PATH`.
 
 ## Recipe requirement

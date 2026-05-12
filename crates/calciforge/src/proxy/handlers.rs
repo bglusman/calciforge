@@ -468,7 +468,7 @@ pub async fn local_model_switch(
 
 /// Handler for GET /control/secrets/list
 pub async fn secret_list(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
-    if let Some(response) = require_control_api_key(&state.config, &headers) {
+    if let Some(response) = require_secret_discovery_api_key(&state.config, &headers) {
         return response;
     }
 
@@ -509,7 +509,7 @@ pub async fn secret_reference(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    if let Some(response) = require_control_api_key(&state.config, &headers) {
+    if let Some(response) = require_secret_discovery_api_key(&state.config, &headers) {
         return response;
     }
 
@@ -1017,6 +1017,37 @@ fn require_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response
     }
 }
 
+fn require_secret_discovery_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
+    let Some(expected_key) = config.secret_discovery_api_key.as_deref().map(str::trim) else {
+        return Some(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "secret_discovery_auth_not_configured",
+            "Secret discovery API requires proxy.secret_discovery_api_key or proxy.secret_discovery_api_key_file",
+            None,
+        ));
+    };
+    if expected_key.is_empty() {
+        return Some(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "secret_discovery_auth_not_configured",
+            "Secret discovery API requires a non-empty proxy.secret_discovery_api_key or proxy.secret_discovery_api_key_file",
+            None,
+        ));
+    }
+
+    let provided = bearer_token(headers);
+    if provided == Some(expected_key) {
+        None
+    } else {
+        Some(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid secret discovery API key",
+            None,
+        ))
+    }
+}
+
 fn require_control_api_key(config: &ProxyConfig, headers: &HeaderMap) -> Option<Response> {
     let Some(expected_key) = config.secret_control_api_key.as_deref().map(str::trim) else {
         return Some(api_error(
@@ -1209,6 +1240,13 @@ mod tests {
         }
     }
 
+    fn config_with_secret_discovery_key(key: Option<&str>) -> ProxyConfig {
+        ProxyConfig {
+            secret_discovery_api_key: key.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
     fn config_with_secret_control_key(key: Option<&str>) -> ProxyConfig {
         ProxyConfig {
             secret_control_api_key: key.map(str::to_string),
@@ -1392,6 +1430,56 @@ mod tests {
         let headers = HeaderMap::new();
         let response = require_api_key(&config_with_key(Some("test-key")), &headers);
         assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn require_secret_discovery_api_key_fails_closed_without_configured_key() {
+        let headers = HeaderMap::new();
+
+        let missing =
+            require_secret_discovery_api_key(&config_with_secret_discovery_key(None), &headers)
+                .expect("secret discovery API must reject unconfigured auth");
+        assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let empty = require_secret_discovery_api_key(
+            &config_with_secret_discovery_key(Some("  ")),
+            &headers,
+        )
+        .expect("secret discovery API must reject empty auth");
+        assert_eq!(empty.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn require_secret_discovery_api_key_rejects_control_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer control-key"),
+        );
+
+        let response = require_secret_discovery_api_key(
+            &config_with_secret_discovery_key(Some("discovery-key")),
+            &headers,
+        )
+        .expect("write-capable control token must not authorize read-only helper API");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn require_secret_discovery_api_key_accepts_valid_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer discovery-key"),
+        );
+
+        assert!(
+            require_secret_discovery_api_key(
+                &config_with_secret_discovery_key(Some("discovery-key")),
+                &headers,
+            )
+            .is_none()
+        );
     }
 
     #[test]

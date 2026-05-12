@@ -123,14 +123,13 @@ async fn set(name: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("refusing to store an empty secret value".into());
     }
-    if let Some(remote) = RemoteSecretsApi::from_env() {
-        remote.set(name, &value).await?;
-    } else {
-        FnoxClient::new()
-            .set(name, &value)
-            .await
-            .map_err(|e| format!("fnox set failed: {e}"))?;
+    if RemoteSecretsApi::from_env().is_some() {
+        return Err("remote calciforge-secrets is read-only; use the operator secret-input UI or a local fnox-backed helper to set secrets".into());
     }
+    FnoxClient::new()
+        .set(name, &value)
+        .await
+        .map_err(|e| format!("fnox set failed: {e}"))?;
     eprintln!("stored secret {name}");
     Ok(())
 }
@@ -244,16 +243,6 @@ impl RemoteSecretsApi {
         Ok(response)
     }
 
-    async fn set(&self, name: &str, value: &str) -> Result<(), String> {
-        self.send(
-            self.client
-                .post(format!("{}/control/secrets/set", self.base_url))
-                .json(&json!({ "name": name, "value": value })),
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn reference(&self, name: &str) -> Result<String, String> {
         let response = self
             .send(
@@ -267,10 +256,24 @@ impl RemoteSecretsApi {
         Ok(response.reference)
     }
 
+    fn validate_base_url(&self) -> Result<(), String> {
+        let url = reqwest::Url::parse(&self.base_url)
+            .map_err(|e| format!("invalid Calciforge secret API base URL: {e}"))?;
+        match url.scheme() {
+            "https" => Ok(()),
+            "http" if is_loopback_host(url.host_str()) => Ok(()),
+            "http" => Err("refusing to send Calciforge secret API bearer token over plain HTTP except to loopback".into()),
+            scheme => Err(format!(
+                "unsupported Calciforge secret API URL scheme {scheme:?}; use HTTPS or loopback HTTP"
+            )),
+        }
+    }
+
     async fn send(
         &self,
         mut request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, String> {
+        self.validate_base_url()?;
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
@@ -299,6 +302,10 @@ impl RemoteSecretsApi {
     }
 }
 
+fn is_loopback_host(host: Option<&str>) -> bool {
+    matches!(host, Some("localhost" | "127.0.0.1" | "::1"))
+}
+
 fn print_help() {
     println!(
         "calciforge-secrets\n\
@@ -319,6 +326,10 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
 
     async fn one_shot_http(
         response_body: &'static str,
@@ -352,7 +363,7 @@ mod tests {
                 user_id: Some("brian".into()),
                 channel: Some("signal".into()),
             },
-            client: reqwest::Client::new(),
+            client: test_client(),
         };
 
         let response = api.list().await.unwrap();
@@ -394,21 +405,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_set_posts_secret_value_to_central_api() {
-        let (base_url, request) = one_shot_http(r#"{"stored":"API_KEY"}"#).await;
+    async fn remote_secret_api_rejects_cleartext_non_loopback_base_url() {
         let api = RemoteSecretsApi {
-            base_url,
+            base_url: "http://calciforge.example".into(),
             token: Some("test-token".into()),
             identity: SecretAccessIdentity::default(),
-            client: reqwest::Client::new(),
+            client: test_client(),
         };
 
-        api.set("API_KEY", "secret-value").await.unwrap();
-
-        let request = request.await.unwrap();
-        assert!(request.starts_with("POST /control/secrets/set "));
-        assert!(request.contains(r#""name":"API_KEY""#));
-        assert!(request.contains(r#""value":"secret-value""#));
+        let err = api.list().await.unwrap_err();
+        assert!(
+            err.contains("plain HTTP"),
+            "remote helper must fail closed before sending bearer token: {err}"
+        );
     }
 
     #[tokio::test]
@@ -422,7 +431,7 @@ mod tests {
                 agent_id: Some("research-agent".into()),
                 ..Default::default()
             },
-            client: reqwest::Client::new(),
+            client: test_client(),
         };
 
         let reference = api.reference("BRAVE_API_KEY").await.unwrap();

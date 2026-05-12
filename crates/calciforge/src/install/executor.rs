@@ -548,11 +548,27 @@ fn run_agent_helper_install(
         };
     };
 
-    if Url::parse(base_url).is_err() || base_url.contains(['\n', '\r']) {
+    let Ok(parsed_base_url) = Url::parse(base_url) else {
         return StepResult {
             step: InstallStep::AgentHelperInstall,
             outcome: StepOutcome::Failed {
                 error: "agent helper base URL must be a valid single-line URL".into(),
+            },
+        };
+    };
+    if base_url.contains(['\n', '\r']) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper base URL must be a valid single-line URL".into(),
+            },
+        };
+    }
+    if !is_trusted_secret_helper_url(&parsed_base_url) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper base URL must use HTTPS, or HTTP on loopback for local-only development".into(),
             },
         };
     }
@@ -567,7 +583,7 @@ fn run_agent_helper_install(
         return StepResult {
             step: InstallStep::AgentHelperInstall,
             outcome: StepOutcome::Failed {
-                error: "agent helper API key is required and must match proxy.secret_control_api_key; proxy.api_key is not accepted for secret-control endpoints".into(),
+                error: "agent helper API key is required and must match proxy.secret_discovery_api_key; do not deploy proxy.secret_control_api_key to managed agents".into(),
             },
         };
     }
@@ -743,6 +759,17 @@ fn run_agent_helper_install(
                 ),
             },
         },
+    }
+}
+
+fn is_trusted_secret_helper_url(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => url
+            .host_str()
+            .map(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"))
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -2457,7 +2484,7 @@ mod tests {
 
     fn install_args_with_central_secret_helper() -> InstallArgs {
         InstallArgs {
-            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_base_url: Some("https://calciforge.example:8080".into()),
             agent_helper_api_key: Some("secret-helper-token".into()),
             ..Default::default()
         }
@@ -2947,14 +2974,27 @@ mod tests {
     }
 
     #[test]
+    fn central_secret_helper_url_requires_https_or_loopback_http() {
+        assert!(is_trusted_secret_helper_url(
+            &Url::parse("https://calciforge.example:8080").unwrap()
+        ));
+        assert!(is_trusted_secret_helper_url(
+            &Url::parse("http://127.0.0.1:8080").unwrap()
+        ));
+        assert!(!is_trusted_secret_helper_url(
+            &Url::parse("http://calciforge.example:8080").unwrap()
+        ));
+    }
+
+    #[test]
     fn central_secret_helper_wrapper_points_to_calciforge_api() {
         let wrapper = render_central_secret_helper_wrapper(
-            "http://calciforge.local:8080/",
+            "https://calciforge.example:8080/",
             Some("secret-token"),
             "research-agent",
         );
         assert!(wrapper.contains("CALCIFORGE_AGENT_ID='research-agent'"));
-        assert!(wrapper.contains("CALCIFORGE_SECRETS_BASE_URL='http://calciforge.local:8080'"));
+        assert!(wrapper.contains("CALCIFORGE_SECRETS_BASE_URL='https://calciforge.example:8080'"));
         assert!(wrapper.contains("CALCIFORGE_SECRETS_TOKEN='secret-token'"));
         assert!(wrapper.contains("calciforge-secrets-bin"));
         assert!(
@@ -2990,11 +3030,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_agent_helper_requires_secret_control_api_key() {
+    async fn managed_agent_helper_requires_secret_discovery_api_key() {
         let (claw, ssh, health) = make_openclaw_claw(true);
         let deps = ExecutorDeps::mock(ssh, health);
         let args = InstallArgs {
-            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_base_url: Some("https://calciforge.example:8080".into()),
             agent_helper_api_key: None,
             ..Default::default()
         };
@@ -3014,8 +3054,8 @@ mod tests {
             helper_step
                 .outcome
                 .summary()
-                .contains("proxy.secret_control_api_key"),
-            "failure should name the required privileged key: {:?}",
+                .contains("proxy.secret_discovery_api_key"),
+            "failure should name the required read-only key: {:?}",
             helper_step.outcome
         );
     }

@@ -641,11 +641,13 @@ preserve process-scoped compatibility for existing deployments. The proxy
 strips Calciforge identity headers, including legacy `x-agent-id`, before
 forwarding upstream.
 
-This ACL is a read/use policy. The central `POST /control/secrets/set`
-helper remains a privileged operator path guarded by the
-`secret_control_api_key` and, when `allowed_destinations` are supplied,
-refuses to store the secret value unless destination metadata is stored
-first. It does not currently grant per-identity write permissions; treat
+This ACL is a read/use policy. The central `GET /control/secrets/list` and
+`GET /control/secrets/ref/*` helper endpoints use the read-only
+`secret_discovery_api_key`. The central `POST /control/secrets/set` helper
+remains a privileged operator path guarded by the `secret_control_api_key`
+and, when `allowed_destinations` are supplied, refuses to store the secret
+value unless destination metadata is stored first. It does not currently
+grant per-identity write permissions; treat
 that as separate secret-integrity hardening before exposing write-capable
 helpers broadly.
 
