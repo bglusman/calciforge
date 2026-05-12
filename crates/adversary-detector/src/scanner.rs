@@ -340,6 +340,7 @@ impl AdversaryScanner {
             config,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
+                .no_proxy()
                 .build()
                 .expect("reqwest client"),
             starlark_cache: Arc::new(Mutex::new(StarlarkPolicyCache::default())),
@@ -357,6 +358,26 @@ impl AdversaryScanner {
     /// scanner policy. Remote checks can be best-effort or fail-closed
     /// depending on their config.
     pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> ScanVerdict {
+        self.scan_with_remote_payload(url, content, url, content, ctx)
+            .await
+    }
+
+    /// Scan content while sending a separately-sanitized payload to any
+    /// configured remote HTTP checks.
+    ///
+    /// Local in-process checks receive `url` and `content` so they can inspect
+    /// the exact bytes that will leave the gateway. Remote checks receive
+    /// `remote_url` and `remote_content` because they can forward payloads to
+    /// other services outside the destination allowlist for substituted
+    /// secrets.
+    pub async fn scan_with_remote_payload(
+        &self,
+        url: &str,
+        content: &str,
+        remote_url: &str,
+        remote_content: &str,
+        ctx: ScanContext,
+    ) -> ScanVerdict {
         let mut review_verdict = None;
 
         for check in self.config.configured_checks() {
@@ -365,7 +386,7 @@ impl AdversaryScanner {
                     url: svc_url,
                     fail_closed,
                 } => {
-                    self.remote_http_check(&svc_url, url, content, ctx, fail_closed)
+                    self.remote_http_check(&svc_url, remote_url, remote_content, ctx, fail_closed)
                         .await
                 }
                 ScannerCheckConfig::Starlark {
@@ -411,7 +432,7 @@ impl AdversaryScanner {
             reason: Option<String>,
         }
 
-        let endpoint = format!("{svc_url}/scan");
+        let endpoint = format!("{}/scan", svc_url.trim_end_matches('/'));
         let body = Req {
             url,
             content,
@@ -900,6 +921,48 @@ mod tests {
             v,
             ScanVerdict::Unsafe { reason } if reason == "custom classifier blocked this content"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_remote_http_check_uses_sanitized_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/scan"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "verdict": "clean",
+                "reason": null,
+            })))
+            .mount(&server)
+            .await;
+
+        let s = AdversaryScanner::new(ScannerConfig {
+            checks: vec![ScannerCheckConfig::RemoteHttp {
+                url: server.uri(),
+                fail_closed: true,
+            }],
+            ..Default::default()
+        });
+
+        let secret_value = "REMOTE-SCANNER-MUST-NOT-SEE-THIS";
+        let v = s
+            .scan_with_remote_payload(
+                "https://example.com/_redacted_",
+                &format!(r#"{{"token":"{secret_value}"}}"#),
+                "https://example.com/_redacted_",
+                r#"{"token":"{{secret:API_TOKEN}}"}"#,
+                ScanContext::Api,
+            )
+            .await;
+
+        assert_eq!(v, ScanVerdict::Clean);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["content"], r#"{"token":"{{secret:API_TOKEN}}"}"#);
+        assert!(
+            !body.to_string().contains(secret_value),
+            "remote scanner request must not contain substituted secret values"
+        );
     }
 
     #[tokio::test]
