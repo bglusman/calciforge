@@ -492,10 +492,7 @@ impl SecurityProxy {
             }
         };
 
-        // Substitute in the body depending on content-type. For
-        // unsupported types we still run a raw-bytes scan for
-        // `{{secret:` so an agent can't smuggle a ref by claiming
-        // multipart/form-data (see RFC §11.8).
+        let mut remote_scan_body_before_policy: Option<String> = None;
         let body_bytes: bytes::Bytes = if body_bytes.is_empty() {
             body_bytes
         } else {
@@ -519,15 +516,16 @@ impl SecurityProxy {
                             }
                         }
                     }
-                    match self
+                    let substituted = self
                         .resolve_and_substitute(
                             &body_str,
                             dest_host.as_deref(),
                             secret_metadata.as_ref(),
                             &secret_access_identity,
                         )
-                        .await
-                    {
+                        .await;
+                    remote_scan_body_before_policy = Some(body_str);
+                    match substituted {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
                         Err(e) => {
                             warn!("BLOCKED: body substitution failed: {}", e);
@@ -541,10 +539,6 @@ impl SecurityProxy {
                     }
                 }
                 BodyMode::RawScan => {
-                    // Raw memchr-style check on the undecoded bytes.
-                    // We don't try to parse — any occurrence of the
-                    // ref opener in a content-type we can't safely
-                    // edit is a fail-closed signal.
                     if memchr_substr(&body_bytes, b"{{secret:") {
                         warn!(
                             "BLOCKED: secret reference in body with \
@@ -583,84 +577,92 @@ impl SecurityProxy {
             ));
         }
 
+        let is_llm_api = dest_host_str
+            .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
+            .unwrap_or(false);
+        let is_json = content_type
+            .map(crate::mitm::looks_like_json_content_type_pub)
+            .unwrap_or(false);
+        let dest_for_policy = dest_host_str.unwrap_or("<unknown>");
+
         // (C) Provider-browsing strip / block.
-        let body_bytes = {
-            let is_llm_api = dest_host_str
-                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
-                .unwrap_or(false);
-            let is_json = content_type
-                .map(crate::mitm::looks_like_json_content_type_pub)
-                .unwrap_or(false);
-            if is_llm_api && is_json && !body_bytes.is_empty() {
-                match agent_web::inspect_browsing_body(
-                    &body_bytes,
-                    &policy,
-                    dest_host_str.unwrap_or("<unknown>"),
-                ) {
-                    BrowsingDecision::Allow => body_bytes,
-                    BrowsingDecision::Stripped { body, .. } => bytes::Bytes::from(body),
-                    BrowsingDecision::Block { reason } => {
-                        return Ok(policy_blocked_response(
-                            "agent_web.forbid_provider_browsing",
-                            &reason,
-                            "config_required",
-                            "none",
-                        ));
-                    }
+        let body_bytes = if is_llm_api && is_json && !body_bytes.is_empty() {
+            match agent_web::inspect_browsing_body(&body_bytes, &policy, dest_for_policy) {
+                BrowsingDecision::Allow => body_bytes,
+                BrowsingDecision::Stripped { body, .. } => bytes::Bytes::from(body),
+                BrowsingDecision::Block { reason } => {
+                    return Ok(policy_blocked_response(
+                        "agent_web.forbid_provider_browsing",
+                        &reason,
+                        "config_required",
+                        "none",
+                    ));
                 }
-            } else {
-                body_bytes
             }
+        } else {
+            body_bytes
         };
 
-        // (D) URL pre-flight on LLM message bodies.
+        let remote_scan_body = match (is_llm_api && is_json, remote_scan_body_before_policy) {
+            (true, Some(remote_body)) => match agent_web::inspect_browsing_body(
+                remote_body.as_bytes(),
+                &policy,
+                dest_for_policy,
+            ) {
+                BrowsingDecision::Allow => Some(remote_body),
+                BrowsingDecision::Stripped { body, .. } => {
+                    Some(String::from_utf8_lossy(&body).into_owned())
+                }
+                BrowsingDecision::Block { reason } => {
+                    return Ok(policy_blocked_response(
+                        "agent_web.forbid_provider_browsing",
+                        &reason,
+                        "config_required",
+                        "none",
+                    ));
+                }
+            },
+            (_, remote_body) => remote_body,
+        };
+
+        if is_llm_api
+            && is_json
+            && !body_bytes.is_empty()
+            && let Some(host) = agent_web::preflight_message_urls(&body_bytes, &policy)
         {
-            let is_llm_api = dest_host_str
-                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
-                .unwrap_or(false);
-            let is_json = content_type
-                .map(crate::mitm::looks_like_json_content_type_pub)
-                .unwrap_or(false);
-            if is_llm_api
-                && is_json
-                && !body_bytes.is_empty()
-                && let Some(host) = agent_web::preflight_message_urls(&body_bytes, &policy)
-            {
-                info!(
-                    policy = "agent_web.preflight_message_urls",
-                    dest_host = dest_host_str.unwrap_or("<unknown>"),
-                    denied_host = host.as_str(),
-                    decision = "block",
-                    "blocked LLM request: references forbidden URL"
-                );
-                return Ok(policy_blocked_response(
-                    "agent_web.preflight_message_urls",
-                    &format!("request references forbidden URL host: {host}"),
-                    "config_required",
-                    "none",
-                ));
-            }
+            info!(
+                policy = "agent_web.preflight_message_urls",
+                dest_host = dest_host_str.unwrap_or("<unknown>"),
+                denied_host = host.as_str(),
+                decision = "block",
+                "blocked LLM request: references forbidden URL"
+            );
+            return Ok(policy_blocked_response(
+                "agent_web.preflight_message_urls",
+                &format!("request references forbidden URL host: {host}"),
+                "config_required",
+                "none",
+            ));
         }
 
         let body_str = String::from_utf8_lossy(&body_bytes);
 
-        // Outbound scan (exfiltration)
         if self.config.scan_outbound && !body_str.is_empty() {
+            let remote_scan_body = remote_scan_body.as_deref().unwrap_or(&body_str);
+            let redacted_target_url = redact_url_for_log(&target_url);
             let verdict = self
                 .scanner
-                .scan(
-                    &redact_url_for_log(&target_url),
+                .scan_with_remote_payload(
+                    &redacted_target_url,
                     &body_str,
+                    &redacted_target_url,
+                    remote_scan_body,
                     ScanContext::Api,
                 )
                 .await;
             match &verdict {
                 adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                    warn!(
-                        "BLOCKED outbound to {}: {}",
-                        redact_url_for_log(&target_url),
-                        reason
-                    );
+                    warn!("BLOCKED outbound to {}: {}", redacted_target_url, reason);
                     return Ok(policy_blocked_response(
                         "scanner.outbound_exfiltration",
                         &format!("Outbound request blocked: {reason}"),
@@ -669,11 +671,7 @@ impl SecurityProxy {
                     ));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                    info!(
-                        "REVIEW outbound to {}: {}",
-                        redact_url_for_log(&target_url),
-                        reason
-                    );
+                    info!("REVIEW outbound to {}: {}", redacted_target_url, reason);
                 }
                 adversary_detector::verdict::ScanVerdict::Clean => {}
             }

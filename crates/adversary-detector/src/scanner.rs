@@ -340,6 +340,7 @@ impl AdversaryScanner {
             config,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
+                .no_proxy()
                 .build()
                 .expect("reqwest client"),
             starlark_cache: Arc::new(Mutex::new(StarlarkPolicyCache::default())),
@@ -357,6 +358,26 @@ impl AdversaryScanner {
     /// scanner policy. Remote checks can be best-effort or fail-closed
     /// depending on their config.
     pub async fn scan(&self, url: &str, content: &str, ctx: ScanContext) -> ScanVerdict {
+        self.scan_with_remote_payload(url, content, url, content, ctx)
+            .await
+    }
+
+    /// Scan content while sending a separately-sanitized payload to any
+    /// configured remote HTTP checks.
+    ///
+    /// Local in-process checks receive `url` and `content` so they can inspect
+    /// the exact bytes that will leave the gateway. Remote checks receive
+    /// `remote_url` and `remote_content` because they can forward payloads to
+    /// other services outside the destination allowlist for substituted
+    /// secrets.
+    pub async fn scan_with_remote_payload(
+        &self,
+        url: &str,
+        content: &str,
+        remote_url: &str,
+        remote_content: &str,
+        ctx: ScanContext,
+    ) -> ScanVerdict {
         let mut review_verdict = None;
 
         for check in self.config.configured_checks() {
@@ -365,7 +386,7 @@ impl AdversaryScanner {
                     url: svc_url,
                     fail_closed,
                 } => {
-                    self.remote_http_check(&svc_url, url, content, ctx, fail_closed)
+                    self.remote_http_check(&svc_url, remote_url, remote_content, ctx, fail_closed)
                         .await
                 }
                 ScannerCheckConfig::Starlark {
@@ -411,7 +432,7 @@ impl AdversaryScanner {
             reason: Option<String>,
         }
 
-        let endpoint = format!("{svc_url}/scan");
+        let endpoint = format!("{}/scan", svc_url.trim_end_matches('/'));
         let body = Req {
             url,
             content,
@@ -702,8 +723,6 @@ fn expand_tilde(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn scanner() -> AdversaryScanner {
         AdversaryScanner::new(ScannerConfig::default())
@@ -846,60 +865,6 @@ mod tests {
             matches!(v, ScanVerdict::Review { .. }),
             "base64 blob should trigger Review"
         );
-    }
-
-    #[tokio::test]
-    async fn test_remote_http_check_can_fail_closed() {
-        let s = AdversaryScanner::new(ScannerConfig {
-            checks: vec![ScannerCheckConfig::RemoteHttp {
-                url: "http://127.0.0.1:19999".into(),
-                fail_closed: true,
-            }],
-            ..Default::default()
-        });
-
-        let v = s
-            .scan(
-                "https://example.com",
-                "ordinary content",
-                ScanContext::WebFetch,
-            )
-            .await;
-
-        assert!(
-            v.is_unsafe(),
-            "fail_closed remote check should block when service is unavailable"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_remote_http_check_can_block_clean_local_content() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/scan"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "verdict": "unsafe",
-                "reason": "custom classifier blocked this content",
-            })))
-            .mount(&server)
-            .await;
-
-        let s = AdversaryScanner::new(ScannerConfig {
-            checks: vec![ScannerCheckConfig::RemoteHttp {
-                url: server.uri(),
-                fail_closed: true,
-            }],
-            ..Default::default()
-        });
-
-        let v = s
-            .scan("https://example.com", "ordinary content", ScanContext::Api)
-            .await;
-
-        assert!(matches!(
-            v,
-            ScanVerdict::Unsafe { reason } if reason == "custom classifier blocked this content"
-        ));
     }
 
     #[tokio::test]

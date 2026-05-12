@@ -19,11 +19,13 @@ use hudsucker::rcgen::{
 };
 use hudsucker::rustls::{self, RootCertStore};
 use reqwest::tls::Certificate;
-use security_proxy::config::GatewayConfig;
+use security_proxy::config::{AgentWebPolicy, GatewayConfig};
 use security_proxy::mitm::{CalciforgeMitmHandler, install_default_crypto_provider};
 use security_proxy::proxy::SecurityProxy;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 type SeenRequestSender = Arc<Mutex<Option<oneshot::Sender<(String, String, String)>>>>;
@@ -192,8 +194,11 @@ async fn start_mitm_proxy_with_config(
     ca_key: &str,
     config: GatewayConfig,
 ) -> String {
-    let proxy =
-        SecurityProxy::new(config, ScannerConfig::default(), RateLimitConfig::default()).await;
+    let scanner_config = ScannerConfig {
+        checks: config.scanner_checks.clone(),
+        ..Default::default()
+    };
+    let proxy = SecurityProxy::new(config, scanner_config, RateLimitConfig::default()).await;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -271,6 +276,119 @@ async fn https_mitm_substitutes_header_and_json_body_before_forwarding() {
     let _ = stop_upstream.send(());
     remove_env("MITM_TEST_API_KEY");
     remove_env("SECURITY_PROXY_VAULT_TOKEN");
+}
+
+#[tokio::test]
+async fn https_mitm_remote_scanner_receives_presubstitution_body() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let secret_name = "MITM_REMOTE_SCAN";
+    let secret_value = "MITM-REMOTE-SCANNER-MUST-NOT-SEE-THIS";
+    set_env(format!("{secret_name}_API_KEY"), secret_value);
+
+    let remote_scanner = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/scan"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "verdict": "clean",
+        })))
+        .mount(&remote_scanner)
+        .await;
+
+    let (ca_cert, ca_key) = make_test_ca();
+    let (upstream, seen_rx, stop_upstream) =
+        start_https_upstream(rcgen_authority(&ca_cert, &ca_key)).await;
+    let proxy = start_mitm_proxy_with_config(
+        &ca_cert,
+        &ca_key,
+        GatewayConfig {
+            scan_outbound: true,
+            scan_inbound: false,
+            inject_credentials: false,
+            bypass_domains: vec![],
+            scanner_checks: vec![adversary_detector::ScannerCheckConfig::RemoteHttp {
+                url: remote_scanner.uri(),
+                fail_closed: true,
+            }],
+            agent_web: AgentWebPolicy {
+                forbid_provider_browsing: true,
+                provider_browsing_strategy: "strip".to_string(),
+                known_llm_apis: vec!["localhost".to_string(), "127.0.0.1".to_string()],
+                ..Default::default()
+            },
+            secret_destination_allowlist: std::collections::HashMap::from([(
+                secret_name.to_string(),
+                vec!["localhost".to_string(), "127.0.0.1".to_string()],
+            )]),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .proxy(reqwest::Proxy::all(&proxy).unwrap())
+        .add_root_certificate(Certificate::from_pem(ca_cert.as_bytes()).unwrap())
+        .no_brotli()
+        .no_deflate()
+        .no_gzip()
+        .build()
+        .unwrap();
+    let body = format!(
+        r#"{{
+            "token":"{{{{secret:{secret_name}}}}}",
+            "messages":[{{"role":"user","content":"hello"}}],
+            "tools":[
+                {{"type":"web_search","name":"web_search"}},
+                {{"type":"function","name":"safe_tool"}}
+            ]
+        }}"#
+    );
+    let resp = client
+        .post(format!("{upstream}/secret"))
+        .header("Content-Type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .expect("HTTPS request succeeds through MITM proxy");
+
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let (_header, _proxy_auth, upstream_body) = seen_rx.await.expect("upstream observed request");
+    assert!(
+        upstream_body.contains(secret_value),
+        "upstream destination should still receive the substituted secret"
+    );
+    assert!(
+        !upstream_body.contains("web_search"),
+        "upstream destination should receive the provider-browsing-stripped body"
+    );
+    assert!(
+        upstream_body.contains("safe_tool"),
+        "non-browsing tools should remain in the upstream body"
+    );
+
+    let remote_requests = remote_scanner.received_requests().await.unwrap();
+    assert_eq!(remote_requests.len(), 1);
+    let remote_body: serde_json::Value = serde_json::from_slice(&remote_requests[0].body).unwrap();
+    let remote_content = remote_body["content"].as_str().unwrap_or_default();
+    assert!(
+        remote_content.contains(&format!("{{{{secret:{secret_name}}}}}")),
+        "remote scanner should inspect the pre-substitution body"
+    );
+    assert!(
+        !remote_content.contains("web_search"),
+        "remote scanner should inspect the same provider-browsing-stripped body as upstream"
+    );
+    assert!(
+        remote_content.contains("safe_tool"),
+        "remote scanner should still inspect non-browsing tool definitions"
+    );
+    assert!(
+        !remote_body.to_string().contains(secret_value),
+        "remote scanner request must not receive substituted secret values"
+    );
+
+    let _ = stop_upstream.send(());
+    remove_env(format!("{secret_name}_API_KEY"));
 }
 
 #[tokio::test]
