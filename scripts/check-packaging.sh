@@ -69,6 +69,11 @@ for binding in "${expected_compose_port_bindings[@]}"; do
         exit 1
     }
 done
+actual_loopback_ports="$(grep -Fc 'CALCIFORGE_HOST_BIND:-127.0.0.1' "$ROOT/packaging/docker/docker-compose.yml")"
+if [[ "$actual_loopback_ports" != "${#expected_compose_port_bindings[@]}" ]]; then
+    echo "Docker Compose should have ${#expected_compose_port_bindings[@]} loopback-bound published ports, found $actual_loopback_ports" >&2
+    exit 1
+fi
 grep -q 'api_key_file = "/var/lib/calciforge/gateway-api-key"' "$ROOT/packaging/docker/config.example.toml" || {
     echo "Docker example config must require a client-facing gateway API key file" >&2
     exit 1
