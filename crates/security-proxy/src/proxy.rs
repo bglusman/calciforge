@@ -20,6 +20,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -67,6 +68,24 @@ pub(crate) fn secret_access_identity_from_headers(
     }
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PlaceholderEnvError {
+    #[error("placeholder env secret reference in {key:?} must be the whole value")]
+    PartialSecretReference { key: String },
+
+    #[error("placeholder env secret reference in {key:?} is invalid: {source}")]
+    SecretReference {
+        key: String,
+        source: crate::substitution::SubstitutionError,
+    },
+
+    #[error("placeholder env secret reference in {key:?} could not be registered: {source}")]
+    PlaceholderMap {
+        key: String,
+        source: crate::substitution::PlaceholderMapError,
+    },
+}
+
 // ── SecurityProxy ────────────────────────────────────────────────────────────
 
 /// Unified security proxy for all agent traffic.
@@ -85,6 +104,8 @@ pub struct SecurityProxy {
     pub audit: AuditLogger,
     /// HTTP client for forwarding requests upstream.
     http_client: reqwest::Client,
+    /// Per-agent placeholder registry for roadmap #151 placeholder injection.
+    pub(crate) placeholder_map: RwLock<crate::substitution::PlaceholderMap>,
     /// IronClaw safety layer (leak detection + credential-injection detection).
     #[cfg(feature = "ironclaw-safety")]
     pub(crate) ironclaw: IronclawSafety,
@@ -124,9 +145,117 @@ impl SecurityProxy {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("security proxy reqwest client"),
+            placeholder_map: RwLock::new(crate::substitution::PlaceholderMap::default()),
             #[cfg(feature = "ironclaw-safety")]
             ironclaw: IronclawSafety::new(),
         }
+    }
+
+    /// Register one lifecycle-owned placeholder token for a specific agent.
+    ///
+    /// This only records the authoritative token -> secret-name mapping. It
+    /// does not resolve secret values and does not bypass the identity ACL or
+    /// destination allowlist enforced by placeholder substitution.
+    pub fn register_secret_placeholder(
+        &self,
+        agent_id: impl Into<String>,
+        token: impl Into<String>,
+        secret_name: impl Into<String>,
+    ) -> Result<(), crate::substitution::PlaceholderMapError> {
+        self.placeholder_map
+            .write()
+            .expect("placeholder map lock poisoned")
+            .insert(agent_id, token, secret_name)
+    }
+
+    /// Retire one lifecycle-owned placeholder token for a specific agent.
+    pub fn unregister_secret_placeholder(&self, agent_id: &str, token: &str) -> bool {
+        self.placeholder_map
+            .write()
+            .expect("placeholder map lock poisoned")
+            .remove(agent_id, token)
+    }
+
+    /// Retire all lifecycle-owned placeholder tokens for a specific agent.
+    pub fn unregister_agent_secret_placeholders(&self, agent_id: &str) -> bool {
+        self.placeholder_map
+            .write()
+            .expect("placeholder map lock poisoned")
+            .remove_agent(agent_id)
+    }
+
+    /// Generate and register one lifecycle-owned placeholder token.
+    ///
+    /// The returned token is safe to pass to an agent as an opaque stand-in,
+    /// but it is still only useful if a later outbound request presents the
+    /// same agent identity and passes the normal policy gate.
+    pub fn generate_secret_placeholder(
+        &self,
+        agent_id: impl Into<String>,
+        secret_name: impl Into<String>,
+    ) -> Result<String, crate::substitution::PlaceholderMapError> {
+        let secret_name = secret_name.into();
+        let token = crate::substitution::generate_placeholder_token(&secret_name)?;
+        self.register_secret_placeholder(agent_id, token.clone(), secret_name)?;
+        Ok(token)
+    }
+
+    /// Generate placeholder-backed env for a lifecycle-managed agent.
+    ///
+    /// Values that are exactly `{{secret:NAME}}` are replaced with generated
+    /// opaque placeholders and registered for `agent_id`. Values without secret
+    /// references are preserved. Partial interpolation is rejected so the agent
+    /// never receives strings that mix literals with secret-bearing material.
+    pub fn generate_secret_placeholder_env(
+        &self,
+        agent_id: &str,
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<std::collections::HashMap<String, String>, PlaceholderEnvError> {
+        let mut rendered = env.clone();
+        let mut planned = Vec::new();
+
+        for (key, value) in env {
+            if !value.contains("{{secret:") {
+                continue;
+            }
+
+            let names = crate::substitution::find_refs(value).map_err(|source| {
+                PlaceholderEnvError::SecretReference {
+                    key: key.clone(),
+                    source,
+                }
+            })?;
+            let Some(secret_name) = names.iter().next() else {
+                continue;
+            };
+            let exact_reference = format!("{{{{secret:{secret_name}}}}}");
+            if names.len() != 1 || value != &exact_reference {
+                return Err(PlaceholderEnvError::PartialSecretReference { key: key.clone() });
+            }
+
+            planned.push((key.clone(), secret_name.clone()));
+        }
+
+        let mut registered: Vec<String> = Vec::new();
+        for (key, secret_name) in planned {
+            let placeholder = match crate::substitution::generate_placeholder_token(&secret_name)
+                .and_then(|token| {
+                    self.register_secret_placeholder(agent_id, token.clone(), secret_name.clone())?;
+                    Ok(token)
+                }) {
+                Ok(placeholder) => placeholder,
+                Err(source) => {
+                    for token in registered {
+                        self.unregister_secret_placeholder(agent_id, &token);
+                    }
+                    return Err(PlaceholderEnvError::PlaceholderMap { key, source });
+                }
+            };
+            registered.push(placeholder.clone());
+            rendered.insert(key.clone(), placeholder);
+        }
+
+        Ok(rendered)
     }
 
     // ── Fetch mode ───────────────────────────────────────────────────────
@@ -788,59 +917,22 @@ impl SecurityProxy {
             return Ok(input.to_string());
         }
 
-        // Allowlist gate — runs BEFORE the resolver so that:
+        // Policy gate — runs BEFORE the resolver so that:
         // (a) we don't pay the resolver cost for a request we're
         //     about to reject, and
         // (b) the secret value is never even loaded into memory for
         //     a destination we don't trust.
-        if let Some(host) = dest_host {
-            let host_lower = host.to_lowercase();
-            for name in &names {
-                if !self.config.secret_access.allows(access_identity, name) {
-                    tracing::warn!(
-                        secret = %name,
-                        agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
-                        user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
-                        channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
-                        "secret substitution denied by identity access policy"
-                    );
-                    return Err(format!(
-                        "secret {name:?} not allowed for current Calciforge identity"
-                    ));
-                }
-                let Some(metadata) = metadata else {
-                    return Err(
-                        "secret metadata unavailable for destination-scoped substitution"
-                            .to_string(),
-                    );
-                };
-                if !self.is_destination_allowed(name, &host_lower, metadata) {
-                    tracing::warn!(
-                        secret = %name,
-                        destination_host = %host_lower,
-                        "secret substitution denied by destination allowlist"
-                    );
-                    return Err(format!(
-                        "secret {name:?} not allowed at destination {host:?}"
-                    ));
-                }
-            }
+        for name in &names {
+            self.ensure_secret_allowed_for_substitution(
+                name,
+                dest_host,
+                metadata,
+                access_identity,
+            )?;
         }
 
         let mut resolved = std::collections::HashMap::new();
         for name in names {
-            if !self.config.secret_access.allows(access_identity, &name) {
-                tracing::warn!(
-                    secret = %name,
-                    agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
-                    user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
-                    channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
-                    "secret substitution denied by identity access policy"
-                );
-                return Err(format!(
-                    "secret {name:?} not allowed for current Calciforge identity"
-                ));
-            }
             match secrets_client::vault::get_secret(&name).await {
                 Ok(value) => {
                     tracing::debug!(
@@ -864,6 +956,90 @@ impl SecurityProxy {
         crate::substitution::substitute(input, &resolved)
             .map(|cow| cow.into_owned())
             .map_err(|e| e.to_string())
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "staged placeholder resolver is wired after Calciforge lifecycle registration"
+        )
+    )]
+    pub(crate) fn resolve_placeholder_secret_names(
+        &self,
+        input: &str,
+        dest_host: Option<&str>,
+        metadata: Option<&secrets_client::SecretMetadataStore>,
+        access_identity: &secrets_client::SecretAccessIdentity,
+    ) -> Result<std::collections::HashMap<String, String>, String> {
+        let tokens = crate::substitution::find_placeholder_tokens(input);
+        if tokens.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let resolved = self
+            .placeholder_map
+            .read()
+            .expect("placeholder map lock poisoned")
+            .resolve_tokens(access_identity, &tokens)
+            .map_err(|error| error.to_string())?;
+
+        // Same policy gate as explicit `{{secret:NAME}}` substitution, and
+        // still before any caller may resolve secret values.
+        for secret_name in resolved.values() {
+            self.ensure_secret_allowed_for_substitution(
+                secret_name,
+                dest_host,
+                metadata,
+                access_identity,
+            )?;
+        }
+
+        Ok(resolved)
+    }
+
+    fn ensure_secret_allowed_for_substitution(
+        &self,
+        name: &str,
+        dest_host: Option<&str>,
+        metadata: Option<&secrets_client::SecretMetadataStore>,
+        access_identity: &secrets_client::SecretAccessIdentity,
+    ) -> Result<(), String> {
+        if !self.config.secret_access.allows(access_identity, name) {
+            tracing::warn!(
+                secret = %name,
+                agent_id = access_identity.agent_id.as_deref().unwrap_or("<unknown>"),
+                user_id = access_identity.user_id.as_deref().unwrap_or("<unknown>"),
+                channel = access_identity.channel.as_deref().unwrap_or("<unknown>"),
+                "secret substitution denied by identity access policy"
+            );
+            return Err(format!(
+                "secret {name:?} not allowed for current Calciforge identity"
+            ));
+        }
+
+        let Some(host) = dest_host else {
+            return Ok(());
+        };
+        let Some(metadata) = metadata else {
+            return Err(
+                "secret metadata unavailable for destination-scoped substitution".to_string(),
+            );
+        };
+
+        let host_lower = host.to_lowercase();
+        if !self.is_destination_allowed(name, &host_lower, metadata) {
+            tracing::warn!(
+                secret = %name,
+                destination_host = %host_lower,
+                "secret substitution denied by destination allowlist"
+            );
+            return Err(format!(
+                "secret {name:?} not allowed at destination {host:?}"
+            ));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn load_secret_metadata(
@@ -1253,6 +1429,363 @@ mod tests {
         assert!(
             !err.contains("not found in env or fnox"),
             "secret resolver must not run for identity-policy denials: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_secret_names_use_identity_and_destination_policy_gate() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let token = "cfg_OPENAI_KEY_0123456789abcdef0123456789abcdef";
+        proxy
+            .register_secret_placeholder("agent-a", token, "OPENAI_API_KEY")
+            .unwrap();
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let resolved = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolved.get(token).map(String::as_str),
+            Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn generated_placeholder_registers_for_policy_gated_resolution() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let token = proxy
+            .generate_secret_placeholder("agent-a", "OPENAI_API_KEY")
+            .unwrap();
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let resolved = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolved.get(&token).map(String::as_str),
+            Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_replaces_exact_secret_refs() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([
+            (
+                "OPENAI_API_KEY".to_string(),
+                "{{secret:OPENAI_API_KEY}}".to_string(),
+            ),
+            ("MODEL".to_string(), "gpt-test".to_string()),
+        ]);
+
+        let rendered = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect("exact env secret reference should render as a placeholder");
+        let token = rendered
+            .get("OPENAI_API_KEY")
+            .expect("secret env should be rendered");
+
+        assert_ne!(token, "{{secret:OPENAI_API_KEY}}");
+        assert_eq!(rendered.get("MODEL").map(String::as_str), Some("gpt-test"));
+        assert_eq!(
+            crate::substitution::placeholder_name_hint(token),
+            Some("OPENAI_API_KEY")
+        );
+
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let resolved = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                None,
+                None,
+                &identity,
+            )
+            .expect("generated env placeholder should be registered");
+
+        assert_eq!(
+            resolved.get(token).map(String::as_str),
+            Some("OPENAI_API_KEY")
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_rejects_partial_secret_refs() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig::default(),
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([(
+            "DATABASE_URL".to_string(),
+            "postgres://{{secret:DATABASE_PASSWORD}}@db.local/app".to_string(),
+        )]);
+
+        let err = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect_err("partial env interpolation should fail closed");
+
+        assert_eq!(
+            err,
+            PlaceholderEnvError::PartialSecretReference {
+                key: "DATABASE_URL".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_does_not_register_before_validation_finishes() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig::default(),
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([
+            (
+                "OPENAI_API_KEY".to_string(),
+                "{{secret:OPENAI_API_KEY}}".to_string(),
+            ),
+            (
+                "DATABASE_URL".to_string(),
+                "postgres://{{secret:DATABASE_PASSWORD}}@db.local/app".to_string(),
+            ),
+        ]);
+
+        let err = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect_err("partial env interpolation should fail before registration");
+
+        assert_eq!(
+            err,
+            PlaceholderEnvError::PartialSecretReference {
+                key: "DATABASE_URL".to_string(),
+            }
+        );
+        assert!(
+            !proxy.unregister_agent_secret_placeholders("agent-a"),
+            "failed env generation must not leave registered placeholder state"
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_env_generation_reports_parse_error_key() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig::default(),
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let env = std::collections::HashMap::from([(
+            "BROKEN_SECRET".to_string(),
+            "{{secret:OPENAI_API_KEY".to_string(),
+        )]);
+
+        let err = proxy
+            .generate_secret_placeholder_env("agent-a", &env)
+            .expect_err("malformed env secret reference should fail closed");
+
+        assert!(matches!(
+            err,
+            PlaceholderEnvError::SecretReference { key, .. } if key == "BROKEN_SECRET"
+        ));
+        assert!(
+            !proxy.unregister_agent_secret_placeholders("agent-a"),
+            "parse failure must not leave registered placeholder state"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregistered_placeholder_fails_closed() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let token = proxy
+            .generate_secret_placeholder("agent-a", "OPENAI_API_KEY")
+            .unwrap();
+        assert!(proxy.unregister_secret_placeholder("agent-a", &token));
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let err = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .expect_err("retired placeholder should not resolve");
+
+        assert!(
+            err.contains("not registered for the current agent"),
+            "retired placeholder must fail closed before value resolution; got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_agent_placeholders_fails_closed_for_all_agent_tokens() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["OPENAI_API_KEY".to_string(), "DATABASE_URL".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let openai = proxy
+            .generate_secret_placeholder("agent-a", "OPENAI_API_KEY")
+            .unwrap();
+        let db = proxy
+            .generate_secret_placeholder("agent-a", "DATABASE_URL")
+            .unwrap();
+        assert!(proxy.unregister_agent_secret_placeholders("agent-a"));
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("OPENAI_API_KEY", &["api.openai.com"]);
+
+        let err = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {openai}; Database: {db}"),
+                Some("api.openai.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .expect_err("retired agent placeholders should not resolve");
+
+        assert!(
+            err.contains("not registered for the current agent"),
+            "retired agent placeholders must fail closed before value resolution; got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_secret_names_fail_closed_before_value_resolution() {
+        let proxy = SecurityProxy::new(
+            GatewayConfig {
+                secret_access: secrets_client::SecretAccessPolicy {
+                    rules: vec![secrets_client::SecretAccessRule {
+                        agents: vec!["agent-a".to_string()],
+                        secrets: vec!["ALLOWED_*".to_string()],
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+        )
+        .await;
+        let token = "cfg_DENIED_KEY_0123456789abcdef0123456789abcdef";
+        proxy
+            .register_secret_placeholder("agent-a", token, "DENIED_KEY")
+            .unwrap();
+        let identity = secrets_client::SecretAccessIdentity {
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        };
+        let metadata = metadata_store("DENIED_KEY", &["api.example.com"]);
+
+        let err = proxy
+            .resolve_placeholder_secret_names(
+                &format!("Authorization: Bearer {token}"),
+                Some("api.example.com"),
+                Some(&metadata),
+                &identity,
+            )
+            .expect_err("identity policy should deny placeholder secret name");
+
+        assert!(
+            err.contains("not allowed for current Calciforge identity"),
+            "placeholder name resolution must reuse identity policy gate; got {err}"
         );
     }
 

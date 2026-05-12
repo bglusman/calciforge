@@ -53,6 +53,55 @@ Calciforge can't use this — they hardcode env-var reads.
 about Calciforge. Works with any off-the-shelf agent that reads
 credentials from env vars.
 
+## Current staged implementation
+
+Status as of 2026-05-10: the security-proxy-local primitives are
+implemented in the staged placeholder-injection work, but live placeholder
+substitution is intentionally not enabled yet.
+
+Implemented pieces:
+- Placeholder token recognition for `cfg_<NAME>_<32-hex>`.
+- Placeholder rendering keyed by the full opaque token, not by the
+  embedded name hint.
+- Placeholder token generation from validated secret names.
+- Per-agent `PlaceholderMap` that resolves `agent_id + token` to an
+  authoritative secret name.
+- Fail-closed token-set resolution when any discovered placeholder is
+  not registered for the current agent.
+- Security-proxy lifecycle helpers to register generated placeholders,
+  generate-and-register a placeholder in one step, retire one
+  placeholder, or retire all placeholders for an agent.
+- A shared identity/destination policy gate that placeholder
+  substitution can reuse before any real secret value is loaded.
+- An inert `SecurityProxy` placeholder-name resolution helper that
+  scans request text, resolves token -> secret name, and applies the
+  same policy gate as explicit `{{secret:NAME}}` references.
+
+Not yet wired:
+- A runtime source that calls the lifecycle helpers from supervised
+  agent spawn/shutdown or equivalent channel lifecycle code.
+- Passing generated placeholders into agent env vars at spawn time.
+- Live request rewriting from placeholder token -> real secret value.
+
+The next safe implementation slice is Calciforge-side lifecycle
+wiring: decide which supervised agent runtime owns placeholder
+creation, where generated env values are injected, and where
+single-token or whole-agent retirement is called. Live substitution
+should remain disabled until that owner can deterministically register
+and retire tokens.
+
+That boundary is explicit: `calciforge` currently owns agent config and
+adapter construction, while `security-proxy` owns the in-memory
+placeholder registry. `AgentConfig.env` is cloned into concrete
+subprocess adapters at adapter construction time, and installer-managed
+wrappers separately export `CALCIFORGE_AGENT_ID` for central secret
+helper calls. Do not hide placeholder generation inside an adapter
+constructor by making adapters reach into `SecurityProxy`; that would
+make lifecycle ownership and retirement ambiguous. The next
+implementation should either move the placeholder lifecycle API into a
+shared crate used by both sides, or add an explicit Calciforge-owned
+registration channel/client before adapter env maps are rewritten.
+
 ## What we'd build
 
 Per-agent state in security-proxy:
@@ -76,6 +125,13 @@ When security-proxy sees an outbound request, it scans body + headers
 for placeholder shapes (regex on the `cfg_*_*` prefix) and swaps
 through PlaceholderMap before forwarding. Same code path as
 `{{secret:NAME}}` substitution — just a different recognizer.
+
+Important invariant: the placeholder path must never trust the
+embedded `<NAME>` hint in `cfg_<NAME>_<random>`. It must resolve the
+full opaque token through the per-agent map, apply the same
+per-agent/user/channel secret access policy and destination allowlist
+as explicit `{{secret:NAME}}` substitution, and only then load the real
+secret value.
 
 ## Comparison vs. true eBPF interception
 
@@ -124,6 +180,12 @@ through PlaceholderMap before forwarding. Same code path as
 - **Multiple agents, same secret name.** Two agents both wanting
   `OPENAI_API_KEY` get different placeholders pointing to the same
   real value. Keeps per-agent isolation.
+- **Lifecycle boundary.** Calciforge-side code must own the decision to
+  generate and inject placeholder-backed env because it owns
+  `AgentConfig.env` and supervised process construction. Security-proxy
+  must own the authoritative token registry and value-substitution
+  policy. A shared lifecycle API or explicit registration client should
+  connect those two responsibilities.
 - **Combine with current {{secret:NAME}} mode.** Both can coexist —
   agents that know about Calciforge use the explicit syntax, agents
   that don't get placeholder injection. Recognizer scans for both
@@ -140,7 +202,8 @@ through PlaceholderMap before forwarding. Same code path as
 
 ~1 week for a working prototype:
 - 2 days: PlaceholderMap data structure + lifecycle hooks in security-proxy
-- 2 days: spawn integration in calciforge router (which agents get which placeholders)
+- 1 day: define shared lifecycle API or explicit registration client between Calciforge and security-proxy
+- 2 days: spawn integration in calciforge router/adapters (which agents get which placeholders)
 - 1 day: recognizer + substitution in proxy hot path
 - 1 day: tests + docs
 
