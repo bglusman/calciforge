@@ -834,9 +834,35 @@ suitable for append-only logs and rotation.
 
 ---
 
-## Quick install (Mac)
+## Quick Install
 
-For current development builds:
+For a Linux server or LAN staging host, start with the packaged Docker Compose
+path:
+
+```bash
+git clone https://github.com/bglusman/calciforge
+cd calciforge/packaging/docker
+cp calciforge.env.example .env
+mkdir -p data data-security-proxy data-clashd
+openssl rand -base64 32 > data/gateway-api-key
+chmod 600 data/gateway-api-key
+docker compose --env-file .env build calciforge
+docker compose --env-file .env up -d
+docker compose --env-file .env exec calciforge \
+  calciforge --config /config/config.toml doctor --no-network
+```
+
+For normal macOS installs from published release archives:
+
+```bash
+brew tap bglusman/tap
+brew install calciforge
+$EDITOR "$(brew --prefix)/etc/calciforge/config.toml"
+brew services start calciforge
+calciforge doctor
+```
+
+For current macOS development builds and managed-agent wiring:
 
 ```bash
 git clone https://github.com/bglusman/calciforge
@@ -844,8 +870,7 @@ cd calciforge
 bash scripts/install.sh
 ```
 
-For release packaging and Docker trial paths, see
-[Packaging and Install Options](packaging.html).
+For what each path owns, see [Packaging and Install Options](packaging.html).
 
 Three services land as launchd agents:
 - `clashd` on `:9001` — a `clash`-backed policy sidecar

@@ -1,8 +1,9 @@
 class Calciforge < Formula
   desc "Agent and model gateway with routing, secrets, and security policy sidecars"
   homepage "https://github.com/bglusman/calciforge"
-  version "__VERSION__"
   license "MIT"
+
+  depends_on "fnox"
 
   on_macos do
     if Hardware::CPU.arm?
@@ -22,8 +23,6 @@ class Calciforge < Formula
       odie "Calciforge does not publish a Linux ARM Homebrew binary yet"
     end
   end
-
-  depends_on "fnox"
 
   def install
     bin.install Dir["bin/*"].reject { |path| File.basename(path) == "fnox" }
@@ -71,8 +70,8 @@ class Calciforge < Formula
   end
 
   test do
-    system "#{bin}/calciforge", "--version"
-    system "#{bin}/calciforge-secrets", "help"
+    system bin/"calciforge", "--version"
+    system bin/"calciforge-secrets", "help"
     %w[security-proxy clashd mcp-server paste-server].each do |binary|
       assert_predicate bin/binary, :executable?
     end

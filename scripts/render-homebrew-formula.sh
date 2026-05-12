@@ -76,7 +76,6 @@ import sys
 template, output = sys.argv[1], sys.argv[2]
 text = open(template, encoding="utf-8").read()
 for key in [
-    "VERSION",
     "MAC_ARM64_URL",
     "MAC_ARM64_SHA256",
     "MAC_INTEL_URL",

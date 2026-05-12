@@ -42,12 +42,40 @@ potions than Howl would tolerate.
 
 ## Quick Start
 
+Current Docker Compose path for a Linux server or LAN staging host:
+
+```bash
+git clone https://github.com/bglusman/calciforge
+cd calciforge/packaging/docker
+cp calciforge.env.example .env
+mkdir -p data data-security-proxy data-clashd
+openssl rand -base64 32 > data/gateway-api-key
+chmod 600 data/gateway-api-key
+docker compose --env-file .env build calciforge
+docker compose --env-file .env up -d
+docker compose --env-file .env exec calciforge \
+  calciforge --config /config/config.toml doctor --no-network
+```
+
+Current macOS release path:
+
+```bash
+brew tap bglusman/tap
+brew install calciforge
+$EDITOR "$(brew --prefix)/etc/calciforge/config.toml"
+brew services start calciforge
+calciforge doctor
+```
+
+Current macOS/source path for development builds and managed-agent wiring:
+
 ```bash
 git clone https://github.com/bglusman/calciforge
 cd calciforge
 bash scripts/install.sh
-calciforge doctor
 ```
+
+See [Packaging and Install Options](docs/packaging.md) for what each path owns.
 
 After install, the default local pieces are:
 
