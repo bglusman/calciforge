@@ -16,8 +16,11 @@ impl CommandHandler {
     }
 
     fn set_active_model_for_identity(&self, identity_id: &str, model_id: &str) {
-        let mut active_models = self.active_models.lock().unwrap();
-        active_models.insert(identity_id.to_string(), model_id.to_string());
+        let active_models = {
+            let mut active_models = self.active_models.lock().unwrap();
+            active_models.insert(identity_id.to_string(), model_id.to_string());
+            active_models.clone()
+        };
         save_active_models_to(&self.state_dir, &active_models);
     }
 
