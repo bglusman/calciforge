@@ -340,8 +340,8 @@ fn check_secret_tooling(report: &mut DoctorReport) {
             check_fnox_providers(&path, report);
         }
         None => report.warn(
-            "fnox not found in PATH; env and Vaultwarden secrets may still work, \
-             but fnox-backed discovery/substitution will fail",
+            "fnox not found in PATH; only env secrets will work, \
+             and fnox-backed discovery/substitution will fail",
         ),
     }
 

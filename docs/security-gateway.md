@@ -61,7 +61,8 @@ recursively.
 3. **Secret substitution and credential injection:** When the request is
    visible to Calciforge, the gateway can substitute explicit references such as
    `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported
-   bodies, and inject provider `Authorization` headers from the vault. The
+   bodies, and inject provider `Authorization` headers from the configured
+   env/fnox resolver. The
    staged placeholder path will use this same step to replace registered opaque
    credentials such as `cfg_OPENAI_API_KEY_<random>` once lifecycle wiring is
    enabled.

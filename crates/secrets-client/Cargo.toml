@@ -2,7 +2,7 @@
 name = "secrets-client"
 version = "0.1.0"
 edition = "2024"
-description = "Secrets client for Calciforge — fnox subprocess wrapper, vaultwarden client, env→fnox→vault resolver"
+description = "Secrets client for Calciforge — fnox subprocess wrapper and env→fnox resolver"
 license = "MIT"
 
 [features]

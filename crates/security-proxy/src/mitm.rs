@@ -1528,7 +1528,7 @@ pub(crate) async fn vault_json_response(
         }
     }
 
-    match secrets_client::vault::get_secret(&secret_name).await {
+    match secrets_client::resolver::get_secret(&secret_name).await {
         Ok(token) => {
             debug!(secret = %secret_name, "vault route resolved secret");
             (

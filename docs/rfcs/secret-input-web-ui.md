@@ -20,7 +20,7 @@ make compromise less catastrophic?
 
 - **No web UI** in the fnox binary
 - `fnox tui` is a terminal UI for browsing/editing — not what we want
-- Vault providers (1Password, vaultwarden) bring their own UIs but
+- fnox providers (including external vault backends such as 1Password or vaultwarden) bring their own UIs but
   they're focused on retrieval, not narrow input
 
 So if we want input-only, we build it.

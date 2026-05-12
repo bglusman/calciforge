@@ -5,15 +5,14 @@
 // single-threaded runtime so cross-task contention is not possible.
 #![allow(clippy::await_holding_lock)]
 
-//! Adversarial integration tests for the env → fnox → vaultwarden resolver.
+//! Adversarial integration tests for the env → fnox resolver.
 //!
 //! These tests correspond to T4 in `docs/rfcs/agent-secret-gateway.md`:
 //! the architecture claims the resolver falls through gracefully across
-//! three layers. This file tries to break that claim.
+//! configured layers. This file tries to break that claim.
 //!
-//! Strategy: we can't easily mock `reqwest` calls to vaultwarden from
-//! inside this async function, but we *can* mock `fnox` by putting a
-//! fake shell script earlier on PATH. The vault.rs code shells out via
+//! Strategy: we mock `fnox` by putting a fake shell script earlier on PATH.
+//! The resolver.rs code shells out via
 //! `Command::new("fnox")`, which resolves against the child process's
 //! PATH — which inherits from our test process env.
 //!
@@ -70,10 +69,7 @@ impl PathGuard {
             Some(p) => format!("{}:{}", dir.display(), p),
             None => dir.display().to_string(),
         };
-        // Also isolate from any pre-set vaultwarden creds so we don't
-        // accidentally hit a real server during unit tests.
         set_env("PATH", new_path);
-        remove_env("SECRETS_VAULT_TOKEN");
         Self { original }
     }
 }
@@ -89,10 +85,10 @@ impl Drop for PathGuard {
 
 /// T4-precondition: env takes precedence over fnox.
 ///
-/// Naming convention: vault.rs transforms the logical name into
+/// Naming convention: resolver.rs transforms the logical name into
 /// `{NAME_UPPER}_API_KEY` for env lookup. Tests must use that form.
 /// This is an intentional restriction (env fallback is for API-key-style
-/// secrets only); if you want arbitrary names in env, use fnox or vault.
+/// secrets only); if you want arbitrary names in env, use fnox.
 ///
 /// Failure mode this catches: if the env-check drifted after the
 /// fnox-check during a refactor, a rotated env key would be ignored in
@@ -105,11 +101,11 @@ async fn env_var_wins_over_fnox() {
     let fake_dir = install_fake_fnox(&dir, r#"echo "from-fnox""#);
     let _path_guard = PathGuard::prepend(&fake_dir);
 
-    // vault.rs looks up "{NAME}_API_KEY" when NAME is the logical secret.
+    // resolver.rs looks up "{NAME}_API_KEY" when NAME is the logical secret.
     // We pass "t4_envwins" → it will look up "T4_ENVWINS_API_KEY".
     set_env("T4_ENVWINS_API_KEY", "from-env");
 
-    let result = secrets_client::vault::get_secret("t4_envwins").await;
+    let result = secrets_client::resolver::get_secret("t4_envwins").await;
 
     remove_env("T4_ENVWINS_API_KEY");
 
@@ -126,7 +122,7 @@ async fn env_var_wins_over_fnox() {
 }
 
 /// Documents the env-lookup naming convention as a regression guard.
-/// If vault.rs changes the transform, this test forces an intentional
+/// If resolver.rs changes the transform, this test forces an intentional
 /// update rather than a silent breakage.
 #[tokio::test]
 async fn env_lookup_uses_uppercase_api_key_suffix() {
@@ -141,7 +137,7 @@ async fn env_lookup_uses_uppercase_api_key_suffix() {
     set_env("MIXED_CaSE_API_KEY", "wrong"); // wrong case, must be ignored
     set_env("MIXED_CASE_API_KEY", "expected");
 
-    let result = secrets_client::vault::get_secret("mixed_case").await;
+    let result = secrets_client::resolver::get_secret("mixed_case").await;
 
     remove_env("MIXED_CaSE_API_KEY");
     remove_env("MIXED_CASE_API_KEY");
@@ -150,16 +146,15 @@ async fn env_lookup_uses_uppercase_api_key_suffix() {
         result.expect("env resolve"),
         "expected",
         "env var name should be <NAME_UPPER>_API_KEY exactly — if this fails, \
-         vault.rs changed its env naming convention and callers may break"
+         resolver.rs changed its env naming convention and callers may break"
     );
 }
 
 /// T4a: fnox returns a value when env is unset. Resolver returns that
-/// value without consulting vaultwarden.
+/// value directly.
 ///
 /// Failure mode this catches: a silent regression where the fnox call
-/// is skipped (e.g. due to a plumbing error) and we fall through to
-/// vaultwarden, burning a network round-trip on every request.
+/// is skipped (e.g. due to a plumbing error).
 #[tokio::test]
 async fn fnox_value_returned_when_env_empty() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -173,7 +168,7 @@ async fn fnox_value_returned_when_env_empty() {
     // Belt-and-suspenders: ensure the target env var is not set.
     remove_env("VAULT_T4A_FNOX_WINS");
 
-    let result = secrets_client::vault::get_secret("VAULT_T4A_FNOX_WINS").await;
+    let result = secrets_client::resolver::get_secret("VAULT_T4A_FNOX_WINS").await;
 
     assert!(
         result.is_ok(),
@@ -187,17 +182,12 @@ async fn fnox_value_returned_when_env_empty() {
     );
 }
 
-/// T4b: fnox fails → fallthrough to vaultwarden.
-///
-/// We can't run vaultwarden in a unit test, but we can assert that when
-/// env + fnox both yield nothing, the resolver proceeds to the
-/// vaultwarden path (which will fail because SECRETS_VAULT_TOKEN is
-/// unset) and returns the correct "not found" error.
+/// T4b: fnox fails → resolver returns a clear missing-secret error.
 ///
 /// Failure mode this catches: resolver swallowing the fnox error silently
 /// and returning a stale empty string, or panicking instead of erroring.
 #[tokio::test]
-async fn fnox_failure_falls_through_to_vault_error() {
+async fn fnox_failure_returns_not_found_error() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let dir = TempDir::new().unwrap();
@@ -207,7 +197,7 @@ async fn fnox_failure_falls_through_to_vault_error() {
 
     remove_env("VAULT_T4B_MISSING");
 
-    let result = secrets_client::vault::get_secret("VAULT_T4B_MISSING").await;
+    let result = secrets_client::resolver::get_secret("VAULT_T4B_MISSING").await;
 
     assert!(
         result.is_err(),
@@ -219,9 +209,7 @@ async fn fnox_failure_falls_through_to_vault_error() {
     // just confirm the message names the missing key OR the resolver
     // chain so a user can debug.
     assert!(
-        err.contains("VAULT_T4B_MISSING")
-            || err.contains("not found")
-            || err.contains("No SECRETS_VAULT_TOKEN"),
+        err.contains("VAULT_T4B_MISSING") || err.contains("not found") || err.contains("fnox get"),
         "error should be user-actionable, got: {}",
         err
     );
@@ -244,10 +232,9 @@ async fn fnox_binary_missing_is_graceful() {
     // would still let the real fnox binary (installed by brew) be found.
     let original = std::env::var("PATH").ok();
     set_env("PATH", empty.path().display().to_string());
-    remove_env("SECRETS_VAULT_TOKEN");
     remove_env("VAULT_T4C_NO_FNOX");
 
-    let result = secrets_client::vault::get_secret("VAULT_T4C_NO_FNOX").await;
+    let result = secrets_client::resolver::get_secret("VAULT_T4C_NO_FNOX").await;
 
     // Restore before asserting so any panic below doesn't corrupt
     // the rest of the test run's PATH.
@@ -286,11 +273,11 @@ async fn fnox_empty_output_is_rejected() {
 
     remove_env("VAULT_T4D_EMPTY");
 
-    let result = secrets_client::vault::get_secret("VAULT_T4D_EMPTY").await;
+    let result = secrets_client::resolver::get_secret("VAULT_T4D_EMPTY").await;
 
-    // Either the resolver rejects empty AS fnox-error (preferred — means
-    // fall-through to vaultwarden works), or the whole thing errors out
-    // with a clear message. Either way, must NOT return Ok("").
+    // Either the resolver rejects empty as a fnox error, or the whole
+    // thing errors out with a clear message. Either way, must NOT return
+    // Ok("").
     if let Ok(value) = &result {
         panic!(
             "resolver returned Ok({:?}) from empty fnox output — must reject or fall through",

@@ -18,7 +18,7 @@ User-facing tour: `README.md` → [calciforge.org](https://calciforge.org/).
 |---|---|
 | `calciforge` | Channel router, identity, command dispatch, model gateway. The user-facing binary. |
 | `security-proxy` | HTTPS proxy on `127.0.0.1:8888`. Substitutes `{{secret:NAME}}`, gates per-secret destinations, drives scanning. |
-| `secrets-client` | `env → fnox → vaultwarden` resolver. Default subprocess wrapper around the `fnox` CLI; opt-in library mode behind `--features fnox-library`. |
+| `secrets-client` | `env → fnox` resolver. Default subprocess wrapper around the `fnox` CLI; opt-in library mode behind `--features fnox-library`. |
 | `mcp-server` | MCP surface for agent-facing secret-name discovery. Returns `{{secret:NAME}}` reference tokens; deliberately no `get_secret`. |
 | `paste-server` | Localhost-only HTTP form for one-shot / bulk `.env` secret input without putting values in chat history. |
 | `clashd` | Daemon adapter around the upstream [`clash`](https://crates.io/crates/clash) Starlark policy crate. The "d" is for daemon. |

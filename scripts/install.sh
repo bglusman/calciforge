@@ -1307,10 +1307,10 @@ run_calciforge_doctor() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. fnox — encrypted secret resolver (fallback between env and vaultwarden)
+# 5. fnox — encrypted secret resolver
 # ══════════════════════════════════════════════════════════════════════════════
-# secrets-client's vault.rs lookup order is: env → fnox → vaultwarden. fnox is
-# not hard-required by the Rust resolver, but real channel/gateway deployments
+# secrets-client's resolver.rs lookup order is: env → fnox. fnox is not
+# hard-required by the Rust resolver, but real channel/gateway deployments
 # need it configured before services start so service PATH and HOME match the
 # operator's interactive shell.
 hdr "fnox (secret resolver)"
