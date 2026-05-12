@@ -134,6 +134,9 @@ def collect_logs(proc: subprocess.Popen, logs: list[str]) -> threading.Thread:
 
 def assert_generated_artifacts(tmp_root: Path) -> None:
     artifact_root = tmp_root / "calciforge-artifacts"
+    if not artifact_root.is_dir():
+        raise AssertionError(f"artifact root was not created: {artifact_root}")
+
     run_dirs = [path for path in artifact_root.iterdir() if path.is_dir()]
     if len(run_dirs) != 1:
         raise AssertionError(f"expected one artifact run dir under {artifact_root}, got {run_dirs}")
