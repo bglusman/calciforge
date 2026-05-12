@@ -378,6 +378,7 @@ impl CalciforgeMitmHandler {
             dest_host.as_deref(),
             &mut secret_metadata,
             &secret_access_identity,
+            remote_scan_body.as_deref(),
         )
         .await
         {
@@ -431,25 +432,21 @@ impl CalciforgeMitmHandler {
             && looks_json
             && let Some(remote_body) = remote_scan_body.take()
         {
-            if remote_body.is_empty() {
-                remote_scan_body = Some(remote_body);
-            } else {
-                remote_scan_body =
-                    match agent_web::inspect_browsing_body(remote_body.as_bytes(), policy, dest) {
-                        BrowsingDecision::Allow => Some(remote_body),
-                        BrowsingDecision::Stripped { body, .. } => {
-                            Some(String::from_utf8_lossy(&body).into_owned())
-                        }
-                        BrowsingDecision::Block { reason } => {
-                            return RequestOrResponse::Response(mitm_policy_blocked_response(
-                                "agent_web.forbid_provider_browsing",
-                                &reason,
-                                "config_required",
-                                "none",
-                            ));
-                        }
-                    };
-            }
+            remote_scan_body =
+                match agent_web::inspect_browsing_body(remote_body.as_bytes(), policy, dest) {
+                    BrowsingDecision::Allow => Some(remote_body),
+                    BrowsingDecision::Stripped { body, .. } => {
+                        Some(String::from_utf8_lossy(&body).into_owned())
+                    }
+                    BrowsingDecision::Block { reason } => {
+                        return RequestOrResponse::Response(mitm_policy_blocked_response(
+                            "agent_web.forbid_provider_browsing",
+                            &reason,
+                            "config_required",
+                            "none",
+                        ));
+                    }
+                };
         }
 
         // (D) URL pre-flight — scan messages / tool descriptions for
@@ -816,6 +813,7 @@ async fn substitute_body(
     dest_host: Option<&str>,
     metadata: &mut Option<secrets_client::SecretMetadataStore>,
     access_identity: &secrets_client::SecretAccessIdentity,
+    predecoded_body: Option<&str>,
 ) -> Result<Bytes, String> {
     if body_bytes.is_empty() {
         return Ok(body_bytes);
@@ -823,7 +821,14 @@ async fn substitute_body(
 
     match SecurityProxy::body_substitution_mode(content_type) {
         BodyMode::FullSubstitute => {
-            let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+            let decoded_body;
+            let body_str = match predecoded_body {
+                Some(body) => body,
+                None => {
+                    decoded_body = String::from_utf8_lossy(&body_bytes).into_owned();
+                    &decoded_body
+                }
+            };
             if body_str.contains("{{secret:")
                 && let Some(host) = dest_host
                 && metadata.is_none()
@@ -831,7 +836,7 @@ async fn substitute_body(
                 *metadata = Some(SecurityProxy::load_secret_metadata(host)?);
             }
             state
-                .resolve_and_substitute(&body_str, dest_host, metadata.as_ref(), access_identity)
+                .resolve_and_substitute(body_str, dest_host, metadata.as_ref(), access_identity)
                 .await
                 .map(|substituted| Bytes::from(substituted.into_bytes()))
         }

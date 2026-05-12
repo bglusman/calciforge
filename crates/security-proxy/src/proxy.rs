@@ -143,7 +143,6 @@ impl SecurityProxy {
             audit,
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .no_proxy()
                 .build()
                 .expect("security proxy reqwest client"),
             placeholder_map: RwLock::new(crate::substitution::PlaceholderMap::default()),
@@ -503,7 +502,6 @@ impl SecurityProxy {
             match body_mode {
                 BodyMode::FullSubstitute => {
                     let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
-                    remote_scan_body_before_policy = Some(body_str.clone());
                     if body_str.contains("{{secret:")
                         && let Some(host) = dest_host.as_deref()
                         && secret_metadata.is_none()
@@ -521,15 +519,16 @@ impl SecurityProxy {
                             }
                         }
                     }
-                    match self
+                    let substituted = self
                         .resolve_and_substitute(
                             &body_str,
                             dest_host.as_deref(),
                             secret_metadata.as_ref(),
                             &secret_access_identity,
                         )
-                        .await
-                    {
+                        .await;
+                    remote_scan_body_before_policy = Some(body_str);
+                    match substituted {
                         Ok(substituted) => bytes::Bytes::from(substituted.into_bytes()),
                         Err(e) => {
                             warn!("BLOCKED: body substitution failed: {}", e);
