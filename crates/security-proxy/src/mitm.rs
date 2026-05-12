@@ -1274,13 +1274,22 @@ fn is_exact_secret_reference(value: &str) -> bool {
 
 #[cfg(all(test, feature = "ironclaw-safety"))]
 mod credential_check_tests {
+    use std::sync::Arc;
+
+    use adversary_detector::{RateLimitConfig, ScannerConfig};
+
     use super::{
-        CALCIFORGE_OVERRIDE_HEADER, MANUAL_CREDENTIAL_POLICY, build_credential_check_params,
-        header_value_is_proxy_managed_secret, manual_credential_override_status,
-        mitm_manual_credential_blocked_response, remove_calciforge_control_headers,
-        url_with_secret_query_params_removed,
+        CALCIFORGE_OVERRIDE_HEADER, CalciforgeMitmHandler, MANUAL_CREDENTIAL_POLICY,
+        build_credential_check_params, header_value_is_proxy_managed_secret,
+        manual_credential_override_status, mitm_manual_credential_blocked_response,
+        remove_calciforge_control_headers, url_with_secret_query_params_removed,
     };
+    use crate::config::GatewayConfig;
+    use crate::credentials::{CredentialMapping, CredentialsConfig, InjectionMethod};
+    use crate::proxy::SecurityProxy;
     use hudsucker::hyper::header;
+    use hudsucker::hyper::{Request, StatusCode};
+    use hudsucker::{Body as MitmBody, RequestOrResponse};
 
     #[test]
     fn credential_check_url_omits_proxy_managed_secret_query_params() {
@@ -1376,6 +1385,61 @@ mod credential_check_tests {
         );
 
         assert!(ironclaw_safety::params_contain_manual_credentials(&params));
+    }
+
+    #[tokio::test]
+    async fn credential_check_allows_proxy_injected_provider_credentials() {
+        let proxy = SecurityProxy::with_credentials_config(
+            GatewayConfig {
+                inject_credentials: true,
+                scan_outbound: true,
+                scan_inbound: false,
+                bypass_domains: vec![],
+                ..Default::default()
+            },
+            ScannerConfig::default(),
+            RateLimitConfig::default(),
+            Some(CredentialsConfig {
+                mappings: vec![CredentialMapping {
+                    hosts: vec!["api.example.test".to_string()],
+                    secret_name: "OPENAI_API_KEY".to_string(),
+                    injection: InjectionMethod::Bearer,
+                }],
+                cache_ttl_secs: 0,
+            }),
+        )
+        .await;
+        proxy
+            .credentials
+            .add("OPENAI_API_KEY", "sk-proxy-managed-provider-token");
+        let mut handler = CalciforgeMitmHandler::new(Arc::new(proxy));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://api.example.test/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(MitmBody::from(r#"{"messages":[]}"#.to_string()))
+            .unwrap();
+
+        match handler.process_request(req).await {
+            RequestOrResponse::Request(forwarded) => {
+                assert_eq!(
+                    forwarded.headers().get(header::AUTHORIZATION).unwrap(),
+                    "Bearer sk-proxy-managed-provider-token"
+                );
+            }
+            RequestOrResponse::Response(response) => {
+                assert_ne!(
+                    response.status(),
+                    StatusCode::FORBIDDEN,
+                    "proxy-managed provider credentials must be injected after manual credential checks"
+                );
+                panic!(
+                    "expected proxy-managed provider credential request to forward, got HTTP {}",
+                    response.status()
+                );
+            }
+        }
     }
 
     #[test]
