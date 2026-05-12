@@ -33,6 +33,9 @@ jobs:
       - name: Check installer config helpers
         run: python3 scripts/test-upsert-calciforge-agent.py
 
+      - name: Check architecture ratchets
+        run: ruby scripts/check-architecture-ratchets.rb
+
   # ─────────────────────────────────────────────────────────────────────────────
   # Check formatting and linting
   # ─────────────────────────────────────────────────────────────────────────────

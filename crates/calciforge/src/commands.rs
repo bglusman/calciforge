@@ -34,6 +34,10 @@ use crate::messages::{ChoiceControl, ChoiceOption, Match, OutboundMessage};
 use crate::model_names::configured_first_class_model_ids;
 use crate::providers::alloy::AlloyManager;
 
+mod parser;
+
+use parser::{command_suggestion, command_token, first_arg, second_arg};
+
 const PENDING_CHOICE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// Default state directory: `~/.config/calciforge/state/`.
@@ -94,18 +98,6 @@ fn session_runtime_readiness_error(agent_cfg: &crate::config::AgentConfig) -> Op
     }
 }
 
-fn first_arg(text: &str) -> Option<&str> {
-    text.split_whitespace().nth(1)
-}
-
-fn second_arg(text: &str) -> Option<&str> {
-    text.split_whitespace().nth(2)
-}
-
-fn command_token(text: &str) -> &str {
-    text.split_whitespace().next().unwrap_or("")
-}
-
 fn gateway_model_selector_ids(config: &CalciforgeConfig) -> HashSet<String> {
     configured_first_class_model_ids(config)
         .into_iter()
@@ -158,65 +150,6 @@ impl fmt::Display for AgentChoiceError {
             ),
         }
     }
-}
-
-fn command_suggestion(cmd: &str) -> Option<&'static str> {
-    const MAX_FUZZY_COMMAND_CHARS: usize = 64;
-    const COMMANDS: &[&str] = &[
-        "!help",
-        "!status",
-        "!agents",
-        "!agent",
-        "!sessions",
-        "!session",
-        "!new",
-        "!btw",
-        "!gateway",
-        "!metrics",
-        "!ping",
-        "!switch",
-        "!default",
-        "!model",
-        "!secure",
-        "!secret",
-        "!approve",
-        "!deny",
-    ];
-
-    let lower = cmd.to_lowercase();
-    let without_bang = lower.trim_start_matches('!');
-    if without_bang.chars().count() > MAX_FUZZY_COMMAND_CHARS {
-        return None;
-    }
-
-    COMMANDS
-        .iter()
-        .copied()
-        .find(|candidate| candidate.trim_start_matches('!') == without_bang)
-        .or_else(|| {
-            COMMANDS.iter().copied().find(|candidate| {
-                levenshtein_distance(without_bang, candidate.trim_start_matches('!')) <= 2
-            })
-        })
-}
-
-fn levenshtein_distance(a: &str, b: &str) -> usize {
-    let b_len = b.chars().count();
-    let mut costs: Vec<usize> = (0..=b_len).collect();
-
-    for (i, ca) in a.chars().enumerate() {
-        let mut previous = costs[0];
-        costs[0] = i + 1;
-        for (j, cb) in b.chars().enumerate() {
-            let insertion = costs[j + 1] + 1;
-            let deletion = costs[j] + 1;
-            let substitution = previous + usize::from(ca != cb);
-            previous = costs[j + 1];
-            costs[j + 1] = insertion.min(deletion).min(substitution);
-        }
-    }
-
-    costs[b_len]
 }
 
 /// Load persisted active-agent selections from a given state directory.
