@@ -22,6 +22,7 @@ use crate::providers::alloy::AlloyManager;
 
 mod auth;
 mod backend;
+mod control_auth;
 mod gateway;
 mod handlers;
 pub(crate) mod model_resolver;

@@ -657,27 +657,12 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
 
-    /// API key for read-only secret discovery endpoints.
-    ///
-    /// Managed agent helpers receive this token so they can list allowed secret
-    /// names and mint `{{secret:NAME}}` references without being able to mutate
-    /// the operator-owned secret store.
     #[serde(default)]
     pub secret_discovery_api_key: Option<String>,
-
-    /// Path to file containing the read-only secret discovery API key.
     #[serde(default)]
     pub secret_discovery_api_key_file: Option<PathBuf>,
-
-    /// API key for privileged secret-control endpoints.
-    ///
-    /// This intentionally does not reuse `proxy.api_key` or
-    /// `proxy.secret_discovery_api_key`: model gateway clients and managed
-    /// agent helpers should not automatically be able to overwrite operator
-    /// secrets.
     #[serde(default)]
     pub secret_control_api_key: Option<String>,
-
     /// Path to file containing the privileged secret-control API key.
     #[serde(default)]
     pub secret_control_api_key_file: Option<PathBuf>,

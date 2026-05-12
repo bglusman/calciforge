@@ -29,6 +29,7 @@
 //! - Health check after apply; automatic rollback on failure.
 //! - One claw at a time — never mutate two claws in the same SSH session.
 
+mod agent_helper;
 pub mod cli;
 pub mod executor;
 pub mod health;
