@@ -123,6 +123,39 @@ fn explicit_doctor_override_can_only_make_egress_proxy_stricter() {
 }
 
 #[test]
+fn explicit_doctor_override_does_not_error_on_external_daemon_unverifiability() {
+    let mut config = base_config();
+    config.agents = vec![AgentConfig {
+        id: "openclaw".to_string(),
+        kind: "openclaw-channel".to_string(),
+        endpoint: "http://127.0.0.1:18789".to_string(),
+        ..Default::default()
+    }];
+    let mut report = DoctorReport::default();
+
+    check_agent_proxy_coverage_with_strict(
+        &config,
+        &ProxyEnvironment::default(),
+        true,
+        false,
+        &mut report,
+    );
+
+    assert!(report.findings.iter().any(|finding| {
+        finding.severity == Severity::Warn
+            && finding
+                .message
+                .contains("doctor cannot verify their process proxy environment")
+    }));
+    assert!(!report.findings.iter().any(|finding| {
+        finding.severity == Severity::Error
+            && finding
+                .message
+                .contains("doctor cannot verify their process proxy environment")
+    }));
+}
+
+#[test]
 fn subprocess_agent_proxy_coverage_warns_on_complete_agent_proxy_env() {
     let mut config = base_config();
     config.agents = vec![AgentConfig {

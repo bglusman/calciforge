@@ -1295,7 +1295,7 @@ run_calciforge_doctor() {
         if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" \
             || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES" \
             || truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
-            doctor_env+=(-u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
+            doctor_env+=(-u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy)
         fi
         if truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
             doctor_env+=(CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY=1)

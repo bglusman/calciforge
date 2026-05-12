@@ -170,19 +170,21 @@ pub async fn run_with_options(config_path: &Path, options: DoctorOptions) -> Res
     security_proxy_runtime::check(&mut report).await;
     check_security_proxy_ca_trust(&mut report);
     check_install_node_metadata(options.no_network, &mut report).await;
-    let strict_egress_proxy =
-        effective_agent_egress_proxy_requirement(&config, options.require_agent_egress_proxy);
+    let config_strict_egress_proxy = security_requires_agent_egress_proxy(&config);
+    let strict_subprocess_egress_proxy =
+        config_strict_egress_proxy || options.require_agent_egress_proxy.unwrap_or(false);
     check_agent_proxy_coverage_with_strict(
         &config,
         &proxy_environment_from_process(),
-        strict_egress_proxy,
+        strict_subprocess_egress_proxy,
+        config_strict_egress_proxy,
         &mut report,
     );
     report_agent_protection_summary(&config, &mut report);
     check_agent_wiring_with_strict(
         &config,
         options.no_network,
-        strict_egress_proxy,
+        config_strict_egress_proxy,
         &mut report,
     )
     .await;
@@ -711,13 +713,14 @@ fn check_agent_proxy_coverage(
     report: &mut DoctorReport,
 ) {
     let strict_egress = security_requires_agent_egress_proxy(config);
-    check_agent_proxy_coverage_with_strict(config, env, strict_egress, report);
+    check_agent_proxy_coverage_with_strict(config, env, strict_egress, strict_egress, report);
 }
 
 fn check_agent_proxy_coverage_with_strict(
     config: &CalciforgeConfig,
     env: &ProxyEnvironment,
-    strict_egress: bool,
+    strict_subprocess_egress: bool,
+    strict_external_daemon_egress: bool,
     report: &mut DoctorReport,
 ) {
     let subprocess_agents = config
@@ -753,7 +756,7 @@ fn check_agent_proxy_coverage_with_strict(
 
         if has_any_forward_proxy(env) {
             let message = "Current calciforge doctor process has ambient proxy env; subprocess inheritance works only if the service has the same env, and it can break CLI agents that use CONNECT, WebSockets, npm, or browser-backed auth. Prefer no ambient proxy and only wrap agents through tested recipes.";
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.warn(message);
@@ -764,7 +767,7 @@ fn check_agent_proxy_coverage_with_strict(
             let message = format!(
                 "{clearing_count} subprocess agent(s) set empty proxy env values; CLI/exec agents may bypass security-proxy"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.warn(message);
@@ -775,7 +778,7 @@ fn check_agent_proxy_coverage_with_strict(
             let message = format!(
                 "{incomplete_count} subprocess agent(s) define incomplete MITM proxy env; require HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, loopback NO_PROXY, and at least one runtime CA bundle env"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.warn(message);
@@ -786,7 +789,7 @@ fn check_agent_proxy_coverage_with_strict(
             let message = format!(
                 "{complete_count} subprocess agent(s) define complete MITM proxy env for tested runtime wrappers"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.ok(message);
             } else {
                 report.warn(message);
@@ -805,7 +808,7 @@ fn check_agent_proxy_coverage_with_strict(
             let message = format!(
                 "{missing_count} subprocess agent(s) have no explicit MITM proxy env; use explicit tool/fetch integration or a tested wrapper for traffic that must pass through security-proxy"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.ok(message);
@@ -823,7 +826,7 @@ fn check_agent_proxy_coverage_with_strict(
         let message = format!(
             "{external_count} externally managed HTTP/native agent endpoint(s) configured; doctor cannot verify their process proxy environment"
         );
-        if strict_egress {
+        if strict_external_daemon_egress {
             report.error(message);
         } else {
             report.warn(message);
@@ -835,6 +838,7 @@ fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
     security_requires_agent_egress_proxy_with_override(config, None)
 }
 
+#[cfg(test)]
 fn effective_agent_egress_proxy_requirement(
     config: &CalciforgeConfig,
     require_override: Option<bool>,
