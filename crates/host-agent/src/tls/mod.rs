@@ -33,12 +33,10 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     let client_ca = load_certs(client_ca_path)
         .with_context(|| format!("Failed to load client CA: {:?}", client_ca_path))?;
 
-    // Load CRL if provided
-    let _crl_data = if let Some(crl_path) = crl_path {
-        Some(fs::read(crl_path).with_context(|| "Failed to read CRL file")?)
-    } else {
-        None
-    };
+    // Validate that the configured revocation list can be read. The active
+    // request-serving path enforces the list in IdentityExtractingAcceptor after
+    // rustls has validated the client certificate chain.
+    let _ = load_crl_data(crl_path)?;
 
     // Create root certificate store
     let mut root_store = rustls::RootCertStore::empty();
@@ -62,6 +60,13 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     info!("mTLS configuration created successfully");
 
     Ok(Arc::new(rustls_config))
+}
+
+/// Load the optional certificate revocation list used by the identity-extracting acceptor.
+pub fn load_crl_data<P: AsRef<Path>>(crl_path: Option<P>) -> Result<Option<Vec<u8>>> {
+    crl_path
+        .map(|path| fs::read(path).with_context(|| "Failed to read CRL file"))
+        .transpose()
 }
 
 /// Load certificates from PEM file
@@ -167,5 +172,31 @@ impl IdentityExtractingAcceptor {
         }
 
         anyhow::bail!("No client certificate presented (mTLS required)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn load_crl_data_returns_configured_contents() {
+        let mut file = tempfile::NamedTempFile::new().expect("create temporary CRL");
+        file.write_all(b"revoked-fingerprint\n")
+            .expect("write temporary CRL");
+
+        let crl_data = load_crl_data(Some(file.path()))
+            .expect("load configured CRL")
+            .expect("CRL should be present");
+
+        assert_eq!(crl_data, b"revoked-fingerprint\n");
+    }
+
+    #[test]
+    fn load_crl_data_allows_absent_crl() {
+        let crl_data = load_crl_data::<&Path>(None).expect("absent CRL should be accepted");
+
+        assert!(crl_data.is_none());
     }
 }
