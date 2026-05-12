@@ -50,7 +50,8 @@ pub fn require_agent_egress_proxy_override_from_env() -> Option<bool> {
     std::env::var(DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV)
         .ok()
         .as_deref()
-        .map(truthy_env_value)
+        .filter(|value| truthy_env_value(value))
+        .map(|_| true)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,9 +170,8 @@ pub async fn run_with_options(config_path: &Path, options: DoctorOptions) -> Res
     security_proxy_runtime::check(&mut report).await;
     check_security_proxy_ca_trust(&mut report);
     check_install_node_metadata(options.no_network, &mut report).await;
-    let strict_egress_proxy = options
-        .require_agent_egress_proxy
-        .unwrap_or_else(|| security_requires_agent_egress_proxy(&config));
+    let strict_egress_proxy =
+        effective_agent_egress_proxy_requirement(&config, options.require_agent_egress_proxy);
     check_agent_proxy_coverage_with_strict(
         &config,
         &proxy_environment_from_process(),
@@ -833,6 +833,13 @@ fn check_agent_proxy_coverage_with_strict(
 
 fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
     security_requires_agent_egress_proxy_with_override(config, None)
+}
+
+fn effective_agent_egress_proxy_requirement(
+    config: &CalciforgeConfig,
+    require_override: Option<bool>,
+) -> bool {
+    security_requires_agent_egress_proxy(config) || require_override.unwrap_or(false)
 }
 
 fn security_requires_agent_egress_proxy_with_override(

@@ -97,6 +97,32 @@ fn install_override_requires_agent_egress_proxy() {
 }
 
 #[test]
+fn explicit_doctor_override_can_only_make_egress_proxy_stricter() {
+    let mut config = base_config();
+
+    assert!(!effective_agent_egress_proxy_requirement(&config, None));
+    assert!(effective_agent_egress_proxy_requirement(
+        &config,
+        Some(true)
+    ));
+    assert!(!effective_agent_egress_proxy_requirement(
+        &config,
+        Some(false)
+    ));
+
+    config.security = Some(SecuritySectionConfig {
+        profile: "hardened".to_string(),
+        scan_outbound: Some(true),
+        require_agent_egress_proxy: true,
+        scanner_checks: vec![],
+    });
+    assert!(effective_agent_egress_proxy_requirement(
+        &config,
+        Some(false)
+    ));
+}
+
+#[test]
 fn subprocess_agent_proxy_coverage_warns_on_complete_agent_proxy_env() {
     let mut config = base_config();
     config.agents = vec![AgentConfig {
