@@ -218,7 +218,9 @@ explicit fetch/tool integration, audited recipes, and tested proxy setups.
 The point is simple: do not rely on an agent to remember the safety rules while
 it is under pressure from a page, prompt, or tool result. Put the rules at a
 request boundary where Calciforge can check secrets, destinations, model routes,
-and tool permissions before traffic leaves the machine.
+and tool permissions before traffic leaves the machine. Agents can be brilliant
+and still dramatic; Calciforge is here so one bad web page does not turn into a
+hair-dye-level crisis.
 
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection unless
 it points at Calciforge's inspecting proxy and the target runtime trusts the
@@ -895,9 +897,10 @@ direction in the [UX roadmap](roadmap/product-ux.html).
 Calcifer is the fire demon from Diana Wynne Jones's
 <em>Howl's Moving Castle</em> who's bound by contract to power the castle's
 magical front door — one door connecting to many places, with strict
-rules about who can pass and where. The metaphor felt apt; the tool
-itself doesn't require any familiarity with the book or its film
-adaptation, and nothing else from either is referenced or used.
+rules about who can pass and where. The metaphor felt apt: good automation
+needs power, boundaries, and the occasional reminder that nobody wants their
+bacon burned. The tool itself doesn't require any familiarity with the book or
+its film adaptation.
 </div>
 <p>MIT-licensed. Some bundled tools (e.g. fnox) carry their own licenses.</p>
 </footer>

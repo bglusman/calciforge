@@ -16,7 +16,8 @@ The longer tour, setup examples, and architecture notes live on
 This is usable for a solo operator, but still being hardened. Before you
 make it daily-driver infrastructure, test it with your real chat
 channels, fnox secret store, model providers, and routing choices. Castles
-move; config should still have brakes.
+move; config should still have brakes, labels, and fewer mysterious bathroom
+potions than Howl would tolerate.
 
 | Area | Status | Where to read more |
 |---|---:|---|

@@ -10,11 +10,13 @@ using **HTTP long-polling** (`/sync`). Long-polling means Calciforge keeps
 asking the homeserver for new events, so no webhook endpoint or open firewall
 port is required.
 
-> **No end-to-end encryption.** The Matrix channel receives plaintext `m.text`
-> events and can send plaintext replies plus native media events for agent
-> artifacts. End-to-end encryption (E2EE) is not supported due to compile-time
-> dependency conflicts in the current workspace. Do not use this channel in
-> rooms where E2EE is required.
+> **No end-to-end encryption yet.** The Matrix channel currently uses the raw
+> Matrix Client-Server API, so it receives plaintext `m.text` events and sends
+> plaintext replies plus native media events for agent artifacts. Matrix itself
+> supports end-to-end encryption, and the Matrix Rust SDK has crypto support,
+> but Calciforge has not yet wired the required encrypted-room client state,
+> device trust, and persistent crypto store. Do not use this channel in rooms
+> where E2EE is required.
 
 ## Architecture
 
@@ -138,6 +140,12 @@ You can still use a richer channel, such as Telegram, as the Calciforge control
 surface for agent/model selection while keeping Matrix as the main chat room.
 Selections are keyed by Calciforge identity and apply across that operator's
 channels.
+
+E2EE support is a high-priority follow-up, not a philosophical objection. The
+likely path is to move this adapter onto the Matrix Rust SDK crypto stack,
+persist the bot device's encrypted state, and add a real encrypted-room smoke
+test. Until that lands, treat Matrix as convenient self-hosted transport rather
+than the secure-room option it should become.
 
 <div class="channel-ui-grid">
   <figure>
