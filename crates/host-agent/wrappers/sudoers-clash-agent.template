@@ -1,10 +1,11 @@
 # /etc/sudoers.d/clash-agent
 #
-# Calciforge host-agent sudoers fragment — WRAPPER-ONLY policy
+# Calciforge host-agent sudoers fragment — least-privilege policy
 #
-# IMPORTANT: This file grants only the privilege wrappers that truly need
-# root. Do NOT grant broad /sbin/zfs, /usr/sbin/pct, or /usr/bin/git access;
-# those broad entries are the anti-pattern this file replaces.
+# IMPORTANT: This file grants only the privilege wrappers that truly need root
+# plus narrowly scoped read-only commands. Do NOT grant broad /sbin/zfs,
+# /usr/sbin/pct, or /usr/bin/git access; those broad entries are the
+# anti-pattern this file replaces.
 #
 # Variables to substitute before deploying (or let install.sh fill them in):
 #   {{CLASH_AGENT_USER}}  — system account running host-agent (e.g. clash-agent)

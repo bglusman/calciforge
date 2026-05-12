@@ -131,27 +131,39 @@ fn detect_bare_pct(line: &str) -> Option<String> {
 }
 
 fn detect_bare_git(line: &str) -> Option<String> {
-    if line.contains("!/usr/bin/git") || line.contains("!/bin/git") {
-        return None;
-    }
-    if line.contains("git-safe-wrapper") {
-        return Some(
-            "Do not grant sudo access to /usr/local/sbin/git-safe-wrapper; \
-             git repository config and hooks are not safe to execute as root"
-                .to_string(),
-        );
-    }
-    let bare = ["/usr/bin/git", "/bin/git"];
-    for b in &bare {
-        if line.contains(b) {
-            return Some(format!(
-                "Direct root access to '{}' granted; git operations must run as the \
-                 unprivileged host-agent service account, not through sudoers",
-                b
-            ));
+    for command in sudoers_commands(line) {
+        if command.starts_with('!') {
+            continue;
+        }
+        if command.contains("git-safe-wrapper") {
+            return Some(
+                "Do not grant sudo access to /usr/local/sbin/git-safe-wrapper; \
+                 git repository config and hooks are not safe to execute as root"
+                    .to_string(),
+            );
+        }
+        let bare = ["/usr/bin/git", "/bin/git"];
+        for b in &bare {
+            if command.contains(b) {
+                return Some(format!(
+                    "Direct root access to '{}' granted; git operations must run as the \
+                     unprivileged host-agent service account, not through sudoers",
+                    b
+                ));
+            }
         }
     }
     None
+}
+
+fn sudoers_commands(line: &str) -> impl Iterator<Item = &str> {
+    line.split(',').map(|entry| {
+        entry
+            .split_once(':')
+            .map(|(_, commands)| commands)
+            .unwrap_or(entry)
+            .trim()
+    })
 }
 
 fn detect_nopasswd_all(line: &str) -> Option<String> {
@@ -365,9 +377,23 @@ mod tests {
     }
 
     #[test]
+    fn test_negated_bare_git_does_not_hide_later_allowed_git() {
+        assert!(check(
+            "clash-agent ALL=(root) NOPASSWD: !/usr/bin/git *, /usr/bin/git status *"
+        ));
+    }
+
+    #[test]
     fn test_git_safe_wrapper_flagged() {
         assert!(check(
             "clash-agent ALL=(root) NOPASSWD: /usr/local/sbin/git-safe-wrapper"
+        ));
+    }
+
+    #[test]
+    fn test_negated_bare_git_does_not_hide_later_git_wrapper_grant() {
+        assert!(check(
+            "clash-agent ALL=(root) NOPASSWD: !/usr/bin/git *, /usr/local/sbin/git-safe-wrapper"
         ));
     }
 
