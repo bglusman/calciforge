@@ -24,16 +24,15 @@ use std::time::{Duration, Instant};
 use crate::sync::{Arc, AtomicU64, Mutex, Ordering};
 
 use crate::adapters::{
-    AgentSessionCapability, agent_session_capability, agent_supports_model_override,
-    find_executable_for_agent,
-    openclaw::{SharedPendingApprovals, ZeroClawHttpAdapter},
-    subprocess_command_for_agent,
+    find_executable_for_agent, openclaw::SharedPendingApprovals, subprocess_command_for_agent,
 };
 use crate::config::CalciforgeConfig;
 use crate::messages::{ChoiceControl, ChoiceOption, Match, OutboundMessage};
 use crate::model_names::configured_first_class_model_ids;
 use crate::providers::alloy::AlloyManager;
 
+mod approvals;
+mod model;
 mod parser;
 mod secure;
 mod sessions;
@@ -43,10 +42,11 @@ use parser::{command_suggestion, command_token, first_arg, second_arg};
 #[cfg(test)]
 use secure::{PasteServerEnv, paste_server_env_from_values, secure_input_target};
 use secure::{secure_help, secure_input, secure_list, secure_set};
-use sessions::{active_sessions_message, valid_downstream_session_name};
+#[cfg(test)]
+use sessions::active_sessions_message;
 use state::{
     default_state_dir, load_active_agents_from, load_active_models_from, load_active_sessions_from,
-    save_active_agents_to, save_active_models_to, save_active_sessions_to,
+    save_active_models_to,
 };
 
 const PENDING_CHOICE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -316,22 +316,6 @@ impl CommandHandler {
         self.alloy_manager.as_ref()
     }
 
-    /// Return the active model override for an identity, if one was selected.
-    pub fn active_model_for_identity(&self, identity_id: &str) -> Option<String> {
-        if let Some(model) = self.active_models.lock().unwrap().get(identity_id).cloned() {
-            return Some(model);
-        }
-        self.alloy_manager
-            .as_ref()
-            .and_then(|manager| manager.active_for_identity(identity_id))
-    }
-
-    fn set_active_model_for_identity(&self, identity_id: &str, model_id: &str) {
-        let mut active_models = self.active_models.lock().unwrap();
-        active_models.insert(identity_id.to_string(), model_id.to_string());
-        save_active_models_to(&self.state_dir, &active_models);
-    }
-
     /// Return agent choices the identity may activate, with display labels.
     pub fn agent_choices_for_identity(
         &self,
@@ -389,66 +373,6 @@ impl CommandHandler {
         }
     }
 
-    /// Return model choices that can be activated with `!model use <id>`.
-    pub fn activatable_model_choices(&self) -> Vec<(String, String)> {
-        let mut choices = Vec::new();
-        choices.extend(
-            self.config
-                .effective_model_shortcuts()
-                .iter()
-                .map(|shortcut| {
-                    (
-                        shortcut.alias.clone(),
-                        format!("{} → {}", shortcut.alias, shortcut.model),
-                    )
-                }),
-        );
-        if let Some(manager) = self.alloy_manager.as_ref() {
-            choices.extend(
-                manager
-                    .list()
-                    .into_iter()
-                    .map(|model| (model.id.clone(), format!("{} (alloy)", model.name))),
-            );
-            choices.extend(
-                manager
-                    .list_cascades()
-                    .into_iter()
-                    .map(|model| (model.id.clone(), format!("{} (cascade)", model.name))),
-            );
-            choices.extend(
-                manager
-                    .list_dispatchers()
-                    .into_iter()
-                    .map(|model| (model.id.clone(), format!("{} (dispatcher)", model.name))),
-            );
-        }
-        if let Some(manager) = self.local_manager.as_ref() {
-            choices.extend(manager.models().iter().map(|model| {
-                (
-                    model.id.clone(),
-                    model
-                        .display_name
-                        .clone()
-                        .unwrap_or_else(|| format!("{} (local)", model.id)),
-                )
-            }));
-        }
-        if let Some(proxy_cfg) = self.config.proxy.as_ref() {
-            for provider in &proxy_cfg.providers {
-                for model in &provider.models {
-                    if model.contains('*') {
-                        continue;
-                    }
-                    choices.push((model.clone(), format!("{} ({})", model, provider.id)));
-                }
-            }
-        }
-        choices.sort_by(|left, right| left.0.cmp(&right.0));
-        choices.dedup_by(|left, right| left.0 == right.0);
-        choices
-    }
-
     /// Returns `true` for commands whose primary response can include agent choices.
     pub fn is_agent_choice_request(text: &str) -> bool {
         let mut tokens = text.split_whitespace();
@@ -467,28 +391,6 @@ impl CommandHandler {
                     && (sub.eq_ignore_ascii_case("list")
                         || sub.eq_ignore_ascii_case("ls")
                         || sub.eq_ignore_ascii_case("agents"))
-            }
-        }
-    }
-
-    /// Returns `true` for model list commands that can include activatable choices.
-    pub fn is_model_choice_request(text: &str) -> bool {
-        let mut tokens = text.split_whitespace();
-        let Some(cmd) = tokens.next() else {
-            return false;
-        };
-        let sub = tokens.next();
-        if tokens.next().is_some() {
-            return false;
-        }
-
-        match sub {
-            None => cmd.eq_ignore_ascii_case("!model"),
-            Some(sub) => {
-                cmd.eq_ignore_ascii_case("!model")
-                    && (sub.eq_ignore_ascii_case("list")
-                        || sub.eq_ignore_ascii_case("ls")
-                        || sub.eq_ignore_ascii_case("models"))
             }
         }
     }
@@ -525,32 +427,6 @@ impl CommandHandler {
                 )))
             }
         }
-    }
-
-    /// Build a channel-agnostic model choice response.
-    pub fn model_choice_message(&self, text: &str) -> Option<OutboundMessage> {
-        if !Self::is_model_choice_request(text) {
-            return None;
-        }
-
-        let choices = self.activatable_model_choices();
-        let reply = self.handle(text).unwrap_or_else(|| {
-            if choices.is_empty() {
-                "No activatable model choices are configured. Type `!model` for configured shortcuts."
-                    .to_string()
-            } else {
-                "Choose a model, or type `!model use <id>`:".to_string()
-            }
-        });
-
-        let options = choices
-            .into_iter()
-            .map(|(id, label)| ChoiceOption::model(label, id))
-            .collect::<Vec<_>>();
-        Some(
-            OutboundMessage::text(reply)
-                .with_control(ChoiceControl::new("Choose a model", options)),
-        )
     }
 
     /// Record that a message was routed to an agent.
@@ -690,26 +566,6 @@ impl CommandHandler {
             agent_id,
             prompt: rest.to_string(),
         })
-    }
-
-    /// Return the currently selected downstream session for an identity/agent.
-    pub fn active_session_for(&self, identity_id: &str, agent_id: &str) -> Option<String> {
-        let map = self.active_sessions.lock().unwrap();
-        map.get(identity_id)
-            .and_then(|sessions| sessions.get(agent_id))
-            .cloned()
-    }
-
-    fn set_active_session_for(&self, identity_id: &str, agent_id: &str, session: &str) {
-        let sessions_snapshot = {
-            let mut sessions = self.active_sessions.lock().unwrap();
-            sessions
-                .entry(identity_id.to_string())
-                .or_default()
-                .insert(agent_id.to_string(), session.to_string());
-            sessions.clone()
-        };
-        save_active_sessions_to(&self.state_dir, &sessions_snapshot);
     }
 
     /// Remember the latest discrete choice sent to an identity.
@@ -1040,219 +896,6 @@ impl CommandHandler {
         lines.join("\n\n")
     }
 
-    /// Handle a command that may require async work (approve/deny).
-    ///
-    /// Returns `Some((ack, Option<follow_up>))` if the text matches `!approve`
-    /// or `!deny`, `None` if it is not a recognized async command.
-    ///
-    /// Callers should send `ack` immediately, then send `follow_up` (if present)
-    /// once it arrives — it carries the continuation agent response after the
-    /// approval/denial has been relayed to ZeroClaw and polled for a result.
-    pub async fn handle_async(&self, text: &str) -> Option<(String, Option<String>)> {
-        if Self::is_approve_command(text) {
-            let (ack, follow_up) = self.handle_approve(text).await;
-            Some((ack, follow_up))
-        } else if Self::is_deny_command(text) {
-            let (ack, follow_up) = self.handle_deny(text).await;
-            Some((ack, follow_up))
-        } else {
-            None
-        }
-    }
-
-    /// Register a pending approval for later `!approve` / `!deny` handling.
-    ///
-    /// Called by the channel dispatcher when it receives an `ApprovalPending`
-    /// error from the router.
-    pub async fn register_pending_approval(
-        &self,
-        meta: crate::adapters::openclaw::PendingApprovalMeta,
-    ) {
-        self.pending_approvals
-            .lock()
-            .await
-            .insert(meta.request_id.clone(), meta);
-    }
-
-    /// Build the operator-facing approval request with reusable approve/deny choices.
-    pub fn approval_request_message(
-        command: &str,
-        reason: &str,
-        request_id: &str,
-    ) -> OutboundMessage {
-        let text = format!(
-            "Approval required\nCommand: {command}\nReason: {reason}\nRequest ID: {request_id}"
-        );
-        OutboundMessage::text(text).with_control(ChoiceControl::new(
-            "Choose an approval action",
-            vec![
-                ChoiceOption::approve(request_id),
-                ChoiceOption::deny(request_id),
-            ],
-        ))
-    }
-
-    /// Handle an `!approve [request_id]` command.
-    ///
-    /// If no `request_id` is provided and exactly one approval is pending,
-    /// auto-selects it.  Signals ZeroClaw to allow the blocked tool call, then
-    /// polls for the continuation result (up to 10 minutes).
-    ///
-    /// Returns `(reply_message, Option<final_agent_response>)`.
-    pub async fn handle_approve(&self, text: &str) -> (String, Option<String>) {
-        let args = text.trim().splitn(3, ' ').collect::<Vec<_>>();
-        // args[0] = "!approve", args[1] = optional request_id
-        let explicit_id = args.get(1).map(|s| s.trim()).filter(|s| !s.is_empty());
-
-        let meta = self.resolve_pending_approval(explicit_id).await;
-        let meta = match meta {
-            Ok(m) => m,
-            Err(msg) => return (msg, None),
-        };
-
-        // Signal ZeroClaw to approve.
-        match ZeroClawHttpAdapter::send_approval_decision(
-            &self.http_client,
-            &meta.zeroclaw_endpoint,
-            &meta.zeroclaw_auth_token,
-            &meta.request_id,
-            true,
-            None,
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(e) => {
-                return (format!("⚠️ Failed to send approval: {e}"), None);
-            }
-        }
-
-        // Remove from local pending store.
-        self.pending_approvals.lock().await.remove(&meta.request_id);
-
-        // Poll for the continuation result.
-        let result = ZeroClawHttpAdapter::poll_result(
-            &self.http_client,
-            &meta.zeroclaw_endpoint,
-            &meta.zeroclaw_auth_token,
-            &meta.request_id,
-        )
-        .await;
-
-        match result {
-            Ok(response) => (
-                format!("✅ Approved (request {})", meta.request_id),
-                Some(response),
-            ),
-            Err(e) => (
-                format!("✅ Approved — but failed to retrieve result: {e}"),
-                None,
-            ),
-        }
-    }
-
-    /// Handle a `!deny [request_id] [reason]` command.
-    ///
-    /// If no `request_id` is provided and exactly one approval is pending,
-    /// auto-selects it.  Signals ZeroClaw to deny the blocked tool call, then
-    /// polls for the continuation result.
-    pub async fn handle_deny(&self, text: &str) -> (String, Option<String>) {
-        let trimmed = text.trim();
-        // Parse: "!deny [request_id] [reason...]"
-        let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
-        let (explicit_id, reason) = match parts.len() {
-            1 => (None, None),
-            2 => (Some(parts[1].trim()), None),
-            _ => {
-                // Try to distinguish: if parts[1] looks like a UUID, treat as id+reason.
-                // Otherwise treat the whole tail as a reason with no explicit id.
-                let candidate = parts[1].trim();
-                if candidate.len() == 36 && candidate.contains('-') {
-                    (Some(candidate), Some(parts[2].trim()))
-                } else {
-                    (None, Some(&trimmed[6..])) // skip "!deny "
-                }
-            }
-        };
-
-        let meta = self.resolve_pending_approval(explicit_id).await;
-        let meta = match meta {
-            Ok(m) => m,
-            Err(msg) => return (msg, None),
-        };
-
-        // Signal ZeroClaw to deny.
-        match ZeroClawHttpAdapter::send_approval_decision(
-            &self.http_client,
-            &meta.zeroclaw_endpoint,
-            &meta.zeroclaw_auth_token,
-            &meta.request_id,
-            false,
-            reason,
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(e) => {
-                return (format!("⚠️ Failed to send denial: {e}"), None);
-            }
-        }
-
-        // Remove from local pending store.
-        self.pending_approvals.lock().await.remove(&meta.request_id);
-
-        // Poll for the continuation result.
-        let result = ZeroClawHttpAdapter::poll_result(
-            &self.http_client,
-            &meta.zeroclaw_endpoint,
-            &meta.zeroclaw_auth_token,
-            &meta.request_id,
-        )
-        .await;
-
-        match result {
-            Ok(response) => (
-                format!("🚫 Denied (request {})", meta.request_id),
-                Some(response),
-            ),
-            Err(e) => (
-                format!("🚫 Denied — but failed to retrieve result: {e}"),
-                None,
-            ),
-        }
-    }
-
-    /// Resolve the pending approval to act on.
-    ///
-    /// If `explicit_id` is `Some`, looks up by that ID.
-    /// If `None`, auto-selects the single pending approval (or errors if 0 or >1).
-    async fn resolve_pending_approval(
-        &self,
-        explicit_id: Option<&str>,
-    ) -> Result<crate::adapters::openclaw::PendingApprovalMeta, String> {
-        let store = self.pending_approvals.lock().await;
-        if let Some(id) = explicit_id {
-            match store.get(id) {
-                Some(meta) => Ok(meta.clone()),
-                None => Err(format!(
-                    "⚠️ No pending approval with ID '{id}'.\n\nUse !approve or !deny without an ID to list pending approvals."
-                )),
-            }
-        } else {
-            match store.len() {
-                0 => Err("⚠️ No pending approvals.".to_string()),
-                1 => Ok(store.values().next().unwrap().clone()),
-                n => {
-                    let ids: Vec<&str> = store.keys().map(|s| s.as_str()).collect();
-                    Err(format!(
-                        "⚠️ {n} pending approvals. Specify a request ID:\n{}",
-                        ids.join("\n")
-                    ))
-                }
-            }
-        }
-    }
-
     /// Return a status string for the given authenticated identity.
     ///
     /// Uses [`active_agent_for`] to show the per-identity active agent rather
@@ -1347,417 +990,6 @@ impl CommandHandler {
         format!(
             "Calciforge status:\n  version: {version}\n  uptime: {hours}h {minutes}m {seconds}s\n  active agent: {active_agent}{active_model_info}{runtime_info}\n  agents: {agents_display}\n  identities: {identity_count}, channels: {channel_count}"
         )
-    }
-
-    /// Handle a `!switch <agent> [session]` command for an authenticated identity.
-    ///
-    /// Validates the requested agent against the identity's `allowed_agents`,
-    /// updates the active-agent map, and returns a confirmation message.
-    /// For session-capable agents, an optional session name can be specified.
-    ///
-    /// Returns an error string (to be sent back to the user) on any validation
-    /// failure — never panics.
-    pub fn handle_switch(&self, text: &str, identity_id: &str) -> String {
-        let trimmed = text.trim();
-        // Parse arguments after "!switch" or noun-style "!agent switch".
-        let mut parts = trimmed.split_whitespace();
-        let is_agent_cmd = parts
-            .next()
-            .is_some_and(|cmd| cmd.eq_ignore_ascii_case("!agent"));
-        let mut args: Vec<&str> = parts.collect();
-        if is_agent_cmd
-            && args.first().is_some_and(|arg| {
-                arg.eq_ignore_ascii_case("switch") || arg.eq_ignore_ascii_case("use")
-            })
-        {
-            args.remove(0);
-        }
-
-        if args.is_empty() {
-            return "Usage: !switch <agent> [session]\nAlias: !agent switch <agent> [session]\n\nUse !agent list to see available agents.\nUse !session list <agent> to list available sessions when an adapter can expose them.".to_string();
-        }
-
-        let agent_arg = args[0].to_string();
-        let session_arg = (args.len() > 1).then(|| args[1..].join(" "));
-
-        // Look up the routing rule for this identity.
-        let routing_rule = match self
-            .config
-            .routing
-            .iter()
-            .find(|r| r.identity == identity_id)
-        {
-            Some(r) => r,
-            None => {
-                return "⚠️ No routing rule found for your identity.".to_string();
-            }
-        };
-
-        // Determine which agents this identity is allowed to switch to.
-        // Empty allowed_agents means unrestricted (any configured agent).
-        let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
-            self.config.agents.iter().map(|a| a.id.as_str()).collect()
-        } else {
-            routing_rule
-                .allowed_agents
-                .iter()
-                .map(|s| s.as_str())
-                .collect()
-        };
-
-        // Case-insensitive match of the requested agent against allowed list,
-        // checking both agent id and any configured aliases.
-        let matched_agent = allowed
-            .iter()
-            .find(|&&a| {
-                // Direct id match
-                if a.eq_ignore_ascii_case(&agent_arg) {
-                    return true;
-                }
-                // Alias match — look up the agent and check its aliases
-                if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
-                    return agent_cfg
-                        .aliases
-                        .iter()
-                        .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
-                }
-                false
-            })
-            .copied();
-
-        match matched_agent {
-            None => {
-                // Build a helpful rejection message listing valid options.
-                let valid = allowed.join(", ");
-                format!(
-                    "⚠️ Agent '{}' is not available to you.\n\nValid agents: {}",
-                    agent_arg, valid
-                )
-            }
-            Some(agent_id) => {
-                // Look up display name from registry metadata (if any).
-                let agent_cfg = self.config.agents.iter().find(|a| a.id == agent_id);
-                let display_name = agent_cfg
-                    .and_then(|a| a.registry.as_ref())
-                    .and_then(|r| r.display_name.as_deref())
-                    .unwrap_or(agent_id);
-
-                let session_capability = agent_cfg
-                    .map(agent_session_capability)
-                    .unwrap_or(AgentSessionCapability::None);
-                if session_capability != AgentSessionCapability::None
-                    && let Some(session) = session_arg.as_deref()
-                    && !valid_downstream_session_name(session)
-                {
-                    return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash.".to_string();
-                }
-                if session_capability != AgentSessionCapability::None
-                    && let Some(error) = agent_cfg.and_then(session_runtime_readiness_error)
-                {
-                    return format!("⚠️ Cannot switch to '{}': {}", agent_id, error);
-                }
-                let session_info = if session_capability != AgentSessionCapability::None {
-                    if let Some(session) = session_arg.as_ref() {
-                        format!(" (session: {})", session)
-                    } else {
-                        " (default session)".to_string()
-                    }
-                } else if session_arg.is_some() {
-                    " (note: session parameter ignored for agents without Calciforge session support)".to_string()
-                } else {
-                    String::new()
-                };
-
-                // Update per-identity active agent and persist to disk.
-                let active_agents_snapshot = {
-                    let mut map = self.active_agents.lock().unwrap();
-                    map.insert(identity_id.to_string(), agent_id.to_string());
-                    map.clone()
-                };
-                save_active_agents_to(&self.state_dir, &active_agents_snapshot);
-
-                let active_sessions_snapshot = {
-                    let mut sessions = self.active_sessions.lock().unwrap();
-                    if let Some(session) = session_arg
-                        .as_ref()
-                        .filter(|_| session_capability != AgentSessionCapability::None)
-                    {
-                        sessions
-                            .entry(identity_id.to_string())
-                            .or_default()
-                            .insert(agent_id.to_string(), session.to_string());
-                    } else if session_capability != AgentSessionCapability::None {
-                        let mut remove_identity = false;
-                        if let Some(identity_sessions) = sessions.get_mut(identity_id) {
-                            identity_sessions.remove(agent_id);
-                            remove_identity = identity_sessions.is_empty();
-                        }
-                        if remove_identity {
-                            sessions.remove(identity_id);
-                        }
-                    }
-                    sessions.clone()
-                };
-                save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
-
-                format!(
-                    "✅ Switched to {}{}. Your messages will now route to {}.\n{}",
-                    display_name,
-                    session_info,
-                    agent_id,
-                    self.agent_switch_context_notice()
-                )
-            }
-        }
-    }
-
-    fn agent_switch_context_notice(&self) -> String {
-        if self.config.context.inject_depth == 0 {
-            "Context: isolated; no prior thread context will be shared.".to_string()
-        } else {
-            format!(
-                "Context: recent thread context is shared with switched agents (up to {} exchanges).",
-                self.config.context.inject_depth
-            )
-        }
-    }
-
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "kept as a text-only wrapper for callers/tests")
-    )]
-    pub async fn handle_sessions(&self, text: &str, identity_id: &str) -> String {
-        self.handle_sessions_message(text, identity_id)
-            .await
-            .render_text_fallback()
-    }
-
-    /// Start or attach a new named downstream session for the current agent.
-    pub fn handle_new_session(&self, text: &str, identity_id: &str) -> String {
-        let args: Vec<&str> = text.split_whitespace().skip(1).collect();
-        if args.len() > 1 {
-            return "Usage: !new [session]\n\nCreates or selects a new named session for your active agent.".to_string();
-        }
-
-        let Some(agent_id) = self.active_agent_for(identity_id) else {
-            return "⚠️ No active agent is configured for your identity.".to_string();
-        };
-        let Some(agent_cfg) = self.config.agents.iter().find(|agent| agent.id == agent_id) else {
-            return format!(
-                "⚠️ Active agent '{}' is not present in configuration.",
-                agent_id
-            );
-        };
-        if agent_session_capability(agent_cfg) == AgentSessionCapability::None {
-            return format!(
-                "ℹ️ Active agent '{}' ({}) does not expose downstream sessions through Calciforge.",
-                agent_cfg.id, agent_cfg.kind
-            );
-        }
-        if let Some(error) = session_runtime_readiness_error(agent_cfg) {
-            return format!(
-                "⚠️ Cannot start a session for '{}': {}",
-                agent_cfg.id, error
-            );
-        }
-
-        let session = args
-            .first()
-            .map(|s| (*s).to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        if !valid_downstream_session_name(&session) {
-            return "⚠️ Invalid session name. Use only letters, numbers, dot, underscore, and dash."
-                .to_string();
-        }
-
-        self.set_active_session_for(identity_id, &agent_id, &session);
-        format!(
-            "✅ Started session '{}' for {}.\n\nUse !switch {} {} to return to it later.",
-            session, agent_id, agent_id, session
-        )
-    }
-
-    /// Handle a `!sessions` command for an authenticated identity.
-    ///
-    /// Lists downstream sessions for the specified agent when the adapter supports it.
-    /// Returns a channel-agnostic message with selectable session choices when
-    /// the ACPX backend reports active sessions.
-    pub async fn handle_sessions_message(&self, text: &str, identity_id: &str) -> OutboundMessage {
-        let trimmed = text.trim();
-        // Parse the agent argument after "!sessions", "!session", or
-        // noun-style "!session list".
-        let mut args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
-        if args
-            .first()
-            .is_some_and(|arg| arg.eq_ignore_ascii_case("list") || arg.eq_ignore_ascii_case("show"))
-        {
-            args.remove(0);
-        }
-        let agent_arg = args.first().copied().unwrap_or("").to_string();
-
-        if agent_arg.is_empty() {
-            return OutboundMessage::text(
-                "Usage: !sessions <agent>\nAlias: !session list <agent>\n\nLists available downstream sessions when the adapter can expose them.\nUse !agent list to see available agents.",
-            );
-        }
-
-        // Look up the routing rule for this identity.
-        let routing_rule = match self
-            .config
-            .routing
-            .iter()
-            .find(|r| r.identity == identity_id)
-        {
-            Some(r) => r,
-            None => {
-                return OutboundMessage::text("⚠️ No routing rule found for your identity.");
-            }
-        };
-
-        // Determine which agents this identity is allowed to use.
-        let allowed: Vec<&str> = if routing_rule.allowed_agents.is_empty() {
-            self.config.agents.iter().map(|a| a.id.as_str()).collect()
-        } else {
-            routing_rule
-                .allowed_agents
-                .iter()
-                .map(|s| s.as_str())
-                .collect()
-        };
-
-        // Find the matched agent (case-insensitive, checking aliases).
-        let matched_agent = allowed
-            .iter()
-            .find(|&&a| {
-                if a.eq_ignore_ascii_case(&agent_arg) {
-                    return true;
-                }
-                if let Some(agent_cfg) = self.config.agents.iter().find(|ag| ag.id == a) {
-                    return agent_cfg
-                        .aliases
-                        .iter()
-                        .any(|alias| alias.eq_ignore_ascii_case(&agent_arg));
-                }
-                false
-            })
-            .copied();
-
-        let agent_id = match matched_agent {
-            None => {
-                let valid = allowed.join(", ");
-                return OutboundMessage::text(format!(
-                    "⚠️ Agent '{}' is not available to you.\n\nValid agents: {}",
-                    agent_arg, valid
-                ));
-            }
-            Some(id) => id,
-        };
-
-        // Get agent config to check session capability.
-        let agent_cfg = match self.config.agents.iter().find(|a| a.id == agent_id) {
-            Some(cfg) => cfg,
-            None => {
-                return OutboundMessage::text(format!(
-                    "⚠️ Agent '{}' not found in configuration.",
-                    agent_id
-                ));
-            }
-        };
-
-        match agent_session_capability(agent_cfg) {
-            AgentSessionCapability::None => OutboundMessage::text(format!(
-                "ℹ️ Agent '{}' ({}) does not expose downstream sessions through Calciforge.",
-                agent_id, agent_cfg.kind
-            )),
-            AgentSessionCapability::Named => OutboundMessage::text(format!(
-                "ℹ️ Agent '{}' ({}) supports named sessions, but Calciforge cannot list them from the agent yet.\n\nUse !switch {} <session> to attach by name, or !new to create a new Calciforge-managed session for your current agent.",
-                agent_id, agent_cfg.kind, agent_id
-            )),
-            AgentSessionCapability::Listable => {
-                let agent_name = agent_cfg.command.as_deref().unwrap_or(agent_id);
-                match self.list_acpx_sessions(agent_name, agent_cfg).await {
-                    Ok(sessions) if sessions.is_empty() => OutboundMessage::text(format!(
-                        "ℹ️ No active sessions for '{}'.\n\nUse !new while '{}' is active to create a new session.",
-                        agent_id, agent_id
-                    )),
-                    Ok(sessions) => active_sessions_message(agent_id, sessions),
-                    Err(e) => OutboundMessage::text(format!(
-                        "⚠️ Failed to list sessions for '{}': {}\n\nMake sure the session backend is installed and the agent is properly configured.",
-                        agent_id, e
-                    )),
-                }
-            }
-        }
-    }
-
-    /// List ACPX sessions for an agent using the acpx CLI.
-    async fn list_acpx_sessions(
-        &self,
-        agent_name: &str,
-        agent_cfg: &crate::config::AgentConfig,
-    ) -> Result<Vec<String>, String> {
-        tokio::fs::create_dir_all(crate::adapters::acpx::ACPX_SESSION_DIR)
-            .await
-            .map_err(|e| format!("Failed to create acpx session dir: {}", e))?;
-
-        let acpx_binary = acpx_binary_for_agent(agent_cfg)?;
-        let mut command = tokio::process::Command::new(acpx_binary);
-        command
-            .arg(agent_name)
-            .arg("sessions")
-            .arg("list")
-            .current_dir(crate::adapters::acpx::ACPX_SESSION_DIR);
-        if let Some(env) = agent_cfg.env.as_ref() {
-            command.envs(env);
-        }
-        let output = command
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run acpx: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("acpx error: {}", stderr));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let sessions: Vec<String> = stdout
-            .lines()
-            .filter(|l| !l.is_empty() && !l.starts_with("No sessions"))
-            .map(|s| s.to_string())
-            .collect();
-
-        Ok(sessions)
-    }
-
-    /// Handle a `!default` command for an authenticated identity.
-    ///
-    /// Looks up the identity's configured `default_agent` from the routing table
-    /// and switches the in-memory active agent back to it.
-    ///
-    /// Returns a confirmation message or an error string if no routing rule exists.
-    pub fn handle_default(&self, identity_id: &str) -> String {
-        let default_agent_id = match crate::auth::default_agent_for(identity_id, &self.config) {
-            Some(id) => id,
-            None => return "⚠️ No routing rule found for your identity.".to_string(),
-        };
-
-        // Update per-identity active agent back to the configured default and persist.
-        let active_agents_snapshot = {
-            let mut map = self.active_agents.lock().unwrap();
-            map.insert(identity_id.to_string(), default_agent_id.clone());
-            map.clone()
-        };
-        save_active_agents_to(&self.state_dir, &active_agents_snapshot);
-
-        let active_sessions_snapshot = {
-            let mut sessions = self.active_sessions.lock().unwrap();
-            sessions.remove(identity_id);
-            sessions.clone()
-        };
-        save_active_sessions_to(&self.state_dir, &active_sessions_snapshot);
-
-        format!("✅ Switched to default agent: {}", default_agent_id)
     }
 
     /// Handle `!secret <subcommand>` / `!secure <subcommand>`. Secret values never transit an
@@ -1865,325 +1097,6 @@ impl CommandHandler {
         ];
         lines.join("\n")
     }
-    /// Identity-independent handling for !model — lists shortcuts/alloys.
-    /// Returns None if an alloy is being selected (requires post-auth handling).
-    fn cmd_model_preauth(&self, text: &str) -> Option<String> {
-        let mut args: Vec<&str> = text.split_whitespace().skip(1).collect();
-
-        let list_requested = args.is_empty()
-            || args.first().is_some_and(|arg| {
-                arg.eq_ignore_ascii_case("list")
-                    || arg.eq_ignore_ascii_case("ls")
-                    || arg.eq_ignore_ascii_case("show")
-            });
-
-        if list_requested {
-            // No argument — list all shortcuts and alloys
-            let mut lines = vec![];
-            let effective_shortcuts = self.config.effective_model_shortcuts();
-
-            // Model selector aliases include explicit shortcuts plus model roles.
-            if !effective_shortcuts.is_empty() {
-                lines.push("Model selector aliases:".to_string());
-                for shortcut in &effective_shortcuts {
-                    lines.push(format!("  {} → {}", shortcut.alias, shortcut.model));
-                }
-            }
-
-            // Synthetic models section
-            if let Some(ref manager) = self.alloy_manager
-                && !manager.is_empty()
-            {
-                if !lines.is_empty() {
-                    lines.push(String::new());
-                }
-                lines.push("Configured alloys:".to_string());
-                for alloy in manager.list() {
-                    let constituents: Vec<String> = alloy
-                        .constituents
-                        .iter()
-                        .map(|c| format!("{} (weight {})", c.model, c.weight))
-                        .collect();
-                    lines.push(format!(
-                        "  {} — {} ({:?}): {}",
-                        alloy.id,
-                        alloy.name,
-                        alloy.strategy,
-                        constituents.join(", ")
-                    ));
-                }
-                let cascades = manager.list_cascades();
-                if !cascades.is_empty() {
-                    lines.push(String::new());
-                    lines.push("Configured cascades:".to_string());
-                    for cascade in cascades {
-                        let models: Vec<String> = cascade
-                            .models
-                            .iter()
-                            .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
-                            .collect();
-                        lines.push(format!(
-                            "  {} — {}: {}",
-                            cascade.id,
-                            cascade.name,
-                            models.join(" → ")
-                        ));
-                    }
-                }
-                let dispatchers = manager.list_dispatchers();
-                if !dispatchers.is_empty() {
-                    lines.push(String::new());
-                    lines.push("Configured dispatchers:".to_string());
-                    for dispatcher in dispatchers {
-                        let models: Vec<String> = dispatcher
-                            .models
-                            .iter()
-                            .map(|m| format!("{} ({} tokens)", m.model, m.context_window))
-                            .collect();
-                        lines.push(format!(
-                            "  {} — {}: {}",
-                            dispatcher.id,
-                            dispatcher.name,
-                            models.join(", ")
-                        ));
-                    }
-                }
-            }
-
-            if lines.is_empty() {
-                return Some("No model shortcuts or gateway model selectors configured.\n\nAdd shortcuts to your config:\n[[model_shortcuts]]\nalias = \"sonnet\"\nmodel = \"anthropic/claude-sonnet-4.6\"".to_string());
-            }
-
-            lines.push("\nUsage:".to_string());
-            lines.push("  !model list — show this list".to_string());
-            lines.push("  !model <alias> — activate the shortcut target".to_string());
-            if self.alloy_manager.is_some() {
-                lines.push(
-                    "  !model use <id> — activate an alloy/cascade/dispatcher for your identity"
-                        .to_string(),
-                );
-            }
-            Some(lines.join("\n"))
-        } else {
-            // Argument provided — defer to post-auth handling for activatable
-            // shortcuts, synthetic routing selectors, local models, and provider models.
-            if args.first().is_some_and(|arg| {
-                arg.eq_ignore_ascii_case("use")
-                    || arg.eq_ignore_ascii_case("switch")
-                    || arg.eq_ignore_ascii_case("set")
-            }) {
-                args.remove(0);
-            }
-
-            // Return None to trigger post-auth handling for activatable model
-            // selections. Provider-backed and local model choices do not
-            // require an alloy manager.
-            None
-        }
-    }
-
-    /// Handle a `!model <id>` command for an authenticated identity.
-    ///
-    /// Dispatch order:
-    /// 1. If the ID matches a gateway model selector → activate it.
-    /// 2. If the ID matches a local model in `[local_models]` → trigger a switch
-    ///    (async background task, returns immediately with status message).
-    /// 3. If the ID matches a `[[proxy.providers]]` concrete model → activate it.
-    ///    Provider `on_switch` hooks run synchronously at gateway request time.
-    /// 4. Otherwise → show an error with available options.
-    pub fn handle_model(&self, text: &str, identity_id: &str) -> String {
-        let trimmed = text.trim();
-        let mut args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
-        if args.first().is_some_and(|arg| {
-            arg.eq_ignore_ascii_case("use")
-                || arg.eq_ignore_ascii_case("switch")
-                || arg.eq_ignore_ascii_case("set")
-        }) {
-            args.remove(0);
-        }
-
-        if args.is_empty() {
-            return "Usage: !model use <id>\nAlias: !model <id>\n\nUse !model list to see available models.".to_string();
-        }
-
-        let requested_model_id = args[0];
-        let effective_shortcuts = self.config.effective_model_shortcuts();
-        let resolved_model_id = match crate::model_names::resolve_model_alias_chain(
-            &effective_shortcuts,
-            requested_model_id,
-        ) {
-            Ok(model_id) => model_id,
-            Err(e) => return format!("⚠️ {e}"),
-        };
-        let model_id = resolved_model_id.as_str();
-        let shortcut_note = if model_id == requested_model_id {
-            None
-        } else {
-            Some(format!(" via alias '{requested_model_id}' → '{model_id}'"))
-        };
-
-        let Some(active_agent_id) = self.active_agent_for(identity_id) else {
-            return "⚠️ No active agent is configured for your identity, so Calciforge cannot apply a model override.".to_string();
-        };
-        let Some(active_agent) = self
-            .config
-            .agents
-            .iter()
-            .find(|agent| agent.id == active_agent_id)
-        else {
-            return format!(
-                "⚠️ Active agent '{}' is not present in configuration.",
-                active_agent_id
-            );
-        };
-        if !agent_supports_model_override(active_agent) {
-            return format!(
-                "⚠️ Active agent '{}' ({}) does not consume Calciforge model overrides.\n\nUse an agent explicitly configured with allow_model_override = true, or configure this agent's native model setting instead. Only enable that flag for agents wired to Calciforge's model gateway or known to accept these model IDs.",
-                active_agent.id, active_agent.kind
-            );
-        }
-
-        // 1. Synthetic model selector switch.
-        if let Some(ref manager) = self.alloy_manager
-            && manager.is_synthetic_model(model_id)
-        {
-            if let Err(e) = manager.set_active_for_identity(identity_id, model_id) {
-                return format!("⚠️ Failed to activate model: {}", e);
-            }
-            self.set_active_model_for_identity(identity_id, model_id);
-            if let Some(alloy) = manager.get(model_id) {
-                let constituents: Vec<String> = alloy
-                    .definition()
-                    .constituents
-                    .iter()
-                    .map(|c| format!("{} (weight {})", c.model, c.weight))
-                    .collect();
-                return format!(
-                    "✅ Activated alloy '{}'{} for your identity.\n\nConstituents ({:?} strategy): {}",
-                    model_id,
-                    shortcut_note.as_deref().unwrap_or(""),
-                    alloy.definition().strategy,
-                    constituents.join(", ")
-                );
-            }
-            let kind = if manager
-                .list_cascades()
-                .iter()
-                .any(|cascade| cascade.id == model_id)
-            {
-                "cascade"
-            } else if manager
-                .list_dispatchers()
-                .iter()
-                .any(|dispatcher| dispatcher.id == model_id)
-            {
-                "dispatcher"
-            } else {
-                "synthetic model selector"
-            };
-            return format!(
-                "✅ Activated {kind} '{}'{} for your identity.",
-                model_id,
-                shortcut_note.as_deref().unwrap_or("")
-            );
-        }
-
-        // 2. Local model switch.
-        if let Some(ref lm_mgr) = self.local_manager
-            && let Some(model_def) = lm_mgr.find_model(model_id)
-        {
-            let hf_id = model_def.hf_id.clone();
-            let id = model_id.to_string();
-            let mgr = crate::sync::Arc::clone(lm_mgr);
-            self.set_active_model_for_identity(identity_id, model_id);
-            // Run the blocking switch in a background task — may take 1-2 minutes.
-            tokio::spawn(async move {
-                let result = tokio::task::spawn_blocking(move || mgr.switch(&id)).await;
-                match result {
-                    Ok(Ok(loaded)) => {
-                        tracing::info!(model = %loaded.id, "!model local switch complete");
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "!model local switch failed");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "!model local switch panic");
-                    }
-                }
-            });
-            return format!(
-                "🔄 Switching to local model '{}'{} (HF: {}).\n\
-                    This may take 1-2 minutes while the model loads.\n\
-                    The gateway will continue serving requests during the transition.",
-                model_id,
-                shortcut_note.as_deref().unwrap_or(""),
-                hf_id
-            );
-        }
-
-        // 3. Provider-backed concrete model.
-        if let Some(ref proxy_cfg) = self.config.proxy {
-            for provider in &proxy_cfg.providers {
-                let model_matches = provider
-                    .models
-                    .iter()
-                    .any(|p| crate::proxy::routing::model_matches_pattern(model_id, p));
-                if model_matches {
-                    self.set_active_model_for_identity(identity_id, model_id);
-                    if let Some(ref hook_script) = provider.on_switch
-                        && !hook_script.is_empty()
-                    {
-                        return format!(
-                            "✅ Activated model '{}'{} for your identity (provider: {}). Its on_switch hook will run before the next gateway request that uses this provider.",
-                            model_id,
-                            shortcut_note.as_deref().unwrap_or(""),
-                            provider.id
-                        );
-                    }
-                    return format!(
-                        "✅ Activated model '{}'{} for your identity (provider: {}).",
-                        model_id,
-                        shortcut_note.as_deref().unwrap_or(""),
-                        provider.id
-                    );
-                }
-            }
-        }
-
-        // 4. Unknown model — show what's available.
-        let mut available = vec![];
-        for shortcut in &effective_shortcuts {
-            available.push(format!("  {} → {} (alias)", shortcut.alias, shortcut.model));
-        }
-        if let Some(ref mgr) = self.alloy_manager {
-            for a in mgr.list() {
-                available.push(format!("  {} (alloy)", a.id));
-            }
-            for c in mgr.list_cascades() {
-                available.push(format!("  {} (cascade)", c.id));
-            }
-            for d in mgr.list_dispatchers() {
-                available.push(format!("  {} (dispatcher)", d.id));
-            }
-        }
-        if let Some(ref lm) = self.local_manager {
-            for m in lm.models() {
-                available.push(format!("  {} (local/{})", m.id, m.provider_type));
-            }
-        }
-        if available.is_empty() {
-            return format!(
-                "⚠️ Unknown model: '{}'\n\nNo models configured.",
-                requested_model_id
-            );
-        }
-        format!(
-            "⚠️ Unknown model: '{}'\n\nAvailable:\n{}",
-            requested_model_id,
-            available.join("\n")
-        )
-    }
-
     fn cmd_agents_summary(&self) -> String {
         if self.config.agents.is_empty() {
             return "No agents configured.".to_string();
@@ -2262,6 +1175,7 @@ mod tests {
         ModelRoleConfig, ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
+    use mockito::Matcher;
 
     fn make_handler() -> CommandHandler {
         let config = Arc::new(make_config());
@@ -2302,6 +1216,18 @@ mod tests {
             let mut permissions = std::fs::metadata(&path).unwrap().permissions();
             permissions.set_mode(0o755);
             std::fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    fn pending_approval(
+        request_id: &str,
+        endpoint: String,
+    ) -> crate::adapters::openclaw::PendingApprovalMeta {
+        crate::adapters::openclaw::PendingApprovalMeta {
+            request_id: request_id.to_string(),
+            zeroclaw_endpoint: endpoint,
+            zeroclaw_auth_token: "approval-token".to_string(),
+            _summary: "test approval".to_string(),
         }
     }
 
@@ -2852,6 +1778,68 @@ mod tests {
                     && option.callback_data.as_deref() == Some("cf:deny:req-1")),
             "approval choice must expose deny callback: {approval:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn approve_parses_request_id_with_repeated_whitespace() {
+        let mut server = mockito::Server::new_async().await;
+        let approval = server
+            .mock("POST", "/webhook/approve")
+            .match_header("authorization", "Bearer approval-token")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "request_id": "req-1",
+                "approved": true
+            })))
+            .with_status(503)
+            .with_body("stop before polling")
+            .create_async()
+            .await;
+
+        let h = make_handler();
+        h.register_pending_approval(pending_approval("req-1", server.url()))
+            .await;
+        h.register_pending_approval(pending_approval("req-2", "http://127.0.0.1:9".to_string()))
+            .await;
+
+        let (reply, follow_up) = h.handle_approve("!approve   req-1").await;
+
+        approval.assert_async().await;
+        assert!(follow_up.is_none());
+        assert!(
+            reply.contains("Failed to send approval"),
+            "explicit request id should be honored despite repeated spaces: {reply}"
+        );
+        assert!(
+            !reply.contains("pending approvals"),
+            "repeated spaces must not drop the explicit request id: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deny_accepts_non_uuid_request_id_with_reason() {
+        let mut server = mockito::Server::new_async().await;
+        let approval = server
+            .mock("POST", "/webhook/approve")
+            .match_header("authorization", "Bearer approval-token")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "request_id": "req-1",
+                "approved": false,
+                "reason": "not today"
+            })))
+            .with_status(503)
+            .with_body("stop before polling")
+            .create_async()
+            .await;
+
+        let h = make_handler();
+        h.register_pending_approval(pending_approval("req-1", server.url()))
+            .await;
+
+        let (reply, follow_up) = h.handle_deny("!deny req-1 not today").await;
+
+        approval.assert_async().await;
+        assert!(follow_up.is_none());
+        assert!(reply.contains("Failed to send denial"), "{reply}");
     }
 
     #[test]
