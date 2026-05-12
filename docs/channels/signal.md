@@ -130,15 +130,23 @@ silently dropped at the auth boundary.
 
 ## Step 3: Run signal-cli-rest-api
 
-The standard deployment is the upstream Docker image:
+The standard deployment is the upstream Docker image. Bind the published
+port to loopback so the unauthenticated Signal session API is reachable only
+from the host running Calciforge:
 
 ```bash
 docker run -d --name signal-api \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v signal-cli-config:/home/.local/share/signal-cli \
   -e MODE=json-rpc \
   bbernhard/signal-cli-rest-api
 ```
+
+Do not publish `signal-cli-rest-api` on a routable interface unless you put it
+behind a trusted reverse proxy, firewall, or authentication layer. Calciforge's
+`allowed_numbers`, identity routing, and message-scanning controls apply after
+Calciforge receives events; they do not protect clients that can talk directly
+to the Signal backend.
 
 `MODE=json-rpc` is required — Calciforge talks JSON-RPC + SSE, not the
 older REST endpoints.
