@@ -477,16 +477,13 @@ impl SecurityProxy {
         }
         let original_headers = substituted_headers;
 
-        // Find the content-type for body-substitution routing. Default
-        // to None; body_substitution_mode() treats that as RawScan
-        // (fail-closed if refs present).
+        // Missing content-type is treated as RawScan.
         let content_type = original_headers
             .iter()
             .find(|(k, _)| k.to_lowercase() == "content-type")
             .map(|(_, v)| v.as_str());
         let body_mode = Self::body_substitution_mode(content_type);
 
-        // Read request body
         let body_bytes = match req.into_body().collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
@@ -1323,6 +1320,9 @@ fn sanitize_header_value(s: &str) -> String {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod secret_policy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use wiremock::matchers::{header as wm_header, method, path};
@@ -1390,41 +1390,6 @@ mod tests {
         assert!(
             !err.contains("not found in env or fnox"),
             "secret resolver must not run for denied destinations: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn unknown_identity_policy_denies_before_secret_resolver() {
-        let proxy = test_proxy(GatewayConfig {
-            secret_access: secrets_client::SecretAccessPolicy {
-                rules: vec![secrets_client::SecretAccessRule {
-                    agents: vec!["agent-a".to_string()],
-                    secrets: vec!["ALLOWED_*".to_string()],
-                    ..Default::default()
-                }],
-            },
-            ..Default::default()
-        })
-        .await;
-        let metadata = metadata_store("DENIED_KEY", &["api.example.com"]);
-
-        let err = proxy
-            .resolve_and_substitute(
-                "https://api.example.com/?key={{secret:DENIED_KEY}}",
-                Some("api.example.com"),
-                Some(&metadata),
-                &secrets_client::SecretAccessIdentity::default(),
-            )
-            .await
-            .expect_err("configured identity policy should fail closed without identity");
-
-        assert!(
-            err.contains("not allowed for current Calciforge identity"),
-            "unknown identity denial should happen before resolver lookup; got {err}"
-        );
-        assert!(
-            !err.contains("not found in env or fnox"),
-            "secret resolver must not run when identity is unknown under configured policy: {err}"
         );
     }
 
