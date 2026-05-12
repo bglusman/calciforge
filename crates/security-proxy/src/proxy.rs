@@ -496,14 +496,14 @@ impl SecurityProxy {
             }
         };
 
-        let mut remote_scan_body: Option<String> = None;
+        let mut remote_scan_body_before_policy: Option<String> = None;
         let body_bytes: bytes::Bytes = if body_bytes.is_empty() {
             body_bytes
         } else {
             match body_mode {
                 BodyMode::FullSubstitute => {
                     let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
-                    remote_scan_body = Some(body_str.clone());
+                    remote_scan_body_before_policy = Some(body_str.clone());
                     if body_str.contains("{{secret:")
                         && let Some(host) = dest_host.as_deref()
                         && secret_metadata.is_none()
@@ -607,11 +607,8 @@ impl SecurityProxy {
             body_bytes
         };
 
-        if is_llm_api
-            && is_json
-            && let Some(remote_body) = remote_scan_body.take()
-        {
-            remote_scan_body = match agent_web::inspect_browsing_body(
+        let remote_scan_body = match (is_llm_api && is_json, remote_scan_body_before_policy) {
+            (true, Some(remote_body)) => match agent_web::inspect_browsing_body(
                 remote_body.as_bytes(),
                 &policy,
                 dest_for_policy,
@@ -628,8 +625,9 @@ impl SecurityProxy {
                         "none",
                     ));
                 }
-            };
-        }
+            },
+            (_, remote_body) => remote_body,
+        };
 
         if is_llm_api
             && is_json
