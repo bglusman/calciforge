@@ -229,8 +229,8 @@ Operational guidance:
 Dirac is attractive for Calciforge because its CLI is scriptable:
 
 ```sh
-dirac --json --timeout 120 --cwd /path/to/project \
-  "Fix the failing test and summarize the result."
+printf '%s\n' "Fix the failing test and summarize the result." \
+  | dirac --json --timeout 120 --cwd /path/to/project
 ```
 
 Local smoke testing found:
