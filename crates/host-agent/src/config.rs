@@ -490,14 +490,21 @@ impl Config {
 
     /// Find agent config by CN
     pub fn find_agent(&self, cn: &str) -> Option<&AgentConfig> {
-        self.agents.iter().find(|a| {
-            if a.cn_pattern.ends_with('*') {
-                let prefix = &a.cn_pattern[..a.cn_pattern.len() - 1];
-                cn.starts_with(prefix)
-            } else {
-                a.cn_pattern == cn
-            }
-        })
+        self.agents
+            .iter()
+            .find(|a| cn_pattern_matches(&a.cn_pattern, cn))
+    }
+}
+
+/// Match an mTLS common-name pattern from host-agent config.
+///
+/// A trailing `*` means prefix match, but a bare `*` is intentionally not a
+/// global wildcard. Every trusted agent identity must have a non-empty anchor.
+pub(crate) fn cn_pattern_matches(pattern: &str, cn: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        !prefix.is_empty() && cn.starts_with(prefix)
+    } else {
+        pattern == cn
     }
 }
 
@@ -552,6 +559,26 @@ mod tests {
         // Should not find unknown agent
         let agent = config.find_agent("unknown-agent");
         assert!(agent.is_none());
+    }
+
+    #[test]
+    fn test_find_agent_rejects_global_wildcard_pattern() {
+        let config = Config {
+            agents: vec![AgentConfig {
+                cn_pattern: "*".to_string(),
+                agent_type: "generic".to_string(),
+                unix_user: "clash-agent".to_string(),
+                autonomy: AutonomyLevel::Supervised,
+                allowed_operations: vec![],
+                requires_approval_for: vec![],
+                pattern_rules: vec![],
+                allow_full_autonomy_bypass: false,
+            }],
+            ..Default::default()
+        };
+
+        assert!(config.find_agent("any-agent").is_none());
+        assert!(config.find_agent("").is_none());
     }
 
     #[test]

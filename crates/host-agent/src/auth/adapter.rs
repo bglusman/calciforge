@@ -5,7 +5,7 @@
 //! - Zeroclaw: ZeroClaw CLI agent
 //! - ACPX: Anthropic Computer Protocol eXtended agents (Codex, Claude Code, etc.)
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, cn_pattern_matches};
 
 /// Registry of agent adapters
 pub struct AgentRegistry {
@@ -21,7 +21,7 @@ impl AgentRegistry {
     pub fn is_registered(&self, cn: &str) -> bool {
         self.configs
             .iter()
-            .any(|config| cn_matches(&config.cn_pattern, cn))
+            .any(|config| cn_pattern_matches(&config.cn_pattern, cn))
     }
 
     /// Return a placeholder CN for policy lookups when no per-request identity is available.
@@ -31,14 +31,6 @@ impl AgentRegistry {
         self.configs
             .first()
             .map(|c| c.cn_pattern.trim_end_matches('*').to_string())
-    }
-}
-
-fn cn_matches(pattern: &str, cn: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        cn.starts_with(prefix)
-    } else {
-        pattern == cn
     }
 }
 
@@ -135,6 +127,14 @@ mod tests {
         assert!(registry.is_registered("librarian-main"));
         assert!(registry.is_registered("admin"));
         assert!(!registry.is_registered("nobody"));
+    }
+
+    #[test]
+    fn agent_registry_rejects_global_wildcard_cn_pattern() {
+        let registry = AgentRegistry::new(vec![agent_config("*")]);
+
+        assert!(!registry.is_registered("any-agent"));
+        assert!(!registry.is_registered(""));
     }
 
     #[test]
