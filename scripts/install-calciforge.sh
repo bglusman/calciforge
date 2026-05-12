@@ -25,6 +25,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="/opt/calciforge"
 CONFIG_DIR="/etc/calciforge"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
+CALCIFORGE_INSTALL_DOCTOR_NETWORK="${CALCIFORGE_INSTALL_DOCTOR_NETWORK:-true}"
 
 # ── Target resolution ──────────────────────────────────────────────
 ACTION="${1:-help}"
@@ -272,7 +273,13 @@ verify_host() {
     fi
 
     echo "  doctor:"
-    run_on "$host" "$INSTALL_DIR/bin/calciforge --config $CONFIG_DIR/config.toml doctor --no-network" 2>&1 | sed 's/^/    /'
+    local doctor_args="doctor"
+    case "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" in
+        0|false|FALSE|no|NO|off|OFF)
+            doctor_args="doctor --no-network"
+            ;;
+    esac
+    run_on "$host" "$INSTALL_DIR/bin/calciforge --config $CONFIG_DIR/config.toml $doctor_args" 2>&1 | sed 's/^/    /'
 }
 
 # ── Main ───────────────────────────────────────────────────────────

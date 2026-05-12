@@ -856,8 +856,10 @@ After editing config or moving an agent, run:
 calciforge doctor
 ```
 
-The installer runs `calciforge doctor --no-network` after local service
-installation when a config file exists. `doctor` validates the config,
+The installer runs full `calciforge doctor` after local service
+installation when a config file exists, so cross-node and agent endpoint
+checks run by default. Set `CALCIFORGE_INSTALL_DOCTOR_NETWORK=false`
+for an offline/local-only install check. `doctor` validates the config,
 checks referenced secret files without printing values, catches stale
 active-agent/model state, warns when an agent appears to point back into
 the local model gateway by accident, validates model-gateway provider routing
