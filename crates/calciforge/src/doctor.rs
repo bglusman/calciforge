@@ -34,6 +34,26 @@ use crate::proxy::routing;
 mod agent_adapter_doctor;
 mod security_proxy_runtime;
 
+#[cfg(test)]
+#[path = "doctor_proxy_coverage_tests.rs"]
+mod doctor_proxy_coverage_tests;
+
+const DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV: &str = "CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY";
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DoctorOptions {
+    pub no_network: bool,
+    pub require_agent_egress_proxy: Option<bool>,
+}
+
+pub fn require_agent_egress_proxy_override_from_env() -> Option<bool> {
+    std::env::var(DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV)
+        .ok()
+        .as_deref()
+        .filter(|value| truthy_env_value(value))
+        .map(|_| true)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Ok,
@@ -96,7 +116,7 @@ impl DoctorReport {
     }
 }
 
-pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
+pub async fn run_with_options(config_path: &Path, options: DoctorOptions) -> Result<DoctorReport> {
     let mut report = DoctorReport::default();
 
     match config::validator::validate_config_file(&config_path.to_path_buf()) {
@@ -145,14 +165,29 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_secret_files(&config, &mut report);
     check_model_gateway_config(&config, &mut report);
     check_secret_tooling(&mut report);
-    check_scanner_config(&config, no_network, &mut report).await;
+    check_scanner_config(&config, options.no_network, &mut report).await;
     check_proxy_environment(&mut report);
     security_proxy_runtime::check(&mut report).await;
     check_security_proxy_ca_trust(&mut report);
-    check_install_node_metadata(no_network, &mut report).await;
-    check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
+    check_install_node_metadata(options.no_network, &mut report).await;
+    let config_strict_egress_proxy = security_requires_agent_egress_proxy(&config);
+    let strict_subprocess_egress_proxy =
+        config_strict_egress_proxy || options.require_agent_egress_proxy.unwrap_or(false);
+    check_agent_proxy_coverage_with_strict(
+        &config,
+        &proxy_environment_from_process(),
+        strict_subprocess_egress_proxy,
+        config_strict_egress_proxy,
+        &mut report,
+    );
     report_agent_protection_summary(&config, &mut report);
-    check_agent_wiring(&config, no_network, &mut report).await;
+    check_agent_wiring_with_strict(
+        &config,
+        options.no_network,
+        config_strict_egress_proxy,
+        &mut report,
+    )
+    .await;
     check_persisted_state(&config, &mut report);
 
     Ok(report)
@@ -671,12 +706,23 @@ fn check_proxy_environment_in(env: ProxyEnvironment, report: &mut DoctorReport) 
     }
 }
 
+#[cfg(test)]
 fn check_agent_proxy_coverage(
     config: &CalciforgeConfig,
     env: &ProxyEnvironment,
     report: &mut DoctorReport,
 ) {
     let strict_egress = security_requires_agent_egress_proxy(config);
+    check_agent_proxy_coverage_with_strict(config, env, strict_egress, strict_egress, report);
+}
+
+fn check_agent_proxy_coverage_with_strict(
+    config: &CalciforgeConfig,
+    env: &ProxyEnvironment,
+    strict_subprocess_egress: bool,
+    strict_external_daemon_egress: bool,
+    report: &mut DoctorReport,
+) {
     let subprocess_agents = config
         .agents
         .iter()
@@ -710,7 +756,7 @@ fn check_agent_proxy_coverage(
 
         if has_any_forward_proxy(env) {
             let message = "Current calciforge doctor process has ambient proxy env; subprocess inheritance works only if the service has the same env, and it can break CLI agents that use CONNECT, WebSockets, npm, or browser-backed auth. Prefer no ambient proxy and only wrap agents through tested recipes.";
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.warn(message);
@@ -721,7 +767,7 @@ fn check_agent_proxy_coverage(
             let message = format!(
                 "{clearing_count} subprocess agent(s) set empty proxy env values; CLI/exec agents may bypass security-proxy"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.warn(message);
@@ -732,7 +778,7 @@ fn check_agent_proxy_coverage(
             let message = format!(
                 "{incomplete_count} subprocess agent(s) define incomplete MITM proxy env; require HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, loopback NO_PROXY, and at least one runtime CA bundle env"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.warn(message);
@@ -743,7 +789,7 @@ fn check_agent_proxy_coverage(
             let message = format!(
                 "{complete_count} subprocess agent(s) define complete MITM proxy env for tested runtime wrappers"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.ok(message);
             } else {
                 report.warn(message);
@@ -762,7 +808,7 @@ fn check_agent_proxy_coverage(
             let message = format!(
                 "{missing_count} subprocess agent(s) have no explicit MITM proxy env; use explicit tool/fetch integration or a tested wrapper for traffic that must pass through security-proxy"
             );
-            if strict_egress {
+            if strict_subprocess_egress {
                 report.error(message);
             } else {
                 report.ok(message);
@@ -780,7 +826,7 @@ fn check_agent_proxy_coverage(
         let message = format!(
             "{external_count} externally managed HTTP/native agent endpoint(s) configured; doctor cannot verify their process proxy environment"
         );
-        if strict_egress {
+        if strict_external_daemon_egress {
             report.error(message);
         } else {
             report.warn(message);
@@ -789,14 +835,37 @@ fn check_agent_proxy_coverage(
 }
 
 fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
-    config.security.as_ref().is_some_and(|security| {
-        let profile_requires_egress = matches!(
-            security.profile.as_str(),
-            "hardened" | "maximum" | "paranoid"
-        );
-        let scans_agent_responses = security.scan_outbound.unwrap_or(profile_requires_egress);
-        security.require_agent_egress_proxy || scans_agent_responses
-    })
+    security_requires_agent_egress_proxy_with_override(config, None)
+}
+
+#[cfg(test)]
+fn effective_agent_egress_proxy_requirement(
+    config: &CalciforgeConfig,
+    require_override: Option<bool>,
+) -> bool {
+    security_requires_agent_egress_proxy(config) || require_override.unwrap_or(false)
+}
+
+fn security_requires_agent_egress_proxy_with_override(
+    config: &CalciforgeConfig,
+    require_override: Option<&str>,
+) -> bool {
+    require_override.is_some_and(truthy_env_value)
+        || config.security.as_ref().is_some_and(|security| {
+            let profile_requires_egress = matches!(
+                security.profile.as_str(),
+                "hardened" | "maximum" | "paranoid"
+            );
+            let scans_agent_responses = security.scan_outbound.unwrap_or(profile_requires_egress);
+            security.require_agent_egress_proxy || scans_agent_responses
+        })
+}
+
+fn truthy_env_value(value: &str) -> bool {
+    matches!(
+        value.trim(),
+        "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+    )
 }
 
 fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorReport) {
@@ -1388,9 +1457,25 @@ fn check_agent_runtime_dependencies(agent: &AgentConfig, report: &mut DoctorRepo
     }
 }
 
+#[cfg(test)]
 async fn check_agent_wiring(
     config: &CalciforgeConfig,
     no_network: bool,
+    report: &mut DoctorReport,
+) {
+    check_agent_wiring_with_strict(
+        config,
+        no_network,
+        security_requires_agent_egress_proxy(config),
+        report,
+    )
+    .await;
+}
+
+async fn check_agent_wiring_with_strict(
+    config: &CalciforgeConfig,
+    no_network: bool,
+    strict_egress_proxy: bool,
     report: &mut DoctorReport,
 ) {
     let proxy_bind = config.proxy.as_ref().map(|proxy| proxy.bind.as_str());
@@ -1503,6 +1588,9 @@ async fn check_agent_wiring(
 
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
+                if agent.kind == "openclaw-channel" {
+                    check_openclaw_channel_route(agent, strict_egress_proxy, report).await;
+                }
             }
         }
 
@@ -3014,250 +3102,6 @@ mod tests {
             .status()
             .expect("run openssl");
         assert!(status.success(), "openssl generated test CA");
-    }
-
-    #[test]
-    fn subprocess_agent_proxy_coverage_accepts_missing_proxy_env() {
-        let mut config = base_config();
-        config.agents = vec![AgentConfig {
-            id: "codex".to_string(),
-            kind: "codex-cli".to_string(),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                http: None,
-                https: None,
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Ok
-                && finding.message.contains("have no explicit MITM proxy env")
-        }));
-    }
-
-    #[test]
-    fn subprocess_agent_proxy_coverage_warns_on_complete_agent_proxy_env() {
-        let mut config = base_config();
-        config.agents = vec![AgentConfig {
-            id: "dirac".to_string(),
-            kind: "dirac-cli".to_string(),
-            env: Some(HashMap::from([
-                (
-                    "HTTP_PROXY".to_string(),
-                    "http://127.0.0.1:8888".to_string(),
-                ),
-                (
-                    "HTTPS_PROXY".to_string(),
-                    "http://127.0.0.1:8888".to_string(),
-                ),
-                ("ALL_PROXY".to_string(), "http://127.0.0.1:8888".to_string()),
-                (
-                    "NO_PROXY".to_string(),
-                    "localhost,127.0.0.1,::1".to_string(),
-                ),
-                (
-                    "NODE_EXTRA_CA_CERTS".to_string(),
-                    "/tmp/mitm-ca.pem".to_string(),
-                ),
-            ])),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                http: None,
-                https: None,
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Warn
-                && finding.message.contains("define complete MITM proxy env")
-        }));
-    }
-
-    #[test]
-    fn subprocess_agent_proxy_coverage_warns_when_agent_env_is_incomplete() {
-        let mut config = base_config();
-        config.agents = vec![AgentConfig {
-            id: "codex".to_string(),
-            kind: "codex-cli".to_string(),
-            env: Some(HashMap::from([(
-                "https_proxy".to_string(),
-                "http://127.0.0.1:9999".to_string(),
-            )])),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                http: None,
-                https: None,
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Warn
-                && finding.message.contains("define incomplete MITM proxy env")
-        }));
-    }
-
-    #[test]
-    fn subprocess_agent_proxy_coverage_errors_in_strict_security_without_proxy_env() {
-        let mut config = base_config();
-        config.security = Some(SecuritySectionConfig {
-            profile: "hardened".to_string(),
-            scan_outbound: Some(true),
-            require_agent_egress_proxy: true,
-            scanner_checks: vec![],
-        });
-        config.agents = vec![AgentConfig {
-            id: "codex".to_string(),
-            kind: "codex-cli".to_string(),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Error
-                && finding.message.contains("have no explicit MITM proxy env")
-        }));
-    }
-
-    #[test]
-    fn scan_outbound_false_relaxes_profile_default_strict_egress() {
-        let mut config = base_config();
-        config.security = Some(SecuritySectionConfig {
-            profile: "hardened".to_string(),
-            scan_outbound: Some(false),
-            require_agent_egress_proxy: false,
-            scanner_checks: vec![],
-        });
-
-        assert!(!security_requires_agent_egress_proxy(&config));
-    }
-
-    #[test]
-    fn subprocess_agent_proxy_coverage_warns_when_agent_env_clears_proxy() {
-        let mut config = base_config();
-        config.agents = vec![AgentConfig {
-            id: "codex".to_string(),
-            kind: "codex-cli".to_string(),
-            env: Some(HashMap::from([("HTTP_PROXY".to_string(), String::new())])),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                http: None,
-                https: None,
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Warn
-                && finding.message.contains("set empty proxy env values")
-        }));
-    }
-
-    #[test]
-    fn external_agent_proxy_coverage_errors_in_strict_security() {
-        let mut config = base_config();
-        config.security = Some(SecuritySectionConfig {
-            profile: "hardened".to_string(),
-            scan_outbound: Some(true),
-            require_agent_egress_proxy: true,
-            scanner_checks: vec![],
-        });
-        config.agents = vec![AgentConfig {
-            id: "openclaw".to_string(),
-            kind: "openclaw-channel".to_string(),
-            endpoint: "http://127.0.0.1:18789".to_string(),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                http: Some("http://127.0.0.1:8888".to_string()),
-                https: Some("http://127.0.0.1:8888".to_string()),
-                all: Some("http://127.0.0.1:8888".to_string()),
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                node_extra_ca_certs: Some("/tmp/mitm-ca.pem".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Error
-                && finding
-                    .message
-                    .contains("doctor cannot verify their process proxy environment")
-        }));
-    }
-
-    #[test]
-    fn external_agent_proxy_coverage_warns_that_daemon_env_is_unverified() {
-        let mut config = base_config();
-        config.agents = vec![AgentConfig {
-            id: "openclaw".to_string(),
-            kind: "openclaw-channel".to_string(),
-            endpoint: "http://127.0.0.1:18789".to_string(),
-            ..Default::default()
-        }];
-        let mut report = DoctorReport::default();
-
-        check_agent_proxy_coverage(
-            &config,
-            &ProxyEnvironment {
-                http: Some("http://127.0.0.1:8888".to_string()),
-                https: Some("http://127.0.0.1:8888".to_string()),
-                no_proxy: Some("localhost,127.0.0.1".to_string()),
-                ..Default::default()
-            },
-            &mut report,
-        );
-
-        assert!(report.findings.iter().any(|finding| {
-            finding.severity == Severity::Warn
-                && finding
-                    .message
-                    .contains("doctor cannot verify their process proxy environment")
-        }));
     }
 
     #[test]
