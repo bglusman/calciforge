@@ -5,6 +5,8 @@ title: Security Gateway
 
 # Security Gateway
 
+Status: Experimental
+
 The security gateway checks agent traffic that actually passes through
 Calciforge. That phrase matters. Calciforge can inspect model calls, tool
 requests, fetched pages, and provider traffic only when those requests use a

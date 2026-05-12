@@ -5,6 +5,8 @@ title: Agents, Identities, and Routing
 
 # Agents, Identities, and Routing
 
+Status: Implemented
+
 This page covers the three configuration sections that together control who
 can talk to Calciforge and which AI backend handles their messages:
 
