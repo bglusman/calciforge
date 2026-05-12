@@ -58,6 +58,31 @@ grep -q "calciforge-ollama-switch" "$ROOT/scripts/build-dist-archive.sh" || {
     exit 1
 }
 
+expected_compose_port_bindings=(
+    '"${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_PROXY_PORT:-18792}:18792"'
+    '"${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_SECURITY_PROXY_PORT:-8888}:8888"'
+    '"${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_CLASHD_PORT:-9001}:9001"'
+)
+for binding in "${expected_compose_port_bindings[@]}"; do
+    grep -Fq "$binding" "$ROOT/packaging/docker/docker-compose.yml" || {
+        echo "Docker Compose published port must default to loopback host binding: $binding" >&2
+        exit 1
+    }
+done
+actual_loopback_ports="$(grep -Fc 'CALCIFORGE_HOST_BIND:-127.0.0.1' "$ROOT/packaging/docker/docker-compose.yml")"
+if [[ "$actual_loopback_ports" != "${#expected_compose_port_bindings[@]}" ]]; then
+    echo "Docker Compose should have ${#expected_compose_port_bindings[@]} loopback-bound published ports, found $actual_loopback_ports" >&2
+    exit 1
+fi
+grep -q 'api_key_file = "/var/lib/calciforge/gateway-api-key"' "$ROOT/packaging/docker/config.example.toml" || {
+    echo "Docker example config must require a client-facing gateway API key file" >&2
+    exit 1
+}
+grep -q 'openssl rand -base64 32 > data/gateway-api-key' "$ROOT/packaging/docker/README.md" || {
+    echo "Docker README must provision the sample gateway API key before startup" >&2
+    exit 1
+}
+
 installer_shell_files=(
     "$ROOT/scripts/install.sh"
     "$ROOT/scripts/clean-install-reset.sh"

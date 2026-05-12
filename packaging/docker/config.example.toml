@@ -4,6 +4,7 @@ version = 2
 [proxy]
 enabled = true
 bind = "0.0.0.0:18792"
+api_key_file = "/var/lib/calciforge/gateway-api-key"
 backend_type = "http"
 backend_url = "http://host.docker.internal:11434/v1"
 backend_api_key = "ollama"

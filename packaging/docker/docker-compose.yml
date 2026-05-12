@@ -11,7 +11,7 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-calciforge=info}
     ports:
-      - "${CALCIFORGE_PROXY_PORT:-18792}:18792"
+      - "${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_PROXY_PORT:-18792}:18792"
     volumes:
       - "${CALCIFORGE_CONFIG:-./config.example.toml}:/config/config.toml:ro"
       - "${CALCIFORGE_DATA:-./data}:/var/lib/calciforge"
@@ -29,7 +29,7 @@ services:
       SECURITY_PROXY_CONFIG: /config/security-proxy.toml
       AGENT_CONFIG: /config/agents.json
     ports:
-      - "${CALCIFORGE_SECURITY_PROXY_PORT:-8888}:8888"
+      - "${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_SECURITY_PROXY_PORT:-8888}:8888"
     volumes:
       - "${CALCIFORGE_SECURITY_PROXY_CONFIG:-./security-proxy.example.toml}:/config/security-proxy.toml:ro"
       - "${CALCIFORGE_AGENTS_CONFIG:-./agents.example.json}:/config/agents.json:ro"
@@ -47,7 +47,7 @@ services:
       CLASHD_POLICY: /config/policy.star
       CLASHD_AGENTS: /config/agents.json
     ports:
-      - "${CALCIFORGE_CLASHD_PORT:-9001}:9001"
+      - "${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_CLASHD_PORT:-9001}:9001"
     volumes:
       - "${CALCIFORGE_CLASHD_POLICY:-./policy.example.star}:/config/policy.star:ro"
       - "${CALCIFORGE_AGENTS_CONFIG:-./agents.example.json}:/config/agents.json:ro"
