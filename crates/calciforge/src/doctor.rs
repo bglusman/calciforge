@@ -31,6 +31,7 @@ use crate::providers::alloy::AlloyManager;
 use crate::proxy::model_resolver::ModelResolver;
 use crate::proxy::routing;
 
+mod agent_adapter_doctor;
 mod security_proxy_runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1502,16 +1503,10 @@ async fn check_agent_wiring(
 
             if !no_network {
                 check_endpoint_reachable(agent, report).await;
-                if agent.kind == "openclaw-channel" {
-                    check_openclaw_channel_route(
-                        agent,
-                        security_requires_agent_egress_proxy(config),
-                        report,
-                    )
-                    .await;
-                }
             }
         }
+
+        agent_adapter_doctor::check(agent, config, no_network, report).await;
     }
 
     for (endpoint, count) in endpoint_counts {
