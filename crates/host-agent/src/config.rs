@@ -499,6 +499,10 @@ impl Config {
 /// A trailing `*` means prefix match, but a bare `*` is intentionally not a
 /// global wildcard. Every trusted agent identity must have a non-empty anchor.
 pub(crate) fn cn_pattern_matches(pattern: &str, cn: &str) -> bool {
+    if pattern.is_empty() || cn.is_empty() {
+        return false;
+    }
+
     if let Some(prefix) = pattern.strip_suffix('*') {
         !prefix.is_empty() && cn.starts_with(prefix)
     } else {
@@ -577,6 +581,26 @@ mod tests {
 
         assert!(config.find_agent("any-agent").is_none());
         assert!(config.find_agent("").is_none());
+    }
+
+    #[test]
+    fn test_find_agent_rejects_empty_cn_pattern() {
+        let config = Config {
+            agents: vec![AgentConfig {
+                cn_pattern: String::new(),
+                agent_type: "generic".to_string(),
+                unix_user: "clash-agent".to_string(),
+                autonomy: AutonomyLevel::Supervised,
+                allowed_operations: vec![],
+                requires_approval_for: vec![],
+                pattern_rules: vec![],
+                allow_full_autonomy_bypass: false,
+            }],
+            ..Default::default()
+        };
+
+        assert!(config.find_agent("").is_none());
+        assert!(config.find_agent("any-agent").is_none());
     }
 
     #[test]

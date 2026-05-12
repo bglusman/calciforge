@@ -138,6 +138,14 @@ mod tests {
     }
 
     #[test]
+    fn agent_registry_rejects_empty_cn_pattern() {
+        let registry = AgentRegistry::new(vec![agent_config("")]);
+
+        assert!(!registry.is_registered(""));
+        assert!(!registry.is_registered("any-agent"));
+    }
+
+    #[test]
     fn test_agent_type_from_str() {
         assert!(matches!(
             AgentType::from_str("librarian"),
