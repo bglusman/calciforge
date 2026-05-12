@@ -8,9 +8,115 @@ title: Packaging and Install Options
 Calciforge supports four install shapes. They serve different audiences and
 should not be mixed up in docs or support notes.
 
+## Start Here
+
+- **Linux server or LAN staging host:** use Docker Compose. It is the fastest
+  packaged path today and does not require Rust on the host.
+- **macOS release install:** use Homebrew. It installs published release
+  binaries and runs Calciforge under Homebrew service supervision.
+- **Development or managed-agent wiring:** use the source installer. It builds
+  from the checkout and can configure first-class agents, certificates, and
+  local service supervision.
+- **Manual/offline installs:** use release archives when you need to place the
+  binaries yourself without Homebrew or Compose.
+
+## Docker Compose
+
+Use this for trials, LAN staging, and repeatable smoke environments:
+
+```bash
+git clone https://github.com/bglusman/calciforge
+cd calciforge/packaging/docker
+cp calciforge.env.example .env
+mkdir -p data data-security-proxy data-clashd
+openssl rand -base64 32 > data/gateway-api-key
+chmod 600 data/gateway-api-key
+docker compose --env-file .env build calciforge
+docker compose --env-file .env up -d
+docker compose --env-file .env exec calciforge \
+  calciforge --config /config/config.toml doctor
+```
+
+The Compose example runs Calciforge, `security-proxy`, and `clashd` from the
+same image. It is separate from `scripts/docker-compose.yml`, which remains the
+CI/mock-LLM smoke stack. Release Compose installs should use the published GHCR
+image. GitHub Actions publishes `ghcr.io/bglusman/calciforge:main` and
+`ghcr.io/bglusman/calciforge:sha-<commit>` on every merge to `main`; release
+tags also publish immutable version tags from the release workflow. Use `:main`
+for staging nodes that should follow the integration branch, and pin a version
+or SHA tag for stable hosts. Local `--build` remains useful for development and
+pre-release smoke tests.
+
+To validate the packaged Compose path without real provider credentials:
+
+```bash
+scripts/packaging-docker-smoke.sh
+```
+
+That smoke script overlays the packaged Compose file with a mock
+OpenAI-compatible backend and checks Calciforge, `security-proxy`, `clashd`,
+model listing, and a chat completion.
+
+For CLI-backed agents in Compose, install or mount the agent binaries inside
+the Calciforge container. Host-level tools are not visible to Docker by
+default. `doctor` checks configured subprocess commands such as `acpx`,
+`opencode`, `codex`, and `claude` from the same runtime that will dispatch chat
+messages.
+
+For clean reinstall testing, inspect the reset plan before removing anything:
+
+```bash
+scripts/clean-install-reset.sh
+scripts/clean-install-reset.sh --include-docker --include-config
+scripts/clean-install-reset.sh --ssh root@calciforge-staging.example --include-docker
+```
+
+The reset helper is dry-run by default. Add `--execute` only after the printed
+plan matches the machine you intend to clean. Config/state removal, Docker
+cleanup, and Calciforge-managed agent services are separate flags so a service
+reset does not silently delete operator data.
+
+Fnox is treated as a dependency, not Calciforge-owned state. The reset helper
+will not remove `~/.config/fnox` unless you pass `--include-fnox`, because that
+vault may already contain unrelated or sensitive operator data.
+
+## Homebrew Binary Formula
+
+Use this for normal macOS installs from published release archives. The formula
+installs released binaries; it does not build from source.
+
+```bash
+brew tap bglusman/tap
+brew install calciforge
+$EDITOR "$(brew --prefix)/etc/calciforge/config.toml"
+brew services start calciforge
+calciforge doctor
+```
+
+Packaging maintainers render the formula from:
+
+```bash
+scripts/render-homebrew-formula.sh --help
+```
+
+Docker, Homebrew, and release archives share the runtime binary contract in
+`packaging/runtime-binaries.txt`. `scripts/check-packaging.sh` fails if Docker,
+the archive builder, or the rendered Homebrew formula drifts from that list.
+
+This is a binary packaging path with Homebrew service supervision and a
+Homebrew `fnox` dependency for secret helpers. It expects you to provide config at
+`$(brew --prefix)/etc/calciforge/config.toml`; it does not discover agents,
+install certificates, or populate secrets by itself.
+
+Use the formula when you want released binaries and native macOS supervision.
+Run the explicit installer/configuration flow after installing when Calciforge
+should discover agents, install certificates, bootstrap secrets, or wire remote
+nodes.
+
 ## Source Installer
 
-Use this when developing Calciforge or testing current `main`:
+Use this when developing Calciforge, testing current `main`, or wiring managed
+agents:
 
 ```bash
 git clone https://github.com/bglusman/calciforge
@@ -40,93 +146,6 @@ Do not deploy fnox to arbitrary agent or sidecar nodes just to make helper
 commands pass. A remote `security-proxy` that performs secret substitution still
 needs an explicit central-secret-backend mode or co-location with the Calciforge
 secret owner; otherwise it would become a second source of truth.
-
-For clean reinstall testing, inspect the reset plan before removing anything:
-
-```bash
-scripts/clean-install-reset.sh
-scripts/clean-install-reset.sh --include-docker --include-config
-scripts/clean-install-reset.sh --ssh root@calciforge-staging.example --include-docker
-```
-
-The reset helper is dry-run by default. Add `--execute` only after the printed
-plan matches the machine you intend to clean. Config/state removal, Docker
-cleanup, and Calciforge-managed agent services are separate flags so a service
-reset does not silently delete operator data.
-
-Fnox is treated as a dependency, not Calciforge-owned state. The reset helper
-will not remove `~/.config/fnox` unless you pass `--include-fnox`, because that
-vault may already contain unrelated or sensitive operator data.
-
-## Homebrew Binary Formula
-
-Use this for normal macOS installs once release archives are published. The
-formula installs released binaries; it does not build from source.
-
-Packaging maintainers render the formula from:
-
-```bash
-scripts/render-homebrew-formula.sh --help
-```
-
-Docker, Homebrew, and release archives share the runtime binary contract in
-`packaging/runtime-binaries.txt`. `scripts/check-packaging.sh` fails if Docker,
-the archive builder, or the rendered Homebrew formula drifts from that list.
-
-This is a binary packaging path with Homebrew service supervision and a
-Homebrew `fnox` dependency for secret helpers. It expects you to provide config at
-`$(brew --prefix)/etc/calciforge/config.toml`; it does not discover agents,
-install certificates, or populate secrets by itself.
-
-```bash
-brew install bglusman/tap/calciforge
-$EDITOR "$(brew --prefix)/etc/calciforge/config.toml"
-brew services start calciforge
-```
-
-Use the formula when you want released binaries and native macOS supervision.
-Run the explicit installer/configuration flow after installing when Calciforge
-should discover agents, install certificates, bootstrap secrets, or wire remote
-nodes.
-
-## Docker Compose
-
-Use this for trials, LAN staging, and repeatable smoke environments:
-
-```bash
-cd packaging/docker
-cp calciforge.env.example .env
-mkdir -p data
-docker compose --env-file .env up -d
-docker compose --env-file .env exec calciforge \
-  calciforge --config /config/config.toml doctor --no-network
-```
-
-The Compose example runs Calciforge, `security-proxy`, and `clashd` from the
-same image. It is separate from `scripts/docker-compose.yml`, which remains the
-CI/mock-LLM smoke stack. Release Compose installs should use the published GHCR
-image. GitHub Actions publishes `ghcr.io/bglusman/calciforge:main` and
-`ghcr.io/bglusman/calciforge:sha-<commit>` on every merge to `main`; release
-tags also publish immutable version tags from the release workflow. Use `:main`
-for staging nodes that should follow the integration branch, and pin a version
-or SHA tag for stable hosts. Local `--build` remains useful for development and
-pre-release smoke tests.
-
-To validate the packaged Compose path without real provider credentials:
-
-```bash
-scripts/packaging-docker-smoke.sh
-```
-
-That smoke script overlays the packaged Compose file with a mock
-OpenAI-compatible backend and checks Calciforge, `security-proxy`, `clashd`,
-model listing, and a chat completion.
-
-For CLI-backed agents in Compose, install or mount the agent binaries inside
-the Calciforge container. Host-level tools are not visible to Docker by
-default. `doctor` checks configured subprocess commands such as `acpx`,
-`opencode`, `codex`, and `claude` from the same runtime that will dispatch chat
-messages.
 
 ## Choosing an Install Shape
 
