@@ -216,7 +216,10 @@ impl RemoteSecretsApi {
             base_url,
             token,
             identity: SecretAccessIdentity::from_env(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("building Calciforge secrets API HTTP client"),
         })
     }
 
@@ -262,7 +265,9 @@ impl RemoteSecretsApi {
         match url.scheme() {
             "https" => Ok(()),
             "http" if is_loopback_host(url.host_str()) => Ok(()),
-            "http" => Err("refusing to send Calciforge secret API bearer token over plain HTTP except to loopback".into()),
+            "http" => Err(
+                "refusing to call Calciforge secret API over plain HTTP except to loopback".into(),
+            ),
             scheme => Err(format!(
                 "unsupported Calciforge secret API URL scheme {scheme:?}; use HTTPS or loopback HTTP"
             )),
