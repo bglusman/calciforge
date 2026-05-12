@@ -269,7 +269,7 @@ fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
                 }
                 if channel.enabled && channel.allowed_users.is_empty() {
                     result.add_error(
-                        "Matrix channel requires at least one allowed_user when enabled"
+                        "Matrix channel requires at least one allowed_users entry when enabled"
                             .to_string(),
                     );
                 }
@@ -278,6 +278,12 @@ fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
                         if channel.matrix_e2ee_store_path.is_some() {
                             result.add_warning(
                                 "Matrix channel sets matrix_e2ee_store_path, but matrix_e2ee is not experimental-sdk; the store path will be ignored"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.matrix_e2ee_store_passphrase_file.is_some() {
+                            result.add_warning(
+                                "Matrix channel sets matrix_e2ee_store_passphrase_file, but matrix_e2ee is not experimental-sdk; the passphrase file will be ignored"
                                     .to_string(),
                             );
                         }

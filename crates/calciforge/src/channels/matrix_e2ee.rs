@@ -8,8 +8,13 @@ use std::path::Path;
 
 use matrix_sdk::Client;
 
-// Kept compile-gated until the Matrix channel loop is SDK-backed.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "experimental SDK scaffold is compile-gated until the Matrix loop is SDK-backed"
+    )
+)]
 pub fn e2ee_client_builder(
     homeserver: &str,
     store_path: impl AsRef<Path>,

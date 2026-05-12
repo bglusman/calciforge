@@ -654,8 +654,11 @@ pub async fn run(
             .await
             .with_context(|| format!("Matrix: room '{room_id_str}' not accessible"))?;
 
-        let is_encrypted =
-            check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
+        let is_encrypted = if channel.matrix_e2ee == MatrixE2eeMode::Off {
+            false
+        } else {
+            check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await
+        };
         if let Some(error) = matrix_e2ee_startup_error(channel.matrix_e2ee, true, is_encrypted) {
             anyhow::bail!("{error}");
         }

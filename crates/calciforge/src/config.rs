@@ -398,9 +398,9 @@ pub struct ChannelConfig {
     /// Matrix end-to-end encryption handling.
     ///
     /// The production Matrix channel is still raw Client-Server API. Use
-    /// `warn` to keep today's behavior, `require` to fail closed when the
-    /// configured room is not encrypted, or `experimental-sdk` only on builds
-    /// compiled with `channel-matrix-e2ee`.
+    /// `warn` to keep today's behavior, `require` to fail closed unless an
+    /// SDK-backed encrypted runtime is available, or `experimental-sdk` only
+    /// on builds compiled with `channel-matrix-e2ee`.
     #[serde(default)]
     pub matrix_e2ee: MatrixE2eeMode,
 

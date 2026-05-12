@@ -5,7 +5,7 @@ title: "ADR 0003: Matrix E2EE Prototype"
 
 # ADR 0003: Matrix E2EE Prototype
 
-Status: Experimental branch note
+Status: Experimental
 
 Date: 2026-05-12
 
