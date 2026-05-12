@@ -755,6 +755,10 @@ fn format_reqwest_error(error: &reqwest::Error) -> String {
 }
 
 #[cfg(test)]
+#[path = "openclaw_channel_reply_tests.rs"]
+mod openclaw_channel_reply_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::extract::State;
@@ -1100,124 +1104,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reply_server_acks_correlated_error_callbacks() {
-        let router = ReplyRouter::new();
-        let request_id = "req-error".to_string();
-        let session_key = "calciforge:main:renee".to_string();
-        let (tx, rx) = oneshot::channel::<ReplyResult>();
-        router
-            .insert(request_id.clone(), session_key.clone(), tx)
-            .await;
-
-        let state = ReplyServerState {
-            router,
-            auth_tokens: Arc::new(StdMutex::new(HashSet::new())),
-        };
-
-        let payload = ReplyPayload {
-            session_key,
-            request_id: Some(request_id),
-            message: None,
-            error: Some(
-                "OpenClaw completed without a visible reply for this Calciforge request".into(),
-            ),
-            error_kind: Some("no_visible_reply".into()),
-            no_visible_reply_reason: Some("no_reply_dispatched".into()),
-            attachments: Vec::new(),
-            channel: Some("signal".into()),
-            to: None,
-        };
-
-        let (status, Json(ack)) = handle_reply(State(state), HeaderMap::new(), Json(payload)).await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert!(ack.ok);
-        let err = rx
-            .await
-            .expect("reply sender should not be dropped")
-            .expect_err("callback error should route to waiter as protocol error");
-        assert!(
-            err.contains("kind=no_visible_reply"),
-            "error should include kind: {err}"
-        );
-        assert!(
-            err.contains("reason=no_reply_dispatched"),
-            "error should include reason: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_reply_token_must_match_pending_legacy_callback() {
-        let router = ReplyRouter::new();
-        let request_id = "req-victim".to_string();
-        let session_key = "calciforge:victim:alice".to_string();
-        let (tx, mut rx) = oneshot::channel::<ReplyResult>();
-        router
-            .insert_with_auth(
-                request_id.clone(),
-                session_key.clone(),
-                Some("reply-secret-a".to_string()),
-                tx,
-            )
-            .await;
-
-        let state = ReplyServerState {
-            router,
-            auth_tokens: Arc::new(StdMutex::new(HashSet::from([
-                "reply-secret-a".to_string(),
-                "reply-secret-b".to_string(),
-            ]))),
-        };
-
-        let payload = ReplyPayload {
-            session_key: session_key.clone(),
-            request_id: None,
-            message: Some("spoofed legacy reply".into()),
-            error: None,
-            error_kind: None,
-            no_visible_reply_reason: None,
-            attachments: Vec::new(),
-            channel: None,
-            to: None,
-        };
-        let mut attacker_headers = HeaderMap::new();
-        attacker_headers.insert("authorization", "Bearer reply-secret-b".parse().unwrap());
-
-        let (status, Json(ack)) =
-            handle_reply(State(state.clone()), attacker_headers, Json(payload)).await;
-
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert!(!ack.ok);
-        assert!(
-            rx.try_recv().is_err(),
-            "wrong-token callback must not consume the pending request"
-        );
-
-        let payload = ReplyPayload {
-            session_key,
-            request_id: Some(request_id),
-            message: Some("victim reply".into()),
-            error: None,
-            error_kind: None,
-            no_visible_reply_reason: None,
-            attachments: Vec::new(),
-            channel: None,
-            to: None,
-        };
-        let mut victim_headers = HeaderMap::new();
-        victim_headers.insert("authorization", "Bearer reply-secret-a".parse().unwrap());
-
-        let (status, Json(ack)) = handle_reply(State(state), victim_headers, Json(payload)).await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert!(ack.ok);
-        assert_eq!(
-            rx.await.unwrap().unwrap().render_text_fallback(),
-            "victim reply"
-        );
-    }
-
-    #[tokio::test]
     async fn test_dispatch_ignores_ambient_proxy_for_agent_control_plane() {
         let _env_lock = ENV_LOCK.lock().await;
         let _http_proxy = EnvRestore::set("HTTP_PROXY", "http://127.0.0.1:9");
@@ -1420,50 +1306,6 @@ mod tests {
             .expect("empty requestId should fall back to sessionKey");
 
         assert_eq!(reply, "empty request id legacy reply");
-    }
-
-    #[tokio::test]
-    async fn test_legacy_session_key_callback_is_ambiguous_for_overlapping_dispatches() {
-        let router = ReplyRouter::new();
-        let (first_tx, first_rx) = oneshot::channel::<ReplyResult>();
-        let (second_tx, second_rx) = oneshot::channel::<ReplyResult>();
-        let session_key = "calciforge:main:brian".to_string();
-
-        router
-            .insert("request-1".to_string(), session_key.clone(), first_tx)
-            .await;
-        router
-            .insert("request-2".to_string(), session_key.clone(), second_tx)
-            .await;
-
-        assert!(
-            router.take(&session_key).await.is_none(),
-            "legacy sessionKey-only callback must fail closed once the session has overlapping requests"
-        );
-
-        let first = router
-            .take("request-1")
-            .await
-            .expect("requestId correlation for first request should remain available");
-        first
-            .send(Ok(OutboundMessage::text("first")))
-            .expect("first receiver should still be live");
-        assert_eq!(
-            first_rx.await.unwrap().unwrap().render_text_fallback(),
-            "first"
-        );
-
-        let second = router
-            .take("request-2")
-            .await
-            .expect("requestId correlation for second request should remain available");
-        second
-            .send(Ok(OutboundMessage::text("second")))
-            .expect("second receiver should still be live");
-        assert_eq!(
-            second_rx.await.unwrap().unwrap().render_text_fallback(),
-            "second"
-        );
     }
 
     #[tokio::test]
