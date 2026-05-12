@@ -111,7 +111,7 @@ impl ReplyRouter {
     ) -> Result<Option<oneshot::Sender<ReplyResult>>, ReplyAuthError> {
         let entry = {
             let mut pending = self.pending.lock().await;
-            let Some(entry) = pending.get(correlation_key).cloned() else {
+            let Some(entry) = pending.get(correlation_key) else {
                 return Ok(None);
             };
             if entry.auth_token.as_deref() != presented_token {
