@@ -1100,8 +1100,6 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = config.server.bind.parse()?;
     info!("Setting up mTLS on {}", addr);
 
-    // Load once so the acceptor enforces the same CRL bytes that startup
-    // validated, without a second filesystem read.
     let crl_data = tls::load_crl_data(config.server.crl_file.as_ref())
         .with_context(|| "Failed to load configured CRL for mTLS acceptor")?;
 
