@@ -17,6 +17,13 @@ impl AgentRegistry {
         Self { configs }
     }
 
+    /// Return true when a certificate CN is explicitly configured as an agent.
+    pub fn is_registered(&self, cn: &str) -> bool {
+        self.configs
+            .iter()
+            .any(|config| cn_matches(&config.cn_pattern, cn))
+    }
+
     /// Return a placeholder CN for policy lookups when no per-request identity is available.
     /// Returns None if no configs are registered.
     pub fn resolve_cn_placeholder(&self) -> Option<String> {
@@ -27,9 +34,18 @@ impl AgentRegistry {
     }
 }
 
+fn cn_matches(pattern: &str, cn: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        cn.starts_with(prefix)
+    } else {
+        pattern == cn
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::config::AutonomyLevel;
+    use super::AgentRegistry;
+    use crate::config::{AgentConfig, AutonomyLevel};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -97,6 +113,28 @@ mod tests {
             }
             true
         }
+    }
+
+    fn agent_config(cn_pattern: &str) -> AgentConfig {
+        AgentConfig {
+            cn_pattern: cn_pattern.to_string(),
+            agent_type: "generic".to_string(),
+            unix_user: "clash-agent".to_string(),
+            autonomy: AutonomyLevel::Supervised,
+            allowed_operations: vec![],
+            requires_approval_for: vec![],
+            pattern_rules: vec![],
+            allow_full_autonomy_bypass: false,
+        }
+    }
+
+    #[test]
+    fn agent_registry_rejects_unconfigured_cn() {
+        let registry = AgentRegistry::new(vec![agent_config("librarian*"), agent_config("admin")]);
+
+        assert!(registry.is_registered("librarian-main"));
+        assert!(registry.is_registered("admin"));
+        assert!(!registry.is_registered("nobody"));
     }
 
     #[test]

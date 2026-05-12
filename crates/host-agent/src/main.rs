@@ -171,6 +171,23 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+fn require_registered_agent(state: &AppState, identity: &ClientIdentity) -> Result<(), AppError> {
+    if state.agent_registry.is_registered(&identity.cn) {
+        return Ok(());
+    }
+
+    warn!(
+        cn = %identity.cn,
+        uid = %identity.uid,
+        "Rejecting mTLS client because certificate CN is not configured as an agent"
+    );
+    state.metrics.increment_policy_denials();
+    Err(AppError::PolicyDenied(format!(
+        "client certificate CN '{}' is not configured as an agent",
+        identity.cn
+    )))
+}
+
 // ZFS snapshot endpoint (no approval required for delegation)
 async fn zfs_snapshot(
     State(state): State<AppState>,
@@ -178,6 +195,7 @@ async fn zfs_snapshot(
     Json(req): Json<SnapshotRequest>,
 ) -> Result<Json<SnapshotResponse>, AppError> {
     state.metrics.increment_requests();
+    require_registered_agent(&state, &identity)?;
     state.metrics.increment_zfs_operation("snapshot");
 
     let audit_id = uuid::Uuid::new_v4().to_string();
@@ -269,6 +287,7 @@ async fn zfs_list(
     Json(req): Json<ListRequest>,
 ) -> Result<Json<ListResponse>, AppError> {
     state.metrics.increment_requests();
+    require_registered_agent(&state, &identity)?;
     state.metrics.increment_zfs_operation("list");
 
     let audit_id = uuid::Uuid::new_v4().to_string();
@@ -344,6 +363,7 @@ async fn zfs_destroy(
     Json(req): Json<DestroyRequest>,
 ) -> Result<Json<DestroyResponse>, AppError> {
     state.metrics.increment_requests();
+    require_registered_agent(&state, &identity)?;
 
     // Rate-limit check (P-B5)
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
@@ -540,6 +560,7 @@ async fn submit_approval(
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, AppError> {
     state.metrics.increment_requests();
+    require_registered_agent(&state, &identity)?;
 
     // Rate-limit check (P-B5)
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
@@ -691,6 +712,10 @@ async fn list_pending(
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
 
+    if let Err(err) = require_registered_agent(&state, &identity) {
+        return err.into_response();
+    }
+
     // Rate-limit check (P-B5)
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
         state.metrics.increment_rate_limited();
@@ -746,6 +771,9 @@ async fn list_all_pending(
     Extension(identity): Extension<ClientIdentity>,
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
+    if let Err(err) = require_registered_agent(&state, &identity) {
+        return err.into_response();
+    }
     let config = state.config.get().await;
     if let Err(status) = require_admin_identity(&config, &identity) {
         return (
@@ -774,6 +802,10 @@ async fn warn_permissions(
     Extension(identity): Extension<ClientIdentity>,
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
+
+    if let Err(err) = require_registered_agent(&state, &identity) {
+        return err.into_response();
+    }
 
     let config = state.config.get().await;
     if let Err(status) = require_admin_identity(&config, &identity) {
@@ -814,6 +846,7 @@ async fn host_op_dispatch(
     Json(op): Json<HostOp>,
 ) -> Result<impl IntoResponse, AppError> {
     state.metrics.increment_requests();
+    require_registered_agent(&state, &identity)?;
 
     // Rate-limit check
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
