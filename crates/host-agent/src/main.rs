@@ -1073,8 +1073,8 @@ async fn main() -> Result<()> {
         audit: Arc::new(audit),
         approvals: Arc::new(approvals),
         zfs: Arc::new(zfs),
-        metrics,
-        agent_registry,
+        metrics: metrics.clone(),
+        agent_registry: agent_registry.clone(),
         rate_limiter,
         adapter_registry: Arc::new(adapter_registry),
     };
@@ -1149,11 +1149,6 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Custom accept loop: for each connection, TLS-handshake → extract ClientIdentity
-    // → inject into request extensions → serve with hyper + axum.
-    //
-    // This replaces axum_server::bind_rustls which does not support custom per-connection
-    // extension injection. Using hyper_util::server::conn::auto::Builder for H1+H2 support.
     info!("Server running. Ctrl+C to stop.");
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -1184,9 +1179,10 @@ async fn main() -> Result<()> {
 
                 let acceptor = acceptor.clone();
                 let app = app.clone();
+                let agent_registry = agent_registry.clone();
+                let metrics = metrics.clone();
 
                 tokio::spawn(async move {
-                    // TLS handshake + client certificate extraction
                     let (identity, tls_stream) = match acceptor.accept(tcp_stream).await {
                         Ok(v) => v,
                         Err(e) => {
@@ -1194,6 +1190,11 @@ async fn main() -> Result<()> {
                             return;
                         }
                     };
+                    if !agent_registry.is_registered(&identity.cn) {
+                        warn!(cn = %identity.cn, uid = %identity.uid, "Rejecting mTLS client because certificate CN is not configured as an agent");
+                        metrics.increment_policy_denials();
+                        return;
+                    }
 
                     tracing::debug!(
                         cn = %identity.cn,
@@ -1202,13 +1203,8 @@ async fn main() -> Result<()> {
                         "mTLS handshake complete — serving request"
                     );
 
-                    // Clone identity to move into the service wrapper
                     let identity_for_service = identity.clone();
 
-                    // Build a tower service that injects ClientIdentity into each request's
-                    // extensions before passing to the axum router.
-                    // hyper passes Request<Incoming>; axum Router accepts Request<Body>,
-                    // so we convert via http_body_util::Limited or just use axum's body conversion.
                     let tower_svc = tower::service_fn(move |req: hyper::Request<Incoming>| {
                         let identity = identity_for_service.clone();
                         let mut inner = app.clone();
