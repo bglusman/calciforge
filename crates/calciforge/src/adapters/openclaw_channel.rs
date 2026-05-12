@@ -39,31 +39,45 @@ type ReplyResult = Result<OutboundMessage, String>;
 struct PendingReply {
     request_id: String,
     session_key: String,
+    auth_token: Option<String>,
     tx: Arc<Mutex<Option<oneshot::Sender<ReplyResult>>>>,
 }
 
 /// Correlates OpenClaw callbacks to pending dispatch requests.
 #[derive(Clone, Default)]
-pub struct ReplyRouter {
+struct ReplyRouter {
     pending: Arc<Mutex<HashMap<String, PendingReply>>>,
 }
 
 impl ReplyRouter {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             pending: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub async fn insert(
+    #[cfg(test)]
+    async fn insert(
         &self,
         request_id: String,
         session_key: String,
         tx: oneshot::Sender<ReplyResult>,
     ) {
+        self.insert_with_auth(request_id, session_key, None, tx)
+            .await;
+    }
+
+    async fn insert_with_auth(
+        &self,
+        request_id: String,
+        session_key: String,
+        auth_token: Option<String>,
+        tx: oneshot::Sender<ReplyResult>,
+    ) {
         let entry = PendingReply {
             request_id: request_id.clone(),
             session_key: session_key.clone(),
+            auth_token,
             tx: Arc::new(Mutex::new(Some(tx))),
         };
         let mut pending = self.pending.lock().await;
@@ -82,23 +96,48 @@ impl ReplyRouter {
         }
     }
 
-    pub async fn take(&self, correlation_key: &str) -> Option<oneshot::Sender<ReplyResult>> {
+    #[cfg(test)]
+    async fn take(&self, correlation_key: &str) -> Option<oneshot::Sender<ReplyResult>> {
+        self.take_authorized(correlation_key, None)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn take_authorized(
+        &self,
+        correlation_key: &str,
+        presented_token: Option<&str>,
+    ) -> Result<Option<oneshot::Sender<ReplyResult>>, ReplyAuthError> {
         let entry = {
             let mut pending = self.pending.lock().await;
-            let entry = pending.remove(correlation_key)?;
+            let Some(entry) = pending.get(correlation_key).cloned() else {
+                return Ok(None);
+            };
+            if entry.auth_token.as_deref() != presented_token {
+                return Err(ReplyAuthError::TokenMismatch);
+            }
+            let entry = pending
+                .remove(correlation_key)
+                .expect("pending reply disappeared after authorization check");
             pending.retain(|_, candidate| candidate.request_id != entry.request_id);
             entry
         };
 
-        entry.tx.lock().await.take()
+        Ok(entry.tx.lock().await.take())
     }
 
-    pub async fn remove(&self, request_id: &str) {
+    async fn remove(&self, request_id: &str) {
         self.pending
             .lock()
             .await
             .retain(|_, entry| entry.request_id != request_id);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplyAuthError {
+    TokenMismatch,
 }
 
 #[derive(Clone)]
@@ -201,6 +240,7 @@ struct SharedReplyServer {
 #[derive(Clone)]
 struct ReplyServerHandle {
     shared: SharedReplyServer,
+    auth_token: Option<String>,
     config_error: Option<String>,
 }
 
@@ -230,6 +270,7 @@ impl ReplyServerHandle {
                 });
             return Self {
                 shared,
+                auth_token: None,
                 config_error: Some(
                     "openclaw-channel requires reply_auth_token or reply_auth_token_file; unauthenticated callback listeners are not allowed"
                         .to_string(),
@@ -242,15 +283,16 @@ impl ReplyServerHandle {
                 .auth_tokens
                 .lock()
                 .expect("openclaw-channel reply auth token set poisoned");
-            tokens.insert(auth_token);
+            tokens.insert(auth_token.clone());
             return Self {
                 shared: existing.clone(),
+                auth_token: Some(auth_token),
                 config_error: None,
             };
         }
 
         let mut auth_tokens = HashSet::new();
-        auth_tokens.insert(auth_token);
+        auth_tokens.insert(auth_token.clone());
 
         let shared = SharedReplyServer {
             port,
@@ -266,6 +308,7 @@ impl ReplyServerHandle {
 
         Self {
             shared,
+            auth_token: Some(auth_token),
             config_error: None,
         }
     }
@@ -276,12 +319,14 @@ async fn handle_reply(
     headers: HeaderMap,
     Json(payload): Json<ReplyPayload>,
 ) -> (StatusCode, Json<AckResponse>) {
-    {
+    let presented_token = {
         let auth_tokens = state
             .auth_tokens
             .lock()
             .expect("openclaw-channel reply auth token set poisoned");
-        if !auth_tokens.is_empty() {
+        if auth_tokens.is_empty() {
+            None
+        } else {
             let auth = headers
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
@@ -290,8 +335,9 @@ async fn handle_reply(
             if !auth_tokens.contains(token) {
                 return (StatusCode::UNAUTHORIZED, Json(AckResponse { ok: false }));
             }
+            Some(token.to_string())
         }
-    }
+    };
 
     let correlation_key = payload
         .request_id
@@ -300,7 +346,24 @@ async fn handle_reply(
         .unwrap_or(&payload.session_key)
         .to_string();
 
-    if let Some(tx) = state.router.take(&correlation_key).await {
+    let pending_tx = match state
+        .router
+        .take_authorized(&correlation_key, presented_token.as_deref())
+        .await
+    {
+        Ok(tx) => tx,
+        Err(ReplyAuthError::TokenMismatch) => {
+            warn!(
+                session_key = %payload.session_key,
+                correlation_key = %correlation_key,
+                request_id = ?payload.request_id,
+                "openclaw-channel reply token did not match pending request"
+            );
+            return (StatusCode::UNAUTHORIZED, Json(AckResponse { ok: false }));
+        }
+    };
+
+    if let Some(tx) = pending_tx {
         if let Some(error) = payload.callback_error_message() {
             warn!(
                 session_key = %payload.session_key,
@@ -570,7 +633,12 @@ impl AgentAdapter for OpenClawChannelAdapter {
         self.reply_server
             .shared
             .router
-            .insert(request_id.clone(), session_key.clone(), tx)
+            .insert_with_auth(
+                request_id.clone(),
+                session_key.clone(),
+                self.reply_server.auth_token.clone(),
+                tx,
+            )
             .await;
 
         let body = InboundPayload {
@@ -1075,6 +1143,77 @@ mod tests {
         assert!(
             err.contains("reason=no_reply_dispatched"),
             "error should include reason: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reply_token_must_match_pending_legacy_callback() {
+        let router = ReplyRouter::new();
+        let request_id = "req-victim".to_string();
+        let session_key = "calciforge:victim:alice".to_string();
+        let (tx, mut rx) = oneshot::channel::<ReplyResult>();
+        router
+            .insert_with_auth(
+                request_id.clone(),
+                session_key.clone(),
+                Some("reply-secret-a".to_string()),
+                tx,
+            )
+            .await;
+
+        let state = ReplyServerState {
+            router,
+            auth_tokens: Arc::new(StdMutex::new(HashSet::from([
+                "reply-secret-a".to_string(),
+                "reply-secret-b".to_string(),
+            ]))),
+        };
+
+        let payload = ReplyPayload {
+            session_key: session_key.clone(),
+            request_id: None,
+            message: Some("spoofed legacy reply".into()),
+            error: None,
+            error_kind: None,
+            no_visible_reply_reason: None,
+            attachments: Vec::new(),
+            channel: None,
+            to: None,
+        };
+        let mut attacker_headers = HeaderMap::new();
+        attacker_headers.insert("authorization", "Bearer reply-secret-b".parse().unwrap());
+
+        let (status, Json(ack)) =
+            handle_reply(State(state.clone()), attacker_headers, Json(payload)).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!ack.ok);
+        assert!(
+            rx.try_recv().is_err(),
+            "wrong-token callback must not consume the pending request"
+        );
+
+        let payload = ReplyPayload {
+            session_key,
+            request_id: Some(request_id),
+            message: Some("victim reply".into()),
+            error: None,
+            error_kind: None,
+            no_visible_reply_reason: None,
+            attachments: Vec::new(),
+            channel: None,
+            to: None,
+        };
+        let mut victim_headers = HeaderMap::new();
+        victim_headers.insert("authorization", "Bearer reply-secret-a".parse().unwrap());
+
+        let (status, Json(ack)) = handle_reply(State(state), victim_headers, Json(payload)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(ack.ok);
+        assert_eq!(
+            rx.await.unwrap().unwrap().render_text_fallback(),
+            "victim reply"
         );
     }
 
