@@ -1175,6 +1175,7 @@ mod tests {
         ModelRoleConfig, ModelShortcutConfig, RoutingRule, SyntheticModelConfig,
     };
     use crate::providers::alloy::AlloyManager;
+    use mockito::Matcher;
 
     fn make_handler() -> CommandHandler {
         let config = Arc::new(make_config());
@@ -1215,6 +1216,18 @@ mod tests {
             let mut permissions = std::fs::metadata(&path).unwrap().permissions();
             permissions.set_mode(0o755);
             std::fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    fn pending_approval(
+        request_id: &str,
+        endpoint: String,
+    ) -> crate::adapters::openclaw::PendingApprovalMeta {
+        crate::adapters::openclaw::PendingApprovalMeta {
+            request_id: request_id.to_string(),
+            zeroclaw_endpoint: endpoint,
+            zeroclaw_auth_token: "approval-token".to_string(),
+            _summary: "test approval".to_string(),
         }
     }
 
@@ -1765,6 +1778,68 @@ mod tests {
                     && option.callback_data.as_deref() == Some("cf:deny:req-1")),
             "approval choice must expose deny callback: {approval:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn approve_parses_request_id_with_repeated_whitespace() {
+        let mut server = mockito::Server::new_async().await;
+        let approval = server
+            .mock("POST", "/webhook/approve")
+            .match_header("authorization", "Bearer approval-token")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "request_id": "req-1",
+                "approved": true
+            })))
+            .with_status(503)
+            .with_body("stop before polling")
+            .create_async()
+            .await;
+
+        let h = make_handler();
+        h.register_pending_approval(pending_approval("req-1", server.url()))
+            .await;
+        h.register_pending_approval(pending_approval("req-2", "http://127.0.0.1:9".to_string()))
+            .await;
+
+        let (reply, follow_up) = h.handle_approve("!approve   req-1").await;
+
+        approval.assert_async().await;
+        assert!(follow_up.is_none());
+        assert!(
+            reply.contains("Failed to send approval"),
+            "explicit request id should be honored despite repeated spaces: {reply}"
+        );
+        assert!(
+            !reply.contains("pending approvals"),
+            "repeated spaces must not drop the explicit request id: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deny_accepts_non_uuid_request_id_with_reason() {
+        let mut server = mockito::Server::new_async().await;
+        let approval = server
+            .mock("POST", "/webhook/approve")
+            .match_header("authorization", "Bearer approval-token")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "request_id": "req-1",
+                "approved": false,
+                "reason": "not today"
+            })))
+            .with_status(503)
+            .with_body("stop before polling")
+            .create_async()
+            .await;
+
+        let h = make_handler();
+        h.register_pending_approval(pending_approval("req-1", server.url()))
+            .await;
+
+        let (reply, follow_up) = h.handle_deny("!deny req-1 not today").await;
+
+        approval.assert_async().await;
+        assert!(follow_up.is_none());
+        assert!(reply.contains("Failed to send denial"), "{reply}");
     }
 
     #[test]

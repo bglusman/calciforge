@@ -61,8 +61,7 @@ impl CommandHandler {
     ///
     /// Returns `(reply_message, Option<final_agent_response>)`.
     pub async fn handle_approve(&self, text: &str) -> (String, Option<String>) {
-        let args = text.trim().splitn(3, ' ').collect::<Vec<_>>();
-        let explicit_id = args.get(1).map(|s| s.trim()).filter(|s| !s.is_empty());
+        let explicit_id = text.split_whitespace().nth(1);
 
         let meta = self.resolve_pending_approval(explicit_id).await;
         let meta = match meta {
@@ -114,24 +113,9 @@ impl CommandHandler {
     /// auto-selects it. Signals ZeroClaw to deny the blocked tool call, then
     /// polls for the continuation result.
     pub async fn handle_deny(&self, text: &str) -> (String, Option<String>) {
-        let trimmed = text.trim();
-        let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
-        let (explicit_id, reason) = match parts.len() {
-            1 => (None, None),
-            2 => (Some(parts[1].trim()), None),
-            _ => {
-                let candidate = parts[1].trim();
-                if candidate.len() == 36 && candidate.contains('-') {
-                    (Some(candidate), Some(parts[2].trim()))
-                } else {
-                    (None, Some(&trimmed[6..]))
-                }
-            }
-        };
-
-        let meta = self.resolve_pending_approval(explicit_id).await;
-        let meta = match meta {
-            Ok(m) => m,
+        let meta_and_reason = self.resolve_pending_denial(text).await;
+        let (meta, reason) = match meta_and_reason {
+            Ok(result) => result,
             Err(msg) => return (msg, None),
         };
 
@@ -141,7 +125,7 @@ impl CommandHandler {
             &meta.zeroclaw_auth_token,
             &meta.request_id,
             false,
-            reason,
+            reason.as_deref(),
         )
         .await
         {
@@ -194,12 +178,51 @@ impl CommandHandler {
                 0 => Err("⚠️ No pending approvals.".to_string()),
                 1 => Ok(store.values().next().unwrap().clone()),
                 n => {
-                    let ids: Vec<&str> = store.keys().map(|s| s.as_str()).collect();
+                    let mut ids: Vec<&str> = store.keys().map(|s| s.as_str()).collect();
+                    ids.sort_unstable();
                     Err(format!(
                         "⚠️ {n} pending approvals. Specify a request ID:\n{}",
                         ids.join("\n")
                     ))
                 }
+            }
+        }
+    }
+
+    async fn resolve_pending_denial(
+        &self,
+        text: &str,
+    ) -> Result<(PendingApprovalMeta, Option<String>), String> {
+        let mut tokens = text.split_whitespace();
+        let _command = tokens.next();
+        let candidate = tokens.next();
+        let remainder = tokens.collect::<Vec<_>>().join(" ");
+
+        let store = self.pending_approvals.lock().await;
+        if let Some(id) = candidate
+            && let Some(meta) = store.get(id)
+        {
+            return Ok((meta.clone(), (!remainder.is_empty()).then_some(remainder)));
+        }
+
+        let reason = candidate.map(|first| {
+            if remainder.is_empty() {
+                first.to_string()
+            } else {
+                format!("{first} {remainder}")
+            }
+        });
+
+        match store.len() {
+            0 => Err("⚠️ No pending approvals.".to_string()),
+            1 => Ok((store.values().next().unwrap().clone(), reason)),
+            n => {
+                let mut ids: Vec<&str> = store.keys().map(|s| s.as_str()).collect();
+                ids.sort_unstable();
+                Err(format!(
+                    "⚠️ {n} pending approvals. Specify a request ID:\n{}",
+                    ids.join("\n")
+                ))
             }
         }
     }
