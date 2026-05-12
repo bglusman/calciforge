@@ -1,8 +1,9 @@
 //! Dirac CLI adapter.
 //!
 //! This adapter dispatches messages through `dirac` in scripted mode.
-//! Default invocation uses `--yolo --json` with a fixed argv prompt and writes
+//! Default invocation uses JSON output with a fixed argv prompt and writes
 //! the user task on stdin, avoiding prompt leakage through process listings.
+//! Operators who want approval-bypass modes must opt in explicitly in config.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -157,7 +158,7 @@ impl DiracCliAdapter {
 }
 
 fn default_dirac_args() -> Vec<String> {
-    vec!["--yolo".to_string(), "--json".to_string()]
+    vec!["--json".to_string()]
 }
 
 #[async_trait]
@@ -239,10 +240,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_append_prompt_when_no_placeholder() {
+    fn defaults_do_not_bypass_dirac_approvals() {
         let a = DiracCliAdapter::new(None, None, None, None, None);
         let args = a.build_args();
-        assert!(args.contains(&"--yolo".to_string()));
+        assert!(!args.contains(&"--yolo".to_string()));
         assert!(args.contains(&"--json".to_string()));
         assert_eq!(args.last().map(String::as_str), Some(STDIN_TASK_PROMPT));
     }

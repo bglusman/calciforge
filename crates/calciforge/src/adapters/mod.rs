@@ -360,7 +360,7 @@ pub fn agent_supports_model_override(agent: &AgentConfig) -> bool {
 /// | `artifact-cli`     | subprocess stdin + artifact dir | ❌ one-shot | n/a |
 /// | `codex-cli`        | `codex exec`        | ✅ `resume` path    | n/a |
 /// | `claude-cli`       | `claude --print`    | ✅ `--session-id`   | n/a |
-/// | `dirac-cli`        | `dirac --yolo --json` | ❌ one-shot       | n/a |
+/// | `dirac-cli`        | `dirac --json` | ❌ one-shot       | n/a |
 /// | `kimi-cli`         | `kimi --quiet`      | ✅ `--session`      | n/a |
 /// | `ironclaw`         | HTTP + SSE events   | ✅ server-side      | n/a |
 /// | `acp`              | SACP stdio          | ✅ persistent proc  | n/a |

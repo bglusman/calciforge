@@ -424,7 +424,7 @@ CONFIGURE_ONLY=false
 NODES_ONLY=false
 AGENTS_ONLY=false
 NODES_FILE=""
-AGENTS="claude,opencode,openclaw,zeroclaw,ironclaw,hermes,dirac"
+AGENTS="claude,opencode,openclaw,zeroclaw,ironclaw,hermes"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1947,6 +1947,7 @@ if agent_enabled dirac; then
     if command -v dirac &>/dev/null; then
         ok "dirac CLI installed"
         warn "Authenticate once before first use: dirac auth"
+        warn "Dirac is opt-in for installation; avoid approval-bypass flags such as --yolo unless you accept local command execution risk."
     fi
 fi
 
