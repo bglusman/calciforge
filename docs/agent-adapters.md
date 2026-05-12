@@ -49,7 +49,7 @@ Adapter lifecycle labels:
 | OpenAI-compatible endpoint | `openai-compat` | Plain `/v1/chat/completions` target for Calciforge's model gateway, local test gateways, or compatible model APIs. Set `allow_model_override = true` only when this endpoint should accept Calciforge `!model` selections. |
 | Artifact-producing CLI | `kind = "artifact-cli"` | Prototype path for tools such as npcsh media workflows. Calciforge sends the task on stdin, exposes `{artifact_dir}` and `CALCIFORGE_ARTIFACT_DIR`, validates produced files, and returns a text fallback that names attachments without exposing local paths. Telegram and Matrix already use the richer internal envelope; native media upload can be added channel by channel. |
 | opencode | `acpx` or generic CLI | Model-agnostic terminal agent with a mature CLI/TUI surface. Prefer ACP when available. |
-| Dirac | `kind = "dirac-cli"` | Good scriptable fit. The adapter uses `--yolo --json`, sends the user task on stdin, ignores internal JSON event spam, and returns the final `completion_result`. |
+| Dirac | `kind = "dirac-cli"` | Good scriptable fit. The adapter defaults to `--json`, sends the user task on stdin, ignores internal JSON event spam, and returns the final `completion_result`. Approval-bypass flags such as `--yolo` require an explicit operator opt-in. |
 | Kimi Code CLI | `kind = "kimi-cli"` or generic ACP | Use `kimi-cli` for print-mode CLI dispatch with `--session` and explicit `--thinking` / `--no-thinking` args. Use generic ACP for `kimi acp` when Calciforge should talk to Kimi's native agent protocol. |
 | AgentSwift | Not supported directly | Interesting iOS-specific workflow, but current public shape is a SwiftUI app that drives Claude plus `xcodebuildmcp`/`openspec`, not a stable CLI adapter surface. Revisit if it exposes a noninteractive JSON/ACP/HTTP protocol. |
 
@@ -229,25 +229,27 @@ Operational guidance:
 Dirac is attractive for Calciforge because its CLI is scriptable:
 
 ```sh
-dirac --yolo --json --timeout 120 --cwd /path/to/project \
-  "Fix the failing test and summarize the result."
+printf '%s\n' "Fix the failing test and summarize the result." \
+  | dirac --json --timeout 120 --cwd /path/to/project
 ```
 
 Local smoke testing found:
 
 - `dirac --json` can complete a non-edit task and emit a final
   `completion_result`.
-- `dirac --yolo --json` can perform a simple edit, run `npm test`, and return a
-  concise final answer.
-- Non-yolo scripted runs can stop at approval prompts, which is unsuitable for
-  unattended Calciforge dispatch.
+- Approval-bypass flags such as `--yolo` can perform edits and run commands
+  without interactive approval, so Calciforge does not enable them by default.
+- Non-yolo scripted runs can stop at approval prompts; operators should pair
+  Dirac agents with trusted identities and constrained workspaces rather than
+  making approval bypass the default.
 - JSON output includes repeated internal `api_req_started` events for the same
   request. The Calciforge adapter intentionally ignores those and only returns
   final assistant events.
 
 Operational guidance:
 
-- Keep `--yolo` limited to trusted identities and workspaces.
+- Only add approval-bypass flags such as `--yolo` for trusted identities and
+  workspaces after accepting the local command execution risk.
 - Set `timeout_ms` generously for real coding tasks; the adapter still kills the
   child process if it exceeds Calciforge's timeout.
 - Prefer prompt-on-stdin configuration. Avoid putting sensitive request text in

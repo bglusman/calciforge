@@ -97,14 +97,14 @@ primary_channels = ["telegram"]
 id = "dirac"
 kind = "dirac-cli"
 command = "dirac"
-args = ["--yolo", "--json"]
+args = ["--json"]
 timeout_ms = 600000
 
 [agents.registry]
 display_name = "Dirac CLI"
 description = "Dirac coding agent via the official dirac-cli"
 specialties = ["coding", "refactoring", "token-efficiency"]
-access = ["filesystem", "git", "shell"]
+access = ["filesystem", "git"]
 primary_channels = ["telegram"]
 
 # OpenCode via ACP (stdio transport)
