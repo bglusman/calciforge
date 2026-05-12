@@ -657,12 +657,13 @@ impl SecurityProxy {
         // allowlist.
         if self.config.scan_outbound && !body_str.is_empty() {
             let remote_scan_body = remote_scan_body.as_deref().unwrap_or(&body_str);
+            let redacted_target_url = redact_url_for_log(&target_url);
             let verdict = self
                 .scanner
                 .scan_with_remote_payload(
-                    &redact_url_for_log(&target_url),
+                    &redacted_target_url,
                     &body_str,
-                    &redact_url_for_log(&target_url),
+                    &redacted_target_url,
                     remote_scan_body,
                     ScanContext::Api,
                 )
@@ -1338,8 +1339,7 @@ mod tests {
     use wiremock::matchers::{header as wm_header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static ENV_ASYNC_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn test_proxy(config: GatewayConfig) -> Arc<SecurityProxy> {
         Arc::new(
@@ -1830,9 +1830,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unreadable_destination_metadata_fails_closed() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+    #[tokio::test]
+    async fn unreadable_destination_metadata_fails_closed() {
+        let _guard = ENV_MUTEX.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let metadata_path = dir.path().join("secret-metadata.json");
         std::fs::write(&metadata_path, "not-json").unwrap();
@@ -2187,7 +2187,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_scanner_receives_presubstitution_body() {
-        let _guard = ENV_ASYNC_MUTEX.lock().await;
+        let _guard = ENV_MUTEX.lock().await;
         let upstream = MockServer::start().await;
         let remote_scanner = MockServer::start().await;
         Mock::given(method("POST"))
