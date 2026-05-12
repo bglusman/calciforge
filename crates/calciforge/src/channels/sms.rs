@@ -20,6 +20,7 @@ use base64::{Engine as _, engine::general_purpose};
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha1::Sha1;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 use url::form_urlencoded;
 use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
@@ -519,7 +520,7 @@ fn conversation_chat_key(identity_id: &str, reply_target: &str) -> String {
     format!("sms-{identity_id}-{reply_target}")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct TwilioChannel {
     account_sid: String,
     auth_token: String,
@@ -545,7 +546,11 @@ impl TwilioChannel {
             messaging_service_sid,
             allowed_senders,
             api_base: "https://api.twilio.com".to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(20))
+                .build()
+                .expect("building Twilio SMS/RCS HTTP client"),
         }
     }
 
@@ -846,7 +851,7 @@ async fn twilio_webhook_handler(
 
 fn read_secret_file(path: &str, label: &str) -> Result<String> {
     Ok(std::fs::read_to_string(expand_tilde(path))
-        .with_context(|| format!("Text/iMessage: failed to read {label} '{path}'"))?
+        .with_context(|| format!("SMS channel: failed to read {label} '{path}'"))?
         .trim()
         .to_string())
 }
