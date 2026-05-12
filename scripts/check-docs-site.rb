@@ -23,6 +23,18 @@ def markdown_files
   files.sort
 end
 
+def all_markdown_files
+  files = []
+  Find.find(ROOT.to_s) do |path|
+    next if path.include?("/.git/")
+    next if path.include?("/target/")
+    next unless path.end_with?(".md")
+
+    files << Pathname.new(path)
+  end
+  files.sort
+end
+
 def external_href?(href)
   uri = URI.parse(href)
   uri.scheme || href.start_with?("//", "mailto:")
@@ -70,6 +82,29 @@ def validate_href(file, href)
   fail_with("#{file.relative_path_from(ROOT)}: missing local link target #{href}")
 end
 
+def validate_repo_href(file, href)
+  href = href.strip
+  return if href.empty? || href.start_with?("#") || external_href?(href)
+
+  path_part = href.split("#", 2).first
+  return if path_part.empty?
+
+  target = if path_part.start_with?("/")
+    ROOT.join(path_part.delete_prefix("/")).cleanpath
+  else
+    (file.dirname + path_part).cleanpath
+  end
+
+  return if target.file? || target.directory?
+
+  if path_part.end_with?(".html")
+    source = generated_page_source(target)
+    return if source&.file?
+  end
+
+  fail_with("#{file.relative_path_from(ROOT)}: missing repository link target #{href}")
+end
+
 markdown_files.each do |file|
   validate_front_matter(file)
   text = file.read
@@ -80,6 +115,18 @@ markdown_files.each do |file|
 
   text.scan(/href=["']([^"']+)["']/) do |(href)|
     validate_href(file, href)
+  end
+end
+
+all_markdown_files.each do |file|
+  text = file.read
+
+  text.scan(/\[[^\]]+\]\(([^)]+)\)/) do |(href)|
+    validate_repo_href(file, href)
+  end
+
+  text.scan(/href=["']([^"']+)["']/) do |(href)|
+    validate_repo_href(file, href)
   end
 end
 

@@ -123,4 +123,4 @@ node -e "
 ## See Also
 
 - [clashd](../clashd/) — Policy sidecar documentation
-- [OpenClaw Plugin System](../../docs/plugins.md) — General plugin docs
+- [OpenClaw integration findings](../../docs/agent-adapters.md#openclaw-integration-findings) — Calciforge's current OpenClaw plugin path
