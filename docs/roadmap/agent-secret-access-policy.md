@@ -60,9 +60,11 @@ means no discovery, no reference, and no substitution. Destination
 allowlists remain a second, independent gate.
 
 Scope boundary: this policy controls secret discovery, reference
-creation, and network-boundary substitution. The central
-`/control/secrets/set` helper is a privileged operator write path guarded
-by `secret_control_api_key`; it is not a per-agent write ACL. Add
+creation, and network-boundary substitution. The central read-only
+`/control/secrets/list` and `/control/secrets/ref/*` helper endpoints are
+guarded by `secret_discovery_api_key`. The central `/control/secrets/set`
+helper is a privileged operator write path guarded by
+`secret_control_api_key`; it is not a per-agent write ACL. Add
 identity-scoped write permissions separately before exposing
 write-capable helpers to broad agent surfaces.
 

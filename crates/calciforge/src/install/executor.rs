@@ -37,6 +37,7 @@ use url::Url;
 use crate::sync::Arc;
 
 use super::{
+    agent_helper::{is_trusted_secret_helper_url, render_central_secret_helper_wrapper},
     cli::InstallArgs,
     health::{HealthChecker, HttpHealthChecker, MockHealthChecker, health_check_claw},
     json5::parse_json5_relaxed,
@@ -548,11 +549,27 @@ fn run_agent_helper_install(
         };
     };
 
-    if Url::parse(base_url).is_err() || base_url.contains(['\n', '\r']) {
+    let Ok(parsed_base_url) = Url::parse(base_url) else {
         return StepResult {
             step: InstallStep::AgentHelperInstall,
             outcome: StepOutcome::Failed {
                 error: "agent helper base URL must be a valid single-line URL".into(),
+            },
+        };
+    };
+    if base_url.contains(['\n', '\r']) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper base URL must be a valid single-line URL".into(),
+            },
+        };
+    }
+    if !is_trusted_secret_helper_url(&parsed_base_url) {
+        return StepResult {
+            step: InstallStep::AgentHelperInstall,
+            outcome: StepOutcome::Failed {
+                error: "agent helper base URL must use HTTPS, or HTTP on loopback for local-only development".into(),
             },
         };
     }
@@ -567,7 +584,7 @@ fn run_agent_helper_install(
         return StepResult {
             step: InstallStep::AgentHelperInstall,
             outcome: StepOutcome::Failed {
-                error: "agent helper API key is required and must match proxy.secret_control_api_key; proxy.api_key is not accepted for secret-control endpoints".into(),
+                error: "agent helper API key is required and must match proxy.secret_discovery_api_key; do not deploy proxy.secret_control_api_key to managed agents".into(),
             },
         };
     }
@@ -744,32 +761,6 @@ fn run_agent_helper_install(
             },
         },
     }
-}
-
-fn render_central_secret_helper_wrapper(
-    base_url: &str,
-    api_key: Option<&str>,
-    agent_id: &str,
-) -> String {
-    let token_line = api_key
-        .map(|token| {
-            format!(
-                "export CALCIFORGE_SECRETS_TOKEN={}\n",
-                shell_quote(token.trim())
-            )
-        })
-        .unwrap_or_default();
-    format!(
-        "#!/bin/sh\n\
-         # Managed by calciforge install. This wrapper talks to the central Calciforge secret store.\n\
-         export CALCIFORGE_AGENT_ID={}\n\
-         export CALCIFORGE_SECRETS_BASE_URL={}\n\
-         {}\
-         exec \"$HOME/.local/libexec/calciforge/calciforge-secrets-bin\" \"$@\"\n",
-        shell_quote(agent_id.trim()),
-        shell_quote(base_url.trim().trim_end_matches('/')),
-        token_line
-    )
 }
 
 fn find_local_calciforge_secrets() -> Option<PathBuf> {
@@ -2457,7 +2448,7 @@ mod tests {
 
     fn install_args_with_central_secret_helper() -> InstallArgs {
         InstallArgs {
-            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_base_url: Some("https://calciforge.example:8080".into()),
             agent_helper_api_key: Some("secret-helper-token".into()),
             ..Default::default()
         }
@@ -2946,23 +2937,6 @@ mod tests {
         assert!(!summary.any_failed());
     }
 
-    #[test]
-    fn central_secret_helper_wrapper_points_to_calciforge_api() {
-        let wrapper = render_central_secret_helper_wrapper(
-            "http://calciforge.local:8080/",
-            Some("secret-token"),
-            "research-agent",
-        );
-        assert!(wrapper.contains("CALCIFORGE_AGENT_ID='research-agent'"));
-        assert!(wrapper.contains("CALCIFORGE_SECRETS_BASE_URL='http://calciforge.local:8080'"));
-        assert!(wrapper.contains("CALCIFORGE_SECRETS_TOKEN='secret-token'"));
-        assert!(wrapper.contains("calciforge-secrets-bin"));
-        assert!(
-            !wrapper.contains("FNOX"),
-            "managed agent helper must use the central API, not local fnox"
-        );
-    }
-
     #[tokio::test]
     async fn managed_agent_without_central_secret_api_warns_instead_of_copying_local_fnox_helper() {
         let (claw, ssh, health) = make_openclaw_claw(true);
@@ -2990,11 +2964,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_agent_helper_requires_secret_control_api_key() {
+    async fn managed_agent_helper_requires_secret_discovery_api_key() {
         let (claw, ssh, health) = make_openclaw_claw(true);
         let deps = ExecutorDeps::mock(ssh, health);
         let args = InstallArgs {
-            agent_helper_base_url: Some("http://calciforge.local:8080".into()),
+            agent_helper_base_url: Some("https://calciforge.example:8080".into()),
             agent_helper_api_key: None,
             ..Default::default()
         };
@@ -3014,8 +2988,8 @@ mod tests {
             helper_step
                 .outcome
                 .summary()
-                .contains("proxy.secret_control_api_key"),
-            "failure should name the required privileged key: {:?}",
+                .contains("proxy.secret_discovery_api_key"),
+            "failure should name the required read-only key: {:?}",
             helper_step.outcome
         );
     }
