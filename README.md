@@ -73,8 +73,10 @@ on Linux, it creates a local `age` provider backed by an Ed25519 key in
 to bring your own provider/key material. Treat the generated age key as
 secret: anyone who can read it can decrypt the local fnox store.
 
-The installer runs `calciforge doctor --no-network` after installing
-local services when a config file is present. Run `calciforge doctor`
+The installer runs full `calciforge doctor` after installing
+local services when a config file is present, so cross-node and agent
+endpoint checks run by default. Set `CALCIFORGE_INSTALL_DOCTOR_NETWORK=false`
+for an offline/local-only install check. Run `calciforge doctor`
 again after editing config or moving services. It
 validates config, checks referenced secret files without printing
 values, flags stale active-agent/model state, detects suspicious
