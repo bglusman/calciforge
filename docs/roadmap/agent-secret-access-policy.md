@@ -55,7 +55,8 @@ Identity sources:
   forwarding upstream.
 
 Compatibility rule: unknown identity preserves process-scoped behavior
-for existing deployments. Known identity fails closed: no matching rule
+only while no secret access rules are configured. Once an operator configures
+identity ACLs, missing or unknown identity fails closed: no matching rule
 means no discovery, no reference, and no substitution. Destination
 allowlists remain a second, independent gate.
 
