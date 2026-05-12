@@ -5,20 +5,24 @@ title: Model Gateway
 
 Status: Implemented
 
-# Model Boundary And Provider Adapters
+# Model Gateway And Provider Adapters
 
-Calciforge can expose an OpenAI-compatible local endpoint while routing
-requests across upstream providers, local models, aliases, and synthetic
-model choices.
+Calciforge can expose a local endpoint that looks like OpenAI's chat API, then
+route each request to the provider or local model you choose. That lets one
+agent use friendly names like `sonnet`, `local`, or `balanced` while
+Calciforge handles the real provider URL, key file, fallback plan, and audit
+record.
 
-The product boundary is not a singular gateway implementation. Calciforge owns
+The product boundary is not one magic gateway implementation. Calciforge owns
 the model access boundary: authentication, identity, per-agent model policy,
 auditing, aliases, synthetic selectors, and route selection. Concrete model
 traffic then exits through one or more configured `ProviderAdapter`s, such as
 Ollama, OpenRouter, LiteLLM, Helicone, or a direct OpenAI-compatible endpoint.
+Put another way: Calciforge decides which door opens; the provider adapter
+walks through it.
 
 Operational installs should choose at least one explicit provider adapter.
-`mock` is test-only and there is intentionally no built-in public-provider
+`mock` is test-only, and there is intentionally no built-in public-provider
 default. Installer recipes may offer convenience setup for adapters such as
 Helicone or OpenCode, but those are adapter choices, not Calciforge's required
 runtime architecture.
@@ -29,17 +33,19 @@ security proxy, and provider-owned boundaries, see
 
 Agents can also point at an OpenAI-compatible endpoint with
 `kind = "openai-compat"`. Use that for plain model-gateway or model API
-targets. Do not use it as an OpenClaw agent adapter; OpenClaw agents should use
+targets. API means application programming interface: the HTTP shape a model
+service accepts. Do not use `openai-compat` as an OpenClaw agent adapter;
+OpenClaw agents should use
 `kind = "openclaw-channel"` so slash commands and agent identity stay native.
 Set `allow_model_override = true` only for OpenAI-compatible agents that should
 accept Calciforge `!model` selections and gateway model selectors. Leave it unset
 for endpoints with their own restricted model namespace.
 
-From a user-experience perspective, keep model routes separate from agents.
-Agents own runtime identity, commands, tools, sessions, approvals, memory, and
-artifacts. Model routes are just chat/model endpoints. They can be useful for a
-simple chatbot lane or dispatcher testing, but they should be shown as "models"
-or "chat routes" rather than as full agents in user-facing lists.
+In the UI and docs, keep model routes separate from agents. Agents own runtime
+identity, commands, tools, sessions, approvals, memory, and artifacts. Model
+routes are just chat/model endpoints. They can be useful for a simple chatbot
+lane or dispatcher testing, but they should be shown as "models" or "chat
+routes" rather than as full agents in user-facing lists.
 
 ## Traffic Boundaries
 
@@ -60,7 +66,9 @@ Calciforge's own `[proxy]` endpoint. An `openai-compat` agent whose `endpoint`
 points at the local Calciforge proxy does this. OpenClaw, Hermes, IronClaw,
 ACP/ACPX, Codex CLI, Claude CLI, Kimi CLI, opencode CLI, and recipe
 subprocesses are agent adapters; they do not automatically put their internal
-provider or tool traffic through the model gateway.
+provider or tool traffic through the model gateway. If an adapter keeps its own
+login and network path, Calciforge needs runtime-specific wiring before it can
+claim coverage there.
 
 Those adapters can still be useful, but their protection and observability
 depend on runtime-specific wiring:
@@ -106,7 +114,7 @@ warns because that path bypasses provider-specific prefixes, API keys, and
 | Fallback behavior | Working, implicit | Alloy execution produces an ordered attempt plan; later constituents are tried when earlier ones fail. |
 | Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
-| Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. |
+| Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. BPE means byte-pair encoding, a common way model APIs count tokens. |
 | CLI-backed subscription agents | Working | Codex, Claude Code, Kimi Code, Dirac, and generic executable adapters are agent routes, not gateway model selectors. |
 | External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected gateway engine and operator dashboard link after sender identity resolution. |
 | Helicone external gateway adapter | Working | `backend_type = "helicone"` forwards OpenAI-compatible requests to a Helicone AI Gateway while preserving Calciforge auth, routing, and command UX. |

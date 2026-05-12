@@ -2,35 +2,38 @@
 
 > **Keep your castle secure and moving.**
 
-Calciforge is a self-hosted security gateway for AI agents. It sits
-between your agents and the rest of the world, so every agent gets its
-own model routes, command permissions, destination-scoped secret
-substitution, and audit trail without holding your raw API keys.
+Calciforge is a self-hosted safety layer for AI agents. It sits between
+your agents and the outside world, then applies the rules you set:
+which model an agent may use, which commands it may run, where a secret
+may be sent, and what gets written to the audit trail. The agent can ask
+for `{{secret:NAME}}`; it does not need to hold the actual API key.
 
-The longer feature tour, configuration examples, and architecture notes
-live on the docs site: **[calciforge.org](https://calciforge.org/)**.
+The longer tour, setup examples, and architecture notes live on
+**[calciforge.org](https://calciforge.org/)**.
 
 ## What Works Today
 
-This is usable for a solo operator, but still in active hardening. New
-installations should be smoke-tested against their real channel
-credentials, fnox store, gateway providers, and synthetic routes before
-being treated as daily-driver infrastructure.
+This is usable for a solo operator, but still being hardened. Before you
+make it daily-driver infrastructure, test it with your real chat
+channels, fnox secret store, model providers, and routing choices. Castles
+move; config should still have brakes, labels, and fewer mysterious bathroom
+potions than Howl would tolerate.
 
 | Area | Status | Where to read more |
 |---|---:|---|
-| `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Explicit `{{secret:NAME}}` substitution in URL, headers, and body | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Opaque placeholder credentials for supervised agent env vars or managed credential files | Staged primitives | [Placeholder injection mode](https://calciforge.org/roadmap/placeholder-injection-mode.html) |
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
-| Local paste UI for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
-| MCP and CLI tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
-| Agent runtime contract for CLI-first guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
+| Local paste form for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
+| Command-line and optional MCP tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp-and-cli) |
+| Agent runtime contract for command-line guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
 | Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Helicone-backed gateway observability with dashboard-visible doctor checks | Working | [Model gateway](docs/model-gateway.md#external-gateway-engines) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
 | Default-on inbound prompt-injection scanning, with opt-in outbound exfiltration and response secret-leak heuristics via editable policy | Working | [Traffic gating](https://calciforge.org/#outbound-traffic-gating) |
-| Configurable scanner checks with editable Starlark policy, Rust-backed `regex_match`, and remote HTTP/LLM extension points | Working | [Security gateway](docs/security-gateway.md) |
+| Configurable scanner checks with editable Starlark policy, Rust-backed `regex_match`, and optional remote model review | Working | [Security gateway](docs/security-gateway.md) |
 | Contributor red-team fixtures for prompt-injection, encoding, Unicode, and tool-policy bypass cases | Working | [Security gateway](docs/security-gateway.md#testing) |
 | [`clash`](https://crates.io/crates/clash)-backed tool policy via the `clashd` sidecar | Working | [Policy sidecar](crates/clashd/README.md) |
 | mTLS `host-agent` for ZFS, systemd, PCT, git, and exec operations | Working | [Host-agent](crates/host-agent/README.md) |
@@ -52,7 +55,7 @@ After install, the default local pieces are:
 - `security-proxy` on `127.0.0.1:8888` — substitution, destination checks, scanning, credential injection
 - `clashd` on `127.0.0.1:9001` — small HTTP adapter around the `clash` policy engine
 - `secrets-client` — env → fnox → Vaultwarden secret resolver
-- `calciforge-secrets` — non-MCP secret-name discovery and `{{secret:NAME}}` reference helper
+- `calciforge-secrets` — command-line secret-name discovery and `{{secret:NAME}}` reference helper
 - `paste-server` — short-lived local/LAN forms for adding secrets without putting values in chat history
 
 The installer attempts to install and initialize `fnox` automatically.
@@ -97,9 +100,11 @@ routing, and observability. Route agent tool/web traffic through
 content needs scanning or `{{secret:NAME}}` substitution.
 
 First-class adapters are expected to document and test their Calciforge ingress
-and egress paths. Generic CLI, generic ACP, and recipe adapters are useful but
-best effort unless their recipe proves a network boundary; hardened deployments
-should disable unverified adapters rather than assuming proxy env is enough.
+and egress paths. Generic command-line, generic ACP, and recipe adapters are
+useful but best effort unless their recipe proves a network boundary. ACP means
+Agent Client Protocol, a way to run persistent agent sessions. Hardened
+deployments should disable unverified adapters rather than assuming proxy
+environment variables are enough.
 
 For externally managed agent daemons that Calciforge does not launch, proxying
 has to be configured on that daemon or its service manager and validated
@@ -110,13 +115,30 @@ export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=localhost,127.0.0.1,::1
 ```
 
-Do not treat ambient `HTTPS_PROXY` as a security boundary unless it points at
-Calciforge's MITM listener and the agent runtime trusts the Calciforge CA. The
-installer enables the experimental hudsucker-backed listener and generates a
-persistent local CA by default; manual deployments can set
+Do not treat a generic `HTTPS_PROXY` setting as a security boundary unless it
+points at Calciforge's inspecting proxy and the agent runtime trusts the
+Calciforge CA. CA means certificate authority: a local certificate issuer your
+machine can trust so Calciforge may open an HTTPS tunnel, inspect the request,
+and then re-encrypt it. Without that trust step, HTTPS is mostly an opaque
+tube; Calciforge can see the destination host, not the page or request body
+inside. The installer enables the experimental hudsucker-backed listener and
+generates a persistent local CA by default; manual deployments can set
 `SECURITY_PROXY_CA_CERT=...` and `SECURITY_PROXY_CA_KEY=...`. Use a
-Calciforge-owned model gateway, fetch/tool path, audited recipe, or tested MITM
-proxy setup when HTTPS content needs scanning or secret substitution.
+Calciforge-owned model gateway, fetch/tool path, audited recipe, or tested
+inspecting-proxy setup when HTTPS content needs scanning or secret
+substitution.
+
+Secret handling is in a transition period. The working path today is explicit
+reference syntax: an agent emits `{{secret:NAME}}`, and Calciforge resolves it
+only at an approved destination. The next path is opaque placeholder
+credentials: Calciforge will generate fake-looking random values such as
+`cfg_OPENAI_API_KEY_<random>`, register them with the security proxy, then
+provide them to supervised agents through env vars or managed credential files.
+That matters for agents like OpenClaw lanes that expect plaintext credential
+files or ordinary `*_API_KEY` variables. Once that path is wired, they can
+receive stand-ins instead of real secrets, and the gateway will swap in the
+real value only during an allowed outbound request. That path is not the
+default yet.
 
 ## Tiny Config Sketch
 

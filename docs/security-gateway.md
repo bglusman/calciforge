@@ -3,22 +3,28 @@ layout: default
 title: Security Gateway
 ---
 
-# Security Gateway Architecture
+# Security Gateway
 
-The `security-gateway` checks agent tool and provider traffic that actually
-enters Calciforge-controlled paths. It is not automatic coverage for every
-process on the host.
+Status: Experimental
 
-Calciforge treats this as a support-tier question:
+The security gateway checks agent traffic that actually passes through
+Calciforge. That phrase matters. Calciforge can inspect model calls, tool
+requests, fetched pages, and provider traffic only when those requests use a
+Calciforge-controlled path. It is not a spell cast over every process on the
+machine.
+
+Calciforge treats coverage as a support-tier question:
 
 - **First-class agents** should have tested ingress and egress contracts. If a
   first-class adapter can receive user messages or send model/tool traffic
   around Calciforge in a protected profile, treat that as a Calciforge bug or
   an upstream limitation that needs a documented workaround.
-- **Recipe, generic CLI, and generic ACP agents** are best effort unless the
-  recipe documents a tested network boundary. Calciforge can give them safer
-  defaults, wrapper scripts, CLI helpers, and proxy env, but it cannot prove an
-  arbitrary agent runtime will not open another network path.
+- **Recipe, generic command-line, and generic ACP agents** are best effort
+  unless the recipe documents a tested network boundary. ACP means Agent
+  Client Protocol, a way to run persistent agent sessions. Calciforge can give
+  these adapters safer defaults, wrapper scripts, command-line helpers, and
+  proxy environment variables, but it cannot prove an arbitrary agent runtime
+  will not open another network path.
 - **Hardened deployments** should be able to reject or disable adapters whose
   ingress, egress, or instruction path cannot be verified. That is the target
   shape for release-hardening work; for now, `calciforge doctor` reports the
@@ -28,7 +34,7 @@ For stronger guarantees, route model calls through Calciforge's model gateway,
 give agents explicit Calciforge fetch/tool wrappers, or run the agent under a
 host/container boundary that prevents bypass.
 
-## 🛡️ Traffic Flow
+## Traffic Flow
 
 Outbound traffic from protected agents can be routed through the gateway by a
 specific supported integration. Calciforge's own provider calls, health
@@ -41,22 +47,24 @@ recursively.
 
 1. **Manual credential check:** Before Calciforge substitutes any secrets,
    IronClaw checks the original agent-supplied URL and non-transport headers
-   for raw credentials such as `api_key=sk-...`. Transport-auth headers such
-   as `Authorization`, `Cookie`, and provider API-key headers are sanitized
+   for raw credentials such as `api_key=sk-...`. Transport-auth headers, such
+   as `Authorization`, `Cookie`, and provider API-key headers, are sanitized
    before this check; otherwise normal model/provider sessions and local
-   gateways generate false positives. Exact
-   proxy-managed placeholders such as
+   gateways would look suspicious. Exact proxy-managed explicit references such as
    `{% raw %}{{secret:NAME}}{% endraw %}` and
    `Bearer {% raw %}{{secret:NAME}}{% endraw %}` are safe control syntax;
-   mixed manual-plus-placeholder values still remain visible to the check.
+   mixed manual-plus-reference values still remain visible to the check.
 2. **Optional exfiltration scan:** When `scan_outbound = true`, outgoing request bodies are analyzed by the
    `adversary-detector` for exfiltration language, credential-harvest phrasing,
    and adversarial patterns. This is opt-in by default because provider/tool
    transcripts often include benign prompt-injection examples and opaque IDs.
 3. **Secret substitution and credential injection:** When the request is
-   visible to Calciforge, the gateway can substitute placeholders such as
+   visible to Calciforge, the gateway can substitute explicit references such as
    `{% raw %}{{secret:NAME}}{% endraw %}` in URLs, headers, and supported
-   bodies, and inject provider `Authorization` headers from the vault.
+   bodies, and inject provider `Authorization` headers from the vault. The
+   staged placeholder path will use this same step to replace registered opaque
+   credentials such as `cfg_OPENAI_API_KEY_<random>` once lifecycle wiring is
+   enabled.
 4. **Control header strip and forwarding:** Calciforge strips
    `X-Calciforge-*` control headers, then forwards the request to the
    destination.
@@ -72,7 +80,7 @@ recursively.
 3. **Enforcement:** If the response is deemed `unsafe`, the gateway blocks the
    content and returns `403 Forbidden` to the agent.
 
-## 🚀 Deployment & Enforcement
+## Deployment And Enforcement
 
 The gateway has several enforcement modes. They are not interchangeable; pick
 the strongest mode the target agent can actually run under, then verify that
@@ -81,16 +89,55 @@ the selected agent adapter actually uses it.
 | Mode | Level | Status | Description |
 |------|-------|--------|-------------|
 | Model gateway | API | Working | Route OpenAI-compatible model calls through Calciforge's gateway. This is the most reliable path for providers and local dispatcher routes because Calciforge owns the HTTP request. |
-| Explicit tools/fetch | App | Working/expanding | Give agents Calciforge-provided fetch, MCP, or recipe wrappers for network actions that need scanning or secret substitution. |
+| Explicit tools/fetch | App | Working/expanding | Give agents Calciforge-provided fetch, MCP, or recipe wrappers for network actions that need scanning or secret substitution. MCP means Model Context Protocol: a structured way to expose tools to an agent. |
 | Cooperative HTTP proxy | App | Limited | Set `HTTP_PROXY` only for agents and tools that have been tested with the proxy. This is useful for plaintext HTTP and simple HTTP clients. |
-| HTTPS MITM | App/host trust | Experimental | Trust a Calciforge CA and terminate CONNECT traffic for clients that support custom trust stores. The hudsucker-backed prototype runs the existing scan/substitution pipeline over decrypted requests and responses. |
+| HTTPS inspecting proxy | App/host trust | Experimental | Trust a Calciforge CA and terminate CONNECT traffic for clients that support custom trust stores. CA means certificate authority: a local certificate issuer your runtime agrees to trust. The hudsucker-backed prototype runs the existing scan/substitution pipeline over decrypted requests and responses. |
 | OS redirect | Host | Roadmap | Use firewall rules such as Linux `iptables`/`nftables` or macOS `pf` to redirect outbound traffic from a controlled UID/process group to the gateway. |
 | Container or VM isolation | Runtime | Roadmap | Run the agent in Docker, a Linux namespace, LXC, or a VM where egress is denied except through Calciforge-managed gateways. This is the likely path for agents that ignore proxy env or use complex transports. |
-| Placeholder injection | Secret boundary | Roadmap | Give off-the-shelf agents fake env credentials and substitute real secrets only at the gateway. This keeps raw secrets out of agent memory but still needs a network enforcement path. |
+| Placeholder injection | Secret boundary | Staged primitives | Give off-the-shelf agents fake env credentials or managed credential files and substitute real secrets only at the gateway. This keeps raw secrets out of agent memory but still needs agent lifecycle wiring, live request rewriting, and a network enforcement path. |
+
+## Secret References And Opaque Placeholder Credentials
+
+Calciforge now has two related secret-use shapes:
+
+- **Explicit secret references** are the working path:
+  `{% raw %}{{secret:NAME}}{% endraw %}`. Agents that know about Calciforge can
+  ask `calciforge-secrets ref NAME` or use the MCP tool, place that reference
+  into a visible outbound request, and let the gateway resolve it.
+- **Opaque placeholder credentials** are the staged next path:
+  `cfg_<NAME>_<random>`. Calciforge generates the token, registers the full
+  token against an authoritative secret name for one agent, then provides the
+  token through a supervised surface such as an environment variable, wrapper,
+  or managed credential file. The embedded `<NAME>` is only a hint for humans;
+  policy must resolve the full token through the per-agent registry.
+
+The second path exists because many agents and tools do not know Calciforge's
+mustache-style syntax. They expect `OPENAI_API_KEY`, a credentials directory,
+or a provider config file. For example, an OpenClaw lane may already have a
+plaintext credentials folder. In a managed placeholder setup, Calciforge should
+write placeholder values there instead of real keys, register those values with
+the security proxy, and retire them when that managed runtime stops or rotates.
+
+Do not mark explicit references deprecated yet. They remain the only fully
+wired path, they are simple to audit, and they work for agents that can follow
+Calciforge's CLI/MCP guidance. Placeholder credentials may become the default
+for some supervised first-class agents once generation, delivery,
+registration, live replacement, and retirement are all end-to-end tested. Even
+then, both mechanisms may remain supported: explicit references are clearer for
+agent-aware workflows, while opaque placeholders are better for ordinary tools
+that expect env vars or credential files.
+
+There is also a scanner compatibility reason to keep both. Opaque placeholders
+are deliberately random and secret-shaped. If IronClaw-style exfiltration
+detection is enabled, those stand-ins may look like credentials unless the
+scanner learns Calciforge's placeholder registry or allowlist. That is solvable,
+but it means placeholder injection and aggressive exfil detection should be
+treated as separate knobs until the integration is proven.
 
 The unified installer starts `security-proxy`, but it does not put
 `HTTP_PROXY`/`HTTPS_PROXY` on the Calciforge service itself. Do not assume
-CLI or exec-backed agents can be protected by generic proxy environment:
+command-line or exec-backed agents can be protected by generic proxy
+environment variables.
 Codex, Claude, ACPX, npm-backed adapters, and streaming clients may use
 CONNECT, WebSockets, or browser-backed authentication flows that the current
 proxy cannot inspect and may break. Keep those agents unproxied unless you
@@ -106,14 +153,14 @@ run, or add `"security_proxy_bind": "0.0.0.0"` to that host's node entry in
 network restrictions when the LAN is not fully trusted.
 
 Ambient `HTTPS_PROXY` is not a complete protection story unless it points at a
-Calciforge MITM listener and the client trusts the Calciforge CA. Standard
-HTTPS proxying uses CONNECT tunnels; without MITM, a proxy can only see the
-destination host and encrypted bytes. Current `security-proxy` is MITM-only:
-it uses hudsucker to terminate CONNECT traffic, mint per-host certificates from
-the configured CA, and run the existing request/response substitution and
-scanner pipeline over the decrypted HTTP messages. Prefer Calciforge-owned
-model gateway routes, explicit fetch/tool integration, or audited recipe
-wrappers for runtimes that cannot use the MITM trust setup.
+Calciforge inspecting proxy and the client trusts the Calciforge CA. Standard
+HTTPS proxying uses CONNECT tunnels; without inspection, a proxy can only see
+the destination host and encrypted bytes. Current `security-proxy` uses
+hudsucker to terminate CONNECT traffic, mint per-host certificates from the
+configured CA, and run the existing request/response substitution and scanner
+pipeline over the decrypted HTTP messages. Prefer Calciforge-owned model
+gateway routes, explicit fetch/tool integration, or audited recipe wrappers for
+runtimes that cannot use this trust setup.
 
 Externally managed agent daemons are different. OpenClaw, ZeroClaw, Claude
 Code, opencode, Dirac, or any custom process started by a separate service
@@ -145,7 +192,7 @@ as a reliable security mechanism.
   after checking that the configured `security-proxy` is reachable from the
   OpenClaw host.
 - `HTTPS_PROXY` should only be set for agent runtimes that have been tested
-  with Calciforge's MITM mode and trust the configured CA. Setting it globally
+  with Calciforge's inspecting-proxy mode and trust the configured CA. Setting it globally
   can break streaming clients, WebSockets, browser/OAuth flows, and npm-backed
   adapters.
 - Browser-backed tools usually need runtime-specific wiring. Managed OpenClaw
@@ -157,14 +204,14 @@ as a reliable security mechanism.
   control-plane traffic through its own proxy boundary.
 - Secret injection works when the request reaches Calciforge in a visible form:
   model-gateway/provider routes, explicit fetch/MCP/tool wrappers, audited
-  recipes, plaintext HTTP intercept mode, or HTTPS MITM mode. It does not
+  recipes, plaintext HTTP intercept mode, or HTTPS inspecting-proxy mode. It does not
   happen for an external daemon's direct HTTPS egress unless that daemon is
-  configured to use Calciforge's MITM listener or another Calciforge-owned tool
-  path.
+  configured to use Calciforge's inspecting proxy or another Calciforge-owned
+  tool path.
 
-### HTTPS MITM Prototype
+### HTTPS Inspecting Proxy Prototype
 
-The installer now starts `security-proxy` with the hudsucker-backed MITM
+The installer now starts `security-proxy` with the hudsucker-backed inspecting
 listener enabled by default and generates a persistent local CA if one does not
 already exist. On macOS, the installer explains why the trust step is needed
 before it asks the system to add that CA to the login keychain. This is required
@@ -201,7 +248,7 @@ Practical tiers:
 
 - Direct Mac Mini/Studio OpenClaw: use the Calciforge bridge plugin for inbound chat,
   point provider/model calls at Calciforge's model gateway where possible, and
-  use `proxy_endpoint` plus MITM CA trust for tested HTTP/HTTPS egress. This is
+  use `proxy_endpoint` plus inspecting-proxy CA trust for tested HTTP/HTTPS egress. This is
   convenient but cooperative; OpenClaw can still bypass Calciforge if it opens
   its own direct connections outside the configured proxy environment.
 - Linux service host: add systemd drop-ins, dedicated service users, and later
@@ -231,7 +278,7 @@ daemon is launched in a controlled environment. The practical future path is a
 local-lab profile that can run selected agents inside a container or VM with
 egress limited to Calciforge services.
 
-## ⚙️ Configuration
+## Configuration
 
 The gateway is configured via `GatewayConfig`:
 - `scan_outbound`: Toggle outbound adversary/exfiltration detection. Defaults
@@ -283,8 +330,9 @@ Calciforge's security checks are an ordered pipeline:
    `base64_decoded_regex_match(pattern, content)` for bounded Rust-backed
    matching.
 3. `remote_http` — optional custom policy service. This is where operators can
-   add an LLM classifier, heavyweight DLP checks, or organization-specific
-   threat modeling that belongs outside the proxy process.
+   add a model-based classifier, heavier data-loss prevention checks, or
+   organization-specific threat modeling that belongs outside the proxy
+   process.
 
 ### Override and Approval Matrix
 
@@ -319,18 +367,18 @@ service environment, or policy files, while request-carried override metadata
 stays narrowly scoped and is stripped before forwarding upstream.
 
 Calciforge intentionally has both local and remote adversary detectors. The
-local Starlark policy is for deterministic prefiltering: hidden DOM/text,
+local Starlark policy is for deterministic prefiltering: hidden page text,
 encoding, obvious exfiltration language, and concrete tool-policy bypass
-patterns. The remote HTTP/LLM check is for semantic adjudication: foreign
+patterns. The remote HTTP/model check is for semantic judgment: foreign
 language, poetry or other style-shift attacks, fictional framing, coercion,
 multi-step decomposition, and intent that would be brittle or overbroad as
 regex. The remote pass adds latency and still asks one model to defend another
-model, so Calciforge keeps Starlark as the default and makes the LLM pass
+model, so Calciforge keeps Starlark as the default and makes model review
 explicitly configurable.
 
 No remote service is required for the default gateway. The localhost HTTP hop is
-small, but an LLM classifier call is not; enable it only when the extra security
-pass is worth the added latency.
+small, but a model classifier call is not; enable it only when the extra
+security pass is worth the added latency.
 
 On a local release build, the built-in Starlark default scanner measured about
 `299µs` per warm scan for ordinary small content. Treat that as a sanity check,
@@ -603,11 +651,21 @@ helpers broadly.
 
 ## `[security.agent_web]` — agent-web-content defenses
 
-Calciforge's MITM gateway already scans every outbound HTTPS, but the highest-likelihood leak path for blocked content is *not* a direct egress to a denied host — it's the **search-API response** that contains pre-indexed snippets of the same denied host, or a **provider-side browsing tool** that the model invokes from inside an allowed `api.openai.com` session.
+Calciforge's inspecting gateway can scan outbound HTTPS when the runtime uses
+the trusted proxy path, but the highest-likelihood leak path for blocked
+content is *not* a direct egress to a denied host. It is the **search-API
+response** that contains pre-indexed snippets of the same denied host, or a
+**provider-side browsing tool** that the model invokes from inside an allowed
+`api.openai.com` session.
 
 `[security.agent_web]` adds four configurable defenses against this class of leak. All default to safe values; operators opt into stricter modes.
 
-This complements but does **not** replace `secret_destination_allowlist` or dynamic `allowed_destinations` secret metadata — those allowlists gate *secrets-into-hosts*, while `agent_web` gates *content* (search snippets, provider browsing tool defs, URLs in LLM message bodies). Static TOML policy and dynamic metadata are intersected; metadata read failures fail closed when substitution needs a destination policy decision.
+This complements but does **not** replace `secret_destination_allowlist` or
+dynamic `allowed_destinations` secret metadata. Those allowlists gate
+*secrets-into-hosts*, while `agent_web` gates *content*: search snippets,
+provider browsing tool definitions, and URLs in large-language-model request
+bodies. Static TOML policy and dynamic metadata are intersected; metadata read
+failures fail closed when substitution needs a destination policy decision.
 
 ### (A) `forbid_search_engines`
 

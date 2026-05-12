@@ -42,6 +42,10 @@ Secrets:
 - Put `{{secret:NAME}}` placeholders only into outbound requests that are
   routed through Calciforge. Do not try to resolve, print, log, or store secret
   values yourself.
+- If your runtime receives an env var or credential file whose value starts
+  with `cfg_`, treat it as an opaque Calciforge-managed credential stand-in.
+  Use it only in the provider request it was configured for. Do not print,
+  transform, rotate, or copy it elsewhere.
 
 Artifacts:
 - If Calciforge provides `CALCIFORGE_ARTIFACT_DIR`, write generated images,
@@ -71,6 +75,9 @@ Current surfaces:
   discovery and placeholder construction.
 - Optional `mcp-server` tools for the same secret-name workflow when MCP is
   explicitly configured.
+- Managed opaque placeholder credentials for supervised runtimes. Calciforge
+  or an installer-managed wrapper must generate and provide these values; the
+  agent should never invent a `cfg_*` value itself.
 - `CALCIFORGE_ARTIFACT_DIR` for recipes or adapters that produce files.
 - The OpenAI-compatible model gateway when a local agent should route model
   calls through Calciforge rather than directly to a provider.

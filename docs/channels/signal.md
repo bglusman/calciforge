@@ -6,24 +6,27 @@ title: Signal Channel Setup
 # Signal Channel
 
 Calciforge's Signal channel embeds [`zeroclawlabs::SignalChannel`][zclaw] as a
-library and talks to [`signal-cli-rest-api`][scra] (or any compatible
-`signal-cli daemon --http` front-end) directly. There is no separate ZeroClaw
-daemon in the runtime path.
+library and talks directly to [`signal-cli-rest-api`][scra] or any compatible
+`signal-cli daemon --http` front-end. There is no separate ZeroClaw daemon in
+the runtime path.
 
 [zclaw]: https://docs.rs/zeroclawlabs
 [scra]: https://github.com/bbernhard/signal-cli-rest-api
 
-The wire-protocol contract is `signal-cli`'s JSON-RPC + SSE API. As long as
-your daemon implements that (signal-cli-rest-api is the reference; any
-compatible re-implementation works), Calciforge will connect.
+The wire-protocol contract is `signal-cli`'s JSON-RPC + SSE API. JSON-RPC is a
+structured request/response format; SSE, or Server-Sent Events, is the stream
+used for incoming messages. As long as your daemon implements that
+(`signal-cli-rest-api` is the reference; any compatible re-implementation
+works), Calciforge will connect.
 
 ## What this gateway does
 
-`signal-cli-rest-api` owns the Signal session (registration, encryption, the
-libsignal store) and exposes it over HTTP. `zeroclawlabs::SignalChannel` is
-the Rust client that subscribes to the SSE event stream for inbound messages
-and POSTs JSON-RPC `send` requests for outbound replies. Calciforge wires
-that client into its identity resolver, command dispatcher, and agent router.
+`signal-cli-rest-api` owns the Signal session: registration, encryption, and
+the libsignal store. It exposes that session over HTTP.
+`zeroclawlabs::SignalChannel` is the Rust client that subscribes to the SSE
+event stream for inbound messages and POSTs JSON-RPC `send` requests for
+outbound replies. Calciforge wires that client into its identity resolver,
+command dispatcher, and agent router.
 
 ZeroClaw is no longer required. `signal-cli-rest-api` is the only external
 dependency, and it is a generic Signal automation tool — not Calciforge- or
@@ -89,21 +92,6 @@ allowed_numbers = ["+15555550001"]
 | `signal_ignore_stories` | no | `false` | Drop story messages |
 | `ui_mode` | no | `"auto"` | Reserved for channel-native controls; set `"text"` to force plain text fallback |
 | `scan_messages` | no | `false` | Enable inbound adversarial content scanning |
-
-## Channel UI
-
-Signal currently renders Calciforge choices as deterministic text fallback.
-Agent choices, model choices, session lists, and approval decisions all use the
-shared choice model, so replies include actionable commands such as
-`!agent switch <id>`, `!model use <id>`, `!switch <agent> <session>`,
-`!approve <id>`, and `!deny <id>`.
-
-The embedded transport sends through `zeroclawlabs::Channel::SendMessage`,
-which exposes text, recipient, threading, cancellation, and attachments, but
-does not expose Signal-native quick replies or buttons. If that backend grows a
-safe native-control API later, Calciforge can render the same shared choices
-without changing the command handlers. Set `ui_mode = "text"` to keep this
-channel text-only for bridge-heavy or constrained clients.
 
 ## Migrating from the legacy webhook config
 
@@ -178,7 +166,8 @@ model, but the embedded Signal transport sends the text fallback because
 `zeroclawlabs::Channel::SendMessage` does not expose Signal-native controls.
 Keep using deterministic commands such as `!agent switch <id>`, `!model use
 <id>`, `!switch <agent> <session>`, `!approve <id>`, and `!deny <id>` until the
-Signal transport exposes safe native affordances.
+Signal transport exposes safe native affordances. The commands are not fancy,
+but they are clear, logged, and hard to mis-tap.
 
 You can also use Telegram as the Calciforge control surface for buttons while
 continuing the main chat in Signal. Active agent/model selections are keyed by

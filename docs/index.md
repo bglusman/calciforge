@@ -186,10 +186,10 @@ footer .name-origin {
 <h1 class="wordmark">Calci<span class="glow">forge</span></h1>
 <p class="tagline">Keep your castle secure and moving.</p>
 
-<p class="lede">A self-hosted security gateway for AI agents. Every agent
-gets a bound contract — destination-scoped secret substitution,
-model routes, command permissions, and audit trails — without sharing
-raw API keys or trusting the agent's own restraint.</p>
+<p class="lede">A self-hosted safety layer for AI agents. Give each agent a
+clear contract: which models it may use, which commands it may run, where
+secrets may go, and what gets logged. The agent can ask for a secret by name;
+it does not need the raw key in memory.</p>
 
 <div class="nav">
 <a href="https://github.com/bglusman/calciforge">GitHub</a>
@@ -203,7 +203,7 @@ raw API keys or trusting the agent's own restraint.</p>
 
 <main class="container" markdown="1">
 
-## What it gives you
+## What Calciforge Does
 
 Calciforge sits between your AI agents and the places they can send messages,
 fetch pages, run tools, and spend tokens. You do not have to use every part on
@@ -218,19 +218,26 @@ explicit fetch/tool integration, audited recipes, and tested proxy setups.
 The point is simple: do not rely on an agent to remember the safety rules while
 it is under pressure from a page, prompt, or tool result. Put the rules at a
 request boundary where Calciforge can check secrets, destinations, model routes,
-and tool permissions before traffic leaves the machine.
+and tool permissions before traffic leaves the machine. Agents can be brilliant
+and still dramatic; Calciforge is here so one bad web page does not turn into a
+hair-dye-level crisis.
 
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection unless
-it points at Calciforge's MITM listener and the target runtime trusts the
-Calciforge CA. Standard HTTPS proxying uses CONNECT tunnels; the experimental
-hudsucker-backed MITM mode terminates those tunnels so Calciforge can scan and
-rewrite decrypted request/response bodies. The installer enables that listener
-and generates a persistent local CA by default, while runtime-specific CA trust
-and `HTTPS_PROXY` rollout remain explicit.
-For agents that do not work with cooperative proxy env, Calciforge's
-security boundary shifts to model-gateway routing, explicit MCP/fetch tools,
-audited recipe wrappers, or future container/VM isolation profiles that deny
-egress except through Calciforge services.
+it points at Calciforge's inspecting proxy and the target runtime trusts the
+Calciforge CA. CA means certificate authority: a certificate issuer your
+machine trusts. For Calciforge, the local CA lets the proxy terminate the
+agent's HTTPS connection, inspect the request and response, then open its own
+encrypted connection to the upstream destination. Without that trust step,
+ordinary HTTPS proxying uses CONNECT
+tunnels, so the proxy sees the destination host and encrypted bytes, not the
+page or request body inside. The installer enables the experimental
+hudsucker-backed listener and generates a persistent local CA by default, while
+runtime-specific CA trust and `HTTPS_PROXY` rollout remain explicit.
+For agents that do not work with cooperative proxy environment variables,
+Calciforge's
+security boundary shifts to model-gateway routing, explicit fetch tools,
+optional MCP tools, audited recipe wrappers, or future container/VM isolation
+profiles that deny egress except through Calciforge services.
 
 The gateway protects at three boundaries:
 
@@ -245,14 +252,14 @@ The gateway protects at three boundaries:
   write, network call, or other agent action should be allowed, denied, or sent
   for review.
 
-The default adversary detector is intentionally editable. Calciforge
-ships a built-in Starlark policy for deterministic checks such as
-zero-width text, hidden DOM, base64-encoded English instructions,
-credential-harvest phrasing, exfiltration language, and concrete
-tool-policy bypass patterns. Operators can copy that policy into
+The default adversary detector is intentionally editable. Calciforge ships a
+built-in Starlark policy for checks that should be boring and repeatable:
+zero-width text, hidden page text, base64-encoded English instructions,
+credential-harvest phrasing, exfiltration language, and concrete tool-policy
+bypass patterns. Operators can copy that policy into
 `/etc/calciforge/scanner-policies/default-scanner.star`, edit it, add
-more Starlark checks, or attach a remote HTTP scanner for heavier DLP
-and LLM-based semantic review.
+more Starlark checks, or attach a remote HTTP scanner for heavier data-loss
+prevention checks and model-based review.
 
 ```toml
 [[security.scanner_checks]]
@@ -269,10 +276,10 @@ fail_closed = true
 
 Starlark policy files can call `regex_match(pattern, content)` and
 `base64_decoded_regex_match(pattern, content)` for bounded Rust-backed
-matching. Remote scanners use a simple `/scan` HTTP contract; the
-included example wraps an OpenAI-compatible classifier with an editable
-prompt for foreign-language, poetry/style-shift, fictional-framing, and
-multi-step manipulation cases that are too semantic for local regexes.
+matching. Remote scanners use a simple `/scan` HTTP contract; the included
+example wraps an OpenAI-compatible classifier with an editable prompt for cases
+that are too semantic for local regexes, such as foreign-language instructions,
+poetry or style-shift jailbreaks, fictional framing, and multi-step coercion.
 
 See the [security gateway docs](security-gateway.html) for configuration
 details and the
@@ -298,9 +305,9 @@ ANTHROPIC_API_KEY = { provider = "1password", value = "claude" }
 NPM_TOKEN = { default = "value-from-env-or-prompt" }
 ```
 
-For new values, prefer the local paste UI. It gives you a short-lived
-browser form and keeps the value out of Telegram, Matrix, WhatsApp,
-and other chat history:
+For new values, prefer the local paste form. It gives you a short-lived
+browser page and keeps the value out of Telegram, Matrix, WhatsApp, and other
+chat history. Secrets in chat have a way of sticking around like soot.
 
 ```bash
 paste-server OPENAI_API_KEY "OpenAI API key"
@@ -354,16 +361,29 @@ with a temporary secret by default so macOS Keychain or provider approval
 prompts happen during setup instead of the first chat-driven paste. Set
 `CALCIFORGE_FNOX_WARMUP=false` to skip that preflight.
 
-### Outbound traffic gating
+### Outbound Traffic Gating
 
-The gateway substitutes `{% raw %}{{secret:NAME}}{% endraw %}`
-references at the moment of forwarding — and only if the destination
-is on the per-secret allowlist. Placeholders are allowed in URLs,
-headers, and supported request bodies, including query parameters such
-as `?api_key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`. The
-gateway runs manual-credential detection before substitution, so raw
-agent-supplied credentials such as `?api_key=sk-...` are blocked while
-proxy-managed placeholders can still be resolved safely.
+The working path today is explicit secret references. The agent writes
+`{% raw %}{{secret:NAME}}{% endraw %}`, and the gateway substitutes that
+reference at the moment of forwarding — and only if the destination is on the
+per-secret allowlist. References are allowed in URLs, headers, and supported
+request bodies, including query parameters such as
+`?api_key={% raw %}{{secret:OPENAI_API_KEY}}{% endraw %}`. The gateway runs
+manual-credential detection before substitution, so raw agent-supplied
+credentials such as `?api_key=sk-...` are blocked while Calciforge-managed
+references can still be resolved safely.
+
+Calciforge is also growing an opaque placeholder credential path. Instead of
+teaching an agent to write `{% raw %}{{secret:NAME}}{% endraw %}`, Calciforge
+will be able to generate a random stand-in such as
+`cfg_OPENAI_API_KEY_<random>`, register that token with the
+security proxy, and put the stand-in where the agent already expects a
+credential: an env var, a wrapper-provided file, or eventually a managed
+credential folder. The agent never receives the real key. When a visible
+outbound request carries the stand-in, the gateway resolves the full opaque
+token to the real secret name, checks the same identity and destination policy,
+and only then loads the value. The primitives for that path are staged, but
+agent lifecycle wiring and live request rewriting are not enabled yet.
 
 ```toml
 # /etc/calciforge/security-proxy.toml
@@ -428,11 +448,11 @@ The scanner pipeline is configurable. The default policy now runs through
 edited, replaced, or ordered alongside other Starlark checks. Starlark
 policies can call `regex_match(pattern, content)` and bounded
 `base64_decoded_regex_match(pattern, content)` helpers for Rust-backed matching
-without a sidecar service. Optional remote HTTP scanners can host heavier DLP
-or LLM classifier passes, and the example LLM classifier ships with an editable
-default prompt. The built-in default measured about `299µs` per warm scan in a
-local release build; remote LLM checks are explicit because they add materially
-more latency.
+without a sidecar service. Optional remote HTTP scanners can host heavier
+data-loss prevention or model-classifier passes, and the example classifier
+ships with an editable default prompt. The built-in default measured about
+`299µs` per warm scan in a local release build; remote model checks are explicit
+because they add materially more latency.
 
 ### Inbound traffic gating and tool policy
 
@@ -685,13 +705,20 @@ proxy/model surfaces, and future agent-facing APIs.
 
 ### Agent-facing tools (MCP and CLI)
 
-A small CLI and optional MCP server expose secret *names* to agents
-but never return values — the only way for an agent to use a secret is to
-emit `{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve
-on the way out. Designed so a compromised agent can enumerate names
-and fail to retrieve values.
+A small command-line tool and optional MCP server expose secret *names* to
+agents but never return values. MCP means Model Context Protocol, a way for
+tools to expose structured capabilities to an agent. Today, the portable way
+for an agent to use a secret is to emit
+`{% raw %}{{secret:NAME}}{% endraw %}` and let the gateway resolve it on the
+way out. A compromised agent may learn that a key exists, but it still cannot
+ask Calciforge to hand over the value.
 
-Calciforge's default agent guidance should be CLI-first:
+For agents that cannot be taught Calciforge syntax, the planned placeholder
+credential path gives them fake credential values instead. Those stand-ins must
+be generated and provided by Calciforge or an installer-managed wrapper; an
+agent cannot safely invent one.
+
+Calciforge's default agent guidance should be command-line first:
 `calciforge-secrets list` and `calciforge-secrets ref NAME` work for any
 runtime that can run a command. MCP is an opt-in convenience for runtimes that
 support it and have been configured explicitly. Discovery is filtered by
@@ -727,7 +754,7 @@ Per-channel setup guides (config reference + TOML examples tested against
 the live schema in CI):
 
 - [Telegram](channels/telegram.html) — long-poll, no open port required
-- [Matrix](channels/matrix.html) — HTTP long-poll; note: no E2EE
+- [Matrix](channels/matrix.html) — HTTP long-poll; note: no end-to-end encryption
 - [Signal](channels/signal.html) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
 - [WhatsApp](channels/whatsapp.html) — embedded WhatsApp Web session
 - [Text/iMessage](channels/sms.html) — Linq webhook receiver for iMessage/RCS/SMS
@@ -796,12 +823,12 @@ is value hiding plus destination allowlists.
 ### Sensitive system operations
 
 A separate authenticated daemon (`host-agent`) handles ZFS / systemd
-/ PCT / git / exec calls behind mTLS. Agents never get a shell
-directly; they call the daemon, which validates the operation
-shape against allowlist rules and runs through narrow sudoers
-wrappers. The host side relies on Unix permissions for enforcement and
-writes structured audit records suitable for append-only logs and
-rotation.
+/ PCT / git / exec calls behind mTLS. mTLS means mutual TLS: both sides prove
+who they are with certificates before a request is accepted. Agents never get a
+shell directly; they call the daemon, which validates the operation shape
+against allowlist rules and runs through narrow sudoers wrappers. The host side
+relies on Unix permissions for enforcement and writes structured audit records
+suitable for append-only logs and rotation.
 
 ---
 
@@ -845,14 +872,14 @@ Do not put proxy variables in a shell startup file used by the Calciforge
 daemon itself. That can send Calciforge's provider calls, callbacks, health
 checks, and local control traffic through its own proxy.
 
-Also do not assume every CLI agent is protected just because `HTTP_PROXY` or
+Also do not assume every command-line agent is protected just because `HTTP_PROXY` or
 `HTTPS_PROXY` exists in the environment. Codex, Claude, ACPX, npm-backed
 adapters, and streaming clients may use CONNECT, WebSockets, or browser-backed
 auth flows. Some work fine with Calciforge's proxy. Some need runtime-specific
 wiring. Some will ignore the proxy like it was a very small sign in the rain.
 For traffic that must pass through Calciforge, prefer model-gateway routes,
-explicit fetch/tool integration, audited recipes, tested MITM proxy setup, or a
-runtime-specific wrapper.
+explicit fetch/tool integration, audited recipes, tested inspecting-proxy setup,
+or a runtime-specific wrapper.
 
 For externally managed agent daemons that Calciforge does not launch, configure
 a tested proxy path on the agent process or its service manager and validate it
@@ -889,9 +916,10 @@ direction in the [UX roadmap](roadmap/product-ux.html).
 Calcifer is the fire demon from Diana Wynne Jones's
 <em>Howl's Moving Castle</em> who's bound by contract to power the castle's
 magical front door — one door connecting to many places, with strict
-rules about who can pass and where. The metaphor felt apt; the tool
-itself doesn't require any familiarity with the book or its film
-adaptation, and nothing else from either is referenced or used.
+rules about who can pass and where. The metaphor felt apt: good automation
+needs power, boundaries, and the occasional reminder that nobody wants their
+bacon burned. The tool itself doesn't require any familiarity with the book or
+its film adaptation.
 </div>
 <p>MIT-licensed. Some bundled tools (e.g. fnox) carry their own licenses.</p>
 </footer>
