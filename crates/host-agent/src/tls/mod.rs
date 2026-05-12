@@ -15,7 +15,6 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     cert_path: P,
     key_path: P,
     client_ca_path: P,
-    crl_path: Option<P>,
 ) -> Result<Arc<ServerConfig>> {
     let cert_path = cert_path.as_ref();
     let key_path = key_path.as_ref();
@@ -32,11 +31,6 @@ pub fn create_mtls_config<P: AsRef<Path>>(
     // Load client CA
     let client_ca = load_certs(client_ca_path)
         .with_context(|| format!("Failed to load client CA: {:?}", client_ca_path))?;
-
-    // Validate that the configured revocation list can be read. The active
-    // request-serving path enforces the list in IdentityExtractingAcceptor after
-    // rustls has validated the client certificate chain.
-    let _ = load_crl_data(crl_path)?;
 
     // Create root certificate store
     let mut root_store = rustls::RootCertStore::empty();
@@ -65,7 +59,10 @@ pub fn create_mtls_config<P: AsRef<Path>>(
 /// Load the optional certificate revocation list used by the identity-extracting acceptor.
 pub fn load_crl_data<P: AsRef<Path>>(crl_path: Option<P>) -> Result<Option<Vec<u8>>> {
     crl_path
-        .map(|path| fs::read(path).with_context(|| "Failed to read CRL file"))
+        .map(|path| {
+            let path = path.as_ref();
+            fs::read(path).with_context(|| format!("Failed to read CRL file: {:?}", path))
+        })
         .transpose()
 }
 
@@ -198,5 +195,16 @@ mod tests {
         let crl_data = load_crl_data::<&Path>(None).expect("absent CRL should be accepted");
 
         assert!(crl_data.is_none());
+    }
+
+    #[test]
+    fn load_crl_data_reports_unreadable_path() {
+        let missing_path = Path::new("/tmp/calciforge-host-agent-missing-test-crl.pem");
+        let err = load_crl_data(Some(missing_path)).expect_err("missing CRL should fail");
+
+        assert!(
+            format!("{err:#}").contains(missing_path.to_string_lossy().as_ref()),
+            "error should identify the unreadable CRL path: {err:#}"
+        );
     }
 }
