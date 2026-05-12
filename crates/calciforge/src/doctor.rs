@@ -34,6 +34,7 @@ use crate::proxy::routing;
 mod agent_adapter_doctor;
 mod security_proxy_runtime;
 
+const DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV: &str = "CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Ok,
@@ -789,14 +790,30 @@ fn check_agent_proxy_coverage(
 }
 
 fn security_requires_agent_egress_proxy(config: &CalciforgeConfig) -> bool {
-    config.security.as_ref().is_some_and(|security| {
-        let profile_requires_egress = matches!(
-            security.profile.as_str(),
-            "hardened" | "maximum" | "paranoid"
-        );
-        let scans_agent_responses = security.scan_outbound.unwrap_or(profile_requires_egress);
-        security.require_agent_egress_proxy || scans_agent_responses
-    })
+    let install_override = std::env::var(DOCTOR_REQUIRE_AGENT_EGRESS_PROXY_ENV).ok();
+    security_requires_agent_egress_proxy_with_override(config, install_override.as_deref())
+}
+
+fn security_requires_agent_egress_proxy_with_override(
+    config: &CalciforgeConfig,
+    require_override: Option<&str>,
+) -> bool {
+    require_override.is_some_and(truthy_env_value)
+        || config.security.as_ref().is_some_and(|security| {
+            let profile_requires_egress = matches!(
+                security.profile.as_str(),
+                "hardened" | "maximum" | "paranoid"
+            );
+            let scans_agent_responses = security.scan_outbound.unwrap_or(profile_requires_egress);
+            security.require_agent_egress_proxy || scans_agent_responses
+        })
+}
+
+fn truthy_env_value(value: &str) -> bool {
+    matches!(
+        value.trim(),
+        "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+    )
 }
 
 fn check_model_gateway_config(config: &CalciforgeConfig, report: &mut DoctorReport) {
@@ -3041,6 +3058,27 @@ mod tests {
             finding.severity == Severity::Ok
                 && finding.message.contains("have no explicit MITM proxy env")
         }));
+    }
+
+    #[test]
+    fn install_override_requires_agent_egress_proxy() {
+        let config = base_config();
+
+        assert!(!security_requires_agent_egress_proxy_with_override(
+            &config, None
+        ));
+        assert!(security_requires_agent_egress_proxy_with_override(
+            &config,
+            Some("1")
+        ));
+        assert!(security_requires_agent_egress_proxy_with_override(
+            &config,
+            Some("yes")
+        ));
+        assert!(!security_requires_agent_egress_proxy_with_override(
+            &config,
+            Some("false")
+        ));
     }
 
     #[test]

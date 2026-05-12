@@ -130,6 +130,7 @@ LOG_MAX_BYTES="${CALCIFORGE_LOG_MAX_BYTES:-10485760}"
 LOG_BACKUPS="${CALCIFORGE_LOG_BACKUPS:-5}"
 CALCIFORGE_INSTALL_DOCTOR_NETWORK="${CALCIFORGE_INSTALL_DOCTOR_NETWORK:-true}"
 CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES="${CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES:-false}"
+CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY="${CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY:-true}"
 ZC_CONFIG="${CALCIFORGE_CONFIG:-$CALCIFORGE_CONFIG_HOME/config.toml}"
 ZC_LOG_DIR="${ZC_LOG_DIR:-$CALCIFORGE_CONFIG_HOME/logs}"
 INSTALL_NODES_STATE="${CALCIFORGE_INSTALL_NODES_STATE:-$CALCIFORGE_CONFIG_HOME/install-nodes.json}"
@@ -1290,16 +1291,18 @@ run_calciforge_doctor() {
         if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK"; then
             doctor_args+=(--no-network)
         fi
-        local doctor_env=()
+        local doctor_env=(env)
         if ! truthy "$CALCIFORGE_INSTALL_DOCTOR_NETWORK" || truthy "$CALCIFORGE_INSTALL_DOCTOR_STRIP_PROXIES"; then
-            doctor_env=(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
+            doctor_env+=(-u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy)
         fi
-        if [[ ${#doctor_env[@]} -gt 0 ]]; then
-            "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}" \
-                || warn "calciforge doctor reported issues; see output above"
-        else
-            "$BIN_DIR/calciforge" "${doctor_args[@]}" \
-                || warn "calciforge doctor reported issues; see output above"
+        if truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
+            doctor_env+=(CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY=1)
+        fi
+        if ! "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}"; then
+            if truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
+                die "calciforge doctor found security-proxy coverage errors; add complete per-agent proxy env for subprocess agents or set CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY=false to opt out"
+            fi
+            warn "calciforge doctor reported issues; see output above"
         fi
     else
         warn "Skipping calciforge doctor — config or binary not available yet"

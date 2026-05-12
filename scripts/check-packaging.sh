@@ -93,6 +93,26 @@ for shell_file in "${installer_shell_files[@]}"; do
     bash -n "$shell_file"
 done
 
+python3 - "$ROOT/scripts/install.sh" <<'PY'
+import pathlib
+import re
+import sys
+
+install = pathlib.Path(sys.argv[1]).read_text()
+
+if 'CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY="${CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY:-true}"' not in install:
+    raise SystemExit("installer must default to requiring explicit subprocess-agent egress proxy coverage")
+
+run_doctor = re.search(r'run_calciforge_doctor\(\) \{(?P<body>.*?)\n\}', install, re.S)
+if not run_doctor:
+    raise SystemExit("could not find run_calciforge_doctor")
+body = run_doctor.group('body')
+if 'CALCIFORGE_DOCTOR_REQUIRE_AGENT_EGRESS_PROXY=1' not in body:
+    raise SystemExit("installer doctor must enable strict agent egress proxy checks")
+if 'die "calciforge doctor found security-proxy coverage errors' not in body:
+    raise SystemExit("installer must fail closed when strict egress proxy doctor checks fail")
+PY
+
 "$ROOT/scripts/clean-install-reset.sh" --help >/dev/null
 "$ROOT/scripts/clean-install-reset.sh" --ssh 2>"$TMP/reset-missing-ssh.err" && {
     echo "clean-install-reset accepted --ssh without a host" >&2
