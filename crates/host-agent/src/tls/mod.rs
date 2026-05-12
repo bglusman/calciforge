@@ -199,8 +199,9 @@ mod tests {
 
     #[test]
     fn load_crl_data_reports_unreadable_path() {
-        let missing_path = Path::new("/tmp/calciforge-host-agent-missing-test-crl.pem");
-        let err = load_crl_data(Some(missing_path)).expect_err("missing CRL should fail");
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let missing_path = temp_dir.path().join("missing-crl.pem");
+        let err = load_crl_data(Some(&missing_path)).expect_err("missing CRL should fail");
 
         assert!(
             format!("{err:#}").contains(missing_path.to_string_lossy().as_ref()),
