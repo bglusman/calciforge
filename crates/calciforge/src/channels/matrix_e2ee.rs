@@ -24,19 +24,19 @@ pub fn e2ee_client_builder(
 mod tests {
     use super::*;
 
-    #[test]
-    fn e2ee_builder_accepts_persistent_sqlite_store() {
+    #[tokio::test]
+    async fn e2ee_builder_accepts_persistent_sqlite_store() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let builder = e2ee_client_builder(
+        let client = e2ee_client_builder(
             "https://matrix.example.test",
             temp.path().join("matrix-sdk-store"),
             Some("test-passphrase"),
-        );
+        )
+        .build()
+        .await
+        .expect("SDK client should build with persistent E2EE store");
 
-        let debug = format!("{builder:?}");
-        assert!(
-            debug.contains("matrix.example.test"),
-            "builder should retain configured homeserver in debug output: {debug}"
-        );
+        let _encryption = client.encryption();
+        assert_eq!(client.homeserver().as_str(), "https://matrix.example.test/");
     }
 }
