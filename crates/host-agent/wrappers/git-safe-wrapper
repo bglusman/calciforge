@@ -1,9 +1,10 @@
 #!/bin/bash
 # git-safe-wrapper — run a safe subset of git commands in allowlisted repos.
 #
-# This script is installed root-owned to /usr/local/sbin/git-safe-wrapper.
-# It is the only git execution path granted via sudoers so that clash-agent
-# can trigger git operations without unrestricted git access.
+# This script may be installed root-owned to /usr/local/sbin/git-safe-wrapper,
+# but it must run as the unprivileged host-agent service account. Do not grant
+# sudo access to this wrapper: Git can execute repository-controlled hooks,
+# configuration, and diff drivers.
 #
 # Supported sub-commands (read-only or controlled fetch/pull only):
 #   status, fetch, pull, log, diff
@@ -24,6 +25,7 @@
 #   - All paths are resolved with realpath --canonicalize-missing before
 #     allowlist lookup to resist symlink traversal.
 #   - chdir happens in bash before exec; git never receives a path argument.
+#   - Refuses to run as root, even if an operator accidentally grants sudo.
 
 set -euo pipefail
 
@@ -44,6 +46,12 @@ die() {
 log_info() {
     logger -t "$SCRIPT_NAME" -p security.info "$*"
 }
+
+# ── privilege validation ─────────────────────────────────────────────────────
+
+if [[ "$EUID" -eq 0 ]]; then
+    die "git-safe-wrapper must not run as root; run git as the unprivileged host-agent service account"
+fi
 
 # ── arg validation ────────────────────────────────────────────────────────────
 
