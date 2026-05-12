@@ -490,7 +490,7 @@ async fn main() -> Result<()> {
 
     let sms_fut = async {
         if !args.proxy_only && has_sms {
-            info!("starting Text/iMessage channel (Linq webhook receiver)");
+            info!("starting text/SMS channel");
             channels::sms::run(
                 config.clone(),
                 router.clone(),

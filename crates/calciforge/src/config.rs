@@ -369,9 +369,10 @@ pub struct RoutingRule {
 /// For Matrix: set `homeserver`, `access_token_file`, `room_id`, and optionally `allowed_users`.
 /// For WhatsApp: set `whatsapp_session_path` and `allowed_numbers`.
 /// For Signal: set `signal_cli_url`, `signal_account`, and `allowed_numbers`.
-/// For text/iMessage: set `sms_linq_api_token_file`, `sms_from_phone`, and `allowed_numbers`;
-/// configure inbound webhooks with `sms_webhook_listen` and `sms_webhook_path`; and prefer
-/// `sms_linq_signing_secret_file` or `sms_linq_signing_secret` for webhook signature checks.
+/// For text/iMessage: set `sms_provider = "linq"` or `"twilio"`, the provider
+/// credentials, `sms_from_phone` or `sms_twilio_messaging_service_sid`, and
+/// `allowed_numbers`. Configure inbound webhooks with `sms_webhook_listen` and
+/// `sms_webhook_path`; prefer provider signature checks on public endpoints.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelConfig {
     pub kind: String,
@@ -462,7 +463,13 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub whatsapp_group_mention_patterns: Vec<String>,
 
-    // --- Text/iMessage-specific fields (embedded `zeroclawlabs::LinqChannel`) ---
+    // --- Text/iMessage-specific fields ---
+    /// SMS/RCS provider backend. Defaults to `"linq"` for backwards
+    /// compatibility. `"twilio"` is experimental and covers SMS plus RCS via
+    /// Twilio Messaging Services.
+    #[serde(default)]
+    pub sms_provider: Option<String>,
+
     /// Linq Partner API token. Prefer `sms_linq_api_token_file`.
     pub sms_linq_api_token: Option<String>,
 
@@ -485,6 +492,39 @@ pub struct ChannelConfig {
 
     /// Path to a file containing the Linq webhook signing secret.
     pub sms_linq_signing_secret_file: Option<String>,
+
+    /// Twilio Account SID. Prefer `sms_twilio_account_sid_file`.
+    #[serde(default)]
+    pub sms_twilio_account_sid: Option<String>,
+
+    /// Path to a file containing the Twilio Account SID.
+    #[serde(default)]
+    pub sms_twilio_account_sid_file: Option<String>,
+
+    /// Twilio Auth Token. Prefer `sms_twilio_auth_token_file`.
+    #[serde(default)]
+    pub sms_twilio_auth_token: Option<String>,
+
+    /// Path to a file containing the Twilio Auth Token.
+    #[serde(default)]
+    pub sms_twilio_auth_token_file: Option<String>,
+
+    /// Optional Twilio Messaging Service SID. When set, outbound sends use
+    /// `MessagingServiceSid` instead of `From`, which is the normal path for
+    /// RCS sender-pool fallback.
+    #[serde(default)]
+    pub sms_twilio_messaging_service_sid: Option<String>,
+
+    /// Public webhook URL Twilio signs, including scheme, host, path, and any
+    /// query string. Required for signature verification behind reverse
+    /// proxies because Twilio signs the externally configured URL.
+    #[serde(default)]
+    pub sms_twilio_webhook_public_url: Option<String>,
+
+    /// Disable Twilio signature verification. Intended only for local tunnels
+    /// and tests; public endpoints should leave verification enabled.
+    #[serde(default)]
+    pub sms_twilio_disable_signature_validation: bool,
 
     // --- Signal-specific fields (embedded `zeroclawlabs::SignalChannel`) ---
     /// HTTP URL of `signal-cli-rest-api` (or compatible signal-cli daemon
@@ -2259,6 +2299,37 @@ allowed_numbers = ["+15555550100"]
         assert_eq!(
             cfg.channels[0].sms_from_phone.as_deref(),
             Some("+15555550001")
+        );
+    }
+
+    #[test]
+    fn test_channel_config_twilio_sms_inline() {
+        let raw = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_provider = "twilio"
+sms_twilio_account_sid_file = "~/.config/calciforge/secrets/twilio-account-sid"
+sms_twilio_auth_token_file = "~/.config/calciforge/secrets/twilio-auth-token"
+sms_twilio_messaging_service_sid = "MG_TEST_MESSAGING_SERVICE_SID"
+sms_twilio_webhook_public_url = "https://calciforge.example.test/webhooks/sms"
+sms_webhook_listen = "0.0.0.0:18798"
+sms_webhook_path = "/webhooks/sms"
+allowed_numbers = ["+15555550100"]
+"#;
+        let cfg: CalciforgeConfig = toml::from_str(raw).expect("twilio sms channel config");
+        assert_eq!(cfg.channels[0].kind, "sms");
+        assert_eq!(cfg.channels[0].sms_provider.as_deref(), Some("twilio"));
+        assert_eq!(
+            cfg.channels[0].sms_twilio_messaging_service_sid.as_deref(),
+            Some("MG_TEST_MESSAGING_SERVICE_SID")
+        );
+        assert_eq!(
+            cfg.channels[0].sms_twilio_webhook_public_url.as_deref(),
+            Some("https://calciforge.example.test/webhooks/sms")
         );
     }
 
