@@ -54,6 +54,18 @@ WATCH_PATTERNS = {
   "unsafe block" => /unsafe\s*\{/
 }.freeze
 
+# These counts are not style rules. They are ratchets for patterns that tend to
+# grow accidental architecture surface area: shared mutable state, stringly
+# typed maps, unjoined background tasks, and unsafe code. If a future PR needs
+# more of one, bump the budget in that PR so reviewers see the tradeoff.
+WATCH_PATTERN_BUDGETS = {
+  "Arc<Mutex" => 40,
+  "Arc<RwLock" => 11,
+  "HashMap<String, String>" => 70,
+  "tokio::spawn" => 141,
+  "unsafe block" => 15
+}.freeze
+
 def rust_files
   files = []
   Find.find(ROOT.join("crates").to_s) do |path|
@@ -101,6 +113,14 @@ puts "  pinned large-module budgets: #{RUST_LINE_BUDGETS.length}"
 puts "  watched pattern counts:"
 pattern_counts.sort.each do |name, count|
   puts "    #{name}: #{count}"
+end
+
+WATCH_PATTERN_BUDGETS.each do |name, budget|
+  count = pattern_counts.fetch(name, 0)
+  next unless count > budget
+
+  warn "#{name}: #{count} occurrences exceeds architecture budget #{budget}"
+  failed = true
 end
 
 abort("architecture ratchets failed") if failed
