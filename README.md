@@ -135,9 +135,10 @@ credentials: Calciforge will generate fake-looking random values such as
 `cfg_OPENAI_API_KEY_<random>`, register them with the security proxy, then
 provide them to supervised agents through env vars or managed credential files.
 That matters for agents like OpenClaw lanes that expect plaintext credential
-files or ordinary `*_API_KEY` variables. They can receive stand-ins instead of
-real secrets, while the gateway swaps in the real value only during an allowed
-outbound request. That path is not the default yet.
+files or ordinary `*_API_KEY` variables. Once that path is wired, they can
+receive stand-ins instead of real secrets, and the gateway will swap in the
+real value only during an allowed outbound request. That path is not the
+default yet.
 
 ## Tiny Config Sketch
 
