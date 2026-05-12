@@ -1302,7 +1302,7 @@ run_calciforge_doctor() {
         fi
         if ! "${doctor_env[@]}" "$BIN_DIR/calciforge" "${doctor_args[@]}"; then
             if truthy "$CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY"; then
-                die "calciforge doctor reported errors under strict egress-proxy enforcement; see output above. Add complete per-agent proxy env for subprocess agents or set CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY=false to opt out"
+                die "calciforge doctor reported errors while strict egress-proxy enforcement was enabled; see output above. Fix the reported issues or set CALCIFORGE_INSTALL_REQUIRE_AGENT_EGRESS_PROXY=false to opt out"
             fi
             warn "calciforge doctor reported issues; see output above"
         fi
