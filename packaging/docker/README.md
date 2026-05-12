@@ -8,6 +8,8 @@ From this directory:
 ```bash
 cp calciforge.env.example .env
 mkdir -p data data-security-proxy data-clashd
+openssl rand -base64 32 > data/gateway-api-key
+chmod 600 data/gateway-api-key
 docker compose --env-file .env build calciforge
 docker compose --env-file .env up -d
 docker compose --env-file .env exec calciforge \
@@ -29,11 +31,18 @@ to the Compose mounts before starting the container. The sample Compose file
 uses `/config` for clean trials; live migrations should keep paths stable unless
 they are intentionally changing layout.
 
-The example starts:
+The example publishes each service on `${CALCIFORGE_HOST_BIND:-127.0.0.1}` by default:
 
-- `calciforge` on `${CALCIFORGE_PROXY_PORT:-18792}`
-- `security-proxy` on `${CALCIFORGE_SECURITY_PROXY_PORT:-8888}`
-- `clashd` on `${CALCIFORGE_CLASHD_PORT:-9001}`
+- `calciforge` on `${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_PROXY_PORT:-18792}`
+- `security-proxy` on `${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_SECURITY_PROXY_PORT:-8888}`
+- `clashd` on `${CALCIFORGE_HOST_BIND:-127.0.0.1}:${CALCIFORGE_CLASHD_PORT:-9001}`
+
+Keep the default loopback host binding for local trials. If you intentionally set
+`CALCIFORGE_HOST_BIND=0.0.0.0` or another non-loopback address for LAN staging,
+first provision a strong gateway key in `data/gateway-api-key` and require clients
+to send it as `Authorization: Bearer <key>`. Do not expose the security proxy to
+untrusted networks; it is intended for controlled agent egress, not as a public
+forward proxy.
 
 The Compose file builds the shared `calciforge:local` image through the
 `calciforge` service and reuses that image for the sidecars. Build the
@@ -45,7 +54,9 @@ small staging hosts; increase it only on builders with enough RAM.
 
 The default Calciforge config points the model gateway at an OpenAI-compatible
 service on the host machine at `http://host.docker.internal:11434/v1`, which
-matches common Ollama-compatible local testing. Edit `config.example.toml` or set
+matches common Ollama-compatible local testing. It also reads the client-facing
+gateway bearer token from `/var/lib/calciforge/gateway-api-key`, backed by the
+`data/gateway-api-key` file created above. Edit `config.example.toml` or set
 `CALCIFORGE_CONFIG` before using it for real traffic.
 
 Subprocess-backed agents run inside the Calciforge container. If you configure

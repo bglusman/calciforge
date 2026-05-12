@@ -58,6 +58,19 @@ grep -q "calciforge-ollama-switch" "$ROOT/scripts/build-dist-archive.sh" || {
     exit 1
 }
 
+grep -q 'CALCIFORGE_HOST_BIND:-127.0.0.1' "$ROOT/packaging/docker/docker-compose.yml" || {
+    echo "Docker Compose published ports must default to loopback host binding" >&2
+    exit 1
+}
+grep -q 'api_key_file = "/var/lib/calciforge/gateway-api-key"' "$ROOT/packaging/docker/config.example.toml" || {
+    echo "Docker example config must require a client-facing gateway API key file" >&2
+    exit 1
+}
+grep -q 'openssl rand -base64 32 > data/gateway-api-key' "$ROOT/packaging/docker/README.md" || {
+    echo "Docker README must provision the sample gateway API key before startup" >&2
+    exit 1
+}
+
 installer_shell_files=(
     "$ROOT/scripts/install.sh"
     "$ROOT/scripts/clean-install-reset.sh"
