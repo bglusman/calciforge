@@ -581,20 +581,18 @@ impl SecurityProxy {
             ));
         }
 
+        let is_llm_api = dest_host_str
+            .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
+            .unwrap_or(false);
+        let is_json = content_type
+            .map(crate::mitm::looks_like_json_content_type_pub)
+            .unwrap_or(false);
+        let dest_for_policy = dest_host_str.unwrap_or("<unknown>");
+
         // (C) Provider-browsing strip / block.
         let body_bytes = {
-            let is_llm_api = dest_host_str
-                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
-                .unwrap_or(false);
-            let is_json = content_type
-                .map(crate::mitm::looks_like_json_content_type_pub)
-                .unwrap_or(false);
             if is_llm_api && is_json && !body_bytes.is_empty() {
-                match agent_web::inspect_browsing_body(
-                    &body_bytes,
-                    &policy,
-                    dest_host_str.unwrap_or("<unknown>"),
-                ) {
+                match agent_web::inspect_browsing_body(&body_bytes, &policy, dest_for_policy) {
                     BrowsingDecision::Allow => body_bytes,
                     BrowsingDecision::Stripped { body, .. } => bytes::Bytes::from(body),
                     BrowsingDecision::Block { reason } => {
@@ -611,14 +609,36 @@ impl SecurityProxy {
             }
         };
 
+        if is_llm_api
+            && is_json
+            && let Some(remote_body) = remote_scan_body.take()
+        {
+            if remote_body.is_empty() {
+                remote_scan_body = Some(remote_body);
+            } else {
+                remote_scan_body = match agent_web::inspect_browsing_body(
+                    remote_body.as_bytes(),
+                    &policy,
+                    dest_for_policy,
+                ) {
+                    BrowsingDecision::Allow => Some(remote_body),
+                    BrowsingDecision::Stripped { body, .. } => {
+                        Some(String::from_utf8_lossy(&body).into_owned())
+                    }
+                    BrowsingDecision::Block { reason } => {
+                        return Ok(policy_blocked_response(
+                            "agent_web.forbid_provider_browsing",
+                            &reason,
+                            "config_required",
+                            "none",
+                        ));
+                    }
+                };
+            }
+        }
+
         // (D) URL pre-flight on LLM message bodies.
         {
-            let is_llm_api = dest_host_str
-                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
-                .unwrap_or(false);
-            let is_json = content_type
-                .map(crate::mitm::looks_like_json_content_type_pub)
-                .unwrap_or(false);
             if is_llm_api
                 && is_json
                 && !body_bytes.is_empty()
@@ -659,11 +679,7 @@ impl SecurityProxy {
                 .await;
             match &verdict {
                 adversary_detector::verdict::ScanVerdict::Unsafe { reason } => {
-                    warn!(
-                        "BLOCKED outbound to {}: {}",
-                        redact_url_for_log(&target_url),
-                        reason
-                    );
+                    warn!("BLOCKED outbound to {}: {}", redacted_target_url, reason);
                     return Ok(policy_blocked_response(
                         "scanner.outbound_exfiltration",
                         &format!("Outbound request blocked: {reason}"),
@@ -672,11 +688,7 @@ impl SecurityProxy {
                     ));
                 }
                 adversary_detector::verdict::ScanVerdict::Review { reason } => {
-                    info!(
-                        "REVIEW outbound to {}: {}",
-                        redact_url_for_log(&target_url),
-                        reason
-                    );
+                    info!("REVIEW outbound to {}: {}", redacted_target_url, reason);
                 }
                 adversary_detector::verdict::ScanVerdict::Clean => {}
             }
@@ -2142,6 +2154,97 @@ mod tests {
         let resp = proxy.intercept(req).await.unwrap();
         // Should be blocked because request body contains injection phrases
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn remote_scanner_receives_provider_browsing_stripped_payload() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+            .mount(&upstream)
+            .await;
+
+        let remote_scanner = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/scan"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "verdict": "clean",
+            })))
+            .mount(&remote_scanner)
+            .await;
+
+        let config = GatewayConfig {
+            scan_outbound: true,
+            scan_inbound: false,
+            bypass_domains: vec![],
+            scanner_checks: vec![adversary_detector::ScannerCheckConfig::RemoteHttp {
+                url: remote_scanner.uri(),
+                fail_closed: true,
+            }],
+            agent_web: crate::config::AgentWebPolicy {
+                forbid_provider_browsing: true,
+                provider_browsing_strategy: "strip".to_string(),
+                known_llm_apis: vec!["127.0.0.1".to_string(), "localhost".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let proxy = Arc::new(
+            SecurityProxy::new(
+                config.clone(),
+                ScannerConfig {
+                    checks: config.scanner_checks.clone(),
+                    ..Default::default()
+                },
+                RateLimitConfig::default(),
+            )
+            .await,
+        );
+
+        let original_body = r#"{
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [
+                {"type": "web_search", "name": "web_search"},
+                {"type": "function", "name": "safe_tool"}
+            ]
+        }"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("{}/chat/completions", upstream.uri()))
+            .header("content-type", "application/json")
+            .body(Body::from(original_body))
+            .unwrap();
+
+        let resp = proxy.intercept(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let upstream_requests = upstream.received_requests().await.unwrap();
+        assert_eq!(upstream_requests.len(), 1);
+        let upstream_body = String::from_utf8_lossy(&upstream_requests[0].body);
+        assert!(
+            !upstream_body.contains("web_search"),
+            "provider-side browsing tools must be stripped from the upstream request"
+        );
+        assert!(
+            upstream_body.contains("safe_tool"),
+            "non-browsing tools must remain available"
+        );
+
+        let remote_requests = remote_scanner.received_requests().await.unwrap();
+        assert_eq!(remote_requests.len(), 1);
+        let remote_body: serde_json::Value =
+            serde_json::from_slice(&remote_requests[0].body).unwrap();
+        let remote_content = remote_body["content"].as_str().unwrap_or_default();
+        assert!(
+            !remote_content.contains("web_search"),
+            "remote scanner must not receive a browsing tool that Calciforge stripped before forwarding"
+        );
+        assert!(
+            remote_content.contains("safe_tool"),
+            "remote scanner should inspect the same safe tool surface forwarded upstream"
+        );
     }
 
     #[tokio::test]

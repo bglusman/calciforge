@@ -364,13 +364,13 @@ impl CalciforgeMitmHandler {
                 ));
             }
         };
-        let remote_scan_body = match SecurityProxy::body_substitution_mode(content_type.as_deref())
-        {
-            BodyMode::FullSubstitute if !body_bytes.is_empty() => {
-                Some(String::from_utf8_lossy(&body_bytes).into_owned())
-            }
-            _ => None,
-        };
+        let mut remote_scan_body =
+            match SecurityProxy::body_substitution_mode(content_type.as_deref()) {
+                BodyMode::FullSubstitute if !body_bytes.is_empty() => {
+                    Some(String::from_utf8_lossy(&body_bytes).into_owned())
+                }
+                _ => None,
+            };
         let body_bytes = match substitute_body(
             &self.state,
             body_bytes,
@@ -395,19 +395,20 @@ impl CalciforgeMitmHandler {
             }
         };
 
+        let policy = &self.state.config.agent_web;
+        let dest = dest_host.as_deref().unwrap_or("<unknown>");
+        let is_llm_api = dest_host
+            .as_deref()
+            .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
+            .unwrap_or(false);
+        let looks_json = content_type
+            .as_deref()
+            .map(looks_like_json_content_type)
+            .unwrap_or(false);
+
         // (C) Provider-browsing strip / block — only when body looks
         // like a JSON LLM request to a known LLM API.
         let body_bytes = {
-            let policy = &self.state.config.agent_web;
-            let dest = dest_host.as_deref().unwrap_or("<unknown>");
-            let is_llm_api = dest_host
-                .as_deref()
-                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
-                .unwrap_or(false);
-            let looks_json = content_type
-                .as_deref()
-                .map(looks_like_json_content_type)
-                .unwrap_or(false);
             if is_llm_api && looks_json && !body_bytes.is_empty() {
                 match agent_web::inspect_browsing_body(&body_bytes, policy, dest) {
                     BrowsingDecision::Allow => body_bytes,
@@ -426,19 +427,35 @@ impl CalciforgeMitmHandler {
             }
         };
 
+        if is_llm_api
+            && looks_json
+            && let Some(remote_body) = remote_scan_body.take()
+        {
+            if remote_body.is_empty() {
+                remote_scan_body = Some(remote_body);
+            } else {
+                remote_scan_body =
+                    match agent_web::inspect_browsing_body(remote_body.as_bytes(), policy, dest) {
+                        BrowsingDecision::Allow => Some(remote_body),
+                        BrowsingDecision::Stripped { body, .. } => {
+                            Some(String::from_utf8_lossy(&body).into_owned())
+                        }
+                        BrowsingDecision::Block { reason } => {
+                            return RequestOrResponse::Response(mitm_policy_blocked_response(
+                                "agent_web.forbid_provider_browsing",
+                                &reason,
+                                "config_required",
+                                "none",
+                            ));
+                        }
+                    };
+            }
+        }
+
         // (D) URL pre-flight — scan messages / tool descriptions for
         // URLs whose host is on the agent_web URL denylist. Same gate
         // as (C): only fires for JSON-shaped LLM requests.
         {
-            let policy = &self.state.config.agent_web;
-            let is_llm_api = dest_host
-                .as_deref()
-                .map(|h| host_is_known_llm_api(h, &policy.known_llm_apis))
-                .unwrap_or(false);
-            let looks_json = content_type
-                .as_deref()
-                .map(looks_like_json_content_type)
-                .unwrap_or(false);
             if is_llm_api
                 && looks_json
                 && !body_bytes.is_empty()

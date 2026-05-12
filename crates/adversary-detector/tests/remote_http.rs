@@ -6,9 +6,14 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn remote_http_check_can_fail_closed() {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reserve an unused local test port");
+    let unavailable_url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+
     let scanner = AdversaryScanner::new(ScannerConfig {
         checks: vec![ScannerCheckConfig::RemoteHttp {
-            url: "http://127.0.0.1:19999".into(),
+            url: unavailable_url,
             fail_closed: true,
         }],
         ..Default::default()
