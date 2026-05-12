@@ -63,7 +63,7 @@ impl SecretAccessIdentity {
 impl SecretAccessPolicy {
     pub fn allows(&self, identity: &SecretAccessIdentity, secret_name: &str) -> bool {
         if !identity.is_known() {
-            return true;
+            return self.rules.is_empty();
         }
 
         self.rules
@@ -72,9 +72,6 @@ impl SecretAccessPolicy {
     }
 
     pub fn filter_names(&self, identity: &SecretAccessIdentity, names: Vec<String>) -> Vec<String> {
-        if !identity.is_known() {
-            return names;
-        }
         names
             .into_iter()
             .filter(|name| self.allows(identity, name))
@@ -225,9 +222,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_identity_preserves_process_scoped_access() {
+    fn unknown_identity_preserves_process_scoped_access_without_rules() {
         let policy = SecretAccessPolicy::default();
         assert!(policy.allows(&SecretAccessIdentity::default(), "OPENAI_API_KEY"));
+        assert_eq!(
+            policy.filter_names(
+                &SecretAccessIdentity::default(),
+                vec!["OPENAI_API_KEY".into()]
+            ),
+            vec!["OPENAI_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn unknown_identity_fails_closed_when_policy_has_rules() {
+        let policy = SecretAccessPolicy {
+            rules: vec![SecretAccessRule {
+                agents: vec!["researcher".into()],
+                secrets: vec!["PUBLIC_*".into()],
+                ..SecretAccessRule::default()
+            }],
+        };
+
+        assert!(!policy.allows(&SecretAccessIdentity::default(), "PUBLIC_TOKEN"));
+        assert_eq!(
+            policy.filter_names(
+                &SecretAccessIdentity::default(),
+                vec!["PUBLIC_TOKEN".into(), "DENIED_TOKEN".into()]
+            ),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

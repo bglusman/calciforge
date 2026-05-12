@@ -477,16 +477,13 @@ impl SecurityProxy {
         }
         let original_headers = substituted_headers;
 
-        // Find the content-type for body-substitution routing. Default
-        // to None; body_substitution_mode() treats that as RawScan
-        // (fail-closed if refs present).
+        // Missing content-type is treated as RawScan.
         let content_type = original_headers
             .iter()
             .find(|(k, _)| k.to_lowercase() == "content-type")
             .map(|(_, v)| v.as_str());
         let body_mode = Self::body_substitution_mode(content_type);
 
-        // Read request body
         let body_bytes = match req.into_body().collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
@@ -1321,6 +1318,9 @@ fn sanitize_header_value(s: &str) -> String {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod secret_policy_tests;
 
 #[cfg(test)]
 mod tests {

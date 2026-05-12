@@ -635,12 +635,12 @@ Identity sources:
   `x-calciforge-user-id`, `x-calciforge-channel-id`, or
   `x-calciforge-channel`.
 
-Known identities fail closed: if no rule allows a secret, `list_secrets`
+Secret access rules fail closed: if no rule allows a secret, `list_secrets`
 and `calciforge-secrets list` hide it, reference creation rejects it, and
-security-proxy substitution refuses to resolve it. Unknown identities
-preserve process-scoped compatibility for existing deployments. The proxy
-strips Calciforge identity headers, including legacy `x-agent-id`, before
-forwarding upstream.
+security-proxy substitution refuses to resolve it. Unknown identities preserve
+process-scoped compatibility only when no secret access rules are configured.
+The proxy strips Calciforge identity headers, including legacy `x-agent-id`,
+before forwarding upstream.
 
 This ACL is a read/use policy. The central `GET /control/secrets/list` and
 `GET /control/secrets/ref/*` helper endpoints use the read-only

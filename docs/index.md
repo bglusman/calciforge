@@ -724,8 +724,10 @@ runtime that can run a command. MCP is an opt-in convenience for runtimes that
 support it and have been configured explicitly. Discovery is filtered by
 the active [secret access policy](roadmap/agent-secret-access-policy.html)
 when a Calciforge agent, user, or channel identity is known. Unknown
-identities preserve process-scoped compatibility. Calciforge also enforces
-per-secret destination allowlists at substitution time.
+identities preserve process-scoped compatibility only when no secret access
+rules are configured; configured identity ACLs fail closed when identity is
+missing. Calciforge also enforces per-secret destination allowlists at
+substitution time.
 
 ```json
 // ~/.claude/mcp-config.json
