@@ -137,7 +137,7 @@ treated as separate knobs until the integration is proven.
 The unified installer starts `security-proxy`, but it does not put
 `HTTP_PROXY`/`HTTPS_PROXY` on the Calciforge service itself. Do not assume
 command-line or exec-backed agents can be protected by generic proxy
-environment variables:
+environment variables.
 Codex, Claude, ACPX, npm-backed adapters, and streaming clients may use
 CONNECT, WebSockets, or browser-backed authentication flows that the current
 proxy cannot inspect and may break. Keep those agents unproxied unless you

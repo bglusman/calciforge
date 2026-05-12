@@ -225,9 +225,10 @@ hair-dye-level crisis.
 Ambient `HTTPS_PROXY` is deliberately not presented as full protection unless
 it points at Calciforge's inspecting proxy and the target runtime trusts the
 Calciforge CA. CA means certificate authority: a certificate issuer your
-machine trusts. For Calciforge, the local CA lets the proxy open an HTTPS
-tunnel, inspect the request and response, then re-encrypt the connection for
-the agent. Without that trust step, ordinary HTTPS proxying uses CONNECT
+machine trusts. For Calciforge, the local CA lets the proxy terminate the
+agent's HTTPS connection, inspect the request and response, then open its own
+encrypted connection to the upstream destination. Without that trust step,
+ordinary HTTPS proxying uses CONNECT
 tunnels, so the proxy sees the destination host and encrypted bytes, not the
 page or request body inside. The installer enables the experimental
 hudsucker-backed listener and generates a persistent local CA by default, while

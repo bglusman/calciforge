@@ -25,7 +25,7 @@ potions than Howl would tolerate.
 | Opaque placeholder credentials for supervised agent env vars or managed credential files | Staged primitives | [Placeholder injection mode](https://calciforge.org/roadmap/placeholder-injection-mode.html) |
 | Per-secret destination allowlists | Working | [Outbound traffic gating](https://calciforge.org/#outbound-traffic-gating) |
 | Local paste form for one-shot and bulk `.env` secret input | Working | [Secret management](https://calciforge.org/#secret-management) |
-| Command-line and optional MCP tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp) |
+| Command-line and optional MCP tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp-and-cli) |
 | Agent runtime contract for command-line guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
 | Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
 | OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
