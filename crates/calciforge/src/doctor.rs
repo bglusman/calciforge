@@ -31,6 +31,8 @@ use crate::providers::alloy::AlloyManager;
 use crate::proxy::model_resolver::ModelResolver;
 use crate::proxy::routing;
 
+mod security_proxy_runtime;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Ok,
@@ -144,6 +146,7 @@ pub async fn run(config_path: &Path, no_network: bool) -> Result<DoctorReport> {
     check_secret_tooling(&mut report);
     check_scanner_config(&config, no_network, &mut report).await;
     check_proxy_environment(&mut report);
+    security_proxy_runtime::check(&mut report).await;
     check_security_proxy_ca_trust(&mut report);
     check_install_node_metadata(no_network, &mut report).await;
     check_agent_proxy_coverage(&config, &proxy_environment_from_process(), &mut report);
@@ -2743,11 +2746,16 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let endpoint = serve_once("401 Unauthorized").await;
+                let mut server = mockito::Server::new_async().await;
+                let _mock = server
+                    .mock("GET", "/calciforge/inbound")
+                    .with_status(401)
+                    .create_async()
+                    .await;
                 let agent = AgentConfig {
                     id: "custodian".to_string(),
                     kind: "openclaw-channel".to_string(),
-                    endpoint,
+                    endpoint: server.url(),
                     api_key: Some("wrong-token".to_string()),
                     ..Default::default()
                 };
@@ -2766,22 +2774,6 @@ mod tests {
                         && finding.message.contains("exposes openclaw-channel route")
                 }));
             });
-    }
-
-    async fn serve_once(status_line: &'static str) -> String {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buffer = [0; 1024];
-            let _ = stream.read(&mut buffer).await;
-            let response =
-                format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
-            stream.write_all(response.as_bytes()).await.unwrap();
-        });
-        format!("http://{addr}")
     }
 
     #[test]

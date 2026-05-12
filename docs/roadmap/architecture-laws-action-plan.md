@@ -118,6 +118,42 @@ Gate:
 - The factory, doctor, docs, and tests agree on known adapter kinds.
 - New adapter proposals must declare lifecycle state and graduation criteria.
 
+## 6. Adapter Doctor Hooks
+
+Problem: `calciforge doctor` can validate Calciforge config and generic
+endpoint reachability, but first-class agents often have their own runtime
+doctor/status commands. A configured OpenClaw gateway can expose the Calciforge
+channel route while still failing its own model/runtime checks; a ZeroClaw
+endpoint can accept TCP while its daemon, scheduler, or channel freshness state
+is unhealthy.
+
+Action:
+
+- Add an adapter-level doctor contract with a default no-op/generic
+  implementation.
+- Keep generic checks in Calciforge: readable tokens, endpoint URL shape,
+  endpoint reachability, model override support, and session capability shape.
+- Let first-class adapters add native subdoctor probes:
+  - OpenClaw: prefer structured commands such as `openclaw models status --json`
+    for model/auth checks, and attach `openclaw doctor` text output as context
+    unless a future JSON mode exists.
+  - ZeroClaw: use machine-readable exit-code/status modes where available, then
+    keep richer human doctor output as context rather than parsing decorative
+    terminal text.
+- For remote first-class agents, run native subdoctor probes only when install
+  metadata maps the endpoint to a managed node; otherwise report that only the
+  HTTP/plugin surface was checked.
+- Add a separate `calciforge doctor --fix` or `calciforge repair` mode for
+  safe idempotent repairs. Plain doctor must keep detecting and reporting drift
+  without mutating services.
+
+Gate:
+
+- A first-class adapter with a broken native runtime produces a doctor error or
+  clear warning even when its HTTP endpoint accepts TCP.
+- Plain doctor never parses human-only decorative output for pass/fail.
+- Repair mode is opt-in and limited to Calciforge-managed services/config.
+
 ## Execution Order
 
 1. Add lifecycle metadata and doctor warnings for adapters.
@@ -125,6 +161,7 @@ Gate:
 3. Split `commands.rs` behind passing tests.
 4. Unify security proxy policy decisions.
 5. Split installer executor modules and consolidate service rendering.
+6. Add adapter doctor hooks and an explicit repair mode.
 
 The first slice is intentionally small: adapter lifecycle metadata creates a
 durable place to record support state before pruning or reshaping adapter
