@@ -171,23 +171,6 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-fn require_registered_agent(state: &AppState, identity: &ClientIdentity) -> Result<(), AppError> {
-    if state.agent_registry.is_registered(&identity.cn) {
-        return Ok(());
-    }
-
-    warn!(
-        cn = %identity.cn,
-        uid = %identity.uid,
-        "Rejecting mTLS client because certificate CN is not configured as an agent"
-    );
-    state.metrics.increment_policy_denials();
-    Err(AppError::PolicyDenied(format!(
-        "client certificate CN '{}' is not configured as an agent",
-        identity.cn
-    )))
-}
-
 // ZFS snapshot endpoint (no approval required for delegation)
 async fn zfs_snapshot(
     State(state): State<AppState>,
@@ -195,7 +178,6 @@ async fn zfs_snapshot(
     Json(req): Json<SnapshotRequest>,
 ) -> Result<Json<SnapshotResponse>, AppError> {
     state.metrics.increment_requests();
-    require_registered_agent(&state, &identity)?;
     state.metrics.increment_zfs_operation("snapshot");
 
     let audit_id = uuid::Uuid::new_v4().to_string();
@@ -287,7 +269,6 @@ async fn zfs_list(
     Json(req): Json<ListRequest>,
 ) -> Result<Json<ListResponse>, AppError> {
     state.metrics.increment_requests();
-    require_registered_agent(&state, &identity)?;
     state.metrics.increment_zfs_operation("list");
 
     let audit_id = uuid::Uuid::new_v4().to_string();
@@ -363,7 +344,6 @@ async fn zfs_destroy(
     Json(req): Json<DestroyRequest>,
 ) -> Result<Json<DestroyResponse>, AppError> {
     state.metrics.increment_requests();
-    require_registered_agent(&state, &identity)?;
 
     // Rate-limit check (P-B5)
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
@@ -560,7 +540,6 @@ async fn submit_approval(
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, AppError> {
     state.metrics.increment_requests();
-    require_registered_agent(&state, &identity)?;
 
     // Rate-limit check (P-B5)
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
@@ -712,10 +691,6 @@ async fn list_pending(
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
 
-    if let Err(err) = require_registered_agent(&state, &identity) {
-        return err.into_response();
-    }
-
     // Rate-limit check (P-B5)
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
         state.metrics.increment_rate_limited();
@@ -771,9 +746,6 @@ async fn list_all_pending(
     Extension(identity): Extension<ClientIdentity>,
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
-    if let Err(err) = require_registered_agent(&state, &identity) {
-        return err.into_response();
-    }
     let config = state.config.get().await;
     if let Err(status) = require_admin_identity(&config, &identity) {
         return (
@@ -802,10 +774,6 @@ async fn warn_permissions(
     Extension(identity): Extension<ClientIdentity>,
 ) -> impl IntoResponse {
     state.metrics.increment_requests();
-
-    if let Err(err) = require_registered_agent(&state, &identity) {
-        return err.into_response();
-    }
 
     let config = state.config.get().await;
     if let Err(status) = require_admin_identity(&config, &identity) {
@@ -846,7 +814,6 @@ async fn host_op_dispatch(
     Json(op): Json<HostOp>,
 ) -> Result<impl IntoResponse, AppError> {
     state.metrics.increment_requests();
-    require_registered_agent(&state, &identity)?;
 
     // Rate-limit check
     if let Err(retry_after) = state.rate_limiter.check(&identity.cn) {
@@ -1106,8 +1073,8 @@ async fn main() -> Result<()> {
         audit: Arc::new(audit),
         approvals: Arc::new(approvals),
         zfs: Arc::new(zfs),
-        metrics,
-        agent_registry,
+        metrics: metrics.clone(),
+        agent_registry: agent_registry.clone(),
         rate_limiter,
         adapter_registry: Arc::new(adapter_registry),
     };
@@ -1182,11 +1149,6 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Custom accept loop: for each connection, TLS-handshake → extract ClientIdentity
-    // → inject into request extensions → serve with hyper + axum.
-    //
-    // This replaces axum_server::bind_rustls which does not support custom per-connection
-    // extension injection. Using hyper_util::server::conn::auto::Builder for H1+H2 support.
     info!("Server running. Ctrl+C to stop.");
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -1217,9 +1179,10 @@ async fn main() -> Result<()> {
 
                 let acceptor = acceptor.clone();
                 let app = app.clone();
+                let agent_registry = agent_registry.clone();
+                let metrics = metrics.clone();
 
                 tokio::spawn(async move {
-                    // TLS handshake + client certificate extraction
                     let (identity, tls_stream) = match acceptor.accept(tcp_stream).await {
                         Ok(v) => v,
                         Err(e) => {
@@ -1227,6 +1190,11 @@ async fn main() -> Result<()> {
                             return;
                         }
                     };
+                    if !agent_registry.is_registered(&identity.cn) {
+                        warn!(cn = %identity.cn, uid = %identity.uid, "Rejecting mTLS client because certificate CN is not configured as an agent");
+                        metrics.increment_policy_denials();
+                        return;
+                    }
 
                     tracing::debug!(
                         cn = %identity.cn,
@@ -1235,13 +1203,8 @@ async fn main() -> Result<()> {
                         "mTLS handshake complete — serving request"
                     );
 
-                    // Clone identity to move into the service wrapper
                     let identity_for_service = identity.clone();
 
-                    // Build a tower service that injects ClientIdentity into each request's
-                    // extensions before passing to the axum router.
-                    // hyper passes Request<Incoming>; axum Router accepts Request<Body>,
-                    // so we convert via http_body_util::Limited or just use axum's body conversion.
                     let tower_svc = tower::service_fn(move |req: hyper::Request<Incoming>| {
                         let identity = identity_for_service.clone();
                         let mut inner = app.clone();

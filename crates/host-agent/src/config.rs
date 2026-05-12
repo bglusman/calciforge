@@ -496,8 +496,6 @@ impl Config {
     }
 }
 
-/// Match an mTLS common-name pattern from host-agent config.
-///
 /// A trailing `*` means prefix match, but a bare `*` is intentionally not a
 /// global wildcard. Every trusted agent identity must have a non-empty anchor.
 pub(crate) fn cn_pattern_matches(pattern: &str, cn: &str) -> bool {
