@@ -849,7 +849,7 @@ chmod 600 data/gateway-api-key
 docker compose --env-file .env build calciforge
 docker compose --env-file .env up -d
 docker compose --env-file .env exec calciforge \
-  calciforge --config /config/config.toml doctor
+  calciforge --config /config/config.toml doctor --no-network
 ```
 
 For normal macOS installs from published release archives:

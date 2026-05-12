@@ -5,6 +5,9 @@ title: Packaging and Install Options
 
 # Packaging and Install Options
 
+Status: Implemented for Docker Compose, Homebrew, source installs, and release
+archives; managed-agent wiring remains adapter-specific.
+
 Calciforge supports four install shapes. They serve different audiences and
 should not be mixed up in docs or support notes.
 
@@ -34,7 +37,7 @@ chmod 600 data/gateway-api-key
 docker compose --env-file .env build calciforge
 docker compose --env-file .env up -d
 docker compose --env-file .env exec calciforge \
-  calciforge --config /config/config.toml doctor
+  calciforge --config /config/config.toml doctor --no-network
 ```
 
 The Compose example runs Calciforge, `security-proxy`, and `clashd` from the
