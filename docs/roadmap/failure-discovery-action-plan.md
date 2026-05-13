@@ -10,7 +10,10 @@ not the same thing as confidence. The recurring problem is narrower: tests often
 cover the shape we expected, while production breaks on the shape a real agent,
 gateway, package manager, or service manager actually emits.
 
-This page records the lesson and turns it into work.
+This page records the lesson and turns it into work. The aim is not only more
+regression tests. Calciforge needs aggression tests: checks that deliberately
+break protocols, runtime state, config paths, and trust assumptions in ways we
+can already foresee.
 
 ## Post-mortem: Helicone Streaming Response Failure
 
@@ -63,11 +66,11 @@ Recent failures tend to fall into a few buckets:
 - **Weak doctor coverage:** `doctor` can pass while the next real user action
   fails because the check did not exercise the same path.
 
-## Better Failure Discovery
+## Aggression Testing
 
 ### 1. Scenario catalog before broad test growth
 
-Create a small checked-in catalog of high-risk product scenarios. Each scenario
+Keep a small checked-in catalog of high-risk product scenarios. Each scenario
 must name:
 
 - the user action,
@@ -86,6 +89,11 @@ Examples:
 
 Every new adapter, provider, channel, or installer path should add or update at
 least one scenario.
+
+The first catalog lives at `tests/scenarios/high-risk-scenarios.json` and is
+validated by `scripts/check-scenarios.py` in CI. It is intentionally not a
+marketing roadmap. It is a list of assumptions we expect future tests and live
+smokes to attack.
 
 ### 2. Contract tests at every external boundary
 
@@ -185,14 +193,12 @@ facts from a user's failed test message.
 
 ## Near-term Work
 
-1. Add a scenario catalog under `docs/staging-test-matrix.md` or
-   `tests/scenarios/`.
-2. Add real-shape fixtures for streaming chat completions and tool calls.
-3. Extend provider-adapter tests to cover non-retryable failures and alias
+1. Add real-shape fixtures for streaming chat completions and tool calls.
+2. Extend provider-adapter tests to cover non-retryable failures and alias
    resolution through the same code used at runtime.
-4. Add a `doctor --live` path for first-class agent smoke tests.
-5. Run a tiny mutation pass on selector resolution and security-proxy policy.
-6. Add a release-candidate checklist item: one manually observed failure must
+3. Add a `doctor --live` path for first-class agent smoke tests.
+4. Run a tiny mutation pass on selector resolution and security-proxy policy.
+5. Add a release-candidate checklist item: one manually observed failure must
    become either an automated regression test or a documented impossible-to-test
    gap before the PR merges.
 

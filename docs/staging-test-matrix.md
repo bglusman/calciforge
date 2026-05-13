@@ -10,6 +10,9 @@ It complements existing CI by adding realistic staging exercises for releases.
 See also the [Failure Discovery Action Plan](roadmap/failure-discovery-action-plan.html),
 which captures why recent bugs escaped the current suite and how new tests
 should target real failure modes.
+The checked-in high-risk scenario catalog lives in
+`tests/scenarios/high-risk-scenarios.json` and is validated in CI by
+`scripts/check-scenarios.py`.
 
 ## Goals
 
@@ -180,6 +183,10 @@ Additional review strategies worth running before promoting rc1 to 0.1.0:
 - **Route-differential smoke:** send the same Calciforge prompt through at least
   two agents and one direct model-gateway route, then compare whether failures
   are route-specific, channel-specific, or global.
+- **Aggression scenario pass:** pick at least one high-risk scenario from
+  `tests/scenarios/high-risk-scenarios.json`, deliberately vary the inputs or
+  runtime state listed in `aggression_vectors`, and either automate the result
+  or record why it must remain manual for this candidate.
 - **Config-path migration audit:** run a static check over live configs for
   absolute paths, then verify each path is mounted or rewritten in Docker and
   visible to Homebrew services.

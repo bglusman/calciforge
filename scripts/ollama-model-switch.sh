@@ -81,17 +81,16 @@ truthy() {
 }
 
 json_escape() {
-    printf '%s' "$1" \
-        | sed \
-            -e 's/\\/\\\\/g' \
-            -e 's/"/\\"/g' \
-            -e $'s/\t/\\t/g' \
-            -e $'s/\r/\\r/g' \
-            -e $'s/\n/\\n/g'
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json, sys; print(json.dumps(sys.argv[1])[1:-1])' "$1"
+    else
+        printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    fi
 }
 
 warmup_enabled="${CALCIFORGE_OLLAMA_WARMUP:-true}"
 if truthy "$warmup_enabled" && [[ "$target_loaded" != true ]]; then
+    warmup_required="${CALCIFORGE_OLLAMA_WARMUP_REQUIRED:-false}"
     if command -v curl >/dev/null 2>&1; then
         host="${OLLAMA_HOST:-http://127.0.0.1:11434}"
         host="${host%/}"
@@ -103,11 +102,21 @@ if truthy "$warmup_enabled" && [[ "$target_loaded" != true ]]; then
             "$(json_escape "$target")" \
             "$(json_escape "$keep_alive")" \
             "$warmup_ctx")"
-        curl -fsS --max-time "$warmup_timeout" \
+        if ! curl -fsS --max-time "$warmup_timeout" \
             -H 'Content-Type: application/json' \
             -d "$payload" \
-            "$host/api/generate" >/dev/null
+            "$host/api/generate" >/dev/null; then
+            if truthy "$warmup_required"; then
+                exit 1
+            fi
+            echo "warning: Ollama warmup failed for $target; continuing to gateway request" >&2
+        fi
     else
-        "$ollama_bin" run "$target" "Reply with exactly: ready" >/dev/null
+        if ! "$ollama_bin" run "$target" "Reply with exactly: ready" >/dev/null; then
+            if truthy "$warmup_required"; then
+                exit 1
+            fi
+            echo "warning: Ollama warmup failed for $target; continuing to gateway request" >&2
+        fi
     fi
 fi
