@@ -107,7 +107,8 @@ pub fn model_matches_pattern(model: &str, pattern: &str) -> bool {
         return true;
     }
     if let Some(prefix) = pattern.strip_suffix("/*") {
-        return model.starts_with(prefix);
+        let namespace = format!("{prefix}/");
+        return model.starts_with(&namespace) && model.len() > namespace.len();
     }
     model == pattern
 }
@@ -410,6 +411,7 @@ fn resolve_provider_key(
 mod tests {
     use super::*;
     use crate::config::{ProxyModelRoute, ProxyProviderConfig};
+    use proptest::prelude::*;
 
     fn provider(id: &str, backend_type: &str, url: &str) -> ProxyProviderConfig {
         ProxyProviderConfig {
@@ -576,5 +578,28 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].patterns, vec!["test-model"]);
         assert_eq!(entries[0].gateway.gateway_type(), GatewayType::Helicone);
+    }
+
+    proptest! {
+        #[test]
+        fn prefix_slash_wildcard_only_matches_names_inside_namespace(
+            prefix in "[a-z][a-z0-9_-]{0,12}",
+            suffix in "[a-z0-9_-]{1,16}",
+        ) {
+            let pattern = format!("{prefix}/*");
+
+            prop_assert!(
+                model_matches_pattern(&format!("{prefix}/{suffix}"), &pattern),
+                "wildcard should match model inside namespace"
+            );
+            prop_assert!(
+                !model_matches_pattern(&format!("{prefix}-{suffix}"), &pattern),
+                "wildcard must not match sibling names outside namespace"
+            );
+            prop_assert!(
+                !model_matches_pattern(&prefix, &pattern),
+                "wildcard must not match the bare namespace"
+            );
+        }
     }
 }

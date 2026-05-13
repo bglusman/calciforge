@@ -136,6 +136,34 @@ tests. Use Hegel where the input space is typed and the invariant is crisp; use
 `cargo-fuzz`/`arbitrary` where bytes cross a parser boundary; use simulators
 where ordering, timing, retries, and partial failure matter.
 
+Property quality is the gating issue. A generated test only earns its keep when
+the generator covers the boundary's real input grammar and the oracle checks the
+boundary's contract instead of a private implementation detail. Every boundary
+test should state which layer it belongs to:
+
+- **Byte fuzzing:** arbitrary bytes at parser and protocol edges. The minimum
+  oracle is invalid containment: no panic, hang, secret leak, auth bypass, or
+  durable corruption. Byte fuzzing is required for JSON/SSE fragments, URL and
+  header normalization, secret placeholders, scanner policy inputs, and remote
+  list formats.
+- **Structured fuzzing:** `arbitrary`/libFuzzer-generated valid-ish domain
+  values. The oracle must check normalization and correctness across many valid
+  shapes, such as duplicate fields, legal extra fields, interleaved tool-call
+  chunks, alias graphs, or alternate channel event forms.
+- **Property testing:** Hegel/proptest generators for typed contracts where we
+  can write high-signal invariants and shrinking matters. These must generate
+  valid and invalid members of the domain intentionally; broad random strings
+  alone are not enough.
+- **Simulation/chaos:** generated sequences of time, process, network, and
+  filesystem events. These are required where correctness depends on ordering,
+  retries, correlation IDs, cancellation, permissions, symlinks, or partial
+  writes.
+
+For each external boundary, the invalid generator and valid generator are
+different artifacts. Invalid-data tests should aggressively cover nonsense and
+near-miss inputs while proving containment. Valid-data tests should generate the
+entire legal shape space and prove the user-visible result is correct.
+
 ### Integration boundary inventory
 
 | Surface | Bounded behavior | Unbounded behavior | Tier 1 invalid containment | Tier 2 valid correctness |
@@ -237,6 +265,48 @@ Use fuzzing where malformed bytes can cross a trust boundary:
 - JSON tool-call deltas,
 - secret reference syntax,
 - adversarial scanner payloads.
+
+The first cargo-fuzz harnesses live in `fuzz/` and are intentionally scoped to
+library surfaces that can already be linked by libFuzzer:
+
+- `security_substitution_bytes` fuzzes arbitrary text crossing the secret
+  reference and placeholder substitution boundary.
+- `security_substitution_valid_refs` uses structured fuzzing to generate valid
+  secret-reference documents and asserts exact rendered output.
+- `secret_metadata_destinations` fuzzes destination-policy input normalization.
+- `clashd_domain_lists` fuzzes domain-list parsing and matcher construction.
+
+`scripts/boundary-fuzz.sh smoke` runs short local fuzz bursts, and
+`scripts/boundary-fuzz.sh nightly` runs a longer fuzz sweep from the scheduled
+staging workflow. Calciforge runtime adapters are still mostly inside the binary
+crate, so putting their exact parsers under cargo-fuzz will require extracting
+small boundary modules into linkable library APIs instead of only testing them
+through unit-test modules.
+
+For deeper exploration outside PR CI, use
+`scripts/boundary-explore-long.sh one-hour all` or scope it to a boundary such
+as `gateway`, `agents`, `security`, `secrets`, `clashd`, or `install`. The
+script cycles high-case property tests and fuzz targets until the wall-clock
+budget expires, writing logs under `boundary-artifacts/`. A one-hour run is the
+minimum useful local sweep; the same runner is intended to support 24-72 hour
+campaigns after more boundary generators are added.
+
+Patterns to copy from mature property/fuzz ecosystems:
+
+- `cargo-fuzz` parser harnesses should start from existing example or unit-test
+  code, move file I/O into memory, and treat parser `Err` as acceptable
+  containment for invalid inputs.
+- `arbitrary` should be used when raw fuzzer bytes need to become structured
+  legal-ish domain values. This is how byte fuzzing graduates from "random
+  strings" into realistic model/channel/config shapes.
+- Proptest/Hegel strategies must encode constraints directly. A broad regex
+  generator is useful for invalid containment, but valid correctness needs
+  grammar-aware generators and semantic oracles.
+- Hypothesis-style state machines are the model for adapter/channel/doctor
+  sequence tests: generate whole action sequences, not just input structs.
+- Where a type is fuzzable, prefer sharing its generator between fuzz and
+  property tests. That gives short PR regressions and long coverage-guided
+  campaigns the same vocabulary.
 
 Use simulation or chaos where the boundary is temporal or stateful:
 

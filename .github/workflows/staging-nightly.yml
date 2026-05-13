@@ -103,3 +103,61 @@ jobs:
 
       - name: Run synthetic model gateway E2E
         run: python3 scripts/model-gateway-synthetic-e2e.py
+
+  boundary-aggression-nightly:
+    name: Boundary Aggression Nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-boundary-nightly-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run longer boundary aggression sweep
+        run: bash scripts/boundary-aggression.sh nightly
+
+  boundary-fuzz-nightly:
+    name: Boundary Fuzz Nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+            fuzz/target
+          key: ${{ runner.os }}-cargo-boundary-fuzz-${{ hashFiles('**/Cargo.lock', 'fuzz/Cargo.toml') }}
+
+      - name: Run nightly byte-level boundary fuzzers
+        run: bash scripts/boundary-fuzz.sh nightly

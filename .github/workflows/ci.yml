@@ -137,22 +137,8 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-boundary-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run generated parser and property boundary tests
-        run: |
-          cargo test -p calciforge proxy::helicone_streaming::tests -- --nocapture
-          cargo test -p calciforge --test e2e property_tests -- --nocapture
-
-      - name: Run Hegel boundary properties
-        run: |
-          cargo test -p calciforge --features hegel install:: -- --nocapture
-
-      - name: Build Calciforge for process-boundary smoke
-        run: cargo build -p calciforge
-
-      - name: Run Helicone gateway process-boundary smoke
-        run: python3 scripts/model-gateway-helicone-smoke.py
-        env:
-          CALCIFORGE_BIN: target/debug/calciforge
+      - name: Run short PR boundary aggression
+        run: bash scripts/boundary-aggression.sh pr
 
   # Aggregator job that reports a single `test` status check (required by ruleset)
   test:

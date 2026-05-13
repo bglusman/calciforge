@@ -20,6 +20,10 @@ REQUIRED_FIELDS = {
     "source_paths",
     "invalid_containment",
     "valid_correctness",
+    "invalid_generators",
+    "valid_generators",
+    "oracles",
+    "fuzz_targets",
     "automation",
     "scenario_ids",
 }
@@ -87,6 +91,15 @@ def require_nonempty_string_list(entry_id: str, entry: dict, field: str) -> list
     return value
 
 
+def require_string_list(entry_id: str, entry: dict, field: str) -> list[str]:
+    value = entry.get(field)
+    if not isinstance(value, list):
+        fail(f"{entry_id}: {field} must be a list")
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        fail(f"{entry_id}: {field} must contain only non-empty strings")
+    return value
+
+
 def watched_source_files() -> set[str]:
     watched: set[str] = set()
     for root in WATCHED_DIRS:
@@ -108,6 +121,14 @@ def watched_source_files() -> set[str]:
     return watched
 
 
+def fuzz_targets() -> set[str]:
+    manifest = ROOT / "fuzz" / "Cargo.toml"
+    if not manifest.exists():
+        return set()
+    text = manifest.read_text(encoding="utf-8")
+    return set(re.findall(r"\[\[bin\]\]\s+name\s*=\s*\"([^\"]+)\"", text))
+
+
 def main() -> None:
     registry = read_json(REGISTRY)
     if not isinstance(registry, list) or not registry:
@@ -121,6 +142,7 @@ def main() -> None:
     seen_ids: set[str] = set()
     source_owner: dict[str, str] = {}
     statuses: set[str] = set()
+    known_fuzz_targets = fuzz_targets()
 
     for index, entry in enumerate(registry):
         if not isinstance(entry, dict):
@@ -146,6 +168,10 @@ def main() -> None:
         statuses.add(status)
 
         source_paths = require_nonempty_string_list(entry_id, entry, "source_paths")
+        require_nonempty_string_list(entry_id, entry, "invalid_generators")
+        require_nonempty_string_list(entry_id, entry, "valid_generators")
+        require_nonempty_string_list(entry_id, entry, "oracles")
+        entry_fuzz_targets = require_string_list(entry_id, entry, "fuzz_targets")
         automation = require_nonempty_string_list(entry_id, entry, "automation")
         scenario_refs = require_nonempty_string_list(entry_id, entry, "scenario_ids")
 
@@ -164,6 +190,10 @@ def main() -> None:
                 script = command.split()[0]
                 if not (ROOT / script).exists():
                     fail(f"{entry_id}: automation script does not exist: {script}")
+
+        for fuzz_target in entry_fuzz_targets:
+            if fuzz_target not in known_fuzz_targets:
+                fail(f"{entry_id}: fuzz target is not declared in fuzz/Cargo.toml: {fuzz_target}")
 
         for scenario_id in scenario_refs:
             if scenario_id not in scenario_ids:

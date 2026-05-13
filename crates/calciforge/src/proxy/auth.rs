@@ -103,11 +103,9 @@ fn model_matches(model: &str, pattern: &str) -> bool {
         // Universal wildcard: matches everything
         true
     } else if pattern.ends_with("/*") {
-        // Prefix match: "deepseek/*" matches "deepseek-chat" and "deepseek-reasoner"
-        // "kimi/*" matches "kimi/kimi-for-coding" and "kimi/kimi-lite"
-        // Remove the "/*" to get the prefix
         let prefix = pattern.strip_suffix("/*").unwrap_or(pattern);
-        model.starts_with(prefix)
+        let namespace = format!("{prefix}/");
+        model.starts_with(&namespace) && model.len() > namespace.len()
     } else {
         // Exact match
         model == pattern
@@ -136,6 +134,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_model_matches_exact() {
@@ -150,6 +149,7 @@ mod tests {
     fn test_model_matches_wildcard() {
         assert!(model_matches("kimi/kimi-for-coding", "kimi/*"));
         assert!(model_matches("kimi/kimi-lite", "kimi/*"));
+        assert!(!model_matches("kimi-lite", "kimi/*"));
         assert!(!model_matches("deepseek/deepseek-chat", "kimi/*"));
     }
 
@@ -266,11 +266,11 @@ mod tests {
         };
 
         // Agent should have access to allowed models
-        assert!(check_model_access(&config, "test-agent", "deepseek-chat"));
+        assert!(check_model_access(&config, "test-agent", "deepseek/chat"));
         assert!(check_model_access(
             &config,
             "test-agent",
-            "deepseek-reasoner"
+            "deepseek/reasoner"
         ));
         assert!(check_model_access(&config, "test-agent", "test-alloy"));
 
@@ -282,7 +282,7 @@ mod tests {
         ));
 
         // Other agents should be denied (not in configured list)
-        assert!(!check_model_access(&config, "other-agent", "deepseek-chat"));
+        assert!(!check_model_access(&config, "other-agent", "deepseek/chat"));
     }
 
     #[test]
@@ -417,4 +417,27 @@ mod tests {
         assert!(!constant_time_eq("secret", "secreT"));
     }
     */
+
+    proptest! {
+        #[test]
+        fn prefix_slash_wildcard_only_authorizes_names_inside_namespace(
+            prefix in "[a-z][a-z0-9_-]{0,12}",
+            suffix in "[a-z0-9_-]{1,16}",
+        ) {
+            let pattern = format!("{prefix}/*");
+
+            prop_assert!(
+                model_matches(&format!("{prefix}/{suffix}"), &pattern),
+                "wildcard should authorize model inside namespace"
+            );
+            prop_assert!(
+                !model_matches(&format!("{prefix}-{suffix}"), &pattern),
+                "wildcard must not authorize sibling names outside namespace"
+            );
+            prop_assert!(
+                !model_matches(&prefix, &pattern),
+                "wildcard must not authorize the bare namespace"
+            );
+        }
+    }
 }

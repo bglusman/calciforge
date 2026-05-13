@@ -283,10 +283,11 @@ fn parse_adapter(
 /// Parse a `k=v,k=v,...` string into a `HashMap<String, String>`.
 ///
 /// Values may contain `=` (only the first `=` splits key from value).
+/// Literal `,` and `\` characters in values may be escaped as `\,` and `\\`.
 /// Empty keys are rejected.
 fn parse_kv_pairs(spec: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut map = std::collections::HashMap::new();
-    for part in spec.split(',') {
+    for part in split_spec_fields(spec) {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -295,7 +296,7 @@ fn parse_kv_pairs(spec: &str) -> Result<std::collections::HashMap<String, String
             .find('=')
             .context("expected 'key=value' pair in --claw spec")?;
         let key = part[..idx].trim().to_string();
-        let value = part[idx + 1..].to_string();
+        let value = unescape_spec_value(&part[idx + 1..]);
         if key.is_empty() {
             bail!("empty key in --claw spec");
         }
@@ -305,20 +306,80 @@ fn parse_kv_pairs(spec: &str) -> Result<std::collections::HashMap<String, String
 }
 
 fn redact_claw_spec(spec: &str) -> String {
-    spec.split(',')
+    split_spec_fields(spec)
+        .into_iter()
         .map(|part| {
             let Some((key, _value)) = part.split_once('=') else {
-                return part.to_string();
+                return part;
             };
             let trimmed_key = key.trim();
             if is_secret_spec_key(trimmed_key) {
                 format!("{trimmed_key}=<redacted>")
             } else {
-                part.to_string()
+                part
             }
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn split_spec_fields(spec: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut escaped = false;
+
+    for ch in spec.chars() {
+        if escaped {
+            field.push('\\');
+            field.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            ',' => {
+                fields.push(std::mem::take(&mut field));
+            }
+            _ => field.push(ch),
+        }
+    }
+
+    if escaped {
+        field.push('\\');
+    }
+    fields.push(field);
+    fields
+}
+
+fn unescape_spec_value(value: &str) -> String {
+    let mut output = String::new();
+    let mut escaped = false;
+
+    for ch in value.chars() {
+        if escaped {
+            match ch {
+                ',' | '\\' => output.push(ch),
+                other => {
+                    output.push('\\');
+                    output.push(other);
+                }
+            }
+            escaped = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            escaped = true;
+        } else {
+            output.push(ch);
+        }
+    }
+
+    if escaped {
+        output.push('\\');
+    }
+    output
 }
 
 fn is_secret_spec_key(key: &str) -> bool {
@@ -375,6 +436,18 @@ mod tests {
         // endpoint=http://host:18799/path?a=b should work (value has `=`)
         let kv = parse_kv_pairs("name=x,endpoint=http://host:18799/path?a=b").unwrap();
         assert_eq!(kv["endpoint"], "http://host:18799/path?a=b");
+    }
+
+    #[test]
+    fn parse_kv_value_contains_escaped_comma() {
+        let kv = parse_kv_pairs("name=x,endpoint=http://host:18799/path?a=b\\,c").unwrap();
+        assert_eq!(kv["endpoint"], "http://host:18799/path?a=b,c");
+    }
+
+    #[test]
+    fn parse_kv_value_preserves_unknown_backslash_escapes() {
+        let kv = parse_kv_pairs(r"name=x,command=printf\ %s").unwrap();
+        assert_eq!(kv["command"], r"printf\ %s");
     }
 
     #[test]
@@ -538,6 +611,22 @@ mod tests {
         assert!(
             !msg.contains("secret-inbound-token"),
             "error must not leak auth token: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_openclaw_claw_redacts_escaped_comma_secret_tail() {
+        let spec = "name=custodian,adapter=openclaw-channel,host=admin@openclaw.example.invalid,endpoint=http://openclaw.example.invalid:18789,AUTH_TOKEN=secret\\,tail";
+        let err = parse_claw_spec(spec).expect_err("missing later field should fail");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("AUTH_TOKEN=<redacted>"),
+            "error should include redacted spec: {msg}"
+        );
+        assert!(
+            !msg.contains("secret") && !msg.contains("tail"),
+            "escaped comma secret value must be fully redacted: {msg}"
         );
     }
 
