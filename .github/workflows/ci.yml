@@ -143,7 +143,8 @@ jobs:
           cargo test -p calciforge --test e2e property_tests -- --nocapture
 
       - name: Run Hegel boundary properties
-        run: cargo test -p calciforge --features hegel install:: -- --nocapture
+        run: |
+          cargo test -p calciforge --features hegel install:: -- --nocapture
 
       - name: Build Calciforge for process-boundary smoke
         run: cargo build -p calciforge
