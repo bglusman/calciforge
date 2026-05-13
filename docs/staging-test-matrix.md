@@ -7,6 +7,9 @@ title: Staging Test Matrix
 
 This document defines a practical, security-first test pyramid for Calciforge.
 It complements existing CI by adding realistic staging exercises for releases.
+See also the [Failure Discovery Action Plan](roadmap/failure-discovery-action-plan.html),
+which captures why recent bugs escaped the current suite and how new tests
+should target real failure modes.
 
 ## Goals
 

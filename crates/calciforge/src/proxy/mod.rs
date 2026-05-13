@@ -35,6 +35,10 @@ mod voice_handlers;
 // Helicone AI Gateway router (HTTP-based)
 #[cfg(feature = "helicone")]
 mod helicone_router;
+#[cfg(all(test, feature = "helicone"))]
+mod helicone_router_tests;
+#[cfg(feature = "helicone")]
+mod helicone_streaming;
 
 pub use openai::ChatCompletionRequest;
 pub use routing::ProviderEntry;

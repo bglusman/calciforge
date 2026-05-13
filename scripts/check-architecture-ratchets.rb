@@ -36,6 +36,7 @@ RUST_LINE_BUDGETS = {
   "crates/calciforge/src/providers/alloy.rs" => 1126,
   "crates/calciforge/src/proxy/gateway.rs" => 1001,
   "crates/calciforge/src/proxy/handlers.rs" => 2386,
+  "crates/host-agent/src/config.rs" => 724,
   "crates/host-agent/src/main.rs" => 1288,
   "crates/paste-server/src/lib.rs" => 2623,
   "crates/security-proxy/src/mitm.rs" => 1573,
