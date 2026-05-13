@@ -112,6 +112,7 @@
     "status": "partial",
     "source_paths": [
       "crates/calciforge/src/channels/matrix.rs",
+      "crates/calciforge/src/channels/matrix_e2ee.rs",
       "crates/calciforge/src/channels/mock.rs",
       "crates/calciforge/src/channels/runtime.rs",
       "crates/calciforge/src/channels/signal.rs",
@@ -141,6 +142,7 @@
     "fuzz_targets": [],
     "automation": [
       "cargo test -p calciforge channels::",
+      "cargo test -p calciforge --features channel-matrix-e2ee channels::matrix",
       "scripts/matrix-real-e2e.py"
     ],
     "scenario_ids": [
