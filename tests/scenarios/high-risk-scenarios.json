@@ -1,0 +1,121 @@
+[
+  {
+    "id": "helicone-streaming-tools",
+    "title": "Helicone returns SSE for a tool-enabled chat completion",
+    "user_action": "A first-class agent sends a tool-enabled chat-completions request through Calciforge with stream=true.",
+    "components": [
+      "first-class agent adapter",
+      "Calciforge model route",
+      "external gateway adapter",
+      "provider response parser"
+    ],
+    "promise": "A valid upstream streaming response must not become an agent timeout or model-unavailable error.",
+    "aggression_vectors": [
+      "split content across several SSE frames",
+      "split tool-call arguments across several SSE frames",
+      "preserve stream=true on the outbound request",
+      "return an SSE content type with parameters"
+    ],
+    "current_automation": [
+      "crates/calciforge/src/proxy/helicone_streaming.rs unit tests",
+      "scripts/model-gateway-helicone-smoke.py"
+    ],
+    "status": "automated"
+  },
+  {
+    "id": "first-class-agent-gateway-egress",
+    "title": "First-class agent model traffic stays on the Calciforge gateway path",
+    "user_action": "A managed OpenClaw, Hermes, or other first-class agent handles a normal chat message.",
+    "components": [
+      "installer",
+      "agent runtime config",
+      "security proxy",
+      "model gateway",
+      "doctor"
+    ],
+    "promise": "For first-class adapters, provider/model traffic should go through Calciforge unless the operator explicitly opts out.",
+    "aggression_vectors": [
+      "agent service has stale proxy environment",
+      "agent config points directly at a provider",
+      "agent sends server-side web-search tool traffic",
+      "doctor is run against a different config path than the service"
+    ],
+    "current_automation": [
+      "installer strict egress-proxy doctor gate",
+      "agent-security-canary-smoke.sh"
+    ],
+    "status": "partial"
+  },
+  {
+    "id": "security-proxy-hostile-web-response",
+    "title": "Hostile fetched content is blocked on the response path",
+    "user_action": "An agent fetches or summarizes a page containing prompt-injection canary text.",
+    "components": [
+      "security proxy",
+      "adversary detector",
+      "agent web/tool fetch path",
+      "model gateway"
+    ],
+    "promise": "The model should not receive forbidden fetched content merely because the URL was allowed to load.",
+    "aggression_vectors": [
+      "forbidden text appears only in the HTTP response body",
+      "forbidden text appears in JSON returned by a provider-side web tool",
+      "the request itself is harmless but the returned content is not",
+      "the body is compressed or has a misleading content type"
+    ],
+    "current_automation": [
+      "security-proxy canary tests",
+      "mitm_https response-block tests"
+    ],
+    "status": "partial"
+  },
+  {
+    "id": "package-config-path-drift",
+    "title": "Packaged services use the same config paths that doctor validates",
+    "user_action": "An operator installs or updates Calciforge via Homebrew or Docker Compose, then sends a real channel message.",
+    "components": [
+      "Homebrew service",
+      "Docker Compose service",
+      "config discovery",
+      "doctor",
+      "runtime helpers"
+    ],
+    "promise": "An install that passes doctor should not run a different binary, config file, vault path, or helper script at runtime.",
+    "aggression_vectors": [
+      "legacy ~/.calciforge path remains present",
+      "launchd has an older binary path",
+      "Docker volume lacks a helper script",
+      "rsync or runtime binary is missing during update"
+    ],
+    "current_automation": [
+      "scripts/check-packaging.sh",
+      "package-install-smoke workflow"
+    ],
+    "status": "partial"
+  },
+  {
+    "id": "local-model-latency-envelope",
+    "title": "Local model routes stay inside a usable latency envelope",
+    "user_action": "A user sends a short prompt to a first-class agent backed by a local Ollama model.",
+    "components": [
+      "Ollama",
+      "model switch hook",
+      "Calciforge model route",
+      "first-class agent loop",
+      "channel progress feedback"
+    ],
+    "promise": "A local default should feel responsive, and slow paths should be measured and visible instead of looking dead.",
+    "aggression_vectors": [
+      "model is cold",
+      "model is loaded with a very large context window",
+      "agent includes a large session preamble",
+      "the route makes multiple model calls before replying"
+    ],
+    "current_automation": [
+      "Telegram slow-agent progress notice",
+      "Ollama on_switch warmup hook",
+      "scripts/model-gateway-route-aggression.py"
+    ],
+    "status": "partial"
+  }
+]

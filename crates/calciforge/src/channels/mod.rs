@@ -13,5 +13,6 @@ pub mod runtime;
 pub mod signal;
 pub mod sms;
 pub mod telegram;
+mod telegram_progress;
 pub mod telemetry;
 pub mod whatsapp;

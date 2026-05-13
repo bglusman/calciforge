@@ -1,0 +1,438 @@
+[
+  {
+    "id": "model-gateway-provider-boundary",
+    "title": "OpenAI-compatible model gateway and provider adapters",
+    "category": "model-gateway",
+    "status": "partial",
+    "source_paths": [
+      "crates/calciforge/src/proxy/auth.rs",
+      "crates/calciforge/src/proxy/backend.rs",
+      "crates/calciforge/src/proxy/control_auth.rs",
+      "crates/calciforge/src/proxy/gateway.rs",
+      "crates/calciforge/src/proxy/handlers.rs",
+      "crates/calciforge/src/proxy/helicone_router.rs",
+      "crates/calciforge/src/proxy/helicone_streaming.rs",
+      "crates/calciforge/src/proxy/model_resolver.rs",
+      "crates/calciforge/src/proxy/openai.rs",
+      "crates/calciforge/src/proxy/routing.rs",
+      "crates/calciforge/src/proxy/streaming.rs",
+      "crates/calciforge/src/proxy/token_estimator.rs",
+      "crates/calciforge/src/proxy/voice_handlers.rs",
+      "crates/calciforge/src/voice/forward.rs",
+      "crates/calciforge/src/voice/tools.rs"
+    ],
+    "invalid_containment": "Malformed requests, auth failures, invalid JSON/SSE, provider status bodies, transport failures, and oversized or non-UTF8 payloads must fail without panics, hangs, secret leaks, route confusion, or misleading failure classification.",
+    "valid_correctness": "All valid OpenAI-compatible JSON, SSE, tool-call, model-selector, retry, and provider error variants must normalize to the correct response or typed provider failure.",
+    "invalid_generators": [
+      "arbitrary SSE bytes and malformed JSON chunks",
+      "route and auth selector near-misses, including sibling wildcard names",
+      "provider error/status envelope variants and transport failures"
+    ],
+    "valid_generators": [
+      "OpenAI-compatible JSON/SSE streams with legal frame splits and extra fields",
+      "model route, alias, provider, role, alloy, cascade, and dispatcher selector graphs",
+      "tool-call delta streams preserving choice indexes and argument fragments"
+    ],
+    "oracles": [
+      "malformed input never panics, hangs, leaks secrets, or routes to an unintended provider",
+      "valid streams preserve content, tool-call arguments, choice indexes, and typed provider failure classification",
+      "auth and route wildcards match only inside their explicit namespace"
+    ],
+    "fuzz_targets": [],
+    "automation": [
+      "scripts/boundary-aggression.sh pr",
+      "cargo test -p calciforge proxy::helicone_streaming::tests",
+      "cargo test -p calciforge proxy::routing::tests",
+      "cargo test -p calciforge proxy::auth::tests",
+      "cargo test -p calciforge --test e2e property_tests",
+      "scripts/boundary-fuzz.sh nightly",
+      "scripts/model-gateway-helicone-smoke.py"
+    ],
+    "scenario_ids": [
+      "helicone-streaming-tools",
+      "first-class-agent-gateway-egress",
+      "local-model-latency-envelope"
+    ]
+  },
+  {
+    "id": "agent-adapter-boundary",
+    "title": "First-class and subprocess agent adapters",
+    "category": "agent-adapters",
+    "status": "partial",
+    "source_paths": [
+      "crates/calciforge/src/adapters/acp.rs",
+      "crates/calciforge/src/adapters/acpx.rs",
+      "crates/calciforge/src/adapters/artifact_cli.rs",
+      "crates/calciforge/src/adapters/claude_cli.rs",
+      "crates/calciforge/src/adapters/cli.rs",
+      "crates/calciforge/src/adapters/codex_cli.rs",
+      "crates/calciforge/src/adapters/dirac_cli.rs",
+      "crates/calciforge/src/adapters/hermes.rs",
+      "crates/calciforge/src/adapters/ironclaw.rs",
+      "crates/calciforge/src/adapters/kimi_cli.rs",
+      "crates/calciforge/src/adapters/openai_compat.rs",
+      "crates/calciforge/src/adapters/openclaw.rs",
+      "crates/calciforge/src/adapters/openclaw_channel.rs",
+      "crates/calciforge/src/adapters/openclaw_native.rs",
+      "crates/calciforge/src/adapters/zeroclaw.rs",
+      "crates/calciforge/src/adapters/zeroclaw_native.rs"
+    ],
+    "invalid_containment": "Malformed callbacks, stale request IDs, wrong bearer tokens, bad attachment data, invalid JSON-RPC frames, hostile stdout/stderr, broken pipes, and hung children must not wake the wrong request or wedge adapter state.",
+    "valid_correctness": "Valid callbacks, subprocess transcripts, ACP/ACPX frames, attachments, and OpenAI-compatible agent responses must correlate to the intended session and produce the correct normalized reply/artifact result.",
+    "invalid_generators": [
+      "malformed, contradictory, duplicate, stale, and unauthenticated callbacks",
+      "partial JSON-RPC frames and hostile subprocess stdout/stderr",
+      "attachment payloads with missing metadata, unsupported media, huge bodies, and bad paths"
+    ],
+    "valid_generators": [
+      "correlated OpenClaw callback success and failure payloads across timing variants",
+      "valid ACP/ACPX and CLI transcripts with artifacts and text replies",
+      "OpenAI-compatible agent responses with legal content and tool-call shapes"
+    ],
+    "oracles": [
+      "invalid callbacks are acknowledged or rejected without waking the wrong request",
+      "valid replies correlate exactly once to the intended pending request",
+      "contradictory success and failure payloads become protocol errors"
+    ],
+    "fuzz_targets": [],
+    "automation": [
+      "scripts/boundary-aggression.sh pr",
+      "cargo test -p calciforge adapters::",
+      "cargo test -p calciforge adapters::openclaw_channel::openclaw_channel_reply_tests",
+      "cargo test -p calciforge --test e2e adapter_edge_cases"
+    ],
+    "scenario_ids": [
+      "first-class-agent-gateway-egress"
+    ]
+  },
+  {
+    "id": "channel-adapter-boundary",
+    "title": "Inbound and outbound chat channel adapters",
+    "category": "channels",
+    "status": "partial",
+    "source_paths": [
+      "crates/calciforge/src/channels/matrix.rs",
+      "crates/calciforge/src/channels/mock.rs",
+      "crates/calciforge/src/channels/runtime.rs",
+      "crates/calciforge/src/channels/signal.rs",
+      "crates/calciforge/src/channels/sms.rs",
+      "crates/calciforge/src/channels/telegram.rs",
+      "crates/calciforge/src/channels/telegram_progress.rs",
+      "crates/calciforge/src/channels/telemetry.rs",
+      "crates/calciforge/src/channels/whatsapp.rs"
+    ],
+    "invalid_containment": "Malformed updates, unknown senders, invalid HMACs, duplicate events, non-text payloads, missing reply targets, and provider rate-limit bodies must drop or degrade without auth bypass or command-state corruption.",
+    "valid_correctness": "Valid channel payload variants must resolve the correct identity, route, reply target, command state, and outbound response semantics.",
+    "invalid_generators": [
+      "malformed channel webhooks and provider update JSON",
+      "unknown or spoofed senders, duplicate events, invalid HMACs, missing reply targets",
+      "non-text attachments and rate-limit/error response bodies"
+    ],
+    "valid_generators": [
+      "valid Telegram, Matrix, Signal, WhatsApp, SMS, and mock channel message variants",
+      "group, direct-message, threaded, reply-target, and command-state event shapes",
+      "outbound response payloads across channel-supported formats"
+    ],
+    "oracles": [
+      "untrusted or unusable events drop without auth bypass or command-state mutation",
+      "valid events resolve the correct identity, routing target, reply target, and command state",
+      "duplicate or out-of-order events do not produce duplicate irreversible actions"
+    ],
+    "fuzz_targets": [],
+    "automation": [
+      "cargo test -p calciforge channels::",
+      "scripts/matrix-real-e2e.py"
+    ],
+    "scenario_ids": [
+      "first-class-agent-gateway-egress"
+    ]
+  },
+  {
+    "id": "config-routing-auth-boundary",
+    "title": "Config, identity, auth, routing, and model selector inputs",
+    "category": "config-routing-auth",
+    "status": "partial",
+    "source_paths": [
+      "crates/calciforge/src/auth.rs",
+      "crates/calciforge/src/commands.rs",
+      "crates/calciforge/src/config.rs",
+      "crates/calciforge/src/config/validator.rs",
+      "crates/calciforge/src/model_names.rs",
+      "crates/calciforge/src/providers/alloy.rs",
+      "crates/calciforge/src/providers/mod.rs",
+      "crates/calciforge/src/router.rs"
+    ],
+    "invalid_containment": "Malformed TOML, duplicate IDs, cyclic aliases, unsafe route globs, numeric overflows, unknown legacy fields, and invalid auth aliases must fail with typed errors and no partial unsafe config.",
+    "valid_correctness": "Valid config graph variations must preserve the same authorization and routing decisions across identities, aliases, roles, shortcuts, alloys, cascades, dispatchers, and providers.",
+    "invalid_generators": [
+      "malformed TOML/JSON, duplicate IDs, cyclic aliases, numeric overflows, and unknown legacy fields",
+      "unsafe wildcard and route selector near-misses",
+      "invalid identity aliases and auth allowlist combinations"
+    ],
+    "valid_generators": [
+      "identity, alias, routing, role, shortcut, provider, alloy, cascade, and dispatcher graphs",
+      "equivalent selector graphs that should produce the same authorization result",
+      "valid legacy and current config forms where compatibility is promised"
+    ],
+    "oracles": [
+      "invalid config fails with typed errors and no partial unsafe state",
+      "equivalent valid graphs preserve auth and routing decisions",
+      "wildcard semantics are namespace-bounded and consistent across auth and routing"
+    ],
+    "fuzz_targets": [],
+    "automation": [
+      "cargo test -p calciforge config::",
+      "cargo test -p calciforge proxy::model_resolver",
+      "cargo test -p calciforge --features hegel install::"
+    ],
+    "scenario_ids": [
+      "first-class-agent-gateway-egress"
+    ]
+  },
+  {
+    "id": "security-proxy-boundary",
+    "title": "Security proxy, adversary detector, and scanner policy",
+    "category": "security-proxy",
+    "status": "partial",
+    "source_paths": [
+      "crates/adversary-detector/src/audit.rs",
+      "crates/adversary-detector/src/digest.rs",
+      "crates/adversary-detector/src/middleware.rs",
+      "crates/adversary-detector/src/profiles.rs",
+      "crates/adversary-detector/src/proxy.rs",
+      "crates/adversary-detector/src/scanner.rs",
+      "crates/adversary-detector/src/verdict.rs",
+      "crates/security-proxy/src/agent_config.rs",
+      "crates/security-proxy/src/agent_web.rs",
+      "crates/security-proxy/src/audit.rs",
+      "crates/security-proxy/src/config.rs",
+      "crates/security-proxy/src/credentials.rs",
+      "crates/security-proxy/src/ironclaw.rs",
+      "crates/security-proxy/src/mitm.rs",
+      "crates/security-proxy/src/proxy.rs",
+      "crates/security-proxy/src/scanner.rs",
+      "crates/security-proxy/src/substitution.rs"
+    ],
+    "invalid_containment": "Header smuggling, hostile response bodies, bad URL forms, malformed scanner payloads, broken Starlark/policy results, and invalid secret references must fail closed where security requires it.",
+    "valid_correctness": "Valid proxied browser/provider traffic must substitute only authorized secrets, preserve allowed traffic, and keep blocked content out of model context.",
+    "invalid_generators": [
+      "arbitrary bytes around secret references and placeholder tokens",
+      "hostile URLs, headers, scanner payloads, response bodies, and Starlark results",
+      "destination-policy lookalikes and malformed provider browsing tool definitions"
+    ],
+    "valid_generators": [
+      "valid secret-reference and placeholder documents with resolved values",
+      "allowed browser/provider traffic with authorized destination metadata",
+      "scanner verdict payloads and Starlark policy returns across supported forms"
+    ],
+    "oracles": [
+      "invalid security inputs fail closed where required and never leak secret material",
+      "valid substitutions render exactly once using authorized values only",
+      "blocked destinations and blocked content never reach model context"
+    ],
+    "fuzz_targets": [
+      "security_substitution_bytes",
+      "security_substitution_valid_refs"
+    ],
+    "automation": [
+      "cargo test -p security-proxy",
+      "scripts/boundary-fuzz.sh nightly",
+      "cargo test -p adversary-detector"
+    ],
+    "scenario_ids": [
+      "security-proxy-hostile-web-response"
+    ]
+  },
+  {
+    "id": "secret-boundary",
+    "title": "Fnox, MCP, paste, metadata, and secret-reference inputs",
+    "category": "secrets",
+    "status": "partial",
+    "source_paths": [
+      "crates/mcp-server/src/lib.rs",
+      "crates/paste-server/src/lib.rs",
+      "crates/secrets-client/src/access_policy.rs",
+      "crates/secrets-client/src/bin/calciforge-secrets.rs",
+      "crates/secrets-client/src/config.rs",
+      "crates/secrets-client/src/fnox_client.rs",
+      "crates/secrets-client/src/fnox_library.rs",
+      "crates/secrets-client/src/metadata.rs",
+      "crates/secrets-client/src/resolver.rs",
+      "crates/secrets-client/src/secret_refs.rs"
+    ],
+    "invalid_containment": "Missing, hung, or non-UTF8 fnox output, malformed MCP params, replayed paste tokens, invalid origins, and malformed .env or metadata must not leak or misapply secrets.",
+    "valid_correctness": "Valid secret refs, metadata, MCP calls, paste submissions, and .env entries must resolve to the correct vault operation and destination policy.",
+    "invalid_generators": [
+      "malformed secret names, metadata destination strings, MCP params, paste tokens, and fnox output",
+      "non-UTF8, empty, hung, or partial process outputs",
+      "invalid Origin/Referer and replayed or expired paste submissions"
+    ],
+    "valid_generators": [
+      "valid secret refs, destination metadata, MCP calls, paste submissions, and .env entries",
+      "fnox list/get/set output variants the wrapper claims to support",
+      "destination allowlist forms with normalization and deduplication"
+    ],
+    "oracles": [
+      "invalid secret inputs never leak or misapply values",
+      "valid secret references resolve to the intended vault operation and destination policy",
+      "destination normalization is lowercase, deduplicated, URL-free, and stable"
+    ],
+    "fuzz_targets": [
+      "secret_metadata_destinations"
+    ],
+    "automation": [
+      "cargo test -p secrets-client",
+      "scripts/boundary-fuzz.sh nightly",
+      "cargo test -p mcp-server",
+      "cargo test -p paste-server"
+    ],
+    "scenario_ids": [
+      "security-proxy-hostile-web-response"
+    ]
+  },
+  {
+    "id": "filesystem-install-doctor-boundary",
+    "title": "Filesystem, persistence, installer, doctor, services, hooks, and local model lifecycle",
+    "category": "filesystem-install-doctor",
+    "status": "partial",
+    "source_paths": [
+      "crates/calciforge/src/context.rs",
+      "crates/calciforge/src/doctor.rs",
+      "crates/calciforge/src/doctor/agent_adapter_doctor.rs",
+      "crates/calciforge/src/doctor/security_proxy_runtime.rs",
+      "crates/calciforge/src/hooks/memory.rs",
+      "crates/calciforge/src/install/agent_helper.rs",
+      "crates/calciforge/src/install/cli.rs",
+      "crates/calciforge/src/install/executor.rs",
+      "crates/calciforge/src/install/health.rs",
+      "crates/calciforge/src/install/instructions.rs",
+      "crates/calciforge/src/install/json5.rs",
+      "crates/calciforge/src/install/linux_hardening.rs",
+      "crates/calciforge/src/install/migration_types.rs",
+      "crates/calciforge/src/install/model.rs",
+      "crates/calciforge/src/install/ssh.rs",
+      "crates/calciforge/src/install/wizard.rs",
+      "crates/calciforge/src/local_model/mlx_lm.rs",
+      "crates/calciforge/src/local_model/mod.rs",
+      "crates/calciforge/src/persistent_context.rs",
+      "crates/calciforge/src/unified_context.rs"
+    ],
+    "invalid_containment": "Symlinks, permission failures, missing dirs, corrupt SQLite/config, SSH partial failures, stale service files, hook hangs, and concurrent model switches must not corrupt owned state or pretend live paths are healthy.",
+    "valid_correctness": "Valid source, Homebrew, Docker, user, and system layouts must make doctor, runtime, service managers, hooks, local model state, and persistence agree on the same files and paths.",
+    "invalid_generators": [
+      "filesystem tempdir chaos with symlinks, permission errors, missing dirs, corrupt files, and partial writes",
+      "mock SSH/service/process failures and hook hangs",
+      "concurrent model switch and stale service layout sequences"
+    ],
+    "valid_generators": [
+      "source, Homebrew, Docker, user, and system install layouts",
+      "valid service templates, hook envs, config paths, and local model lifecycle states",
+      "doctor/runtime path combinations that should agree"
+    ],
+    "oracles": [
+      "invalid filesystem inputs do not corrupt state outside owned paths",
+      "doctor checks the same path the runtime and install actions use",
+      "valid layouts make doctor, runtime, services, hooks, persistence, and local model state agree"
+    ],
+    "fuzz_targets": [],
+    "automation": [
+      "cargo test -p calciforge install::",
+      "cargo test -p calciforge doctor::",
+      "scripts/check-packaging.sh"
+    ],
+    "scenario_ids": [
+      "package-config-path-drift",
+      "local-model-latency-envelope"
+    ]
+  },
+  {
+    "id": "host-agent-boundary",
+    "title": "Host-agent RPC, approval, and host operation adapters",
+    "category": "host-agent",
+    "status": "partial",
+    "source_paths": [
+      "crates/host-agent/src/adapters/exec.rs",
+      "crates/host-agent/src/adapters/git.rs",
+      "crates/host-agent/src/adapters/pct.rs",
+      "crates/host-agent/src/adapters/registry.rs",
+      "crates/host-agent/src/adapters/systemd.rs",
+      "crates/host-agent/src/adapters/zfs.rs",
+      "crates/host-agent/src/approval/identity_plugin.rs",
+      "crates/host-agent/src/approval/mod.rs",
+      "crates/host-agent/src/approval/signal.rs",
+      "crates/host-agent/src/approval/token.rs",
+      "crates/host-agent/src/audit.rs",
+      "crates/host-agent/src/auth/adapter.rs",
+      "crates/host-agent/src/auth/identity.rs",
+      "crates/host-agent/src/config.rs",
+      "crates/host-agent/src/error.rs",
+      "crates/host-agent/src/metrics.rs",
+      "crates/host-agent/src/perm_warn.rs",
+      "crates/host-agent/src/rate_limit.rs",
+      "crates/host-agent/src/tls/mod.rs",
+      "crates/host-agent/src/zfs/mod.rs"
+    ],
+    "invalid_containment": "mTLS identity mismatch, malformed RPC JSON, replayed approvals, spoofed webhooks, bad dataset names, path metacharacters, and rate-limit edge cases must not mutate host resources.",
+    "valid_correctness": "Valid approved operation sequences must mutate only intended resources and preserve audit, identity, adapter, and rate-limit semantics.",
+    "invalid_generators": [
+      "malformed RPC JSON, mTLS identity mismatch, replayed approvals, spoofed webhooks, and rate-limit edge cases",
+      "bad dataset names, path metacharacters, invalid systemd/unit identifiers, and git/pct/zfs operation variants",
+      "operation sequences with missing approval, stale approval, or conflicting identity"
+    ],
+    "valid_generators": [
+      "approved operation sequences for exec, git, pct, systemd, and zfs adapters",
+      "valid identity, approval token, audit, and rate-limit state transitions",
+      "mock host resources with bounded mutations"
+    ],
+    "oracles": [
+      "invalid host-agent inputs never mutate host resources",
+      "approved valid operations mutate only intended resources",
+      "audit, identity, adapter, and rate-limit semantics remain consistent across operation sequences"
+    ],
+    "fuzz_targets": [],
+    "automation": [
+      "cargo test -p host-agent"
+    ],
+    "scenario_ids": [
+      "package-config-path-drift"
+    ]
+  },
+  {
+    "id": "clashd-policy-boundary",
+    "title": "Clashd policy hooks and remote domain lists",
+    "category": "clashd",
+    "status": "partial",
+    "source_paths": [
+      "crates/clashd/src/domain_lists.rs",
+      "crates/clashd/src/policy/engine.rs",
+      "crates/clashd/src/policy/eval.rs"
+    ],
+    "invalid_containment": "Malformed hooks, huge or redirecting domain lists, punycode/wildcard edge cases, and invalid policy results must fail safely.",
+    "valid_correctness": "Valid hook payloads, domain-list formats, and policy returns must produce deterministic routing and allow/deny decisions.",
+    "invalid_generators": [
+      "arbitrary remote domain-list bytes, invalid regex patterns, huge lists, redirects, and malformed hooks",
+      "punycode, wildcard, IP, hosts-file, URL, and comment edge cases",
+      "invalid Starlark policy results and timeout-like policy behavior"
+    ],
+    "valid_generators": [
+      "valid exact, regex, hosts-file, and URL domain-list formats",
+      "valid hook payloads and policy return variants",
+      "domain probes covering exact, subdomain, case-insensitive, and non-match paths"
+    ],
+    "oracles": [
+      "malformed policy/domain inputs fail safely without unsafe allow decisions",
+      "valid domain lists produce deterministic match decisions",
+      "valid policy returns map to the intended allow, deny, or review decision"
+    ],
+    "fuzz_targets": [
+      "clashd_domain_lists"
+    ],
+    "automation": [
+      "cargo test -p clashd",
+      "scripts/boundary-fuzz.sh nightly"
+    ],
+    "scenario_ids": [
+      "security-proxy-hostile-web-response"
+    ]
+  }
+]

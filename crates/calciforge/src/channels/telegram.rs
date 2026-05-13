@@ -21,7 +21,7 @@ use crate::{
     router::Router,
 };
 
-use super::telemetry;
+use super::{telegram_progress, telemetry};
 
 /// Run the Telegram bot until shutdown.
 pub async fn run(
@@ -629,6 +629,9 @@ fn handle_message_nonblocking(
     tokio::spawn(async move {
         let queue_wait_ms = received_at.elapsed().as_millis() as u64;
         telemetry::agent_dispatch_started("telegram", &identity.id, &agent_id, queue_wait_ms);
+        let dispatch_done_tx =
+            telegram_progress::spawn_slow_agent_notice(bot.clone(), chat_id, agent_id.clone());
+
         // Augment message with conversation context (unseen exchanges for this agent).
         let augmented_text = context_store.augment_message_with_options(
             &chat_key,
@@ -649,7 +652,7 @@ fn handle_message_nonblocking(
         }
 
         let dispatch_start = std::time::Instant::now();
-        match router
+        let dispatch_result = router
             .dispatch_message_with_full_context(
                 &augmented_text,
                 &agent,
@@ -661,8 +664,10 @@ fn handle_message_nonblocking(
                     channel: Some("telegram"),
                 },
             )
-            .await
-        {
+            .await;
+        let _ = dispatch_done_tx.send(());
+
+        match dispatch_result {
             Ok(response_message) => {
                 let response = response_message.render_text_fallback();
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
@@ -1243,330 +1248,6 @@ async fn send_markdown_reply(
                 "Telegram MarkdownV2 send failed; retrying as plain text"
             );
             send_plain_reply(bot, chat_id, reply, reply_kind).await;
-        }
-    }
-}
-
-/// Handle a single incoming Telegram message (async, awaits agent response).
-///
-/// **Deprecated in favour of [`handle_message_nonblocking`]** which spawns agent
-/// dispatch so commands remain responsive.  Kept for reference / testing.
-///
-/// Message flow:
-/// 1. Extract text + sender
-/// 2. Auth — unknown sender → drop silently
-/// 3. Build per-identity context key `"{chat_id}-{identity_id}"` (isolates context per identity)
-/// 4. Identity-resolved local commands (`!ping`, `!help`, etc.) — reply and return
-/// 5. `!switch <agent>` — handle with identity context, reply and return
-/// 6. Resolve active agent for this identity
-/// 7. Augment message with conversation context preamble (unseen exchanges)
-/// 8. Dispatch to agent
-/// 9. Record exchange in context buffer, reply to user
-#[allow(dead_code)]
-async fn handle_message(
-    bot: Bot,
-    msg: Message,
-    config: Arc<CalciforgeConfig>,
-    router: Arc<Router>,
-    command_handler: Arc<CommandHandler>,
-    context_store: ContextStore,
-) {
-    let chat_id = msg.chat.id;
-
-    // Extract text (ignore non-text messages like photos, stickers, etc.)
-    let text = match msg.text() {
-        Some(t) => t.to_string(),
-        None => {
-            debug!(chat_id = %chat_id, "ignoring non-text message");
-            return;
-        }
-    };
-
-    // Extract sender user ID — needed for auth and context labels.
-    let user = match msg.from.as_ref() {
-        Some(u) => u,
-        None => {
-            debug!(chat_id = %chat_id, "message has no sender, dropping");
-            return;
-        }
-    };
-    let sender_id = user.id.0 as i64;
-
-    // Auth boundary: resolve sender to identity.
-    // Must be synchronous (no await) so identity is available for all subsequent
-    // command checks without any async race.
-    let identity = match resolve_telegram_sender(sender_id, &config) {
-        Some(id) => id,
-        None => {
-            warn!(sender_id = %sender_id, "unknown Telegram sender — dropping silently");
-            return;
-        }
-    };
-
-    info!(
-        identity = %identity.id,
-        sender_id = %sender_id,
-        text_len = %text.len(),
-        "authorized message from identity"
-    );
-
-    // Context key: scoped to (chat_id, identity_id) so each identity has isolated
-    // conversation history even within the same Telegram chat.
-    // This prevents context bleed when an operator switches between identities.
-    let chat_key = format!("{}-{}", chat_id.0, identity.id);
-
-    // Identity-independent commands. The sender identity has already been
-    // resolved above; keep operator-state commands on explicit identity paths.
-    if let Some(reply) = command_handler.handle(&text) {
-        debug!(chat_id = %chat_id, cmd = %text.trim(), "handled identity-resolved local command");
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send command reply");
-        }
-        return;
-    }
-
-    // !status — requires identity context; handled post-auth so it shows the
-    // per-identity active agent (respects !switch overrides).
-    if CommandHandler::is_status_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !status command");
-        let reply = command_handler.cmd_status_for_identity(&identity.id).await;
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send status reply");
-        }
-        return;
-    }
-
-    if CommandHandler::is_gateway_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !gateway command");
-        let reply = command_handler.cmd_gateway_for_identity(&identity.id);
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send gateway reply");
-        }
-        return;
-    }
-
-    // !switch — requires identity context; handled post-auth.
-    if CommandHandler::is_switch_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !switch command");
-        let reply = command_handler.handle_switch(&text, &identity.id);
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send switch reply");
-        }
-        return;
-    }
-
-    // !model — requires identity context for alloy selection; handled post-auth.
-    if CommandHandler::is_model_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !model command");
-        let reply = command_handler.handle_model(&text, &identity.id);
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send model reply");
-        }
-        return;
-    }
-
-    // !sessions — list downstream sessions for an agent; requires identity context.
-    if CommandHandler::is_sessions_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !sessions command");
-        let reply = command_handler
-            .handle_sessions_message(&text, &identity.id)
-            .await;
-        let rendered = reply.render_text_fallback();
-        if let Err(e) = bot.send_message(chat_id, &rendered).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send sessions reply");
-        }
-        return;
-    }
-
-    if CommandHandler::is_new_session_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !new command");
-        let reply = command_handler.handle_new_session(&text, &identity.id);
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send new-session reply");
-        }
-        return;
-    }
-
-    if CommandHandler::is_btw_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !btw command");
-        let reply = match command_handler.parse_btw_command(&text, &identity.id) {
-            Ok(request) => {
-                let model_override = command_handler.active_model_for_identity(&identity.id);
-                let dispatch_start = std::time::Instant::now();
-                match router
-                    .dispatch_one_off_for_identity(
-                        &request.prompt,
-                        &request.agent_id,
-                        &config,
-                        &identity.id,
-                        "telegram",
-                        model_override.as_deref(),
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        command_handler
-                            .record_dispatch(dispatch_start.elapsed().as_millis() as u64);
-                        format!("{}:\n{}", request.agent_id, response.render_text_fallback())
-                    }
-                    Err(err) => format!("⚠️ !btw dispatch failed: {err}"),
-                }
-            }
-            Err(err) => err,
-        };
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send btw reply");
-        }
-        return;
-    }
-
-    // !default — switch back to configured default agent; requires identity context.
-    if CommandHandler::is_default_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling !default command");
-        let reply = command_handler.handle_default(&identity.id);
-        if let Err(e) = bot.send_message(chat_id, &reply).await {
-            warn!(chat_id = %chat_id, error = %e, "failed to send default reply");
-        }
-        return;
-    }
-
-    // !secret / !secure — store/list secrets without routing the value to an
-    // agent. Logged debug-level with no text to keep the value out of
-    // ops logs (the chat `set` form would otherwise be visible).
-    if CommandHandler::is_secure_command(&text) {
-        debug!(chat_id = %chat_id, identity = %identity.id, "handling secret command");
-        if CommandHandler::is_secure_set_command(&text)
-            && !crate::config::channel_allows_chat_secret_set(&config, "telegram")
-        {
-            let reply = CommandHandler::secure_set_disabled_reply("Telegram");
-            send_secret_reply(
-                bot,
-                chat_id,
-                reply,
-                "secure_disabled",
-                channel_allows_rich_ui(&config, "telegram"),
-            )
-            .await;
-            return;
-        }
-        let reply = command_handler.handle_secure(&text, &identity.id).await;
-        send_secret_reply(
-            bot,
-            chat_id,
-            reply,
-            "secure",
-            channel_allows_rich_ui(&config, "telegram"),
-        )
-        .await;
-        return;
-    }
-
-    // !context clear — clear the conversation buffer for this chat.
-    if CommandHandler::is_context_clear_command(&text) {
-        context_store.clear(&chat_key);
-        if let Err(e) = bot
-            .send_message(chat_id, "🧹 Conversation context cleared.")
-            .await
-        {
-            warn!(chat_id = %chat_id, error = %e, "failed to send context-clear reply");
-        }
-        return;
-    }
-
-    // Resolve active agent for this identity (respects !switch overrides).
-    let agent_id = match command_handler.active_agent_for(&identity.id) {
-        Some(id) => id,
-        None => {
-            warn!(identity = %identity.id, "no routing rule for identity — dropping");
-            return;
-        }
-    };
-
-    let agent = match find_agent(&agent_id, &config) {
-        Some(a) => a.clone(),
-        None => {
-            warn!(agent_id = %agent_id, "agent not found in config");
-            let _ = bot.send_message(chat_id, "⚠️ Agent not configured.").await;
-            return;
-        }
-    };
-
-    // Resolve a human-readable sender label for context preambles.
-    // Prefer display_name from identity config, fall back to identity id.
-    let sender_label = config
-        .identities
-        .iter()
-        .find(|i| i.id == identity.id)
-        .and_then(|i| i.display_name.as_deref())
-        .unwrap_or(&identity.id)
-        .to_string();
-    let model_override = command_handler.active_model_for_identity(&identity.id);
-    let selected_session = command_handler.active_session_for(&identity.id, &agent_id);
-    let preserve_native_commands = crate::adapters::agent_supports_native_commands(&agent);
-
-    // Augment message with conversation context (unseen exchanges for this agent).
-    let augmented_text = context_store.augment_message_with_options(
-        &chat_key,
-        &agent_id,
-        &text,
-        preserve_native_commands,
-    );
-
-    if augmented_text.len() > text.len() {
-        debug!(
-            chat_id = %chat_id,
-            identity = %identity.id,
-            agent_id = %agent_id,
-            original_len = %text.len(),
-            augmented_len = %augmented_text.len(),
-            "injected conversation context preamble"
-        );
-    }
-
-    // Dispatch to agent
-    let dispatch_start = std::time::Instant::now();
-    match router
-        .dispatch_message_with_full_context(
-            &augmented_text,
-            &agent,
-            &config,
-            crate::router::RouterDispatchContext {
-                sender: Some(&identity.id),
-                model_override: model_override.as_deref(),
-                session: selected_session.as_deref(),
-                channel: Some("telegram"),
-            },
-        )
-        .await
-    {
-        Ok(response_message) => {
-            let response = response_message.render_text_fallback();
-            let latency_ms = dispatch_start.elapsed().as_millis() as u64;
-            command_handler.record_dispatch(latency_ms);
-            debug!(
-                identity = %identity.id,
-                agent_id = %agent_id,
-                response_len = %response.len(),
-                "got agent response"
-            );
-
-            // Record the exchange (original, un-augmented prompt) in the context buffer.
-            context_store.push_with_options(
-                &chat_key,
-                &sender_label,
-                &text,
-                &agent_id,
-                &response,
-                preserve_native_commands,
-            );
-
-            send_outbound_reply(bot, chat_id, response_message, "agent_response").await;
-        }
-        Err(e) => {
-            warn!(identity = %identity.id, error = %e, "agent dispatch failed");
-            let _ = bot
-                .send_message(chat_id, format!("⚠️ Agent error: {}", e))
-                .await;
         }
     }
 }

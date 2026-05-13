@@ -9,6 +9,9 @@ vendor/
 *.orig
 mutants.out/
 mutants.out.old/
+boundary-artifacts/
+fuzz/artifacts/
+fuzz/corpus/
 src-backup/
 infra/
 node_modules/

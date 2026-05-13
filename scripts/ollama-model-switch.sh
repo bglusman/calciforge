@@ -10,7 +10,9 @@ set -euo pipefail
 #   CALCIFORGE_PREV_MODEL_ID     previous public model ID, when known
 #
 # This script unloads other resident Ollama models before Calciforge sends the
-# next gateway request. The request itself will load the target model.
+# next gateway request. When CALCIFORGE_OLLAMA_WARMUP is truthy, it also sends
+# a tiny non-streaming generation so model load and first-token setup can happen
+# before the human-facing request path.
 
 find_ollama() {
     if command -v ollama >/dev/null 2>&1; then
@@ -60,14 +62,65 @@ if ! ollama_bin="$(find_ollama)"; then
 fi
 
 current_models="$("$ollama_bin" ps 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')"
-if [[ -z "$current_models" ]]; then
-    exit 0
-fi
+target_loaded=false
 
 while IFS= read -r model; do
     [[ -n "$model" ]] || continue
     if [[ "$model" == "$target" ]]; then
+        target_loaded=true
         continue
     fi
     "$ollama_bin" stop "$model" >/dev/null 2>&1 || true
 done <<< "$current_models"
+
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+json_escape() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json, sys; print(json.dumps(sys.argv[1])[1:-1])' "$1"
+    else
+        printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    fi
+}
+
+warmup_enabled="${CALCIFORGE_OLLAMA_WARMUP:-true}"
+if truthy "$warmup_enabled" && [[ "$target_loaded" != true ]]; then
+    warmup_required="${CALCIFORGE_OLLAMA_WARMUP_REQUIRED:-false}"
+    if command -v curl >/dev/null 2>&1; then
+        host="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+        host="${host%/}"
+        keep_alive="${CALCIFORGE_OLLAMA_KEEP_ALIVE:-24h}"
+        warmup_timeout="${CALCIFORGE_OLLAMA_WARMUP_TIMEOUT_SECONDS:-120}"
+        warmup_ctx="${CALCIFORGE_OLLAMA_WARMUP_CONTEXT:-1024}"
+        if [[ ! "$warmup_ctx" =~ ^[0-9]+$ ]]; then
+            echo "warning: invalid CALCIFORGE_OLLAMA_WARMUP_CONTEXT='$warmup_ctx'; using 1024" >&2
+            warmup_ctx=1024
+        fi
+        payload="$(printf \
+            '{"model":"%s","prompt":"Reply with exactly: ready","stream":false,"keep_alive":"%s","options":{"num_ctx":%s}}\n' \
+            "$(json_escape "$target")" \
+            "$(json_escape "$keep_alive")" \
+            "$warmup_ctx")"
+        if ! curl -fsS --max-time "$warmup_timeout" \
+            -H 'Content-Type: application/json' \
+            -d "$payload" \
+            "$host/api/generate" >/dev/null; then
+            if truthy "$warmup_required"; then
+                exit 1
+            fi
+            echo "warning: Ollama warmup failed for $target; continuing to gateway request" >&2
+        fi
+    else
+        if ! "$ollama_bin" run "$target" "Reply with exactly: ready" >/dev/null; then
+            if truthy "$warmup_required"; then
+                exit 1
+            fi
+            echo "warning: Ollama warmup failed for $target; continuing to gateway request" >&2
+        fi
+    fi
+fi

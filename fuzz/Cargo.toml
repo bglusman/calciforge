@@ -1,0 +1,46 @@
+[package]
+name = "calciforge-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+clashd = { path = "../crates/clashd" }
+libfuzzer-sys = "0.4"
+secrets-client = { path = "../crates/secrets-client" }
+security-proxy = { path = "../crates/security-proxy" }
+
+[[bin]]
+name = "security_substitution_bytes"
+path = "fuzz_targets/security_substitution_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "security_substitution_valid_refs"
+path = "fuzz_targets/security_substitution_valid_refs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "secret_metadata_destinations"
+path = "fuzz_targets/secret_metadata_destinations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clashd_domain_lists"
+path = "fuzz_targets/clashd_domain_lists.rs"
+test = false
+doc = false
+bench = false
