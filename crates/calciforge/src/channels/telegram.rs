@@ -4,6 +4,7 @@
 //! boundary, routes to the downstream agent, and sends the reply back.
 
 use anyhow::{Context, Result};
+use std::time::Duration;
 use teloxide::{
     prelude::*,
     types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Me, ParseMode},
@@ -22,6 +23,8 @@ use crate::{
 };
 
 use super::telemetry;
+
+const SLOW_AGENT_NOTICE_AFTER: Duration = Duration::from_secs(15);
 
 /// Run the Telegram bot until shutdown.
 pub async fn run(
@@ -629,6 +632,23 @@ fn handle_message_nonblocking(
     tokio::spawn(async move {
         let queue_wait_ms = received_at.elapsed().as_millis() as u64;
         telemetry::agent_dispatch_started("telegram", &identity.id, &agent_id, queue_wait_ms);
+        let (dispatch_done_tx, dispatch_done_rx) = tokio::sync::oneshot::channel::<()>();
+        let slow_notice_bot = bot.clone();
+        let slow_notice_agent_id = agent_id.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(SLOW_AGENT_NOTICE_AFTER) => {
+                    send_plain_reply(
+                        slow_notice_bot,
+                        chat_id,
+                        slow_agent_notice(&slow_notice_agent_id),
+                        "agent_slow_notice",
+                    ).await;
+                }
+                _ = dispatch_done_rx => {}
+            }
+        });
+
         // Augment message with conversation context (unseen exchanges for this agent).
         let augmented_text = context_store.augment_message_with_options(
             &chat_key,
@@ -649,7 +669,7 @@ fn handle_message_nonblocking(
         }
 
         let dispatch_start = std::time::Instant::now();
-        match router
+        let dispatch_result = router
             .dispatch_message_with_full_context(
                 &augmented_text,
                 &agent,
@@ -661,8 +681,10 @@ fn handle_message_nonblocking(
                     channel: Some("telegram"),
                 },
             )
-            .await
-        {
+            .await;
+        let _ = dispatch_done_tx.send(());
+
+        match dispatch_result {
             Ok(response_message) => {
                 let response = response_message.render_text_fallback();
                 let latency_ms = dispatch_start.elapsed().as_millis() as u64;
@@ -906,6 +928,12 @@ async fn send_plain_reply(
             e,
         ),
     }
+}
+
+fn slow_agent_notice(agent_id: &str) -> String {
+    format!(
+        "Still working on {agent_id}. This agent can take a while; I will send the reply here when it finishes."
+    )
 }
 
 async fn send_choice_reply(
@@ -1655,6 +1683,16 @@ mod tests {
         let id = resolve_telegram_sender(7000000001, &config);
         assert!(id.is_some());
         assert_eq!(id.unwrap().id, "brian");
+    }
+
+    #[test]
+    fn slow_agent_notice_names_agent_and_final_delivery() {
+        let notice = slow_agent_notice("openclaw-local");
+        assert!(notice.contains("openclaw-local"));
+        assert!(
+            notice.contains("send the reply here when it finishes"),
+            "notice should make clear this is progress, not a terminal error: {notice}"
+        );
     }
 
     #[test]

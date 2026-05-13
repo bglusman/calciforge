@@ -428,9 +428,20 @@ timeout_seconds = 900
 The source installer writes `calciforge-ollama-switch` when Helicone is enabled,
 and release archives/Homebrew installs include the helper under `bin/`. The hook
 receives `CALCIFORGE_PROVIDER_ID`, `CALCIFORGE_MODEL_ID`,
-`CALCIFORGE_UPSTREAM_MODEL_ID`, and `CALCIFORGE_PREV_MODEL_ID`. `!model` only
-stores the selected model for the sender identity; provider hooks run
-synchronously before the next gateway request that uses that provider.
+`CALCIFORGE_UPSTREAM_MODEL_ID`, and `CALCIFORGE_PREV_MODEL_ID`.
+
+By default the bundled hook also warms a model that is not already resident by
+calling Ollama's local `/api/generate` endpoint with a tiny prompt. Set
+`CALCIFORGE_OLLAMA_WARMUP=false` to skip that step, or tune
+`CALCIFORGE_OLLAMA_WARMUP_TIMEOUT_SECONDS`, `CALCIFORGE_OLLAMA_KEEP_ALIVE`, and
+`CALCIFORGE_OLLAMA_WARMUP_CONTEXT` for a specific host. Warming is most useful
+when install, update, or model-selection flows invoke the hook before the user
+sends real work. If the hook first runs inside the user's request, the cold-load
+cost still lands on that request; Calciforge should make that visible with
+channel progress feedback rather than looking dead.
+
+`!model` only stores the selected model for the sender identity; provider hooks
+run synchronously before the next gateway request that uses that provider.
 Calciforge serializes switches per provider, applies the hook to dispatcher and
 cascade fallback attempts, and fails that provider attempt if the hook exits
 non-zero or times out. Dispatchers, cascades, and alloys may still try later
