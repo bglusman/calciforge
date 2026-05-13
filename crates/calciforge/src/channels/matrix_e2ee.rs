@@ -212,10 +212,21 @@ pub(super) async fn run_sdk_runtime(runtime: MatrixSdkRuntime) -> Result<()> {
         "Matrix SDK E2EE channel listening"
     );
 
-    client
-        .sync(SyncSettings::default())
-        .await
-        .context("Matrix SDK: sync loop exited")
+    let mut retry_delay_secs = 5u64;
+    loop {
+        match client.sync(SyncSettings::default()).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    retry_delay_secs,
+                    "Matrix SDK: sync loop error, retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(retry_delay_secs)).await;
+                retry_delay_secs = (retry_delay_secs * 2).min(60);
+            }
+        }
+    }
 }
 
 fn matrix_session(
