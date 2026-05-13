@@ -5,10 +5,13 @@ title: Failure Discovery Action Plan
 
 # Failure Discovery Action Plan
 
+**Status:** Design sketch
+
 Calciforge already has a lot of tests. Recent staging bugs show that count is
 not the same thing as confidence. The recurring problem is narrower: tests often
-cover the shape we expected, while production breaks on the shape a real agent,
-gateway, package manager, or service manager actually emits.
+cover one observed shape, while production breaks on another valid shape emitted
+by a real agent, gateway, package manager, filesystem, service manager, or
+channel.
 
 This page records the lesson and turns it into work. The aim is not only more
 regression tests. Calciforge needs aggression tests: checks that deliberately

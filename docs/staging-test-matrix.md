@@ -5,6 +5,8 @@ title: Staging Test Matrix
 
 # Staging Test Matrix (Local + GitHub Actions + Cloud)
 
+**Status:** Experimental
+
 This document defines a practical, security-first test pyramid for Calciforge.
 It complements existing CI by adding realistic staging exercises for releases.
 See also the [Failure Discovery Action Plan](roadmap/failure-discovery-action-plan.html),

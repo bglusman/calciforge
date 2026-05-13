@@ -10,9 +10,9 @@ set -euo pipefail
 #   CALCIFORGE_PREV_MODEL_ID     previous public model ID, when known
 #
 # This script unloads other resident Ollama models before Calciforge sends the
-# next gateway request. When CALCIFORGE_OLLAMA_WARMUP is not false, it also
-# sends a tiny non-streaming generation so model load and first-token setup can
-# happen before the human-facing request path.
+# next gateway request. When CALCIFORGE_OLLAMA_WARMUP is truthy, it also sends
+# a tiny non-streaming generation so model load and first-token setup can happen
+# before the human-facing request path.
 
 find_ollama() {
     if command -v ollama >/dev/null 2>&1; then

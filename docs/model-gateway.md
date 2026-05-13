@@ -434,11 +434,12 @@ By default the bundled hook also warms a model that is not already resident by
 calling Ollama's local `/api/generate` endpoint with a tiny prompt. Set
 `CALCIFORGE_OLLAMA_WARMUP=false` to skip that step, or tune
 `CALCIFORGE_OLLAMA_WARMUP_TIMEOUT_SECONDS`, `CALCIFORGE_OLLAMA_KEEP_ALIVE`, and
-`CALCIFORGE_OLLAMA_WARMUP_CONTEXT` for a specific host. Warmup is best-effort:
-the hook warns but continues if the tiny warmup call fails, because a warmup
-problem should not make an otherwise valid provider route unavailable. Set
-`CALCIFORGE_OLLAMA_WARMUP_REQUIRED=true` only when you want warmup failures to
-fail the provider attempt.
+`CALCIFORGE_OLLAMA_WARMUP_CONTEXT` for a specific host. Set `OLLAMA_HOST` to an
+HTTP endpoint such as `http://127.0.0.1:11434` when Ollama is not on the default
+local address. Warmup is best-effort: the hook warns but continues if the tiny
+warmup call fails, because a warmup problem should not make an otherwise valid
+provider route unavailable. Set `CALCIFORGE_OLLAMA_WARMUP_REQUIRED=true` only
+when you want warmup failures to fail the provider attempt.
 
 Warming is most useful when install, update, or model-selection flows invoke the
 hook before the user sends real work. If the hook first runs inside the user's
