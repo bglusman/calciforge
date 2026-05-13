@@ -37,6 +37,9 @@ jobs:
       - name: Check high-risk scenario catalog
         run: python3 scripts/check-scenarios.py
 
+      - name: Check integration boundary registry
+        run: python3 scripts/check-boundary-surfaces.py
+
       - name: Check architecture ratchets
         env:
           CALCIFORGE_ARCH_RATCHET_BASE: ${{ github.event.pull_request.base.sha }}
@@ -109,18 +112,64 @@ jobs:
       - name: Test ${{ matrix.crate }}
         run: cargo test -p ${{ matrix.crate }}
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Boundary aggression tests
+  # ─────────────────────────────────────────────────────────────────────────────
+  boundary-aggression:
+    name: Boundary Aggression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-boundary-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run generated parser and property boundary tests
+        run: |
+          cargo test -p calciforge proxy::helicone_streaming::tests -- --nocapture
+          cargo test -p calciforge --test e2e property_tests -- --nocapture
+
+      - name: Run Hegel boundary properties
+        run: cargo test -p calciforge --features hegel install:: -- --nocapture
+
+      - name: Build Calciforge for process-boundary smoke
+        run: cargo build -p calciforge
+
+      - name: Run Helicone gateway process-boundary smoke
+        run: python3 scripts/model-gateway-helicone-smoke.py
+        env:
+          CALCIFORGE_BIN: target/debug/calciforge
+
   # Aggregator job that reports a single `test` status check (required by ruleset)
   test:
     runs-on: ubuntu-latest
-    needs: [test-crates]
+    needs: [test-crates, boundary-aggression]
     if: always()
     steps:
       - name: Verify all crate test jobs succeeded
         env:
           TEST_CRATES_RESULT: ${{ needs.test-crates.result }}
+          BOUNDARY_AGGRESSION_RESULT: ${{ needs.boundary-aggression.result }}
         run: |
           if [ "$TEST_CRATES_RESULT" != "success" ]; then
             echo "One or more crate test jobs failed: $TEST_CRATES_RESULT"
+            exit 1
+          fi
+          if [ "$BOUNDARY_AGGRESSION_RESULT" != "success" ]; then
+            echo "Boundary aggression tests failed: $BOUNDARY_AGGRESSION_RESULT"
             exit 1
           fi
 

@@ -180,6 +180,21 @@ validated by `scripts/check-scenarios.py` in CI. It is intentionally not a
 marketing roadmap. It is a list of assumptions we expect future tests and live
 smokes to attack.
 
+The integration-boundary registry lives at
+`tests/boundaries/integration-surfaces.json` and is validated by
+`scripts/check-boundary-surfaces.py` in CI. New files under the adapter,
+channel, proxy, install, security, secret, host-agent, and policy boundary
+directories must be registered there with:
+
+- the source paths that belong to the boundary,
+- the invalid-containment contract,
+- the valid-correctness contract,
+- current automation, even if the status is still `missing` or `partial`,
+- at least one linked high-risk scenario.
+
+This makes adding a new integration surface a visible test-design act instead
+of an implicit code-only change.
+
 ### 2. Contract tests at every external boundary
 
 For each provider adapter and first-class agent adapter, keep tests that use

@@ -849,7 +849,6 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_claw_spec_roundtrip(tc: hegel::TestCase) {
-        use hegel::Generator;
         use hegel::generators as gs;
 
         // Use sampled_from with pre-validated safe name strings to avoid
@@ -983,7 +982,6 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_install_target_never_panics(tc: hegel::TestCase) {
-        use hegel::Generator;
         use hegel::generators as gs;
 
         // Generate an arbitrary host string (may be complete garbage).
@@ -1030,7 +1028,6 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_parse_claw_spec_missing_name_always_errors(tc: hegel::TestCase) {
-        use hegel::Generator;
         use hegel::generators as gs;
 
         // Generate random kv pairs using sampled_from for safe keys and values.

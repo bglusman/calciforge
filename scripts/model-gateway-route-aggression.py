@@ -216,6 +216,7 @@ def chat_completion(
     model: str,
     timeout: float,
     expected: str,
+    max_tokens: int,
 ) -> tuple[bool, str, float]:
     payload = {
         "model": model,
@@ -226,7 +227,7 @@ def chat_completion(
             }
         ],
         "temperature": 0,
-        "max_tokens": 16,
+        "max_tokens": max_tokens,
         "stream": False,
     }
     headers = {"Content-Type": "application/json"}
@@ -252,7 +253,7 @@ def chat_completion(
                 return False, f"invalid JSON response: {exc}: {trim(body)}", elapsed
             content = assistant_content(parsed)
             if content.strip() != expected:
-                return False, f"unexpected content {content!r}", elapsed
+                return False, unexpected_content_detail(parsed, content), elapsed
             return True, content.strip(), elapsed
     except urllib.error.HTTPError as exc:
         elapsed = time.monotonic() - started
@@ -282,6 +283,29 @@ def assistant_content(parsed: dict[str, Any]) -> str:
     return ""
 
 
+def unexpected_content_detail(parsed: dict[str, Any], content: str) -> str:
+    choice = first_choice(parsed)
+    finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+    message = choice.get("message") if isinstance(choice, dict) else None
+    reasoning = None
+    if isinstance(message, dict):
+        reasoning = message.get("reasoning") or message.get("reasoning_content")
+    detail = f"unexpected content {content!r}"
+    if finish_reason:
+        detail += f"; finish_reason={finish_reason!r}"
+    if isinstance(reasoning, str) and reasoning:
+        detail += f"; reasoning_prefix={trim(reasoning, 160)!r}"
+    return detail
+
+
+def first_choice(parsed: dict[str, Any]) -> dict[str, Any] | None:
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    choice = choices[0]
+    return choice if isinstance(choice, dict) else None
+
+
 def trim(text: str, limit: int = 500) -> str:
     text = text.replace("\n", "\\n")
     if len(text) <= limit:
@@ -307,6 +331,12 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--expected", default="PONG")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=512,
+        help="Output budget for the smoke prompt; keep high enough for reasoning models to finish thinking",
+    )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args()
 
@@ -337,6 +367,7 @@ def main() -> int:
             model=model,
             timeout=args.timeout,
             expected=args.expected,
+            max_tokens=args.max_tokens,
         )
         ok = ok and passed
         result = {

@@ -200,7 +200,6 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_idempotent(tc: hegel::TestCase) {
-        use hegel::Generator;
         use hegel::generators as gs;
 
         // Use arbitrary text — not just valid JSON.  The idempotency property
@@ -230,7 +229,6 @@ mod tests {
     #[cfg(feature = "hegel")]
     #[hegel::test]
     fn prop_strip_json_comments_never_adds_content(tc: hegel::TestCase) {
-        use hegel::Generator;
         use hegel::generators as gs;
 
         let input = tc.draw(gs::text().max_size(500));
