@@ -23,6 +23,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Check docs site links
         run: ruby scripts/check-docs-site.rb
@@ -37,6 +38,8 @@ jobs:
         run: python3 scripts/check-scenarios.py
 
       - name: Check architecture ratchets
+        env:
+          CALCIFORGE_ARCH_RATCHET_BASE: ${{ github.event.pull_request.base.sha }}
         run: ruby scripts/check-architecture-ratchets.rb
 
   # ─────────────────────────────────────────────────────────────────────────────
