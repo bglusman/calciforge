@@ -365,13 +365,7 @@ async fn handle_reply(
 
     if let Some(tx) = pending_tx {
         if let Err(e) = payload.validate_shape() {
-            warn!(
-                session_key = %payload.session_key,
-                correlation_key = %correlation_key,
-                request_id = ?payload.request_id,
-                error = %e,
-                "openclaw-channel correlated malformed callback"
-            );
+            warn!(%correlation_key, error = %e, "openclaw-channel correlated malformed callback");
             let _ = tx.send(Err(e));
             return (StatusCode::OK, Json(AckResponse { ok: true }));
         }
@@ -416,19 +410,10 @@ async fn handle_reply(
 
 impl ReplyPayload {
     fn validate_shape(&self) -> Result<(), String> {
-        let has_message = self
-            .message
-            .as_deref()
-            .is_some_and(|message| !message.trim().is_empty());
-        let has_error = self
-            .error
-            .as_deref()
-            .is_some_and(|error| !error.trim().is_empty());
-
-        if has_message && has_error {
-            return Err(
-                "openclaw-channel callback included both message and error fields".to_string(),
-            );
+        let filled =
+            |value: &Option<String>| value.as_deref().is_some_and(|s| !s.trim().is_empty());
+        if filled(&self.message) && filled(&self.error) {
+            return Err("openclaw-channel callback included both message and error fields".into());
         }
 
         Ok(())
