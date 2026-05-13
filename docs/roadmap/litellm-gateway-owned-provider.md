@@ -7,12 +7,12 @@ title: LiteLLM Gateway-Owned Provider Spike
 
 Status: recipe/proof path.
 
-Calciforge does not need a LiteLLM-specific adapter to exercise the external
-gateway contract. LiteLLM's proxy is an OpenAI-compatible gateway process, so
-Calciforge can route to it with the existing builtin HTTP transport and mark
-the custody boundary with `model_credential_owner = "provider"`. In this recipe,
-`backend_type = "http"` is only the transport from Calciforge to LiteLLM; it is
-not a raw upstream-provider route.
+Calciforge routes to LiteLLM through the shared OpenAI-compatible provider
+adapter core. Use `backend_type = "litellm"` so Calciforge records the right
+engine metadata and dashboard expectations, then mark the custody boundary with
+`model_credential_owner = "provider"`. The underlying HTTP request plumbing is
+shared with `http`, `helicone`, `openrouter`, and the other OpenAI-compatible
+adapter kinds.
 
 In this shape, Calciforge owns channel identity, aliases, synthetic selectors,
 access policy, command UX, and security scanning. LiteLLM owns upstream provider
@@ -84,7 +84,7 @@ timeout_seconds = 60
 
 [[proxy.providers]]
 id = "litellm-managed"
-backend_type = "http"
+backend_type = "litellm"
 url = "http://127.0.0.1:4000/v1"
 model_credential_owner = "provider"
 api_key_file = "/etc/calciforge/secrets/litellm-virtual-key"

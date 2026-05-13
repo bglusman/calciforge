@@ -685,18 +685,19 @@ pub struct ProxyConfig {
     #[serde(default = "default_proxy_default_policy")]
     pub default_policy: ProxyAccessPolicy,
 
-    /// Legacy root provider adapter type for proxy: "http", "helicone", or "mock".
+    /// Legacy root provider adapter type for proxy.
     ///
-    /// "http" is Calciforge's minimal builtin OpenAI-compatible upstream
-    /// adapter. It is a compatibility path, not a provider-owned boundary with
-    /// its own registry or observability UI.
+    /// Supported values include "http", "helicone", "litellm", "portkey",
+    /// "tensorzero", "future-agi", "openrouter", and "mock". All non-mock
+    /// values use the same OpenAI-compatible HTTP core plus engine-specific
+    /// policy/metadata overlays.
     ///
     /// Provider-specific routes under `[[proxy.providers]]` have their own
     /// narrower `backend_type` surface.
     #[serde(default = "default_proxy_backend_type")]
     pub backend_type: String,
 
-    /// Optional operator UI URL for the selected gateway engine.
+    /// Optional operator UI URL for the selected provider adapter.
     ///
     /// External engines such as Helicone may expose their own dashboard. Engines
     /// without a built-in dashboard can point this at a lightweight Calciforge
@@ -704,7 +705,7 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub gateway_ui_url: Option<String>,
 
-    /// Backend API key (for HTTP backend)
+    /// Root provider adapter API key.
     #[serde(default)]
     pub backend_api_key: Option<String>,
 
@@ -1044,13 +1045,12 @@ pub struct ProxyProviderConfig {
     /// Unique identifier for this provider (e.g. "kimi", "local-mlx").
     pub id: String,
 
-    /// Provider adapter kind. "http" uses Calciforge's builtin
-    /// OpenAI-compatible HTTP transport. With `model_credential_owner = "provider"`,
-    /// that endpoint is treated as an external OpenAI-compatible gateway such
-    /// as LiteLLM. With the default `model_credential_owner = "calciforge"`, it is a
-    /// raw upstream-provider compatibility path. "helicone" forwards through a
-    /// Helicone AI Gateway with Helicone auth headers. CLI-backed
-    /// subscriptions are configured as `[[agents]]`, not gateway providers.
+    /// Provider adapter kind. Supported OpenAI-compatible engine overlays
+    /// include "http", "helicone", "litellm", "portkey", "tensorzero",
+    /// "future-agi", and "openrouter". They share the same request core;
+    /// the kind chooses engine metadata, dashboard capability, and any
+    /// provider-specific headers. CLI-backed subscriptions are configured as
+    /// `[[agents]]`, not gateway providers.
     #[serde(default = "default_proxy_provider_backend")]
     pub backend_type: String,
 

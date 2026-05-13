@@ -40,24 +40,17 @@ flowchart TD
   User["Human channel"] --> Router["Calciforge channel/router"]
   Router --> Adapter["Agent adapter"]
   Adapter -->|"only when runtime is configured for it"| Gateway["Calciforge model gateway"]
-  Gateway --> Engine["ProviderAdapter: builtin HTTP, Helicone, external HTTP boundary, or mock"]
+  Gateway --> Engine["ProviderAdapter: OpenAI-compatible engine or mock"]
   Engine --> Provider["Model provider"]
 
   Adapter -->|"otherwise"| AgentEgress["Agent-owned model/tool egress"]
 ```
 
-The root model gateway has a small supported backend set:
-
-- `http`: Calciforge's builtin HTTP upstream adapter. It is a minimal
-  compatibility path for OpenAI-compatible endpoints, not a provider-owned
-  boundary.
-- `helicone`: Calciforge forwards through a Helicone AI Gateway process.
-- External OpenAI-compatible provider boundary endpoints such as LiteLLM are currently
-  configured as provider routes with `backend_type = "http"` and
-  `model_credential_owner = "provider"`. In that shape, the builtin HTTP adapter is
-  only the transport to the provider boundary; that boundary owns its
-  model/provider registry and upstream keys.
-- `mock`: deterministic local/test behavior.
+The root model gateway has a small supported backend set. `http`, `helicone`,
+`litellm`, `portkey`, `tensorzero`, `future-agi`, and `openrouter` use the same
+OpenAI-compatible HTTP core. The engine name selects metadata, dashboard hints,
+and small policy overlays such as Helicone auth/retry headers. `mock` is
+deterministic local/test behavior.
 
 Experimental or stale root backends such as `embedded`, `library`, and
 `traceloop` are not supported in production config. They can return later only
@@ -94,8 +87,9 @@ Operators get fewer false promises:
 
 This also narrows supported configuration. Configs that used
 `backend_type = "embedded"`, `backend_type = "library"`, or
-`backend_type = "traceloop"` as the root `[proxy]` backend must move to `http`,
-`helicone`, or `mock`, or use an agent adapter/recipe instead.
+`backend_type = "traceloop"` as the root `[proxy]` backend must move to one of
+the supported OpenAI-compatible provider adapter kinds, `mock`, or an agent
+adapter/recipe instead.
 
 ## Follow-Up Refactor Plan
 
@@ -115,8 +109,13 @@ This also narrows supported configuration. Configs that used
 
 ## Follow-Through
 
-2026-05-08: The production code path now exposes only the shared root gateway
-allowlist (`http`, `helicone`, and `mock`). The old Traceloop feature module and
-unimplemented embedded/library backend stubs were removed so validation,
-runtime startup, and selectable gateway engine types cannot drift apart around
+2026-05-08: The production code path narrowed the gateway allowlist and removed
+old Traceloop plus unimplemented embedded/library backend stubs so validation,
+runtime startup, and selectable gateway engine types could not drift around
 unsupported names.
+
+2026-05-13: The provider adapter implementation stopped treating Helicone as a
+privileged runtime path. `http`, `helicone`, `litellm`, `portkey`,
+`tensorzero`, `future-agi`, and `openrouter` now share the same
+OpenAI-compatible HTTP core, with named engines supplying policy/metadata
+overlays.

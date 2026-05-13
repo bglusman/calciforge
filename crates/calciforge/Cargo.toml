@@ -10,11 +10,10 @@ name = "calciforge"
 path = "src/main.rs"
 
 [features]
-default = ["helicone"]
+default = []
 channel-matrix = []
 hegel = ["dep:hegeltest"]
 persistent-context = ["dep:rusqlite"]
-helicone = []
 tiktoken-estimator = ["dep:tiktoken-rs"]
 test = []
 
@@ -108,7 +107,7 @@ uuid = { version = "1", features = ["v4"] }
 
 tempfile = "3"
 
-# Retry logic (Helicone-style)
+# Retry logic
 backon = "0.4"
 
 # Optional exact-ish OpenAI tokenizer for context-window routing.

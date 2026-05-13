@@ -29,6 +29,10 @@ Calciforge will use provider adapters as the primary model-call abstraction.
 - `[[proxy.providers]]` is the preferred operational config surface.
 - A deployment may configure multiple adapters: Ollama, OpenRouter, LiteLLM,
   Helicone, direct OpenAI-compatible HTTP, or future native/library adapters.
+- OpenAI-compatible engine adapters share one HTTP request/response core.
+  Engine names such as `litellm`, `helicone`, `portkey`, `tensorzero`,
+  `future-agi`, and `openrouter` supply metadata, dashboard hints, and small
+  policy overlays; they are not separate copied gateways.
 - Aliases and nested model resolution should be scoped to the selected provider
   where provider-owned routing exists.
 - The legacy root `[proxy].backend_type` remains for compatibility, but it is

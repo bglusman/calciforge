@@ -65,7 +65,7 @@ run_logged() {
 }
 
 run_gateway() {
-  run_logged gateway-helicone env PROPTEST_CASES="$property_cases" cargo test -p calciforge proxy::helicone_streaming::tests -- --nocapture || return 1
+  run_logged gateway-openai-streaming env PROPTEST_CASES="$property_cases" cargo test -p calciforge proxy::openai_streaming::tests -- --nocapture || return 1
   run_logged gateway-routing env PROPTEST_CASES="$property_cases" cargo test -p calciforge proxy::routing::tests -- --nocapture || return 1
   run_logged gateway-auth env PROPTEST_CASES="$property_cases" cargo test -p calciforge proxy::auth::tests -- --nocapture || return 1
 }

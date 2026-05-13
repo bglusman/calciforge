@@ -60,7 +60,7 @@ pub(super) fn parse_streaming_chat_completion(
         saw_chunk = true;
         let value: serde_json::Value = serde_json::from_str(data).map_err(|e| {
             BackendError::InvalidResponse(format!(
-                "Failed to parse Helicone streaming chunk for model '{}': {}",
+                "Failed to parse OpenAI-compatible streaming chunk for model '{}': {}",
                 requested_model, e
             ))
         })?;
@@ -94,7 +94,7 @@ pub(super) fn parse_streaming_chat_completion(
             .and_then(|v| v.as_array())
             .ok_or_else(|| {
                 BackendError::InvalidResponse(format!(
-                    "Helicone streaming chunk for model '{}' did not include choices",
+                    "OpenAI-compatible streaming chunk for model '{}' did not include choices",
                     requested_model
                 ))
             })?;
@@ -104,13 +104,13 @@ pub(super) fn parse_streaming_chat_completion(
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| {
                     BackendError::InvalidResponse(format!(
-                        "Helicone streaming choice for model '{}' did not include a numeric index",
+                        "OpenAI-compatible streaming choice for model '{}' did not include a numeric index",
                         requested_model
                     ))
                 })?;
             let index = u32::try_from(index).map_err(|_| {
                 BackendError::InvalidResponse(format!(
-                    "Helicone streaming choice index for model '{}' exceeded u32",
+                    "OpenAI-compatible streaming choice index for model '{}' exceeded u32",
                     requested_model
                 ))
             })?;
@@ -146,13 +146,13 @@ pub(super) fn parse_streaming_chat_completion(
                         .transpose()
                         .map_err(|_| {
                             BackendError::InvalidResponse(format!(
-                                "Helicone streaming tool call index for model '{}' exceeded u32",
+                                "OpenAI-compatible streaming tool call index for model '{}' exceeded u32",
                                 requested_model
                             ))
                         })?
                         .unwrap_or(u32::try_from(fallback_index).map_err(|_| {
                             BackendError::InvalidResponse(format!(
-                                "Helicone streaming tool call index for model '{}' exceeded u32",
+                                "OpenAI-compatible streaming tool call index for model '{}' exceeded u32",
                                 requested_model
                             ))
                         })?);
@@ -178,20 +178,20 @@ pub(super) fn parse_streaming_chat_completion(
 
     if !saw_chunk {
         return Err(BackendError::InvalidResponse(format!(
-            "Helicone streaming response for model '{}' did not include any chunks",
+            "OpenAI-compatible streaming response for model '{}' did not include any chunks",
             requested_model
         )));
     }
 
     let Some(id) = id else {
         return Err(BackendError::InvalidResponse(format!(
-            "Helicone streaming response for model '{}' did not include an id",
+            "OpenAI-compatible streaming response for model '{}' did not include an id",
             requested_model
         )));
     };
     let Some(created) = created else {
         return Err(BackendError::InvalidResponse(format!(
-            "Helicone streaming response for model '{}' did not include created",
+            "OpenAI-compatible streaming response for model '{}' did not include created",
             requested_model
         )));
     };
@@ -202,13 +202,13 @@ pub(super) fn parse_streaming_chat_completion(
         for (tool_index, call) in accumulator.tool_calls {
             let id = call.id.ok_or_else(|| {
                 BackendError::InvalidResponse(format!(
-                    "Helicone streaming tool call for model '{}' did not include an id",
+                    "OpenAI-compatible streaming tool call for model '{}' did not include an id",
                     requested_model
                 ))
             })?;
             let name = call.name.ok_or_else(|| {
                 BackendError::InvalidResponse(format!(
-                    "Helicone streaming tool call for model '{}' did not include a function name",
+                    "OpenAI-compatible streaming tool call for model '{}' did not include a function name",
                     requested_model
                 ))
             })?;
@@ -269,7 +269,7 @@ pub(super) fn parse_streaming_chat_completion(
 
     if choice_entries.is_empty() {
         return Err(BackendError::InvalidResponse(format!(
-            "Helicone streaming response for model '{}' did not include any choices",
+            "OpenAI-compatible streaming response for model '{}' did not include any choices",
             requested_model
         )));
     }
@@ -300,7 +300,7 @@ fn parse_usage_count(
     };
     u32::try_from(value).map_err(|_| {
         BackendError::InvalidResponse(format!(
-            "Helicone streaming usage field '{}' exceeded u32",
+            "OpenAI-compatible streaming usage field '{}' exceeded u32",
             field
         ))
     })

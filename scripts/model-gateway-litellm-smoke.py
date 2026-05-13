@@ -246,7 +246,7 @@ timeout_seconds = 20
 
 [[proxy.providers]]
 id = "litellm-local"
-backend_type = "http"
+backend_type = "litellm"
 url = "http://127.0.0.1:{litellm_port}/v1"
 model_credential_owner = "provider"
 api_key = "{LITELLM_GATEWAY_KEY}"

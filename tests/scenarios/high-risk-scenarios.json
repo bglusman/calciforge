@@ -1,7 +1,7 @@
 [
   {
-    "id": "helicone-streaming-tools",
-    "title": "Helicone returns SSE for a tool-enabled chat completion",
+    "id": "openai-compatible-streaming-tools",
+    "title": "OpenAI-compatible provider adapter returns SSE for a tool-enabled chat completion",
     "user_action": "A first-class agent sends a tool-enabled chat-completions request through Calciforge with stream=true.",
     "components": [
       "first-class agent adapter",
@@ -17,8 +17,9 @@
       "return an SSE content type with parameters"
     ],
     "current_automation": [
-      "crates/calciforge/src/proxy/helicone_streaming.rs unit tests",
-      "scripts/model-gateway-helicone-smoke.py"
+      "crates/calciforge/src/proxy/openai_streaming.rs unit tests",
+      "scripts/model-gateway-helicone-smoke.py",
+      "scripts/model-gateway-litellm-smoke.py"
     ],
     "status": "automated"
   },
