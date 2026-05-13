@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+mod observability;
 pub mod validator;
+
+pub use observability::ProxyObservabilityConfig;
 
 // ---------------------------------------------------------------------------
 // Schema types
@@ -685,23 +688,12 @@ pub struct ProxyConfig {
     #[serde(default = "default_proxy_default_policy")]
     pub default_policy: ProxyAccessPolicy,
 
-    /// Legacy root provider adapter type for proxy.
-    ///
-    /// Supported values include "http", "helicone", "litellm", "portkey",
-    /// "tensorzero", "future-agi", "openrouter", and "mock". All non-mock
-    /// values use the same OpenAI-compatible HTTP core plus engine-specific
-    /// policy/metadata overlays.
-    ///
-    /// Provider-specific routes under `[[proxy.providers]]` have their own
-    /// narrower `backend_type` surface.
+    /// Legacy root provider adapter type for proxy. Prefer explicit
+    /// `[[proxy.providers]]` routes for operational configs.
     #[serde(default = "default_proxy_backend_type")]
     pub backend_type: String,
 
     /// Optional operator UI URL for the selected provider adapter.
-    ///
-    /// External engines such as Helicone may expose their own dashboard. Engines
-    /// without a built-in dashboard can point this at a lightweight Calciforge
-    /// status page or an observability frontend.
     #[serde(default)]
     pub gateway_ui_url: Option<String>,
 
@@ -754,6 +746,10 @@ pub struct ProxyConfig {
     /// misconfiguration problems.
     #[serde(default = "default_gateway_fallback_on")]
     pub fallback_on: Vec<GatewayFailureKind>,
+
+    /// Fanout destinations for model-gateway attempt telemetry.
+    #[serde(default)]
+    pub observability: Vec<ProxyObservabilityConfig>,
 }
 
 /// Stable failure classes used by gateway retry and synthetic fallback policy.
@@ -956,6 +952,7 @@ impl Default for ProxyConfig {
             voice: None,
             retry: GatewayRetryConfig::default(),
             fallback_on: default_gateway_fallback_on(),
+            observability: Vec::new(),
         }
     }
 }

@@ -426,6 +426,63 @@ async fn configured_authorization_header_cannot_override_backend_api_key() {
     mock.assert_async().await;
 }
 
+#[tokio::test]
+async fn upstream_error_bodies_are_not_copied_into_backend_errors() {
+    let mut server = mockito::Server::new_async().await;
+    let body = "provider failure sk-test-secret-token ".repeat(40);
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(500)
+        .with_header("content-type", "application/json")
+        .with_body(body.clone())
+        .create_async()
+        .await;
+
+    let backend = create_backend(&BackendConfig {
+        backend_type: BackendType::Http,
+        url: Some(format!("{}/v1", server.url())),
+        timeout_seconds: Some(30),
+        ..Default::default()
+    })
+    .unwrap();
+    let gateway = create_gateway(
+        GatewayConfig {
+            backend_type: GatewayType::LiteLlm,
+            base_url: Some(format!("{}/v1", server.url())),
+            timeout_seconds: 30,
+            ..Default::default()
+        },
+        Some(backend),
+    )
+    .unwrap();
+
+    let err = gateway
+        .chat_completion(
+            serde_json::from_value(serde_json::json!({
+                "model": "managed/default",
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("upstream response body omitted"),
+        "error should report omission rather than body contents: {rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("{} bytes", body.len())),
+        "error should retain safe size context: {rendered}"
+    );
+    assert!(
+        !rendered.contains("sk-test-secret-token"),
+        "upstream error body must not be logged or returned: {rendered}"
+    );
+    mock.assert_async().await;
+}
+
 #[test]
 fn create_openai_compatible_gateway_preserves_engine_metadata_through_logging_wrapper() {
     let backend = create_backend(&BackendConfig {

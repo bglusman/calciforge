@@ -401,7 +401,7 @@ impl HttpBackend {
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(BackendError::http_status_error(
                 status,
-                format!("API error {}: {}", status, error_text),
+                upstream_api_error_message(status, &error_text),
             ));
         }
 
@@ -430,6 +430,17 @@ impl HttpBackend {
                 model, e
             ))
         })
+    }
+}
+
+fn upstream_api_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    if body.is_empty() {
+        format!("API error {status}: upstream response body was empty")
+    } else {
+        format!(
+            "API error {status}: upstream response body omitted ({} bytes)",
+            body.len()
+        )
     }
 }
 
@@ -501,7 +512,7 @@ impl SecretsBackend for HttpBackend {
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(BackendError::http_status_error(
                 status,
-                format!("API error {}: {}", status, error_text),
+                upstream_api_error_message(status, &error_text),
             ));
         }
 

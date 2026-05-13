@@ -32,6 +32,9 @@ mod openai;
 mod openai_streaming;
 pub(crate) mod routing;
 mod streaming;
+pub(crate) mod telemetry;
+#[cfg(test)]
+mod telemetry_tests;
 mod token_estimator;
 mod voice_handlers;
 
@@ -52,6 +55,8 @@ pub struct ProxyState {
     /// Named provider entries, in routing priority order.
     /// Entries from `model_routes` come first, then from `providers.models` patterns.
     pub providers: Vec<ProviderEntry>,
+    /// Gateway-attempt observability sinks.
+    pub telemetry: telemetry::TelemetryFanout,
     /// Local model lifecycle manager (present when `[local_models]` is configured).
     pub local_manager: Option<Arc<crate::local_model::LocalModelManager>>,
     /// Voice pipeline config (present when `[proxy.voice]` is configured).
@@ -235,6 +240,8 @@ pub async fn start_proxy_server(
     // Build named provider entries from [[proxy.providers]] and [[proxy.model_routes]].
     let providers = routing::build_provider_entries(&config, config.timeout_seconds)?;
     info!(providers = providers.len(), "Named providers loaded");
+    let telemetry = telemetry::TelemetryFanout::from_config(&config.observability)
+        .context("building proxy observability sinks")?;
 
     let state = ProxyState {
         alloy_manager,
@@ -243,6 +250,7 @@ pub async fn start_proxy_server(
         model_shortcuts,
         gateway,
         providers,
+        telemetry,
         local_manager,
         voice: config.voice.clone(),
     };
