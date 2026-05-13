@@ -1,18 +1,34 @@
-#!/usr/bin/env python3
-"""Deterministic artifact-cli recipe for media-brief smoke tests.
+#!/usr/bin/env sh
+# Deterministic artifact-cli recipe for media-brief smoke tests.
+#
+# Prefer Python 3 when it is available so the generated image/audio stay
+# prompt-shaped, but keep a dependency-free fallback for minimal Docker images.
 
-Reads a user task from stdin and writes three local artifacts into
-CALCIFORGE_ARTIFACT_DIR:
+set -eu
 
-- cover.png: a deterministic generated image
-- intro.wav: a short generated chime
-- brief.md: a short text brief echoing the task
+if [ -z "${CALCIFORGE_ARTIFACT_DIR:-}" ]; then
+  echo "CALCIFORGE_ARTIFACT_DIR is required" >&2
+  exit 2
+fi
 
-This intentionally performs no network calls. It is useful for validating
-Calciforge's recipe, artifact collection, and channel fallback plumbing before
-trying a real image/audio provider.
-"""
+mkdir -p "$CALCIFORGE_ARTIFACT_DIR"
+prompt_file="$(mktemp "${TMPDIR:-/tmp}/calciforge-media-brief.XXXXXX")"
+trap 'rm -f "$prompt_file"' EXIT HUP INT TERM
+cat >"$prompt_file"
 
+python_bin=""
+if command -v python3 >/dev/null 2>&1; then
+  python_bin="python3"
+elif command -v python >/dev/null 2>&1 && python - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info[0] >= 3 else 1)
+PY
+then
+  python_bin="python"
+fi
+
+if [ -n "$python_bin" ]; then
+  "$python_bin" - "$prompt_file" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -108,12 +124,8 @@ def write_brief(path: Path, prompt: str) -> None:
 
 
 def main() -> int:
-    artifact_dir = os.environ.get("CALCIFORGE_ARTIFACT_DIR")
-    if not artifact_dir:
-        print("CALCIFORGE_ARTIFACT_DIR is required", file=sys.stderr)
-        return 2
-
-    prompt = sys.stdin.read()
+    artifact_dir = os.environ["CALCIFORGE_ARTIFACT_DIR"]
+    prompt = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
     out = Path(artifact_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -128,3 +140,46 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+PY
+  exit $?
+fi
+
+decode_base64() {
+  if printf '' | base64 -d >/dev/null 2>&1; then
+    base64 -d
+  else
+    base64 -D
+  fi
+}
+
+if ! command -v base64 >/dev/null 2>&1; then
+  echo "media-brief-demo requires python3, python, or base64" >&2
+  exit 127
+fi
+
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMwaT8JAAJ3AYVm6MJkAAAAAElFTkSuQmCC' \
+  | decode_base64 >"$CALCIFORGE_ARTIFACT_DIR/cover.png"
+
+printf '%s' 'UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
+  | decode_base64 >"$CALCIFORGE_ARTIFACT_DIR/intro.wav"
+
+{
+  printf '# Media Brief\n\n'
+  printf '## Request\n'
+  if [ -s "$prompt_file" ]; then
+    sed 's/^/> /' "$prompt_file"
+  else
+    printf '> Untitled media brief\n'
+  fi
+  printf '\n## Deliverables\n'
+  printf -- '- `cover.png`: dependency-free smoke-test visual\n'
+  printf -- '- `intro.wav`: short silent WAV smoke-test audio\n'
+  printf -- '- `brief.md`: this planning brief\n'
+  printf '\n'
+} >"$CALCIFORGE_ARTIFACT_DIR/brief.md"
+
+topic="$(tr '\n' ' ' <"$prompt_file" | sed 's/  */ /g; s/^ //; s/ $//' | cut -c 1-96)"
+if [ -z "$topic" ]; then
+  topic="media brief"
+fi
+printf 'Media brief ready for: %s\n' "$topic"

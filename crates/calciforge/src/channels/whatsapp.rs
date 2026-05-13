@@ -24,7 +24,7 @@ use crate::{
     commands::CommandHandler,
     config::{CalciforgeConfig, ChannelConfig, expand_tilde},
     context::ContextStore,
-    messages::OutboundMessage,
+    messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
 };
 
@@ -98,8 +98,58 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
     }
 
     async fn send_outbound(&self, recipient: &str, message: &OutboundMessage) {
-        self.send_reply(recipient, &message.render_text_fallback())
-            .await;
+        if message.attachments.is_empty() {
+            self.send_reply(recipient, &message.render_text_fallback())
+                .await;
+            return;
+        }
+
+        let start = std::time::Instant::now();
+        let text = message.text.clone().unwrap_or_default();
+        let attachments = match whatsapp_media_attachments(&message.attachments).await {
+            Ok(attachments) => attachments,
+            Err(e) => {
+                warn!(
+                    recipient = %recipient,
+                    error = %e,
+                    "WhatsApp: failed to prepare native attachments; sending text fallback"
+                );
+                self.send_reply(recipient, &message.render_text_fallback())
+                    .await;
+                return;
+            }
+        };
+        let response_len = message.response_len();
+
+        match self
+            .transport
+            .send(&SendMessage::new(text, recipient).with_attachments(attachments))
+            .await
+        {
+            Ok(()) => telemetry::reply_sent(
+                "whatsapp",
+                recipient,
+                "reply",
+                response_len,
+                start.elapsed().as_millis() as u64,
+            ),
+            Err(e) => {
+                telemetry::reply_failed(
+                    "whatsapp",
+                    recipient,
+                    "reply",
+                    start.elapsed().as_millis() as u64,
+                    &e,
+                );
+                warn!(
+                    recipient = %recipient,
+                    error = %e,
+                    "WhatsApp: native attachment send failed; sending text fallback"
+                );
+                self.send_reply(recipient, &message.render_text_fallback())
+                    .await;
+            }
+        }
     }
 
     fn command_reply_ready(
@@ -652,6 +702,38 @@ impl<C: Channel + ?Sized + 'static> WhatsAppChannel<C> {
             }
         });
     }
+}
+
+async fn whatsapp_media_attachments(
+    attachments: &[OutboundAttachment],
+) -> Result<Vec<zeroclaw_api::media::MediaAttachment>> {
+    let mut media = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let data = tokio::fs::read(&attachment.path).await.with_context(|| {
+            format!(
+                "reading WhatsApp artifact attachment {}",
+                attachment.path.display()
+            )
+        })?;
+        let extension = match attachment.kind {
+            AttachmentKind::Image => "png",
+            AttachmentKind::Audio => "wav",
+            AttachmentKind::Video => "mp4",
+            AttachmentKind::File => "bin",
+        };
+        let file_name = attachment
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("artifact.{extension}"));
+        media.push(zeroclaw_api::media::MediaAttachment {
+            file_name,
+            data,
+            mime_type: Some(attachment.mime_type.clone()),
+        });
+    }
+    Ok(media)
 }
 
 fn conversation_chat_key(identity_id: &str, reply_target: &str) -> String {
@@ -1245,7 +1327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_message_renders_artifact_fallback() {
+    async fn test_handle_message_sends_native_artifacts() {
         let mut config = (*make_test_config(|_| {})).clone();
         config.agents = vec![AgentConfig {
             id: "librarian".to_string(),
@@ -1280,11 +1362,16 @@ mod tests {
         let sent = transport.drain();
         assert_eq!(sent.len(), 1);
         assert!(sent[0].content.contains("done"));
-        assert!(sent[0].content.contains("Attachments:"));
-        assert!(sent[0].content.contains("result.png"));
+        assert_eq!(sent[0].attachments.len(), 1);
+        assert_eq!(sent[0].attachments[0].file_name, "result.png");
+        assert_eq!(sent[0].attachments[0].data, b"image-bytes");
+        assert_eq!(
+            sent[0].attachments[0].mime_type.as_deref(),
+            Some("image/png")
+        );
         assert!(
             !sent[0].content.contains("/tmp/calciforge-artifacts"),
-            "fallback must not leak local artifact paths: {}",
+            "native artifact message must not leak local artifact paths: {}",
             sent[0].content
         );
     }

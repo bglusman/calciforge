@@ -39,6 +39,40 @@ pub struct GatewayEngineInfo {
     pub display_name: String,
     pub ui_url: Option<String>,
     pub capabilities: GatewayCapabilities,
+    pub observability: Vec<ProviderObservabilityCapability>,
+}
+
+/// Observability sink kinds a provider adapter can expose without forcing the
+/// adapter to become the model request path.
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderObservabilityKind {
+    NativeDashboard,
+    OTel,
+    OpenInference,
+    Langfuse,
+}
+
+/// A concrete observability surface supported by a provider adapter.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct ProviderObservabilityCapability {
+    pub kind: ProviderObservabilityKind,
+    pub display_name: String,
+    pub endpoint_required: bool,
+}
+
+impl ProviderObservabilityCapability {
+    pub fn new(
+        kind: ProviderObservabilityKind,
+        display_name: impl Into<String>,
+        endpoint_required: bool,
+    ) -> Self {
+        Self {
+            kind,
+            display_name: display_name.into(),
+            endpoint_required,
+        }
+    }
 }
 
 /// Configuration for a provider adapter.
@@ -243,6 +277,70 @@ impl GatewayType {
         }
     }
 
+    pub fn observability_capabilities(self) -> Vec<ProviderObservabilityCapability> {
+        match self {
+            GatewayType::Helicone => vec![ProviderObservabilityCapability::new(
+                ProviderObservabilityKind::NativeDashboard,
+                "Helicone request dashboard",
+                false,
+            )],
+            GatewayType::LiteLlm => vec![
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::NativeDashboard,
+                    "LiteLLM dashboard",
+                    false,
+                ),
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::Langfuse,
+                    "Langfuse callback",
+                    true,
+                ),
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::OpenInference,
+                    "OpenInference trace export",
+                    true,
+                ),
+            ],
+            GatewayType::Portkey => vec![
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::NativeDashboard,
+                    "Portkey request dashboard",
+                    false,
+                ),
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::OTel,
+                    "OpenTelemetry export",
+                    true,
+                ),
+            ],
+            GatewayType::TensorZero => vec![
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::NativeDashboard,
+                    "TensorZero observability UI",
+                    false,
+                ),
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::OpenInference,
+                    "OpenInference trace export",
+                    true,
+                ),
+            ],
+            GatewayType::FutureAgi => vec![
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::NativeDashboard,
+                    "Future AGI evaluation dashboard",
+                    false,
+                ),
+                ProviderObservabilityCapability::new(
+                    ProviderObservabilityKind::OTel,
+                    "OpenTelemetry export",
+                    true,
+                ),
+            ],
+            GatewayType::BuiltinHttp | GatewayType::OpenRouter | GatewayType::Mock => Vec::new(),
+        }
+    }
+
     pub fn uses_openai_compatible_http_core(self) -> bool {
         matches!(
             self,
@@ -272,6 +370,7 @@ impl GatewayConfig {
             display_name: gateway_type.display_name().to_string(),
             ui_url: self.ui_url.clone(),
             capabilities: gateway_type.default_capabilities(),
+            observability: gateway_type.observability_capabilities(),
         }
     }
 }
@@ -338,6 +437,11 @@ pub trait ProviderAdapter: Send + Sync + Debug {
     /// Return operator-facing adapter metadata.
     fn engine_info(&self) -> GatewayEngineInfo {
         self.config().engine_info(self.gateway_type())
+    }
+
+    /// Return observability surfaces the adapter knows how to expose.
+    fn observability_capabilities(&self) -> Vec<ProviderObservabilityCapability> {
+        self.gateway_type().observability_capabilities()
     }
 }
 

@@ -204,6 +204,44 @@ fn gateway_engine_info_carries_operator_ui_link() {
     assert!(!info.capabilities.model_listing);
     assert!(!info.capabilities.tool_call_transcripts);
     assert!(!info.capabilities.config_validation);
+    assert_eq!(info.observability.len(), 1);
+    assert_eq!(
+        info.observability[0].kind,
+        ProviderObservabilityKind::NativeDashboard
+    );
+}
+
+#[test]
+fn provider_observability_capabilities_are_engine_specific() {
+    let litellm = GatewayType::LiteLlm.observability_capabilities();
+    assert!(
+        litellm
+            .iter()
+            .any(|sink| sink.kind == ProviderObservabilityKind::OpenInference),
+        "LiteLLM should advertise OpenInference-compatible tracing as an optional sink"
+    );
+    assert!(
+        litellm
+            .iter()
+            .any(|sink| sink.kind == ProviderObservabilityKind::Langfuse),
+        "LiteLLM should preserve its common external callback surface"
+    );
+
+    let portkey = GatewayType::Portkey.observability_capabilities();
+    assert!(
+        portkey
+            .iter()
+            .any(|sink| sink.kind == ProviderObservabilityKind::OTel),
+        "Portkey should advertise generic OTel export separately from request routing"
+    );
+
+    assert!(
+        GatewayType::OpenRouter
+            .observability_capabilities()
+            .is_empty(),
+        "OpenRouter has operator UI metadata but no first-class trace sink in Calciforge yet"
+    );
+    assert!(GatewayType::Mock.observability_capabilities().is_empty());
 }
 
 #[test]
@@ -517,6 +555,11 @@ fn create_openai_compatible_gateway_preserves_engine_metadata_through_logging_wr
     assert!(info.capabilities.openai_chat_completions);
     assert!(info.capabilities.operator_ui);
     assert!(info.capabilities.observability);
+    assert!(
+        info.observability
+            .iter()
+            .any(|sink| sink.kind == ProviderObservabilityKind::NativeDashboard)
+    );
 }
 
 #[tokio::test]

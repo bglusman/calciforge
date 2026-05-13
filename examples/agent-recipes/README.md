@@ -112,8 +112,10 @@ multimodal backend. It reads a prompt from stdin and writes a small media kit:
 - `intro.wav`, a generated audio chime
 - `brief.md`, a short text brief
 
-It performs no network calls and requires only Python 3, so it is safe for CI
-and useful for manual channel checks. The PR CI script
+It performs no network calls and uses Python 3 when either `python3` or `python`
+points at a Python 3 interpreter. Minimal Docker images without Python fall back
+to static smoke-test artifacts, so it remains safe for CI and useful for manual
+channel checks. The PR CI script
 `scripts/artifact-recipe-mock-e2e.py` starts Calciforge with the mock channel,
 routes a prompt to this recipe, and verifies all three artifact types appear in
 the channel-safe fallback without exposing local artifact paths.

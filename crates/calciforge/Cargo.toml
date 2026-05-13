@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 channel-matrix = []
+channel-matrix-e2ee = ["channel-matrix", "dep:matrix-sdk"]
 hegel = ["dep:hegeltest"]
 persistent-context = ["dep:rusqlite"]
 tiktoken-estimator = ["dep:tiktoken-rs"]
@@ -49,8 +50,9 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
-# Matrix (optional — channel uses raw HTTP; dep kept for optional feature use)
-matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["rustls-tls"] }
+# Matrix SDK runtime for encrypted rooms. The default Matrix channel still uses
+# raw HTTP unless `matrix_e2ee` selects SDK-backed E2EE at runtime.
+matrix-sdk = { version = "0.17", optional = true, default-features = false, features = ["e2e-encryption", "bundled-sqlite"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

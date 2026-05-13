@@ -8,6 +8,8 @@
 //! for inbound iMessage/RCS/SMS events.
 
 pub mod matrix;
+#[cfg(feature = "channel-matrix-e2ee")]
+pub mod matrix_e2ee;
 pub mod mock;
 pub mod runtime;
 pub mod signal;

@@ -33,6 +33,9 @@ Calciforge will use provider adapters as the primary model-call abstraction.
   Engine names such as `litellm`, `helicone`, `portkey`, `tensorzero`,
   `future-agi`, and `openrouter` supply metadata, dashboard hints, and small
   policy overlays; they are not separate copied gateways.
+- Provider adapters expose observability capabilities as metadata separate from
+  request routing. A provider may advertise a native dashboard, OTel export,
+  OpenInference traces, Langfuse callbacks, or no trace sink at all.
 - Aliases and nested model resolution should be scoped to the selected provider
   where provider-owned routing exists.
 - The legacy root `[proxy].backend_type` remains for compatibility, but it is
