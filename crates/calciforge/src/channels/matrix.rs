@@ -1,9 +1,9 @@
 //! Matrix channel adapter for Calciforge.
 //!
-//! Uses raw Matrix Client-Server API (HTTP long-polling / /sync).
-//! No E2EE — matrix-sdk 0.16 has irreconcilable compile-time dependency
-//! conflicts in this workspace (libsqlite3-sys version + recursion limit).
-//! Plain-text messages only.
+//! Uses raw Matrix Client-Server API by default (HTTP long-polling / /sync).
+//! When `channel-matrix-e2ee` is compiled in and Matrix E2EE is required, the
+//! adapter switches to the Matrix SDK runtime so encrypted rooms can decrypt
+//! inbound events and encrypt outbound replies.
 //!
 //! ## Authentication model
 //!
@@ -19,14 +19,18 @@
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
+};
 use tracing::{debug, info, warn};
 
 use crate::sync::Arc;
 use crate::{
     auth::{find_agent, resolve_channel_sender},
     commands::CommandHandler,
-    config::{CalciforgeConfig, expand_tilde},
+    config::{CalciforgeConfig, MatrixE2eeMode, expand_tilde},
     context::ContextStore,
     messages::{AttachmentKind, OutboundAttachment, OutboundMessage},
     router::Router,
@@ -118,14 +122,14 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
-fn is_sender_allowed(allowed_users: &[String], sender: &str) -> bool {
+pub(super) fn is_sender_allowed(allowed_users: &[String], sender: &str) -> bool {
     if allowed_users.iter().any(|u| u == "*") {
         return true;
     }
     allowed_users.iter().any(|u| u.eq_ignore_ascii_case(sender))
 }
 
-fn cache_event_id(
+pub(super) fn cache_event_id(
     event_id: &str,
     recent_order: &mut VecDeque<String>,
     recent_lookup: &mut HashSet<String>,
@@ -463,6 +467,67 @@ fn matrix_retry_after_ms(body_text: &str) -> u64 {
         .min(MAX_RETRY_AFTER_MS)
 }
 
+fn matrix_e2ee_startup_error(
+    mode: MatrixE2eeMode,
+    has_target_room: bool,
+    room_is_encrypted: bool,
+    has_store_path: bool,
+) -> Option<&'static str> {
+    match mode {
+        MatrixE2eeMode::Off | MatrixE2eeMode::Warn => None,
+        MatrixE2eeMode::Require => {
+            if !has_target_room {
+                Some(
+                    "Matrix E2EE is required, but no room_id is configured to verify room encryption state",
+                )
+            } else if !room_is_encrypted {
+                Some(
+                    "Matrix E2EE is required, but the configured room does not advertise m.room.encryption",
+                )
+            } else if !cfg!(feature = "channel-matrix-e2ee") {
+                Some(
+                    "Matrix E2EE is required, but this calciforge build lacks --features channel-matrix-e2ee",
+                )
+            } else if !has_store_path {
+                Some(
+                    "Matrix E2EE is required, but matrix_e2ee_store_path is not configured for persistent crypto state",
+                )
+            } else {
+                None
+            }
+        }
+        MatrixE2eeMode::ExperimentalSdk => {
+            if !cfg!(feature = "channel-matrix-e2ee") {
+                Some(
+                    "Matrix experimental E2EE requires a calciforge build with --features channel-matrix-e2ee",
+                )
+            } else if !has_target_room {
+                Some(
+                    "Matrix experimental E2EE currently requires room_id; joined-room autodiscovery is not implemented",
+                )
+            } else if !room_is_encrypted {
+                Some(
+                    "Matrix experimental E2EE was requested, but the configured room does not advertise m.room.encryption",
+                )
+            } else if !has_store_path {
+                Some(
+                    "Matrix experimental E2EE requires matrix_e2ee_store_path for persistent crypto state",
+                )
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn matrix_should_use_sdk_runtime(mode: MatrixE2eeMode, room_is_encrypted: bool) -> bool {
+    room_is_encrypted
+        && matches!(
+            mode,
+            MatrixE2eeMode::Require | MatrixE2eeMode::ExperimentalSdk
+        )
+}
+
 async fn send_matrix_outbound_message(
     homeserver: &str,
     http: &reqwest::Client,
@@ -600,7 +665,7 @@ pub async fn run(
         .build()?;
 
     // Resolve optional configured room
-    let target_room: Option<String> = if let Some(ref room_cfg) = room_id_config {
+    let target_room: Option<(String, bool)> = if let Some(ref room_cfg) = room_id_config {
         let room_id_str = resolve_room_id(&homeserver, room_cfg, &http, &auth_header)
             .await
             .with_context(|| format!("Matrix: failed to resolve room '{room_cfg}'"))?;
@@ -610,23 +675,83 @@ pub async fn run(
             .await
             .with_context(|| format!("Matrix: room '{room_id_str}' not accessible"))?;
 
-        let is_encrypted =
-            check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await;
-        if is_encrypted {
+        let is_encrypted = if channel.matrix_e2ee == MatrixE2eeMode::Off {
+            false
+        } else {
+            check_room_encryption(&homeserver, &room_id_str, &http, &auth_header).await
+        };
+        if let Some(error) = matrix_e2ee_startup_error(
+            channel.matrix_e2ee,
+            true,
+            is_encrypted,
+            channel.matrix_e2ee_store_path.is_some(),
+        ) {
+            anyhow::bail!("{error}");
+        }
+        if is_encrypted && channel.matrix_e2ee == MatrixE2eeMode::Warn {
             warn!(
                 room_id = %room_id_str,
-                "Matrix room has E2EE enabled, but this build uses plain-text messaging only. \
-                 Messages will fail. Disable E2EE on the room or use a non-encrypted room."
+                "Matrix room has E2EE enabled, but this channel is configured for the raw HTTP fallback. \
+                 Messages will fail unless the room is unencrypted or matrix_e2ee is set to require/experimental-sdk in an E2EE build."
             );
         }
-        Some(room_id_str)
+        Some((room_id_str, is_encrypted))
     } else {
+        if let Some(error) = matrix_e2ee_startup_error(
+            channel.matrix_e2ee,
+            false,
+            false,
+            channel.matrix_e2ee_store_path.is_some(),
+        ) {
+            anyhow::bail!("{error}");
+        }
         info!("Matrix: no room_id configured — accepting messages from any joined room");
         None
     };
 
-    let (my_user_id, _device_id) = get_whoami(&homeserver, &http, &auth_header).await?;
+    let (my_user_id, device_id) = get_whoami(&homeserver, &http, &auth_header).await?;
     info!(user_id = %my_user_id, "Matrix bot identity confirmed");
+    #[cfg(not(feature = "channel-matrix-e2ee"))]
+    let _ = &device_id;
+
+    if let Some((target_room_id, room_is_encrypted)) = target_room.as_ref()
+        && matrix_should_use_sdk_runtime(channel.matrix_e2ee, *room_is_encrypted)
+    {
+        #[cfg(feature = "channel-matrix-e2ee")]
+        {
+            info!(
+                room_id = %target_room_id,
+                mode = ?channel.matrix_e2ee,
+                "Matrix: starting SDK E2EE runtime for encrypted room"
+            );
+            return super::matrix_e2ee::run_sdk_runtime(super::matrix_e2ee::MatrixSdkRuntime {
+                config,
+                router,
+                command_handler,
+                context_store,
+                homeserver,
+                access_token,
+                user_id: my_user_id,
+                device_id,
+                target_room: target_room_id.clone(),
+                allowed_users,
+                store_path: channel
+                    .matrix_e2ee_store_path
+                    .as_deref()
+                    .context("Matrix E2EE requires matrix_e2ee_store_path")?
+                    .to_string(),
+                store_passphrase_file: channel.matrix_e2ee_store_passphrase_file.clone(),
+            })
+            .await;
+        }
+
+        #[cfg(not(feature = "channel-matrix-e2ee"))]
+        anyhow::bail!(
+            "Matrix E2EE runtime selected for room '{target_room_id}', but this calciforge build lacks --features channel-matrix-e2ee"
+        );
+    }
+
+    let target_room = target_room.map(|(room_id, _encrypted)| room_id);
 
     // Initial sync: grab next_batch but discard all events (skip backlog)
     info!("Matrix: performing initial sync to skip backlog...");
@@ -796,6 +921,12 @@ pub async fn run(
 // Message handling (runs in spawned task)
 // ---------------------------------------------------------------------------
 
+pub(super) type MatrixSendText =
+    Arc<dyn Fn(String, &'static str) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub(super) type MatrixSendOutbound = Arc<
+    dyn Fn(OutboundMessage, &'static str) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_message(
     homeserver: &str,
@@ -812,12 +943,16 @@ async fn handle_message(
     ctx_store: &ContextStore,
     received_at: std::time::Instant,
 ) {
-    let send = |text: String, reply_kind: &'static str| {
-        let homeserver = homeserver.to_string();
-        let http = http.clone();
-        let auth_header = auth_header.to_string();
-        let room_id = room_id.to_string();
-        async move {
+    let homeserver_owned = homeserver.to_string();
+    let http_owned = http.clone();
+    let auth_header_owned = auth_header.to_string();
+    let room_id_owned = room_id.to_string();
+    let send: MatrixSendText = Arc::new(move |text: String, reply_kind: &'static str| {
+        let homeserver = homeserver_owned.clone();
+        let http = http_owned.clone();
+        let auth_header = auth_header_owned.clone();
+        let room_id = room_id_owned.clone();
+        Box::pin(async move {
             let start = std::time::Instant::now();
             let response_len = text.len();
             match send_matrix_message(&homeserver, &http, &auth_header, &room_id, &text).await {
@@ -836,37 +971,78 @@ async fn handle_message(
                     e,
                 ),
             }
-        }
-    };
-    let send_outbound = |message: OutboundMessage, reply_kind: &'static str| {
-        let homeserver = homeserver.to_string();
-        let http = http.clone();
-        let auth_header = auth_header.to_string();
-        let room_id = room_id.to_string();
-        async move {
-            let start = std::time::Instant::now();
-            let response_len = message.response_len();
-            match send_matrix_outbound_message(&homeserver, &http, &auth_header, &room_id, &message)
+        })
+    });
+    let homeserver_owned = homeserver.to_string();
+    let http_owned = http.clone();
+    let auth_header_owned = auth_header.to_string();
+    let room_id_owned = room_id.to_string();
+    let send_outbound: MatrixSendOutbound =
+        Arc::new(move |message: OutboundMessage, reply_kind: &'static str| {
+            let homeserver = homeserver_owned.clone();
+            let http = http_owned.clone();
+            let auth_header = auth_header_owned.clone();
+            let room_id = room_id_owned.clone();
+            Box::pin(async move {
+                let start = std::time::Instant::now();
+                let response_len = message.response_len();
+                match send_matrix_outbound_message(
+                    &homeserver,
+                    &http,
+                    &auth_header,
+                    &room_id,
+                    &message,
+                )
                 .await
-            {
-                Ok(()) => telemetry::reply_sent(
-                    "matrix",
-                    &room_id,
-                    reply_kind,
-                    response_len,
-                    start.elapsed().as_millis() as u64,
-                ),
-                Err(e) => telemetry::reply_failed(
-                    "matrix",
-                    &room_id,
-                    reply_kind,
-                    start.elapsed().as_millis() as u64,
-                    e,
-                ),
-            }
-        }
-    };
+                {
+                    Ok(()) => telemetry::reply_sent(
+                        "matrix",
+                        &room_id,
+                        reply_kind,
+                        response_len,
+                        start.elapsed().as_millis() as u64,
+                    ),
+                    Err(e) => telemetry::reply_failed(
+                        "matrix",
+                        &room_id,
+                        reply_kind,
+                        start.elapsed().as_millis() as u64,
+                        e,
+                    ),
+                }
+            })
+        });
 
+    handle_message_with_senders(
+        sender,
+        identity_id,
+        chat_key,
+        body,
+        config,
+        router,
+        cmd_handler,
+        ctx_store,
+        received_at,
+        send,
+        send_outbound,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn handle_message_with_senders(
+    sender: &str,
+    identity_id: &str,
+    chat_key: &str,
+    body: &str,
+    config: &Arc<CalciforgeConfig>,
+    router: &Arc<Router>,
+    cmd_handler: &Arc<CommandHandler>,
+    ctx_store: &ContextStore,
+    received_at: std::time::Instant,
+    send: MatrixSendText,
+    send_outbound: MatrixSendOutbound,
+) {
     let body_owned;
     let body = match cmd_handler.resolve_pending_choice_reply(identity_id, body) {
         Some(crate::commands::PendingChoiceReply::Command(command)) => {
@@ -874,7 +1050,7 @@ async fn handle_message(
             body_owned.as_str()
         }
         Some(crate::commands::PendingChoiceReply::Reply(reply)) => {
-            send(reply, "choice_reply").await;
+            (send)(reply, "choice_reply").await;
             return;
         }
         None => body,
@@ -884,59 +1060,59 @@ async fn handle_message(
     if let Some(reply) = cmd_handler.agent_choice_message_for_identity(body, identity_id) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled agent choice command");
         cmd_handler.record_pending_choices(identity_id, &reply);
-        send_outbound(reply, "agent_choices").await;
+        (send_outbound)(reply, "agent_choices").await;
         return;
     }
 
     if let Some(reply) = cmd_handler.model_choice_message(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled model choice command");
         cmd_handler.record_pending_choices(identity_id, &reply);
-        send_outbound(reply, "model_choices").await;
+        (send_outbound)(reply, "model_choices").await;
         return;
     }
 
     if let Some(reply) = cmd_handler.handle(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handled local command");
-        send(reply, "command").await;
+        (send)(reply, "command").await;
         return;
     }
 
     // Unknown !command
     if CommandHandler::is_unknown_channel_command(body) {
-        send(cmd_handler.unknown_command(body), "unknown_command").await;
+        (send)(cmd_handler.unknown_command(body), "unknown_command").await;
         return;
     }
 
     if CommandHandler::is_status_command(body) {
         let reply = cmd_handler.cmd_status_for_identity(identity_id).await;
-        send(reply, "status").await;
+        (send)(reply, "status").await;
         return;
     }
 
     if CommandHandler::is_gateway_command(body) {
-        send(cmd_handler.cmd_gateway_for_identity(identity_id), "gateway").await;
+        (send)(cmd_handler.cmd_gateway_for_identity(identity_id), "gateway").await;
         return;
     }
 
     if CommandHandler::is_switch_command(body) {
-        send(cmd_handler.handle_switch(body, identity_id), "switch").await;
+        (send)(cmd_handler.handle_switch(body, identity_id), "switch").await;
         return;
     }
 
     if CommandHandler::is_model_command(body) {
-        send(cmd_handler.handle_model(body, identity_id), "model").await;
+        (send)(cmd_handler.handle_model(body, identity_id), "model").await;
         return;
     }
 
     if CommandHandler::is_sessions_command(body) {
         let reply = cmd_handler.handle_sessions_message(body, identity_id).await;
         cmd_handler.record_pending_choices(identity_id, &reply);
-        send_outbound(reply, "sessions").await;
+        (send_outbound)(reply, "sessions").await;
         return;
     }
 
     if CommandHandler::is_new_session_command(body) {
-        send(
+        (send)(
             cmd_handler.handle_new_session(body, identity_id),
             "new-session",
         )
@@ -969,12 +1145,12 @@ async fn handle_message(
             }
             Err(err) => err,
         };
-        send(reply, "btw").await;
+        (send)(reply, "btw").await;
         return;
     }
 
     if CommandHandler::is_default_command(body) {
-        send(cmd_handler.handle_default(identity_id), "default").await;
+        (send)(cmd_handler.handle_default(identity_id), "default").await;
         return;
     }
 
@@ -987,7 +1163,7 @@ async fn handle_message(
         if CommandHandler::is_secure_set_command(body)
             && !crate::config::channel_allows_chat_secret_set(config, "matrix")
         {
-            send(
+            (send)(
                 CommandHandler::secure_set_disabled_reply("Matrix"),
                 "secure_disabled",
             )
@@ -995,22 +1171,22 @@ async fn handle_message(
             return;
         }
         let reply = cmd_handler.handle_secure(body, identity_id).await;
-        send(reply, "secure").await;
+        (send)(reply, "secure").await;
         return;
     }
 
     if CommandHandler::is_context_clear_command(body) {
         ctx_store.clear(chat_key);
-        send("Conversation context cleared.".to_string(), "context_clear").await;
+        (send)("Conversation context cleared.".to_string(), "context_clear").await;
         return;
     }
 
     if CommandHandler::is_approve_command(body) || CommandHandler::is_deny_command(body) {
         debug!(sender = %sender, cmd = %body.trim(), "Matrix: handling async approval command");
         if let Some((ack, follow_up)) = cmd_handler.handle_async(body).await {
-            send(ack, "approval_ack").await;
+            (send)(ack, "approval_ack").await;
             if let Some(resp) = follow_up {
-                send(resp, "approval_follow_up").await;
+                (send)(resp, "approval_follow_up").await;
             }
         }
         return;
@@ -1029,7 +1205,7 @@ async fn handle_message(
         Some(a) => a.clone(),
         None => {
             warn!(agent_id = %agent_id, "Matrix: agent not found in config");
-            send("Agent not configured.".to_string(), "agent_not_configured").await;
+            (send)("Agent not configured.".to_string(), "agent_not_configured").await;
             return;
         }
     };
@@ -1095,7 +1271,7 @@ async fn handle_message(
                 &response,
                 preserve_native_commands,
             );
-            send_outbound(response_message, "agent_response").await;
+            (send_outbound)(response_message, "agent_response").await;
         }
         Err(e) => {
             // Clash approval flow
@@ -1127,11 +1303,11 @@ async fn handle_message(
                     &req.request_id,
                 );
                 cmd_handler.record_pending_choices(identity_id, &notification);
-                send_outbound(notification, "approval_request").await;
+                (send_outbound)(notification, "approval_request").await;
                 return;
             }
             warn!(identity = %identity_id, error = %e, "Matrix: agent dispatch failed");
-            send(format!("Agent error: {}", e), "agent_error").await;
+            (send)(format!("Agent error: {}", e), "agent_error").await;
         }
     }
 }
@@ -1236,6 +1412,53 @@ mod tests {
             30_000
         );
         assert_eq!(matrix_retry_after_ms(r#"{}"#), 1_000);
+    }
+
+    #[test]
+    fn matrix_e2ee_warn_mode_preserves_plaintext_runtime() {
+        assert_eq!(
+            matrix_e2ee_startup_error(MatrixE2eeMode::Warn, true, true, false),
+            None
+        );
+        assert_eq!(
+            matrix_e2ee_startup_error(MatrixE2eeMode::Off, false, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn matrix_e2ee_require_mode_fails_closed() {
+        let no_room = matrix_e2ee_startup_error(MatrixE2eeMode::Require, false, false, false)
+            .expect("require mode should reject missing room_id");
+        assert!(no_room.contains("no room_id"));
+
+        let unencrypted = matrix_e2ee_startup_error(MatrixE2eeMode::Require, true, false, true)
+            .expect("require mode should reject unencrypted rooms");
+        assert!(unencrypted.contains("does not advertise"));
+
+        let missing_store = matrix_e2ee_startup_error(MatrixE2eeMode::Require, true, true, false)
+            .expect("require mode should reject missing persistent store");
+        if cfg!(feature = "channel-matrix-e2ee") {
+            assert!(missing_store.contains("matrix_e2ee_store_path"));
+        } else {
+            assert!(missing_store.contains("--features channel-matrix-e2ee"));
+        }
+    }
+
+    #[test]
+    fn matrix_e2ee_sdk_modes_use_sdk_when_supported() {
+        let error = matrix_e2ee_startup_error(MatrixE2eeMode::ExperimentalSdk, true, true, true);
+        if cfg!(feature = "channel-matrix-e2ee") {
+            assert_eq!(error, None);
+            assert!(matrix_should_use_sdk_runtime(
+                MatrixE2eeMode::ExperimentalSdk,
+                true
+            ));
+            assert!(matrix_should_use_sdk_runtime(MatrixE2eeMode::Require, true));
+        } else {
+            let error = error.expect("non-feature build should reject SDK E2EE");
+            assert!(error.contains("requires a calciforge build"));
+        }
     }
 
     #[test]
