@@ -28,6 +28,7 @@ REQUIRED_FIELDS = {
     "scenario_ids",
 }
 ALLOWED_STATUS = {"automated", "partial", "manual", "missing"}
+AUTOMATION_REQUIRED_STATUS = {"automated", "partial"}
 
 WATCHED_DIRS = [
     "crates/calciforge/src/adapters",
@@ -129,6 +130,20 @@ def fuzz_targets() -> set[str]:
     return set(re.findall(r"\[\[bin\]\]\s+name\s*=\s*\"([^\"]+)\"", text))
 
 
+def has_fast_automation(commands: list[str]) -> bool:
+    return any(
+        "nightly" not in command and "boundary-explore-long.sh" not in command
+        for command in commands
+    )
+
+
+def has_deep_automation(commands: list[str]) -> bool:
+    return any(
+        "nightly" in command or "boundary-explore-long.sh" in command
+        for command in commands
+    )
+
+
 def main() -> None:
     registry = read_json(REGISTRY)
     if not isinstance(registry, list) or not registry:
@@ -174,6 +189,18 @@ def main() -> None:
         entry_fuzz_targets = require_string_list(entry_id, entry, "fuzz_targets")
         automation = require_nonempty_string_list(entry_id, entry, "automation")
         scenario_refs = require_nonempty_string_list(entry_id, entry, "scenario_ids")
+
+        if status in AUTOMATION_REQUIRED_STATUS:
+            if not has_fast_automation(automation):
+                fail(
+                    f"{entry_id}: partial/automated boundaries must list at least "
+                    "one PR-fast automation command"
+                )
+            if not has_deep_automation(automation):
+                fail(
+                    f"{entry_id}: partial/automated boundaries must list at least "
+                    "one nightly or long-exploration automation command"
+                )
 
         for source_path in source_paths:
             path = ROOT / source_path

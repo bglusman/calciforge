@@ -1090,25 +1090,33 @@ enum TelegramCallbackAction<'a> {
 fn parse_callback_action(data: &str) -> Option<TelegramCallbackAction<'_>> {
     let mut parts = data.splitn(4, ':');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("cf"), Some("agent"), Some(agent_id), None) if !agent_id.trim().is_empty() => {
+        (Some("cf"), Some("agent"), Some(agent_id), None) if valid_callback_segment(agent_id) => {
             Some(TelegramCallbackAction::Agent(agent_id))
         }
-        (Some("cf"), Some("model"), Some(model_id), None) if !model_id.trim().is_empty() => {
+        (Some("cf"), Some("model"), Some(model_id), None) if valid_callback_segment(model_id) => {
             Some(TelegramCallbackAction::Model(model_id))
         }
         (Some("cf"), Some("session"), Some(agent_id), Some(session))
-            if !agent_id.trim().is_empty() && !session.trim().is_empty() =>
+            if valid_callback_segment(agent_id) && valid_callback_segment(session) =>
         {
             Some(TelegramCallbackAction::Session { agent_id, session })
         }
-        (Some("cf"), Some("approve"), Some(request_id), None) if !request_id.trim().is_empty() => {
+        (Some("cf"), Some("approve"), Some(request_id), None)
+            if valid_callback_segment(request_id) =>
+        {
             Some(TelegramCallbackAction::Approve(request_id))
         }
-        (Some("cf"), Some("deny"), Some(request_id), None) if !request_id.trim().is_empty() => {
+        (Some("cf"), Some("deny"), Some(request_id), None)
+            if valid_callback_segment(request_id) =>
+        {
             Some(TelegramCallbackAction::Deny(request_id))
         }
         _ => None,
     }
+}
+
+fn valid_callback_segment(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value
 }
 
 fn telegram_keyboard_for_message(
@@ -1263,6 +1271,7 @@ mod tests {
         AgentConfig, CalciforgeConfig, CalciforgeHeader, ChannelAlias, ChannelConfig, Identity,
         RoutingRule,
     };
+    use proptest::prelude::*;
 
     /// Create a CommandHandler backed by a temp state directory so tests are
     /// isolated from the default active-agent state file on disk.
@@ -1462,6 +1471,50 @@ mod tests {
         );
         assert_eq!(parse_callback_action("agent:librarian"), None);
         assert_eq!(parse_callback_action("cf:agent:"), None);
+    }
+
+    proptest! {
+        #[test]
+        fn telegram_callback_action_rejects_whitespace_padded_segments(
+            action in prop::sample::select(vec!["agent", "model", "approve", "deny"]),
+            value in "[A-Za-z0-9._-]{1,32}",
+            leading in "[ \\t\\r\\n]{1,4}",
+            trailing in "[ \\t\\r\\n]{1,4}",
+        ) {
+            let leading_padded = format!("cf:{action}:{leading}{value}");
+            prop_assert_eq!(
+                parse_callback_action(&leading_padded),
+                None,
+                "callback segment with leading whitespace must not be accepted"
+            );
+
+            let trailing_padded = format!("cf:{action}:{value}{trailing}");
+            prop_assert_eq!(
+                parse_callback_action(&trailing_padded),
+                None,
+                "callback segment with trailing whitespace must not be accepted"
+            );
+        }
+
+        #[test]
+        fn telegram_session_callback_rejects_whitespace_padded_segments(
+            agent_id in "[A-Za-z0-9._-]{1,32}",
+            session in "[A-Za-z0-9._-]{1,32}",
+            pad in "[ \\t\\r\\n]{1,4}",
+        ) {
+            let padded_agent = format!("cf:session:{pad}{agent_id}:{session}");
+            prop_assert_eq!(
+                parse_callback_action(&padded_agent),
+                None,
+                "session callback with padded agent id must not be accepted"
+            );
+            let padded_session = format!("cf:session:{agent_id}:{pad}{session}");
+            prop_assert_eq!(
+                parse_callback_action(&padded_session),
+                None,
+                "session callback with padded session id must not be accepted"
+            );
+        }
     }
 
     #[test]
