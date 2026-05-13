@@ -390,6 +390,88 @@ fn named_openai_compatible_backend_types_are_validated_from_shared_allowlist() {
     }
 }
 
+#[test]
+fn root_backend_type_aliases_validate_with_runtime_parser() {
+    for backend_type in ["direct", "builtin_http", "lite_llm", "open_router"] {
+        let fixture = format!(
+            "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"{backend_type}\"\nbackend_url = \"https://gateway.example.invalid/v1\"\n"
+        );
+        let config = parse(&fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "{backend_type} should validate because GatewayType::from_str accepts it; errors: {:?}",
+            result.errors
+        );
+    }
+}
+
+/// Given a proxy observability sink for an OTLP collector such as Traceloop,
+/// when validate_config runs,
+/// then the sink validates independently from the selected model provider
+/// adapter.
+#[test]
+fn traceloop_observability_sink_validates_as_separate_surface() {
+    let fixture = format!(
+        "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"litellm\"\nbackend_url = \"https://gateway.example.invalid/v1\"\n\n[[proxy.observability]]\nkind = \"traceloop\"\nendpoint = \"https://api.traceloop.example/v1/traces\"\n"
+    );
+    let config = parse(&fixture);
+    let result = validate_config(&config);
+
+    assert!(
+        result.is_valid(),
+        "traceloop observability should validate without becoming a provider adapter; errors: {:?}",
+        result.errors
+    );
+}
+
+/// Given an HTTP telemetry sink without a destination,
+/// when validate_config runs,
+/// then validation fails before requests silently lose observability.
+#[test]
+fn network_observability_sink_requires_endpoint() {
+    let fixture = format!(
+        "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"litellm\"\nbackend_url = \"https://gateway.example.invalid/v1\"\n\n[[proxy.observability]]\nkind = \"http-json\"\n"
+    );
+    let config = parse(&fixture);
+    let result = validate_config(&config);
+
+    assert!(
+        !result.is_valid(),
+        "http-json observability without endpoint must fail"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.contains("observability") && e.contains("requires endpoint")),
+        "error should name observability endpoint requirement; errors: {:?}",
+        result.errors
+    );
+}
+
+/// Given a telemetry sink with headers that reqwest would reject at startup,
+/// when validate_config runs,
+/// then validation reports the bad header before the proxy is launched.
+#[test]
+fn observability_sink_headers_must_be_valid_http_headers() {
+    let fixture = format!(
+        "{MIN_VALID}\n[proxy]\nenabled = true\nbind = \"127.0.0.1:18083\"\nbackend_type = \"litellm\"\nbackend_url = \"https://gateway.example.invalid/v1\"\n\n[[proxy.observability]]\nkind = \"http-json\"\nendpoint = \"https://observability.example.invalid/events\"\n\n[proxy.observability.headers]\n\"bad header\" = \"ok\"\n"
+    );
+    let config = parse(&fixture);
+    let result = validate_config(&config);
+
+    assert!(!result.is_valid(), "invalid observability header must fail");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.contains("observability") && e.contains("header name")),
+        "error should name observability header validation; errors: {:?}",
+        result.errors
+    );
+}
+
 /// Given a disabled proxy with a configured gateway UI link,
 /// when validate_config runs,
 /// then the UI URL is still validated because chat help can surface it from

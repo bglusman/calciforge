@@ -237,18 +237,39 @@ LiteLLM or OpenRouter, may be useful primarily as provider boundaries. Pure
 observability tools should not need to become model gateways just to receive
 events.
 
-The intended next config shape is a separate observability block, for example:
+Use separate observability blocks when another system should receive gateway
+attempt metadata:
 
 ```toml
 [[proxy.observability]]
-kind = "otel"
+kind = "log"
+
+[[proxy.observability]]
+kind = "traceloop"
 endpoint = "http://127.0.0.1:4318/v1/traces"
-format = "openinference"
+
+[[proxy.observability]]
+kind = "http-json"
+endpoint = "http://127.0.0.1:4319/calciforge/events"
+timeout_ms = 250
+
+[proxy.observability.headers]
+authorization = "Bearer local-observability-token"
 ```
 
-That block is roadmap, not a guarantee in the current release. Today,
-`gateway_ui_url` is the stable operator link exposed by `!gateway` and
-`/gateway/ui`, and provider adapters expose coarse capability metadata.
+Supported sink kinds are `log`, `http-json`, `otel`, and `traceloop`.
+`webhook` is accepted as an alias for `http-json`, and `otlp` is accepted as an
+alias for `otel`. The OTLP sinks post JSON trace exports to `/v1/traces` when
+the endpoint is given as a collector base URL, so Traceloop and ordinary
+OpenTelemetry collectors fit behind the same surface.
+
+Telemetry payloads intentionally include routing metadata only: agent id,
+requested model, root selector, concrete model, upstream model, provider id,
+gateway engine, duration, outcome, and failure class. They do not include
+prompts, completions, request headers, query strings, or secret values. A
+dashboard link is still configured with `gateway_ui_url` and exposed by
+`!gateway` and `/gateway/ui`; telemetry sinks are event destinations, not UI
+owners.
 
 LiteLLM is the lightest current candidate for the default local provider
 boundary. It can sit in front of Ollama and remote providers without pulling in

@@ -81,9 +81,10 @@ Operators get fewer false promises:
 - `!agents`, `doctor`, and future UX should report each agent's coverage:
   model-gateway path, security-proxy path, model override support, session
   support, and known bypasses.
-- External gateways add observability and provider management behind
-  Calciforge, but they do not replace Calciforge's channel, identity, command,
-  policy, alias, and routing responsibilities.
+- External gateways add provider management behind Calciforge. Observability
+  sinks are configured separately under `[[proxy.observability]]`, so tools such
+  as Traceloop or a plain OpenTelemetry collector can receive model-attempt
+  telemetry without becoming model gateways.
 
 This also narrows supported configuration. Configs that used
 `backend_type = "embedded"`, `backend_type = "library"`, or

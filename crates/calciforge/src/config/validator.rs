@@ -9,11 +9,14 @@
 //! - No circular dependencies
 
 use anyhow::{Context, Result};
+use reqwest::header::{HeaderName, HeaderValue};
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
 use crate::agent_kinds::{AgentKind, parse_agent_kind};
-use crate::config::{CalciforgeConfig, CredentialOwner, GatewayRetryConfig};
+use crate::config::{
+    CalciforgeConfig, CredentialOwner, GatewayRetryConfig, ProxyObservabilityConfig,
+};
 use crate::model_names::{
     configured_agent_selectors, configured_first_class_model_ids, resolve_model_alias_chain,
 };
@@ -558,6 +561,10 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         }
     }
 
+    for (index, sink) in proxy.observability.iter().enumerate() {
+        validate_proxy_observability_config(index, sink, result);
+    }
+
     if !proxy.enabled {
         return;
     }
@@ -603,11 +610,9 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
         ));
     }
 
-    // Validate backend_type against the same allowlist the runtime uses.
-    if !crate::proxy::supported_root_gateway_backend_types()
-        .iter()
-        .any(|backend_type| *backend_type == proxy.backend_type)
-    {
+    // Validate backend_type with the same parser the runtime uses so accepted
+    // aliases stay aligned with the provider adapter boundary.
+    if root_gateway_type.is_none() {
         result.add_error(format!(
             "Proxy backend_type '{}' is unsupported. Use one of: {}. CLI-backed agents and experimental external gateways must be configured as agents or explicit provider adapters.",
             proxy.backend_type,
@@ -785,6 +790,72 @@ fn validate_proxy_config(proxy: &crate::config::ProxyConfig, result: &mut Valida
                     ));
                 }
             }
+        }
+    }
+}
+
+fn validate_proxy_observability_config(
+    index: usize,
+    sink: &ProxyObservabilityConfig,
+    result: &mut ValidationResult,
+) {
+    if sink.timeout_ms == 0 {
+        result.add_error(format!(
+            "Proxy observability sink #{index} timeout_ms cannot be zero"
+        ));
+    }
+
+    let kind = sink.kind.trim().to_ascii_lowercase().replace('_', "-");
+    if !crate::proxy::telemetry::SUPPORTED_OBSERVABILITY_KINDS.contains(&kind.as_str()) {
+        result.add_error(format!(
+            "Proxy observability sink #{index} kind '{}' is invalid. Use one of: {}",
+            sink.kind,
+            crate::proxy::telemetry::SUPPORTED_OBSERVABILITY_KINDS.join(", ")
+        ));
+        return;
+    }
+
+    if matches!(
+        kind.as_str(),
+        "http-json" | "webhook" | "otel" | "otlp" | "traceloop"
+    ) {
+        match sink.endpoint.as_deref().map(str::trim) {
+            Some(endpoint) if !endpoint.is_empty() => validate_http_url(
+                &format!("Proxy observability sink #{index} endpoint"),
+                endpoint,
+                result,
+                false,
+            ),
+            _ => result.add_error(format!(
+                "Proxy observability sink #{index} kind '{}' requires endpoint",
+                sink.kind
+            )),
+        }
+    }
+
+    if kind == "log"
+        && sink
+            .endpoint
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+    {
+        result.add_warning(format!(
+            "Proxy observability sink #{index} kind='log' ignores endpoint"
+        ));
+    }
+
+    for (name, value) in &sink.headers {
+        if HeaderName::from_bytes(name.as_bytes()).is_err() {
+            result.add_error(format!(
+                "Proxy observability sink #{index} header name '{}' is invalid",
+                name
+            ));
+        }
+        if HeaderValue::from_str(value).is_err() {
+            result.add_error(format!(
+                "Proxy observability sink #{index} header '{}' has an invalid value",
+                name
+            ));
         }
     }
 }

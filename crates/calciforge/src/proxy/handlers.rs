@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::ProxyConfig;
 use crate::model_names::is_exact_model_pattern;
 use crate::proxy::backend::BackendError;
+use crate::proxy::telemetry::GatewayTelemetryAttempt;
 use crate::proxy::{
     ChatCompletionRequest, ProxyState, control_auth,
     model_resolver::ModelResolver,
@@ -167,7 +168,15 @@ pub async fn chat_completions(
     }
 
     // Route to provider with fallback
-    let result = route_with_fallback(&state, &resolved.plan, &req).await;
+    let result = route_with_fallback_with_context(
+        &state,
+        &resolved.plan,
+        &req,
+        agent_id,
+        &requested_model,
+        &resolved.root_model,
+    )
+    .await;
 
     match result {
         Ok(response) => {
@@ -222,10 +231,23 @@ pub async fn gateway_ui_redirect(State(state): State<ProxyState>) -> Response {
 }
 
 /// Route request with fallback chain
+#[cfg(test)]
 async fn route_with_fallback(
     state: &ProxyState,
     plan: &crate::providers::alloy::AlloyPlan,
     req: &ChatCompletionRequest,
+) -> anyhow::Result<ChatCompletionResponse> {
+    route_with_fallback_with_context(state, plan, req, "anonymous", &req.model, &req.model).await
+}
+
+/// Route request with fallback chain and operator-facing telemetry metadata.
+async fn route_with_fallback_with_context(
+    state: &ProxyState,
+    plan: &crate::providers::alloy::AlloyPlan,
+    req: &ChatCompletionRequest,
+    agent_id: &str,
+    requested_model: &str,
+    root_model: &str,
 ) -> anyhow::Result<ChatCompletionResponse> {
     let mut last_error = None;
 
@@ -237,7 +259,7 @@ async fn route_with_fallback(
             .alloy_manager
             .record_attempt(&plan.alloy_id, model, true);
 
-        match try_provider(state, model, req).await {
+        match try_provider(state, model, req, agent_id, requested_model, root_model).await {
             Ok(response) => {
                 info!(model = %model, "Request succeeded");
                 return Ok(response);
@@ -274,9 +296,13 @@ async fn try_provider(
     state: &ProxyState,
     model: &str,
     req: &ChatCompletionRequest,
+    agent_id: &str,
+    requested_model: &str,
+    root_model: &str,
 ) -> Result<ChatCompletionResponse, BackendError> {
     // Check named providers first; fall back to default provider adapter.
     let provider = routing::find_provider(&state.providers, model);
+    let provider_id = provider.map(|entry| entry.id.clone());
     let gateway = provider
         .map(|entry| &entry.gateway)
         .unwrap_or(&state.gateway);
@@ -297,7 +323,34 @@ async fn try_provider(
             .map_err(|e| BackendError::ConfigError(e.to_string()))?;
     }
 
-    gateway.chat_completion(gateway_req).await
+    let upstream_model = gateway_req.model.clone();
+    let gateway_engine = gateway.engine_info().id;
+    let stream = req.should_stream();
+    let tools = req.tools.as_ref().is_some_and(|tools| !tools.is_empty());
+    let message_count = req.messages.len();
+    let telemetry_attempt = GatewayTelemetryAttempt {
+        agent_id: agent_id.to_string(),
+        requested_model: requested_model.to_string(),
+        root_model: root_model.to_string(),
+        concrete_model: model.to_string(),
+        upstream_model: upstream_model.clone(),
+        provider_id,
+        gateway_engine,
+        stream,
+        tools,
+        message_count,
+    };
+    let start = Instant::now();
+    let result = gateway.chat_completion(gateway_req).await;
+    let duration = start.elapsed();
+
+    let event = match &result {
+        Ok(response) => telemetry_attempt.success(duration, response.choices.len()),
+        Err(error) => telemetry_attempt.failure(duration, error.failure_kind()),
+    };
+    state.telemetry.emit_gateway_attempt(event).await;
+
+    result
 }
 
 fn root_mock_is_non_serving_fallback(state: &ProxyState) -> bool {
@@ -1176,6 +1229,7 @@ mod tests {
             model_shortcuts: Vec::new(),
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         }
@@ -1262,6 +1316,7 @@ mod tests {
                 fallback_on: Vec::new(),
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1423,6 +1478,7 @@ mod tests {
             }],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1478,6 +1534,7 @@ mod tests {
             model_shortcuts: Vec::new(),
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1541,6 +1598,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1595,6 +1653,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1654,6 +1713,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1712,6 +1772,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1765,6 +1826,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1835,6 +1897,7 @@ mod tests {
             ],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1897,6 +1960,7 @@ mod tests {
             }],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -1972,6 +2036,7 @@ mod tests {
             ],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -2043,6 +2108,7 @@ mod tests {
             ],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -2096,6 +2162,7 @@ mod tests {
             }],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -2134,6 +2201,7 @@ mod tests {
             }],
             gateway,
             providers: Vec::new(),
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -2186,6 +2254,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -2240,6 +2309,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
@@ -2284,6 +2354,7 @@ mod tests {
                 fallback_on: ProxyConfig::default().fallback_on,
                 request_body: serde_json::Map::new(),
             }],
+            telemetry: crate::proxy::telemetry::TelemetryFanout::default(),
             local_manager: None,
             voice: None,
         };
