@@ -182,7 +182,9 @@ Additional review strategies worth running before promoting rc1 to 0.1.0:
 
 - **Route-differential smoke:** send the same Calciforge prompt through at least
   two agents and one direct model-gateway route, then compare whether failures
-  are route-specific, channel-specific, or global.
+  are route-specific, channel-specific, or global. Use
+  `scripts/model-gateway-route-aggression.py` on real installs to verify that
+  exact configured model routes can actually answer through the deployed gateway.
 - **Aggression scenario pass:** pick at least one high-risk scenario from
   `tests/scenarios/high-risk-scenarios.json`, deliberately vary the inputs or
   runtime state listed in `aggression_vectors`, and either automate the result

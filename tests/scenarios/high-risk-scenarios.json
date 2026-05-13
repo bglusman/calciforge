@@ -113,7 +113,8 @@
     ],
     "current_automation": [
       "Telegram slow-agent progress notice",
-      "Ollama on_switch warmup hook"
+      "Ollama on_switch warmup hook",
+      "scripts/model-gateway-route-aggression.py"
     ],
     "status": "partial"
   }
