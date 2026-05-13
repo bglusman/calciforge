@@ -327,23 +327,10 @@ impl HttpBackend {
         timeout_seconds: u64,
         headers: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
-        let mut client_builder =
-            reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_seconds));
-
-        // Add default headers if provided
-        if let Some(headers) = &headers {
-            let mut header_map = reqwest::header::HeaderMap::new();
-            for (key, value) in headers {
-                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                    && let Ok(header_value) = reqwest::header::HeaderValue::from_str(value)
-                {
-                    header_map.insert(header_name, header_value);
-                }
-            }
-            client_builder = client_builder.default_headers(header_map);
-        }
-
-        let client = client_builder.build().expect("Failed to build HTTP client");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_seconds))
+            .build()
+            .expect("Failed to build HTTP client");
 
         Self {
             client,
@@ -352,6 +339,30 @@ impl HttpBackend {
             timeout_seconds,
             headers: headers.unwrap_or_default(),
         }
+    }
+
+    fn apply_configured_headers(
+        &self,
+        mut request_builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        for (key, value) in &self.headers {
+            if !self.api_key.is_empty() && key.eq_ignore_ascii_case("authorization") {
+                continue;
+            }
+            request_builder = request_builder.header(key, value);
+        }
+        request_builder
+    }
+
+    fn apply_authorization_header(
+        &self,
+        mut request_builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        if !self.api_key.is_empty() {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        request_builder
     }
 
     async fn send_chat_completion_request(
@@ -366,19 +377,13 @@ impl HttpBackend {
         })?;
         apply_kimi_compat(&self.base_url, &model, &mut request_body);
 
-        let mut request_builder = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json");
-
-        if !self.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        for (key, value) in &self.headers {
-            request_builder = request_builder.header(key, value);
-        }
+        let request_builder = self.apply_authorization_header(
+            self.apply_configured_headers(
+                self.client
+                    .post(&url)
+                    .header("Content-Type", "application/json"),
+            ),
+        );
 
         let response = request_builder
             .json(&request_body)
@@ -482,10 +487,8 @@ impl SecretsBackend for HttpBackend {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         let url = format!("{}/models", self.base_url);
 
-        let mut req = self.client.get(&url);
-        if !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
-        }
+        let req =
+            self.apply_authorization_header(self.apply_configured_headers(self.client.get(&url)));
         let response = req.send().await.map_err(|e| {
             BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
         })?;

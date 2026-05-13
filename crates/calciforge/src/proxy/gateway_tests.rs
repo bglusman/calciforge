@@ -347,6 +347,85 @@ async fn builtin_http_gateway_forwards_complete_chat_request_options() {
     mock.assert_async().await;
 }
 
+#[tokio::test]
+async fn configured_authorization_header_cannot_override_backend_api_key() {
+    let mut server = mockito::Server::new_async().await;
+    let response = ChatCompletionResponse {
+        id: "chatcmpl-auth-order".to_string(),
+        object: "chat.completion".to_string(),
+        created: 1,
+        model: "managed/default".to_string(),
+        choices: vec![Choice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: Some(MessageContent::Text("pong".to_string())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+                reasoning_content: None,
+            },
+            finish_reason: Some("stop".to_string()),
+            logprobs: None,
+        }],
+        usage: Usage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+        },
+        system_fingerprint: None,
+    };
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_header("authorization", "Bearer backend-key")
+        .match_header("x-provider-boundary", "litellm")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::to_string(&response).unwrap())
+        .create_async()
+        .await;
+
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer wrong-configured-key".to_string(),
+    );
+    headers.insert("x-provider-boundary".to_string(), "litellm".to_string());
+    let backend = create_backend(&BackendConfig {
+        backend_type: BackendType::Http,
+        url: Some(format!("{}/v1", server.url())),
+        api_key: Some("backend-key".to_string()),
+        timeout_seconds: Some(30),
+        headers: Some(headers),
+    })
+    .unwrap();
+    let gateway = create_gateway(
+        GatewayConfig {
+            backend_type: GatewayType::LiteLlm,
+            base_url: Some(format!("{}/v1", server.url())),
+            api_key: Some("backend-key".to_string()),
+            timeout_seconds: 30,
+            ..Default::default()
+        },
+        Some(backend),
+    )
+    .unwrap();
+
+    gateway
+        .chat_completion(
+            serde_json::from_value(serde_json::json!({
+                "model": "managed/default",
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    mock.assert_async().await;
+}
+
 #[test]
 fn create_openai_compatible_gateway_preserves_engine_metadata_through_logging_wrapper() {
     let backend = create_backend(&BackendConfig {
