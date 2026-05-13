@@ -1,9 +1,9 @@
 //! Unified backend interface for the model gateway
 //!
 //! Provides the runtime abstraction used by supported model-provider methods.
-//! The production root gateway surface is intentionally small: Calciforge's
-//! builtin OpenAI-compatible HTTP upstream adapter, Helicone's external HTTP
-//! gateway, and a mock backend for tests.
+//! The production root gateway surface is intentionally small: one shared
+//! OpenAI-compatible HTTP core with engine-specific policy overlays, plus a
+//! mock backend for tests.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,10 +12,6 @@ use crate::sync::Arc;
 
 use crate::config::GatewayFailureKind;
 use crate::proxy::openai::{ChatCompletionResponse, MessageContent};
-
-// Helicone router (HTTP adapter)
-#[cfg(feature = "helicone")]
-use super::helicone_router;
 
 /// Errors that can occur in backend operations
 #[derive(Error, Debug)]
@@ -126,8 +122,6 @@ pub trait SecretsBackend: Send + Sync {
 pub enum BackendType {
     /// HTTP to an OpenAI-compatible provider.
     Http,
-    /// HTTP to Helicone AI Gateway
-    Helicone,
     /// Mock backend for testing
     Mock,
 }
@@ -136,7 +130,6 @@ impl std::fmt::Display for BackendType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BackendType::Http => write!(f, "http"),
-            BackendType::Helicone => write!(f, "helicone"),
             BackendType::Mock => write!(f, "mock"),
         }
     }
@@ -172,11 +165,6 @@ pub struct BackendConfig {
     pub api_key: Option<String>,
     pub timeout_seconds: Option<u64>,
     pub headers: Option<std::collections::HashMap<String, String>>,
-
-    // Helicone backend config
-    pub helicone_url: Option<String>,
-    pub helicone_api_key: Option<String>,
-    pub helicone_router_name: Option<String>,
 }
 
 impl Default for BackendConfig {
@@ -187,9 +175,6 @@ impl Default for BackendConfig {
             api_key: None,
             timeout_seconds: Some(30),
             headers: None,
-            helicone_url: Some("http://localhost:8080".to_string()),
-            helicone_api_key: None,
-            helicone_router_name: None,
         }
     }
 }
@@ -206,48 +191,8 @@ pub fn create_backend(config: &BackendConfig) -> Result<Arc<dyn SecretsBackend>,
             let headers = config.headers.clone();
             Ok(Arc::new(HttpBackend::new(url, api_key, timeout, headers)))
         }
-        BackendType::Helicone => create_helicone_backend(config),
         BackendType::Mock => Ok(Arc::new(MockBackend::new())),
     }
-}
-
-#[cfg(feature = "helicone")]
-fn create_helicone_backend(
-    config: &BackendConfig,
-) -> Result<Arc<dyn SecretsBackend>, BackendError> {
-    let url = config.helicone_url.clone().ok_or_else(|| {
-        BackendError::ConfigError("Missing helicone_url for Helicone backend".to_string())
-    })?;
-    let api_key = config.helicone_api_key.clone().unwrap_or_default();
-    let timeout = config.timeout_seconds.unwrap_or(120);
-    let router_name = config
-        .helicone_router_name
-        .clone()
-        .unwrap_or_else(|| "helicone".to_string());
-    let helicone_config = helicone_router::HeliconeRouterConfig {
-        base_url: url,
-        api_key,
-        timeout_seconds: timeout,
-        router_name,
-        enable_caching: true,
-        cache_ttl_seconds: 300,
-        headers: std::collections::HashMap::new(),
-        retry: crate::config::GatewayRetryConfig::default(),
-    };
-    let router = helicone_router::HeliconeRouter::new(helicone_config).map_err(|e| {
-        BackendError::ConfigError(format!("Failed to create Helicone router: {}", e))
-    })?;
-    Ok(Arc::new(router))
-}
-
-#[cfg(not(feature = "helicone"))]
-fn create_helicone_backend(
-    _config: &BackendConfig,
-) -> Result<Arc<dyn SecretsBackend>, BackendError> {
-    Err(BackendError::ConfigError(
-        "Helicone backend selected but calciforge was built without the helicone feature"
-            .to_string(),
-    ))
 }
 
 // Mock backend implementation
@@ -382,23 +327,10 @@ impl HttpBackend {
         timeout_seconds: u64,
         headers: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
-        let mut client_builder =
-            reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_seconds));
-
-        // Add default headers if provided
-        if let Some(headers) = &headers {
-            let mut header_map = reqwest::header::HeaderMap::new();
-            for (key, value) in headers {
-                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                    && let Ok(header_value) = reqwest::header::HeaderValue::from_str(value)
-                {
-                    header_map.insert(header_name, header_value);
-                }
-            }
-            client_builder = client_builder.default_headers(header_map);
-        }
-
-        let client = client_builder.build().expect("Failed to build HTTP client");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_seconds))
+            .build()
+            .expect("Failed to build HTTP client");
 
         Self {
             client,
@@ -409,14 +341,35 @@ impl HttpBackend {
         }
     }
 
+    fn apply_configured_headers(
+        &self,
+        mut request_builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        for (key, value) in &self.headers {
+            if !self.api_key.is_empty() && key.eq_ignore_ascii_case("authorization") {
+                continue;
+            }
+            request_builder = request_builder.header(key, value);
+        }
+        request_builder
+    }
+
+    fn apply_authorization_header(
+        &self,
+        mut request_builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        if !self.api_key.is_empty() {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        request_builder
+    }
+
     async fn send_chat_completion_request(
         &self,
-        mut request: crate::proxy::openai::ChatCompletionRequest,
+        request: crate::proxy::openai::ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, BackendError> {
         let url = format!("{}/chat/completions", self.base_url);
-
-        // Force non-streaming until this backend grows SSE support.
-        request.stream = Some(false);
 
         let model = request.model.clone();
         let mut request_body = serde_json::to_value(&request).map_err(|e| {
@@ -424,19 +377,13 @@ impl HttpBackend {
         })?;
         apply_kimi_compat(&self.base_url, &model, &mut request_body);
 
-        let mut request_builder = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json");
-
-        if !self.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        for (key, value) in &self.headers {
-            request_builder = request_builder.header(key, value);
-        }
+        let request_builder = self.apply_authorization_header(
+            self.apply_configured_headers(
+                self.client
+                    .post(&url)
+                    .header("Content-Type", "application/json"),
+            ),
+        );
 
         let response = request_builder
             .json(&request_body)
@@ -458,10 +405,31 @@ impl HttpBackend {
             ));
         }
 
-        response
-            .json()
-            .await
-            .map_err(|e| BackendError::InvalidResponse(format!("Failed to parse response: {}", e)))
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if content_type.contains("text/event-stream") {
+            let body = response.text().await.map_err(|e| {
+                BackendError::transport(
+                    format!(
+                        "Failed to read streaming response for model '{}': {}",
+                        model, e
+                    ),
+                    e.is_timeout(),
+                )
+            })?;
+            return crate::proxy::openai_streaming::parse_streaming_chat_completion(&body, &model);
+        }
+
+        response.json().await.map_err(|e| {
+            BackendError::InvalidResponse(format!(
+                "Failed to parse response for model '{}': {}",
+                model, e
+            ))
+        })
     }
 }
 
@@ -519,10 +487,8 @@ impl SecretsBackend for HttpBackend {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, BackendError> {
         let url = format!("{}/models", self.base_url);
 
-        let mut req = self.client.get(&url);
-        if !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
-        }
+        let req =
+            self.apply_authorization_header(self.apply_configured_headers(self.client.get(&url)));
         let response = req.send().await.map_err(|e| {
             BackendError::transport(format!("Request failed: {}", e), e.is_timeout())
         })?;

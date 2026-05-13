@@ -898,19 +898,36 @@ fn report_model_gateway_provider_boundaries(
     report: &mut DoctorReport,
 ) {
     for provider in &proxy.providers {
-        if provider.backend_type != "http" {
+        let gateway_type = provider
+            .backend_type
+            .parse::<crate::proxy::gateway::GatewayType>();
+        let Ok(gateway_type) = gateway_type else {
+            report.error(format!(
+                "provider '{}' uses unsupported backend_type '{}'",
+                provider.id, provider.backend_type
+            ));
+            continue;
+        };
+        if !gateway_type.uses_openai_compatible_http_core() {
             continue;
         }
 
-        match provider.model_credential_owner {
-            crate::config::CredentialOwner::Provider => report.ok(format!(
-                "provider '{}' uses builtin HTTP transport to a provider-owned endpoint",
-                provider.id
-            )),
-            crate::config::CredentialOwner::Calciforge => report.warn(format!(
-                "provider '{}' uses Calciforge-owned builtin HTTP upstream credentials; this route is not handled by an external provider dashboard or registry",
-                provider.id
-            )),
+        if provider.backend_type == "http" {
+            match provider.model_credential_owner {
+                crate::config::CredentialOwner::Provider => report.ok(format!(
+                    "provider '{}' uses plain HTTP transport to a provider-owned endpoint",
+                    provider.id
+                )),
+                crate::config::CredentialOwner::Calciforge => report.warn(format!(
+                    "provider '{}' uses Calciforge-owned plain HTTP upstream credentials; this route is not handled by a named provider dashboard or registry",
+                    provider.id
+                )),
+            }
+        } else {
+            report.ok(format!(
+                "provider '{}' uses {} provider adapter boundary",
+                provider.id, provider.backend_type
+            ));
         }
     }
 }
@@ -3165,10 +3182,53 @@ mod tests {
                 && finding.message.contains("provider 'opencode-go'")
                 && finding
                     .message
-                    .contains("Calciforge-owned builtin HTTP upstream credentials")
+                    .contains("Calciforge-owned plain HTTP upstream credentials")
                 && finding
                     .message
-                    .contains("not handled by an external provider dashboard or registry")
+                    .contains("not handled by a named provider dashboard or registry")
+        }));
+    }
+
+    #[test]
+    fn model_gateway_config_reports_named_provider_adapter_boundaries() {
+        let mut config = base_config();
+        let proxy = config.proxy.as_mut().expect("proxy");
+        proxy.providers = vec![ProxyProviderConfig {
+            id: "litellm-local".to_string(),
+            backend_type: "litellm".to_string(),
+            url: "http://127.0.0.1:4000/v1".to_string(),
+            api_key: None,
+            api_key_file: None,
+            models: vec!["local/qwen".to_string()],
+            strip_model_prefix: None,
+            add_model_prefix: None,
+            timeout_seconds: Some(60),
+            headers: HashMap::new(),
+            on_switch: None,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+            ..Default::default()
+        }];
+        proxy.model_routes = vec![ProxyModelRoute {
+            pattern: "local/qwen".to_string(),
+            provider: "litellm-local".to_string(),
+        }];
+        let mut report = DoctorReport::default();
+
+        check_model_gateway_config(&config, &mut report);
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.severity == Severity::Ok
+                && finding
+                    .message
+                    .contains("provider 'litellm-local' uses litellm provider adapter boundary")
+        }));
+        assert!(!report.findings.iter().any(|finding| {
+            finding.severity == Severity::Warn
+                && finding
+                    .message
+                    .contains("Calciforge-owned plain HTTP upstream credentials")
         }));
     }
 

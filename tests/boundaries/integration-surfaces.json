@@ -10,10 +10,9 @@
       "crates/calciforge/src/proxy/control_auth.rs",
       "crates/calciforge/src/proxy/gateway.rs",
       "crates/calciforge/src/proxy/handlers.rs",
-      "crates/calciforge/src/proxy/helicone_router.rs",
-      "crates/calciforge/src/proxy/helicone_streaming.rs",
       "crates/calciforge/src/proxy/model_resolver.rs",
       "crates/calciforge/src/proxy/openai.rs",
+      "crates/calciforge/src/proxy/openai_streaming.rs",
       "crates/calciforge/src/proxy/routing.rs",
       "crates/calciforge/src/proxy/streaming.rs",
       "crates/calciforge/src/proxy/token_estimator.rs",
@@ -41,15 +40,16 @@
     "fuzz_targets": [],
     "automation": [
       "scripts/boundary-aggression.sh pr",
-      "cargo test -p calciforge proxy::helicone_streaming::tests",
+      "cargo test -p calciforge proxy::openai_streaming::tests",
       "cargo test -p calciforge proxy::routing::tests",
       "cargo test -p calciforge proxy::auth::tests",
       "cargo test -p calciforge --test e2e property_tests",
       "scripts/boundary-fuzz.sh nightly",
-      "scripts/model-gateway-helicone-smoke.py"
+      "scripts/model-gateway-helicone-smoke.py",
+      "scripts/model-gateway-litellm-smoke.py"
     ],
     "scenario_ids": [
-      "helicone-streaming-tools",
+      "openai-compatible-streaming-tools",
       "first-class-agent-gateway-egress",
       "local-model-latency-envelope"
     ]
@@ -157,6 +157,10 @@
       "crates/calciforge/src/commands.rs",
       "crates/calciforge/src/config.rs",
       "crates/calciforge/src/config/validator.rs",
+      "crates/calciforge/src/config/validator_test_support.rs",
+      "crates/calciforge/src/config/validator_tests_1.rs",
+      "crates/calciforge/src/config/validator_tests_2.rs",
+      "crates/calciforge/src/config/validator_tests_3.rs",
       "crates/calciforge/src/model_names.rs",
       "crates/calciforge/src/providers/alloy.rs",
       "crates/calciforge/src/providers/mod.rs",

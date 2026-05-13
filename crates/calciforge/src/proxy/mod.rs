@@ -23,22 +23,17 @@ use crate::providers::alloy::AlloyManager;
 mod auth;
 mod backend;
 mod control_auth;
-mod gateway;
+pub(crate) mod gateway;
+#[cfg(test)]
+mod gateway_tests;
 mod handlers;
 pub(crate) mod model_resolver;
 mod openai;
+mod openai_streaming;
 pub(crate) mod routing;
 mod streaming;
 mod token_estimator;
 mod voice_handlers;
-
-// Helicone AI Gateway router (HTTP-based)
-#[cfg(feature = "helicone")]
-mod helicone_router;
-#[cfg(all(test, feature = "helicone"))]
-mod helicone_router_tests;
-#[cfg(feature = "helicone")]
-mod helicone_streaming;
 
 pub use openai::ChatCompletionRequest;
 pub use routing::ProviderEntry;
@@ -91,24 +86,19 @@ fn resolve_api_key(
     Ok(api_key.and_then(normalize_api_key))
 }
 
-const SUPPORTED_ROOT_GATEWAY_BACKEND_TYPES: &[&str] = &["http", "helicone", "mock"];
-
 pub(crate) fn supported_root_gateway_backend_types() -> &'static [&'static str] {
-    SUPPORTED_ROOT_GATEWAY_BACKEND_TYPES
+    gateway::GatewayType::SUPPORTED_CONFIG_NAMES
 }
 
-fn gateway_type_for_backend_type(backend_type: &str) -> gateway::GatewayType {
-    match backend_type {
-        "helicone" => gateway::GatewayType::Helicone,
-        "mock" => gateway::GatewayType::Mock,
-        _ => gateway::GatewayType::BuiltinHttp,
-    }
+pub(crate) fn gateway_type_for_backend_type(backend_type: &str) -> Option<gateway::GatewayType> {
+    backend_type.parse().ok()
 }
 
 /// Return true when the configured root gateway is authoritative for model IDs
 /// that are not enumerated in Calciforge provider routes.
 pub(crate) fn backend_accepts_unlisted_models(backend_type: &str) -> bool {
-    matches!(backend_type, "http" | "helicone")
+    gateway_type_for_backend_type(backend_type)
+        .is_some_and(|gateway_type| gateway_type.requires_backend_url())
 }
 
 fn validate_explicit_provider_selection(config: &ProxyConfig) -> anyhow::Result<()> {
@@ -117,8 +107,7 @@ fn validate_explicit_provider_selection(config: &ProxyConfig) -> anyhow::Result<
             "proxy.enabled=true requires at least one explicit [[proxy.providers]] adapter or an explicit non-mock root backend_type. The mock adapter is test-only and is not a production default."
         );
     }
-    if matches!(config.backend_type.as_str(), "http" | "helicone")
-        && config.backend_url.trim().is_empty()
+    if backend_accepts_unlisted_models(&config.backend_type) && config.backend_url.trim().is_empty()
     {
         anyhow::bail!(
             "proxy.enabled=true with root backend_type='{}' requires backend_url. Use backend_type='mock' for explicit-provider-only configs where unmatched models should fail instead of falling back to a root provider.",
@@ -182,33 +171,41 @@ pub async fn start_proxy_server(
     )?;
 
     // Create backend based on config
-    let backend_config = match config.backend_type.as_str() {
-        "http" => backend::BackendConfig {
-            backend_type: backend::BackendType::Http,
-            url: Some(config.backend_url.clone()),
-            api_key: default_api_key.clone(),
-            timeout_seconds: Some(config.timeout_seconds),
-            headers: config.headers.clone(),
-            ..Default::default()
-        },
-        "helicone" => backend::BackendConfig {
-            backend_type: backend::BackendType::Helicone,
-            helicone_url: Some(config.backend_url.clone()),
-            helicone_api_key: default_api_key.clone(),
-            timeout_seconds: Some(config.timeout_seconds),
-            headers: config.headers.clone(),
-            ..Default::default()
-        },
-        "mock" => backend::BackendConfig {
+    let gateway_type = gateway_type_for_backend_type(&config.backend_type).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unsupported proxy backend_type '{}'. Supported root provider adapters: {}",
+            config.backend_type,
+            supported_root_gateway_backend_types().join(", ")
+        )
+    })?;
+
+    let backend_config = match gateway_type {
+        gateway::GatewayType::Helicone
+        | gateway::GatewayType::BuiltinHttp
+        | gateway::GatewayType::LiteLlm
+        | gateway::GatewayType::Portkey
+        | gateway::GatewayType::TensorZero
+        | gateway::GatewayType::FutureAgi
+        | gateway::GatewayType::OpenRouter => {
+            let headers = gateway::openai_compatible_headers(
+                gateway_type,
+                default_api_key.as_deref(),
+                &config.retry,
+                config.headers.as_ref(),
+            );
+            backend::BackendConfig {
+                backend_type: backend::BackendType::Http,
+                url: Some(config.backend_url.clone()),
+                api_key: default_api_key.clone(),
+                timeout_seconds: Some(config.timeout_seconds),
+                headers,
+            }
+        }
+        gateway::GatewayType::Mock => backend::BackendConfig {
             backend_type: backend::BackendType::Mock,
             headers: config.headers.clone(),
             ..Default::default()
         },
-        other => anyhow::bail!(
-            "Unsupported proxy backend_type '{}'. Supported root provider adapters: {}",
-            other,
-            supported_root_gateway_backend_types().join(", ")
-        ),
     };
 
     info!(
@@ -219,9 +216,6 @@ pub async fn start_proxy_server(
 
     let backend = backend::create_backend(&backend_config)
         .map_err(|e| anyhow::anyhow!("Failed to create backend: {}", e))?;
-
-    // Determine gateway type based on configuration
-    let gateway_type = gateway_type_for_backend_type(&config.backend_type);
 
     let gateway_config = gateway::GatewayConfig {
         backend_type: gateway_type,
@@ -313,22 +307,29 @@ mod tests {
     fn gateway_type_for_backend_type_preserves_supported_external_engines() {
         assert_eq!(
             gateway_type_for_backend_type("helicone"),
-            gateway::GatewayType::Helicone
+            Some(gateway::GatewayType::Helicone)
         );
         assert_eq!(
             gateway_type_for_backend_type("http"),
-            gateway::GatewayType::BuiltinHttp
+            Some(gateway::GatewayType::BuiltinHttp)
+        );
+        assert_eq!(
+            gateway_type_for_backend_type("litellm"),
+            Some(gateway::GatewayType::LiteLlm)
         );
         assert_eq!(
             gateway_type_for_backend_type("mock"),
-            gateway::GatewayType::Mock
+            Some(gateway::GatewayType::Mock)
         );
+        assert_eq!(gateway_type_for_backend_type("unknown"), None);
     }
 
     #[test]
     fn unlisted_model_acceptance_is_shared_for_runtime_and_doctor() {
         assert!(backend_accepts_unlisted_models("helicone"));
         assert!(backend_accepts_unlisted_models("http"));
+        assert!(backend_accepts_unlisted_models("litellm"));
+        assert!(backend_accepts_unlisted_models("openrouter"));
         assert!(!backend_accepts_unlisted_models("mock"));
     }
 
@@ -336,7 +337,16 @@ mod tests {
     fn supported_root_backend_allowlist_is_small_and_explicit() {
         assert_eq!(
             supported_root_gateway_backend_types(),
-            ["http", "helicone", "mock"]
+            [
+                "http",
+                "helicone",
+                "litellm",
+                "portkey",
+                "tensorzero",
+                "future-agi",
+                "openrouter",
+                "mock"
+            ]
         );
     }
 }

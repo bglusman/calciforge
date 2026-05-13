@@ -143,63 +143,46 @@ pub fn build_provider_entries(
         provider_switch_state
             .entry(p.id.clone())
             .or_insert_with(|| Arc::new(ProviderSwitchState::default()));
-        if p.backend_type == "helicone" {
-            if p.url.trim().is_empty() {
-                anyhow::bail!(
-                    "provider '{}' with backend_type 'helicone' requires non-empty url",
-                    p.id
-                );
-            }
-            let api_key = resolve_provider_api_key(p)?;
-            let timeout = p.timeout_seconds.unwrap_or(default_timeout);
-            let headers: Option<HashMap<String, String>> = if p.headers.is_empty() {
-                None
-            } else {
-                Some(p.headers.clone())
-            };
-            let gw_cfg = GatewayConfig {
-                backend_type: GatewayType::Helicone,
-                base_url: Some(p.url.clone()),
-                api_key,
-                timeout_seconds: timeout,
-                extra_config: None,
-                headers,
-                retry: p.retry.clone().unwrap_or_else(|| config.retry.clone()),
-                ui_url: None,
-            };
-            let gw = gateway::create_gateway(gw_cfg, None)
-                .with_context(|| format!("creating Helicone gateway for provider '{}'", p.id))?;
-            info!(id = %p.id, url = %p.url, models = ?p.models, "Helicone provider loaded");
-            provider_gateways.insert(p.id.clone(), gw);
-            provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
-            provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
-            provider_add_prefix.insert(p.id.clone(), normalized_add_prefix(p));
-            provider_request_body.insert(p.id.clone(), request_body_map(p));
-            continue;
-        }
 
-        if p.backend_type != "http" {
-            anyhow::bail!(
-                "provider '{}' has unsupported backend_type '{}'; use 'http' or 'helicone'. CLI-backed subscriptions must be configured as [[agents]], not gateway providers.",
+        let gateway_type: GatewayType = p.backend_type.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "provider '{}' has unsupported backend_type '{}'; use one of: {}. CLI-backed subscriptions must be configured as [[agents]], not gateway providers.",
                 p.id,
-                p.backend_type
+                p.backend_type,
+                GatewayType::SUPPORTED_PROVIDER_CONFIG_NAMES.join(", ")
+            )
+        })?;
+        if !gateway_type.uses_openai_compatible_http_core() {
+            anyhow::bail!(
+                "provider '{}' has unsupported backend_type '{}'; use an OpenAI-compatible provider adapter such as {}. CLI-backed subscriptions must be configured as [[agents]], not gateway providers.",
+                p.id,
+                p.backend_type,
+                GatewayType::SUPPORTED_PROVIDER_CONFIG_NAMES.join(", ")
             );
         }
         if p.url.trim().is_empty() {
             anyhow::bail!(
-                "provider '{}' with backend_type 'http' requires non-empty url",
-                p.id
+                "provider '{}' with backend_type '{}' requires non-empty url",
+                p.id,
+                p.backend_type
             );
         }
 
         let api_key = resolve_provider_api_key(p)?;
 
         let timeout = p.timeout_seconds.unwrap_or(default_timeout);
-        let headers: Option<HashMap<String, String>> = if p.headers.is_empty() {
+        let retry = p.retry.clone().unwrap_or_else(|| config.retry.clone());
+        let configured_headers = if p.headers.is_empty() {
             None
         } else {
-            Some(p.headers.clone())
+            Some(&p.headers)
         };
+        let headers = gateway::openai_compatible_headers(
+            gateway_type,
+            api_key.as_deref(),
+            &retry,
+            configured_headers,
+        );
 
         let backend_cfg = BackendConfig {
             backend_type: BackendType::Http,
@@ -207,27 +190,26 @@ pub fn build_provider_entries(
             api_key: api_key.clone(),
             timeout_seconds: Some(timeout),
             headers: headers.clone(),
-            ..Default::default()
         };
 
         let backend = super::backend::create_backend(&backend_cfg)
             .with_context(|| format!("creating backend for provider '{}'", p.id))?;
 
         let gw_cfg = GatewayConfig {
-            backend_type: GatewayType::BuiltinHttp,
+            backend_type: gateway_type,
             base_url: Some(p.url.clone()),
             api_key,
             timeout_seconds: timeout,
             extra_config: None,
             headers,
-            retry: p.retry.clone().unwrap_or_else(|| config.retry.clone()),
+            retry,
             ui_url: None,
         };
 
         let gw = gateway::create_gateway(gw_cfg, Some(backend))
             .with_context(|| format!("creating gateway for provider '{}'", p.id))?;
 
-        info!(id = %p.id, url = %p.url, models = ?p.models, "Provider loaded");
+        info!(id = %p.id, backend_type = %gateway_type, url = %p.url, models = ?p.models, "Provider loaded");
         provider_gateways.insert(p.id.clone(), gw);
         provider_on_switch.insert(p.id.clone(), p.on_switch.clone());
         provider_strip_prefix.insert(p.id.clone(), normalized_strip_prefix(p));
@@ -562,9 +544,8 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "helicone")]
     #[test]
-    fn helicone_provider_uses_helicone_gateway_auth_path() {
+    fn helicone_provider_uses_shared_http_core_with_helicone_engine_metadata() {
         let config = ProxyConfig {
             providers: vec![provider(
                 "helicone-local",
@@ -578,6 +559,25 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].patterns, vec!["test-model"]);
         assert_eq!(entries[0].gateway.gateway_type(), GatewayType::Helicone);
+    }
+
+    #[test]
+    fn litellm_provider_uses_shared_http_core_with_litellm_engine_metadata() {
+        let config = ProxyConfig {
+            providers: vec![provider(
+                "litellm-local",
+                "litellm",
+                "http://127.0.0.1:4000/v1",
+            )],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, 30).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].patterns, vec!["test-model"]);
+        assert_eq!(entries[0].gateway.gateway_type(), GatewayType::LiteLlm);
+        assert_eq!(entries[0].gateway.engine_info().id, "litellm");
     }
 
     proptest! {

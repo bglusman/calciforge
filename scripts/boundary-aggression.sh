@@ -54,7 +54,7 @@ ensure_uv_for_hegel() {
 echo "boundary aggression mode: $mode"
 echo "PROPTEST_CASES=$PROPTEST_CASES"
 
-run cargo test -p calciforge proxy::helicone_streaming::tests -- --nocapture
+run cargo test -p calciforge proxy::openai_streaming::tests -- --nocapture
 run cargo test -p calciforge proxy::routing::tests -- --nocapture
 run cargo test -p calciforge proxy::auth::tests -- --nocapture
 run cargo test -p calciforge adapters::openclaw_channel::openclaw_channel_reply_tests -- --nocapture

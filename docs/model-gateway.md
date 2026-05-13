@@ -116,44 +116,47 @@ warns because that path bypasses provider-specific prefixes, API keys, and
 | Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. BPE means byte-pair encoding, a common way model APIs count tokens. |
 | CLI-backed subscription agents | Working | Codex, Claude Code, Kimi Code, Dirac, and generic executable adapters are agent routes, not gateway model selectors. |
-| External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected gateway engine and operator dashboard link after sender identity resolution. |
-| Helicone external gateway adapter | Working | `backend_type = "helicone"` forwards OpenAI-compatible requests to a Helicone AI Gateway while preserving Calciforge auth, routing, and command UX. |
-| Builtin HTTP upstream adapter | Compatibility path | `backend_type = "http"` uses Calciforge's minimal OpenAI-compatible HTTP client. It is useful for tests, local development, and explicit operator escape hatches, but it is not equivalent to a mature gateway engine such as Helicone or LiteLLM. |
+| External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected provider adapter and operator dashboard link after sender identity resolution. |
+| OpenAI-compatible provider adapter core | Working | `backend_type = "http"`, `"helicone"`, `"litellm"`, `"portkey"`, `"tensorzero"`, `"future-agi"`, and `"openrouter"` share the same `/v1/chat/completions` request path. Engine names select metadata, dashboard hints, and small policy overlays, not separate gateway implementations. |
+| Builtin HTTP upstream adapter | Compatibility path | `backend_type = "http"` is the plain OpenAI-compatible HTTP shape. It is useful for direct providers, tests, and local development. Prefer a named engine such as `litellm`, `helicone`, or `openrouter` when that boundary owns provider registry, keys, retries, or dashboard state. |
 
 ## External Provider Adapters
 
-Calciforge's gateway layer is pluggable at the engine boundary. The built-in
-`mock` engine is for tests. The built-in `http` engine is a minimal upstream
-adapter: it sends OpenAI-compatible HTTP requests directly from Calciforge to a
-configured endpoint. Treat it as a compatibility path, not as a peer to mature
-gateway engines. External engines such as Helicone and LiteLLM can add
-operator-facing dashboards, provider registries, virtual keys, retries, load
-balancing, and provider-specific request translation without changing how
+Calciforge's gateway layer is pluggable at the provider-adapter boundary. The
+`mock` engine is for tests. Every non-mock engine uses the same
+OpenAI-compatible HTTP core, then applies a small engine policy for metadata,
+dashboard hints, and headers. `helicone` is no longer a privileged code path;
+it is one adapter kind beside `litellm`, `portkey`, `tensorzero`, `future-agi`,
+`openrouter`, and plain `http`.
+
+That split matters. Request plumbing should be boring and shared. Provider
+engines can add operator dashboards, provider registries, virtual keys, retries,
+load balancing, request translation, or evaluation tooling without changing how
 channels and agents talk to Calciforge.
 
 Calciforge intentionally treats external provider-boundary model IDs as opaque
-when that boundary owns provider configuration. OpenRouter, Helicone, and
-LiteLLM all support provider/key/model registries; Calciforge should not
-duplicate that registry when the operator has chosen that shape. In Calciforge config, set
+when that boundary owns provider configuration. If LiteLLM, Helicone, Portkey,
+TensorZero, Future AGI, OpenRouter, or another gateway owns provider/key/model
+state, Calciforge should not duplicate that registry. In Calciforge config, set
 `model_credential_owner = "provider"` on the provider route. The provider's
-`api_key`/`api_key_file`, if present, then authenticates Calciforge to the
+`api_key`/`api_key_file`, if present, then authenticates Calciforge to that
 provider boundary; it is not the upstream OpenAI, Anthropic, Ollama, or other
 final provider key.
 
 ```toml
 [[proxy.providers]]
 id = "managed-gateway"
-backend_type = "http"
+backend_type = "litellm"
 url = "http://127.0.0.1:4000/v1"
 model_credential_owner = "provider"
 api_key_file = "/etc/calciforge/secrets/managed-gateway-client-key"
 models = ["managed/*"]
 ```
 
-In that shape, `backend_type = "http"` is just the transport used to reach a
-provider-owned OpenAI-compatible boundary endpoint. `model_credential_owner = "provider"`
-is the important ownership boundary: `managed/default`, `managed/cheap`, or
-`managed/coding` are Calciforge-visible selectors but provider-owned model names.
+In that shape, `backend_type` names the provider boundary Calciforge is calling.
+`model_credential_owner = "provider"` is the important ownership boundary:
+`managed/default`, `managed/cheap`, or `managed/coding` are Calciforge-visible
+selectors but provider-owned model names.
 Calciforge still owns aliases, synthetic selectors, access policy, sender
 identity, security scanning, and command UX. The external gateway owns upstream
 provider API keys, provider-specific model IDs, load balancing, and any
@@ -170,12 +173,12 @@ should use the explicit model credential fields when those concepts differ.
 This is intentionally separate from substitution-protected fnox secrets because
 agents should never need to request these model-provider credentials directly.
 
-Current built-in HTTP/Helicone adapters have one first-class bearer credential
-slot. Do not configure both provider endpoint auth (`api_key`/`api_key_file`)
-and Calciforge-owned final model auth (`model_api_key`/`model_api_key_file`) on
-the same provider route unless that adapter has a documented second auth
-channel. For direct upstream providers, use `model_api_key_file`. For external
-gateway boundaries such as LiteLLM, OpenRouter, or Helicone, use
+Current OpenAI-compatible adapters have one first-class bearer credential slot.
+Do not configure both provider endpoint auth (`api_key`/`api_key_file`) and
+Calciforge-owned final model auth (`model_api_key`/`model_api_key_file`) on the
+same provider route unless that adapter has a documented second auth channel.
+For direct upstream providers, use `model_api_key_file`. For external gateway
+boundaries such as LiteLLM, OpenRouter, or Helicone, use
 `model_credential_owner = "provider"` and put the gateway/client credential in
 `api_key_file`.
 
@@ -225,35 +228,49 @@ path, that route may still be operationally cleaner because it preserves the
 provider's expected request shape and session behavior without extra gateway
 translation.
 
-Helicone is the first external gateway adapter and the default batteries-included
-observability path we ship today. It gives operators a real request dashboard,
-provider routing surface, and persisted gateway logs, while Calciforge remains
-the local identity, command, alias, alloy, dispatcher, and policy boundary.
-That convenience has a cost: the local stack is heavier than a plain HTTP
-forwarder because it includes dashboard, Postgres, ClickHouse, Jawn, and
-S3-compatible object storage pieces. A lighter external gateway or a smaller
-Calciforge-native observability engine may be desirable later; the adapter
-boundary is intentionally where future PRs can plug in those alternatives.
+## Gateway Engines Vs Observability Sinks
 
-Calciforge's installer can
-provision a local Helicone deployment when `CALCIFORGE_HELICONE_ENABLED=true`.
-The tested local setup uses Helicone's all-in-one Docker image for the
-dashboard, bundled MinIO S3-compatible storage, and Jawn API, plus the standalone
-`@helicone/ai-gateway` package for request routing. The standalone gateway is
-intentional: current all-in-one images may start a bundled gateway supervisor
-that exits before routing traffic.
-The installer pins the dashboard image with `CALCIFORGE_HELICONE_IMAGE`
-(`helicone/helicone-all-in-one:v2025.08.21` by default) so local installs do
-not drift when upstream retags `latest`.
+`backend_type` chooses the inline provider engine that receives model traffic.
+Observability is a separate concern. Some engines, such as Helicone, Portkey, or
+TensorZero, may provide both a request path and a dashboard. Others, such as
+LiteLLM or OpenRouter, may be useful primarily as provider boundaries. Pure
+observability tools should not need to become model gateways just to receive
+events.
 
-Configure Calciforge manually by setting `backend_type = "helicone"` and
-pointing `backend_url` at the Helicone AI Gateway OpenAI-compatible base URL.
+The intended next config shape is a separate observability block, for example:
+
+```toml
+[[proxy.observability]]
+kind = "otel"
+endpoint = "http://127.0.0.1:4318/v1/traces"
+format = "openinference"
+```
+
+That block is roadmap, not a guarantee in the current release. Today,
+`gateway_ui_url` is the stable operator link exposed by `!gateway` and
+`/gateway/ui`, and provider adapters expose coarse capability metadata.
+
+LiteLLM is the lightest current candidate for the default local provider
+boundary. It can sit in front of Ollama and remote providers without pulling in
+Helicone's dashboard stack. Helicone remains supported when you want its UI and
+request log, but it is optional: useful, not sacred. Calcifer may like a bright
+fire, but your laptop does not need to run a small castle just to route one
+model request.
+
+Calciforge's installer can provision a local Helicone deployment when
+`CALCIFORGE_HELICONE_ENABLED=true`. That path is heavier because it includes a
+dashboard, Postgres, ClickHouse, Jawn, and S3-compatible object storage pieces.
+The adapter boundary is intentionally where LiteLLM, Helicone, Portkey,
+TensorZero, Future AGI, OpenRouter, and future PRs plug in without changing
+agent/channel behavior.
+
+Configure Calciforge manually by setting `backend_type` to the adapter kind and
+pointing `backend_url` at that engine's OpenAI-compatible base URL.
 `backend_url` must be a plain `http` or `https` base URL without query
-parameters or fragments.
-If it has no path, Calciforge posts to `/v1/chat/completions`; if it already
-includes a path such as `/v1`, `/ai`, or `/router/<name>`, Calciforge appends
-`/chat/completions` to that configured base path instead of injecting another
-`/v1`.
+parameters or fragments. If it has no path, Calciforge posts to
+`/v1/chat/completions`; if it already includes a path such as `/v1`, `/ai`, or
+`/router/<name>`, Calciforge appends `/chat/completions` to that configured base
+path instead of injecting another `/v1`.
 
 ```toml
 [proxy]
@@ -264,6 +281,19 @@ backend_type = "helicone"
 backend_url = "http://127.0.0.1:8787/ai"
 backend_api_key_file = "/etc/calciforge/secrets/helicone-gateway-key"
 gateway_ui_url = "http://127.0.0.1:3300"
+```
+
+The same shape works for LiteLLM:
+
+```toml
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+api_key_file = "/etc/calciforge/secrets/model-gateway-client-key"
+backend_type = "litellm"
+backend_url = "http://127.0.0.1:4000/v1"
+backend_api_key_file = "/etc/calciforge/secrets/litellm-client-key"
+gateway_ui_url = "http://127.0.0.1:4000/ui"
 ```
 
 ### Retry and Fallback Policy
@@ -393,21 +423,20 @@ does not require Calciforge to own the tunnel, DNS name, certificate, firewall,
 or reverse proxy. If `CALCIFORGE_GATEWAY_UI_URL` is unset, the installer only
 records a local dashboard URL when it actually starts the local dashboard
 container. When a dashboard URL is configured, `!gateway` and `/gateway` expose
-it so the operator can jump from Calciforge into Helicone's observability UI.
+it so the operator can jump from Calciforge into the selected provider adapter's
+UI.
 
 Use the same pattern for other local web surfaces: keep the service bind
 conservative, then configure the advertised public URL separately. Paste-server
 links use `CALCIFORGE_PASTE_PUBLIC_BASE_URL` for reverse proxies or tunnels and
 `CALCIFORGE_PASTE_PUBLIC_HOST` for a stable LAN/Tailscale host.
 
-The Helicone gateway is currently strongest for providers that Helicone knows
-how to route directly, such as Ollama via the `/ai` router with
-provider-qualified model IDs. Keep user-facing local selectors such as
-`qwen3.6:27b` in Calciforge, then set `add_model_prefix = "ollama/"` on the
-Helicone provider so upstream requests send `ollama/qwen3.6:27b`. Arbitrary
-OpenAI-compatible providers may still be configured through Calciforge's builtin
-HTTP upstream adapter until their Helicone provider/converter support is
-validated, but that should be treated as an explicit compatibility path.
+For provider boundaries that expect provider-qualified model IDs, keep
+user-facing local selectors such as `qwen3.6:27b` in Calciforge, then set
+`add_model_prefix = "ollama/"` on that provider so upstream requests send
+`ollama/qwen3.6:27b`. For boundaries with their own registry, such as LiteLLM
+or OpenRouter, prefer selectors that make sense in that registry and use
+`strip_model_prefix` / `add_model_prefix` only at the Calciforge edge.
 
 Large local Ollama models usually cannot stay resident together. For Ollama
 providers, configure `on_switch` so Calciforge unloads any other resident model
@@ -477,12 +506,14 @@ For process-boundary coverage, run:
 
 ```bash
 python3 scripts/model-gateway-helicone-smoke.py
+python3 scripts/model-gateway-litellm-smoke.py
 ```
 
-That script starts a local Helicone-shaped gateway, starts Calciforge in
-`--proxy-only` mode, checks `/gateway` metadata and `/gateway/ui`, and sends a
-real `/v1/chat/completions` request through Calciforge to prove the adapter
-forwards the expected auth headers, path, and model.
+Those scripts start local external-gateway-shaped processes, start Calciforge in
+`--proxy-only` mode, check `/gateway` metadata and `/gateway/ui`, and send real
+`/v1/chat/completions` requests through Calciforge to prove the shared
+OpenAI-compatible adapter core forwards the expected auth headers, path, and
+model.
 
 For a live deployment smoke against configured provider routes, run:
 
@@ -519,8 +550,8 @@ requests send the provider's concrete model ID.
 Calciforge's model gateway currently speaks the OpenAI-compatible
 `/v1/chat/completions` request shape. Use OpenCode Go models that are exposed on
 that shape, such as Kimi and Qwen. Models that require Anthropic-compatible
-`/v1/messages` are not supported by the builtin HTTP upstream adapter yet; route
-them through a CLI, ACP adapter, LiteLLM, or another gateway that converts
+`/v1/messages` are not supported by the shared OpenAI-compatible adapter yet;
+route them through a CLI, ACP adapter, LiteLLM, or another gateway that converts
 OpenAI-compatible requests to Anthropic-compatible upstream calls.
 
 ```toml
