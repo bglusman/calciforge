@@ -118,6 +118,7 @@ warns because that path bypasses provider-specific prefixes, API keys, and
 | CLI-backed subscription agents | Working | Codex, Claude Code, Kimi Code, Dirac, and generic executable adapters are agent routes, not gateway model selectors. |
 | External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected provider adapter and operator dashboard link after sender identity resolution. |
 | OpenAI-compatible provider adapter core | Working | `backend_type = "http"`, `"helicone"`, `"litellm"`, `"portkey"`, `"tensorzero"`, `"future-agi"`, and `"openrouter"` share the same `/v1/chat/completions` request path. Engine names select metadata, dashboard hints, and small policy overlays, not separate gateway implementations. |
+| Provider observability capability metadata | Started | Provider adapters now advertise known observability surfaces separately from request routing, including native dashboards and future OTel/OpenInference/Langfuse sink shapes. Event export configuration and emission remain roadmap work. |
 | Builtin HTTP upstream adapter | Compatibility path | `backend_type = "http"` is the plain OpenAI-compatible HTTP shape. It is useful for direct providers, tests, and local development. Prefer a named engine such as `litellm`, `helicone`, or `openrouter` when that boundary owns provider registry, keys, retries, or dashboard state. |
 
 ## External Provider Adapters
@@ -270,6 +271,14 @@ prompts, completions, request headers, query strings, or secret values. A
 dashboard link is still configured with `gateway_ui_url` and exposed by
 `!gateway` and `/gateway/ui`; telemetry sinks are event destinations, not UI
 owners.
+
+The first step of that roadmap is implemented as adapter metadata, not event
+export. Each `ProviderAdapter` can report observability capabilities such as a
+native dashboard, OpenTelemetry export, OpenInference traces, or Langfuse
+callbacks. That lets UI, doctor, and future config validation reason about
+observability consistently across Helicone, LiteLLM, Portkey, TensorZero, Future
+AGI, and other engines without treating any one engine as the required request
+path.
 
 LiteLLM is the lightest current candidate for the default local provider
 boundary. It can sit in front of Ollama and remote providers without pulling in
