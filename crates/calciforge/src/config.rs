@@ -397,15 +397,15 @@ pub struct ChannelConfig {
 
     /// Matrix end-to-end encryption handling.
     ///
-    /// The production Matrix channel is still raw Client-Server API. Use
-    /// `warn` to keep today's behavior, `require` to fail closed unless an
-    /// SDK-backed encrypted runtime is available, or `experimental-sdk` only
-    /// on builds compiled with `channel-matrix-e2ee`.
+    /// Use `warn` to keep the raw Client-Server API fallback, `require` to
+    /// fail closed unless an SDK-backed encrypted runtime is available, or
+    /// `experimental-sdk` to opt into the same SDK runtime while it is still
+    /// hardening.
     #[serde(default)]
     pub matrix_e2ee: MatrixE2eeMode,
 
     /// Path to persistent Matrix SDK state and crypto-store files when
-    /// `matrix_e2ee = "experimental-sdk"`.
+    /// `matrix_e2ee` is `require` or `experimental-sdk`.
     pub matrix_e2ee_store_path: Option<String>,
 
     /// Optional file containing a passphrase for the Matrix SDK store.

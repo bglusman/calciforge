@@ -295,6 +295,18 @@ fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
                                     .to_string(),
                             );
                         }
+                        if channel.enabled && channel.matrix_e2ee_store_path.is_none() {
+                            result.add_error(
+                                "Matrix channel matrix_e2ee='require' requires matrix_e2ee_store_path for persistent crypto state"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.enabled && !cfg!(feature = "channel-matrix-e2ee") {
+                            result.add_error(
+                                "Matrix channel matrix_e2ee='require' requires a calciforge build with --features channel-matrix-e2ee"
+                                    .to_string(),
+                            );
+                        }
                     }
                     MatrixE2eeMode::ExperimentalSdk => {
                         if channel.enabled && channel.room_id.is_none() {
