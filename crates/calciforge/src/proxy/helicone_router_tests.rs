@@ -145,6 +145,58 @@ async fn chat_completion_posts_to_configured_v1_path_without_duplication() {
 }
 
 #[tokio::test]
+async fn chat_completion_accepts_helicone_streaming_response() {
+    let mut server = mockito::Server::new_async().await;
+    let body = concat!(
+        "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"po\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ng\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(serde_json::json!({
+            "model": "openai/gpt-4o-mini",
+            "stream": true
+        })))
+        .with_status(200)
+        .with_header("content-type", "text/event-stream; charset=utf-8")
+        .with_body(body)
+        .create_async()
+        .await;
+
+    let router = HeliconeRouter::new(config(format!("{}/v1/", server.url()))).unwrap();
+    let result = router
+        .chat_completion(
+            "openai/gpt-4o-mini".to_string(),
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("hello".to_string())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+                reasoning_content: None,
+            }],
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.choices[0]
+            .message
+            .content
+            .as_ref()
+            .and_then(MessageContent::to_text)
+            .as_deref(),
+        Some("pong")
+    );
+    mock.assert_async().await;
+}
+
+#[tokio::test]
 async fn chat_completion_forwards_custom_headers() {
     let mut server = mockito::Server::new_async().await;
     let response = ChatCompletionResponse {

@@ -30,7 +30,11 @@ def fail(message: str) -> None:
 
 def require_nonempty_list(scenario: dict, key: str) -> None:
     value = scenario.get(key)
-    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item.strip() for item in value)
+    ):
         fail(f"{scenario.get('id', '<unknown>')}: {key} must be a non-empty list of strings")
 
 

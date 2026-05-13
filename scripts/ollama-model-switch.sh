@@ -97,6 +97,10 @@ if truthy "$warmup_enabled" && [[ "$target_loaded" != true ]]; then
         keep_alive="${CALCIFORGE_OLLAMA_KEEP_ALIVE:-24h}"
         warmup_timeout="${CALCIFORGE_OLLAMA_WARMUP_TIMEOUT_SECONDS:-120}"
         warmup_ctx="${CALCIFORGE_OLLAMA_WARMUP_CONTEXT:-1024}"
+        if [[ ! "$warmup_ctx" =~ ^[0-9]+$ ]]; then
+            echo "warning: invalid CALCIFORGE_OLLAMA_WARMUP_CONTEXT='$warmup_ctx'; using 1024" >&2
+            warmup_ctx=1024
+        fi
         payload="$(printf \
             '{"model":"%s","prompt":"Reply with exactly: ready","stream":false,"keep_alive":"%s","options":{"num_ctx":%s}}\n' \
             "$(json_escape "$target")" \

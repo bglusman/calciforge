@@ -24,7 +24,6 @@ from typing import Any
 
 
 DEFAULT_CONFIG_PATHS = (
-    Path(os.environ.get("CALCIFORGE_CONFIG", "")),
     Path.home() / ".config" / "calciforge" / "config.toml",
     Path("/opt/homebrew/etc/calciforge/config.toml"),
     Path("/etc/calciforge/config.toml"),
@@ -32,8 +31,14 @@ DEFAULT_CONFIG_PATHS = (
 
 
 def existing_default_config() -> Path | None:
+    env_path = os.environ.get("CALCIFORGE_CONFIG", "").strip()
+    if env_path:
+        path = Path(env_path)
+        if path.is_file():
+            return path
+
     for path in DEFAULT_CONFIG_PATHS:
-        if str(path) and path.exists():
+        if path.is_file():
             return path
     return None
 

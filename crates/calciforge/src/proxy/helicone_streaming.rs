@@ -200,12 +200,18 @@ pub(super) fn parse_streaming_chat_completion(
     for (index, accumulator) in choices_by_index {
         let mut tool_call_entries: Vec<(u32, ToolCall)> = Vec::new();
         for (tool_index, call) in accumulator.tool_calls {
-            let Some(id) = call.id else {
-                continue;
-            };
-            let Some(name) = call.name else {
-                continue;
-            };
+            let id = call.id.ok_or_else(|| {
+                BackendError::InvalidResponse(format!(
+                    "Helicone streaming tool call for model '{}' did not include an id",
+                    requested_model
+                ))
+            })?;
+            let name = call.name.ok_or_else(|| {
+                BackendError::InvalidResponse(format!(
+                    "Helicone streaming tool call for model '{}' did not include a function name",
+                    requested_model
+                ))
+            })?;
             tool_call_entries.push((
                 tool_index,
                 ToolCall {
@@ -426,6 +432,22 @@ mod tests {
 
         let error = parse_streaming_chat_completion(body, "ollama/qwen3.6:27b")
             .expect_err("missing id/created should not be papered over");
+
+        assert!(
+            error.to_string().contains("did not include an id"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_streamed_tool_calls() {
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-tools\",\"object\":\"chat.completion.chunk\",\"created\":6,\"model\":\"ollama/qwen3.6:27b\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let error = parse_streaming_chat_completion(body, "ollama/qwen3.6:27b")
+            .expect_err("missing tool call id/name should not become a successful response");
 
         assert!(
             error.to_string().contains("did not include an id"),
