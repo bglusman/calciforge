@@ -36,7 +36,6 @@ RUST_LINE_BUDGETS = {
   "crates/calciforge/src/providers/alloy.rs" => 1126,
   "crates/calciforge/src/proxy/gateway.rs" => 1001,
   "crates/calciforge/src/proxy/handlers.rs" => 2386,
-  "crates/host-agent/src/config.rs" => 724,
   "crates/host-agent/src/main.rs" => 1288,
   "crates/paste-server/src/lib.rs" => 2623,
   "crates/security-proxy/src/mitm.rs" => 1573,
@@ -93,6 +92,11 @@ rust_files.each do |file|
 
   if line_count > budget
     warn "#{rel}: #{line_count} lines exceeds architecture budget #{budget}"
+    failed = true
+  end
+
+  if RUST_LINE_BUDGETS.key?(rel) && line_count <= MAX_NEW_RUST_LINES
+    warn "#{rel}: #{line_count} lines no longer needs pinned architecture budget #{budget}"
     failed = true
   end
 
