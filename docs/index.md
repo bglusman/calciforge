@@ -759,7 +759,7 @@ the live schema in CI):
 - [Matrix](channels/matrix.html) — HTTP long-poll; note: no end-to-end encryption
 - [Signal](channels/signal.html) — embedded `zeroclawlabs::SignalChannel` via `signal-cli-rest-api`
 - [WhatsApp](channels/whatsapp.html) — embedded WhatsApp Web session
-- [Text/iMessage](channels/sms.html) — Linq webhook receiver for iMessage/RCS/SMS
+- [Text/iMessage](channels/sms.html) — Linq iMessage/RCS/SMS or Twilio SMS/RCS webhook receiver
 
 Calciforge treats channel UI and chat transport separately. You can use
 Telegram as a dependable control surface for agent/model selection and secret

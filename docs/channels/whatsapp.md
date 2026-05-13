@@ -88,6 +88,18 @@ buttons, Calciforge can render the same choices natively while preserving text
 fallback. Set `ui_mode = "text"` to keep this channel text-only for bridged or
 constrained clients.
 
+The practical split is:
+
+- The embedded WhatsApp Web backend is homelab-friendly and works with a linked
+  account, but its current Rust channel trait does not expose native reply
+  buttons, lists, or polls.
+- The official WhatsApp Business/Cloud API supports interactive reply buttons
+  and lists, but it is a different provider-backed channel with business
+  onboarding, webhook verification, and template/session-window rules.
+- Baileys-style WhatsApp Web clients may expose more message shapes in
+  JavaScript, but they are unofficial. Calciforge should treat that path as an
+  optional backend experiment, not a default security promise.
+
 Operators can use Telegram as the Calciforge control surface for buttons while
 continuing the main chat in WhatsApp. Active agent/model selections are keyed by
 Calciforge identity, so choices made through Telegram apply to the same

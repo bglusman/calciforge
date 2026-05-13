@@ -258,6 +258,70 @@ fn validate_channels(config: &CalciforgeConfig, result: &mut ValidationResult) {
                     );
                 }
             }
+            "sms" => {
+                let provider = channel
+                    .sms_provider
+                    .as_deref()
+                    .unwrap_or("linq")
+                    .trim()
+                    .to_ascii_lowercase();
+                match provider.as_str() {
+                    "linq" => {
+                        if channel.enabled
+                            && channel.sms_linq_api_token.is_none()
+                            && channel.sms_linq_api_token_file.is_none()
+                        {
+                            result.add_error(
+                                "SMS channel with sms_provider = \"linq\" requires sms_linq_api_token_file or sms_linq_api_token when enabled"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    "twilio" => {
+                        if channel.enabled
+                            && channel.sms_twilio_account_sid.is_none()
+                            && channel.sms_twilio_account_sid_file.is_none()
+                        {
+                            result.add_error(
+                                "SMS channel with sms_provider = \"twilio\" requires sms_twilio_account_sid_file or sms_twilio_account_sid when enabled"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.enabled
+                            && channel.sms_twilio_auth_token.is_none()
+                            && channel.sms_twilio_auth_token_file.is_none()
+                        {
+                            result.add_error(
+                                "SMS channel with sms_provider = \"twilio\" requires sms_twilio_auth_token_file or sms_twilio_auth_token when enabled"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.enabled
+                            && channel.sms_from_phone.is_none()
+                            && channel.sms_twilio_messaging_service_sid.is_none()
+                        {
+                            result.add_error(
+                                "SMS channel with sms_provider = \"twilio\" requires sms_from_phone or sms_twilio_messaging_service_sid when enabled"
+                                    .to_string(),
+                            );
+                        }
+                        if channel.enabled
+                            && !channel.sms_twilio_disable_signature_validation
+                            && channel.sms_twilio_webhook_public_url.is_none()
+                        {
+                            result.add_error(
+                                "SMS channel with sms_provider = \"twilio\" requires sms_twilio_webhook_public_url unless sms_twilio_disable_signature_validation = true"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    other => {
+                        result.add_error(format!(
+                            "SMS channel has unsupported sms_provider '{other}'; expected 'linq' or 'twilio'"
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1883,6 +1947,89 @@ enabled = true
                 .iter()
                 .any(|e| e.contains("whatsapp_session_path")),
             "error should name whatsapp_session_path; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn enabled_twilio_sms_requires_public_webhook_url_or_explicit_test_opt_out() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_provider = "twilio"
+sms_twilio_account_sid = "AC_TEST_ACCOUNT_SID"
+sms_twilio_auth_token = "secret"
+sms_twilio_messaging_service_sid = "MG_TEST_MESSAGING_SERVICE_SID"
+allowed_numbers = ["+15555550100"]
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "Twilio public webhook validation must not silently run without the signed URL"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("sms_twilio_webhook_public_url")),
+            "error should name the webhook URL field; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn enabled_twilio_sms_accepts_messaging_service_configuration() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_provider = "twilio"
+sms_twilio_account_sid = "AC_TEST_ACCOUNT_SID"
+sms_twilio_auth_token = "secret"
+sms_twilio_messaging_service_sid = "MG_TEST_MESSAGING_SERVICE_SID"
+sms_twilio_webhook_public_url = "https://calciforge.example.test/webhooks/sms"
+allowed_numbers = ["+15555550100"]
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            result.is_valid(),
+            "Twilio SMS/RCS should validate with credentials, sender service, and signed webhook URL; errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn unknown_sms_provider_is_config_error() {
+        let fixture = r#"
+[calciforge]
+version = 2
+
+[[channels]]
+kind = "sms"
+enabled = true
+sms_provider = "carrier-test"
+"#;
+        let config = parse(fixture);
+        let result = validate_config(&config);
+        assert!(
+            !result.is_valid(),
+            "unsupported SMS providers must fail before startup"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("unsupported sms_provider")),
+            "error should identify unsupported sms_provider; errors: {:?}",
             result.errors
         );
     }

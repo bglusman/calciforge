@@ -5,36 +5,29 @@ title: Text/iMessage Channel Setup
 
 # Text/iMessage Channel
 
-Calciforge exposes text/iMessage routing as `kind = "sms"`. The implemented
-transport today is `zeroclawlabs::LinqChannel`, which can send and receive
-iMessage, RCS, and SMS through the Linq Partner API. RCS is the richer carrier
-messaging format that can support more app-like features when the provider and
-device both support them.
+Calciforge exposes text routing as `kind = "sms"`. The current stable backend
+is Linq, which can send and receive iMessage, RCS, and SMS through the Linq
+Partner API. An experimental Twilio backend can send and receive SMS/RCS
+through Twilio Programmable Messaging. RCS is the richer carrier messaging
+format that can support more app-like features when the provider and device
+both support them.
 
-Linq is useful, but it should not be the only path. Twilio is the obvious next
-provider adapter for SMS/MMS and, where the account and sender are approved,
-RCS. Twilio's Programmable Messaging API supports SMS, MMS, RCS, and WhatsApp
-from one Message resource, and its RCS docs describe branded profiles, read
-receipts, rich content, and SMS fallback. That fits Calciforge's provider
-adapter model better than pretending every text transport is the same castle
-door.
-
-Inbound messages arrive as Linq webhooks: HTTP calls Linq sends to your
-Calciforge listener. Outbound replies go through the Linq API, but still pass
-through Calciforge identity resolution, routing, security scan settings, and
-artifact fallback rendering.
+Inbound messages arrive as provider webhooks. Outbound replies go through the
+provider API, but still pass through Calciforge identity resolution, routing,
+security scan settings, and artifact fallback rendering.
 
 ```text
-phone user  ->  Linq webhook  ->  Calciforge  ->  agent
-phone user  <-  Linq API      <-  Calciforge  <-  agent
+phone user  ->  provider webhook  ->  Calciforge  ->  agent
+phone user  <-  provider API      <-  Calciforge  <-  agent
 ```
 
-## Configure
+## Linq Config
 
 ```toml
 [[channels]]
 kind = "sms"
 enabled = true
+sms_provider = "linq"
 sms_linq_api_token_file = "~/.config/calciforge/secrets/linq-token"
 sms_from_phone = "+15555550001"
 sms_webhook_listen = "0.0.0.0:18798"
@@ -58,6 +51,38 @@ aliases = [
 ]
 ```
 
+## Twilio Config
+
+Twilio support is experimental. It uses Twilio's standard Messaging webhook
+format for inbound SMS/RCS and the Message resource for outbound replies. RCS
+fallback is mostly a Twilio Messaging Service/Sender Pool concern, so the
+Calciforge config usually points at `sms_twilio_messaging_service_sid` instead
+of a single `sms_from_phone`.
+
+```toml
+[[channels]]
+kind = "sms"
+enabled = true
+sms_provider = "twilio"
+sms_twilio_account_sid_file = "~/.config/calciforge/secrets/twilio-account-sid"
+sms_twilio_auth_token_file = "~/.config/calciforge/secrets/twilio-auth-token"
+sms_twilio_messaging_service_sid = "MG_TEST_MESSAGING_SERVICE_SID"
+sms_twilio_webhook_public_url = "https://calciforge.example.com/webhooks/sms"
+sms_webhook_listen = "0.0.0.0:18798"
+sms_webhook_path = "/webhooks/sms"
+allowed_numbers = ["+15555550100"]
+```
+
+For local tunnels only, you can set:
+
+```toml
+sms_twilio_disable_signature_validation = true
+```
+
+Do not use that on a public endpoint. Twilio signs the externally configured
+webhook URL, so `sms_twilio_webhook_public_url` must match the URL configured in
+Twilio, including scheme, host, path, and query string.
+
 ## Linq Webhook
 
 Point the Linq Partner webhook at:
@@ -69,6 +94,20 @@ https://YOUR-HOST.example.com/webhooks/sms
 If `sms_linq_signing_secret_file` or `sms_linq_signing_secret` is configured,
 Calciforge verifies `X-Webhook-Timestamp` and `X-Webhook-Signature` before
 parsing the payload.
+
+## Twilio Webhook
+
+Point the Twilio phone number, RCS sender, or Messaging Service inbound webhook
+at the same path:
+
+```text
+https://YOUR-HOST.example.com/webhooks/sms
+```
+
+Twilio sends `application/x-www-form-urlencoded` fields such as `MessageSid`,
+`From`, `To`, `Body`, `NumMedia`, and rich-message fields like `ButtonPayload`
+or `InteractiveData`. Calciforge verifies `X-Twilio-Signature` when
+`sms_twilio_webhook_public_url` is configured.
 
 ## Verify
 
