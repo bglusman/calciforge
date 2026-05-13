@@ -44,6 +44,7 @@
       "cargo test -p calciforge proxy::routing::tests",
       "cargo test -p calciforge proxy::auth::tests",
       "cargo test -p calciforge --test e2e property_tests",
+      "scripts/boundary-explore-long.sh one-hour gateway",
       "scripts/boundary-fuzz.sh nightly",
       "scripts/model-gateway-helicone-smoke.py",
       "scripts/model-gateway-litellm-smoke.py"
@@ -99,7 +100,8 @@
       "scripts/boundary-aggression.sh pr",
       "cargo test -p calciforge adapters::",
       "cargo test -p calciforge adapters::openclaw_channel::openclaw_channel_reply_tests",
-      "cargo test -p calciforge --test e2e adapter_edge_cases"
+      "cargo test -p calciforge --test e2e adapter_edge_cases",
+      "scripts/boundary-explore-long.sh one-hour agents"
     ],
     "scenario_ids": [
       "first-class-agent-gateway-egress"
@@ -141,7 +143,8 @@
     "fuzz_targets": [],
     "automation": [
       "cargo test -p calciforge channels::",
-      "scripts/matrix-real-e2e.py"
+      "scripts/matrix-real-e2e.py",
+      "scripts/boundary-explore-long.sh one-hour channels"
     ],
     "scenario_ids": [
       "first-class-agent-gateway-egress"
@@ -187,7 +190,8 @@
     "automation": [
       "cargo test -p calciforge config::",
       "cargo test -p calciforge proxy::model_resolver",
-      "cargo test -p calciforge --features hegel install::"
+      "cargo test -p calciforge --features hegel install::",
+      "scripts/boundary-explore-long.sh one-hour config"
     ],
     "scenario_ids": [
       "first-class-agent-gateway-egress"
@@ -240,6 +244,7 @@
     ],
     "automation": [
       "cargo test -p security-proxy",
+      "scripts/boundary-explore-long.sh one-hour security",
       "scripts/boundary-fuzz.sh nightly",
       "cargo test -p adversary-detector"
     ],
@@ -286,6 +291,7 @@
     ],
     "automation": [
       "cargo test -p secrets-client",
+      "scripts/boundary-explore-long.sh one-hour secrets",
       "scripts/boundary-fuzz.sh nightly",
       "cargo test -p mcp-server",
       "cargo test -p paste-server"
@@ -342,6 +348,7 @@
     "automation": [
       "cargo test -p calciforge install::",
       "cargo test -p calciforge doctor::",
+      "scripts/boundary-explore-long.sh one-hour install",
       "scripts/check-packaging.sh"
     ],
     "scenario_ids": [
@@ -395,7 +402,8 @@
     ],
     "fuzz_targets": [],
     "automation": [
-      "cargo test -p host-agent"
+      "cargo test -p host-agent",
+      "scripts/boundary-explore-long.sh one-hour host-agent"
     ],
     "scenario_ids": [
       "package-config-path-drift"
@@ -433,6 +441,7 @@
     ],
     "automation": [
       "cargo test -p clashd",
+      "scripts/boundary-explore-long.sh one-hour clashd",
       "scripts/boundary-fuzz.sh nightly"
     ],
     "scenario_ids": [

@@ -11,14 +11,14 @@ case "$duration" in
 esac
 
 if ! [[ "$duration" =~ ^[0-9]+$ ]] || [[ "$duration" -le 0 ]]; then
-  echo "usage: $0 [seconds|one-hour|day|three-days] [all|gateway|agents|security|secrets|clashd|install]" >&2
+  echo "usage: $0 [seconds|one-hour|day|three-days] [all|gateway|agents|channels|config|security|secrets|clashd|install|host-agent]" >&2
   exit 2
 fi
 
 case "$surface" in
-  all|gateway|agents|security|secrets|clashd|install) ;;
+  all|gateway|agents|channels|config|security|secrets|clashd|install|host-agent) ;;
   *)
-    echo "usage: $0 [seconds|one-hour|day|three-days] [all|gateway|agents|security|secrets|clashd|install]" >&2
+    echo "usage: $0 [seconds|one-hour|day|three-days] [all|gateway|agents|channels|config|security|secrets|clashd|install|host-agent]" >&2
     exit 2
     ;;
 esac
@@ -64,6 +64,26 @@ run_logged() {
   fi
 }
 
+ensure_uv_for_hegel() {
+  if command -v uv >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "uv is required for Hegel; installing uv"
+  if command -v pipx >/dev/null 2>&1; then
+    pipx install uv
+  else
+    python3 -m pip install --user --break-system-packages uv
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+
+  if [[ -n "${GITHUB_PATH:-}" ]]; then
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+  fi
+
+  command -v uv >/dev/null 2>&1
+}
+
 run_gateway() {
   run_logged gateway-openai-streaming env PROPTEST_CASES="$property_cases" cargo test -p calciforge proxy::openai_streaming::tests -- --nocapture || return 1
   run_logged gateway-routing env PROPTEST_CASES="$property_cases" cargo test -p calciforge proxy::routing::tests -- --nocapture || return 1
@@ -72,6 +92,15 @@ run_gateway() {
 
 run_agents() {
   run_logged agent-openclaw-callback env PROPTEST_CASES="$property_cases" cargo test -p calciforge adapters::openclaw_channel::openclaw_channel_reply_tests -- --nocapture || return 1
+  run_logged agent-adapters env PROPTEST_CASES="$property_cases" cargo test -p calciforge adapters:: -- --nocapture || return 1
+}
+
+run_channels() {
+  run_logged channel-adapters env PROPTEST_CASES="$property_cases" cargo test -p calciforge channels:: -- --nocapture || return 1
+}
+
+run_config() {
+  run_logged config-routing env PROPTEST_CASES="$property_cases" cargo test -p calciforge config:: -- --nocapture || return 1
 }
 
 run_security() {
@@ -87,7 +116,13 @@ run_clashd() {
 }
 
 run_install() {
+  ensure_uv_for_hegel
   run_logged install-hegel cargo test -p calciforge --features hegel install:: -- --nocapture || return 1
+  run_logged doctor-boundary env PROPTEST_CASES="$property_cases" cargo test -p calciforge doctor:: -- --nocapture || return 1
+}
+
+run_host_agent() {
+  run_logged host-agent env PROPTEST_CASES="$property_cases" cargo test -p host-agent -- --nocapture || return 1
 }
 
 printf 'boundary long exploration: duration=%ss surface=%s artifacts=%s\n' "$duration" "$surface" "$artifact_dir"
@@ -99,17 +134,23 @@ while still_running; do
     all)
       run_gateway || break
       run_agents || break
+      run_channels || break
+      run_config || break
       run_security || break
       run_secrets || break
       run_clashd || break
       run_install || break
+      run_host_agent || break
       ;;
     gateway) run_gateway || break ;;
     agents) run_agents || break ;;
+    channels) run_channels || break ;;
+    config) run_config || break ;;
     security) run_security || break ;;
     secrets) run_secrets || break ;;
     clashd) run_clashd || break ;;
     install) run_install || break ;;
+    host-agent) run_host_agent || break ;;
   esac
 done
 

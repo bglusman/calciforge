@@ -161,3 +161,41 @@ jobs:
 
       - name: Run nightly byte-level boundary fuzzers
         run: bash scripts/boundary-fuzz.sh nightly
+
+  boundary-long-exploration:
+    name: Boundary Long Exploration
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+            fuzz/target
+          key: ${{ runner.os }}-cargo-boundary-long-${{ hashFiles('**/Cargo.lock', 'fuzz/Cargo.toml') }}
+
+      - name: Run one-hour mixed boundary exploration
+        run: bash scripts/boundary-explore-long.sh one-hour all
+
+      - name: Upload boundary exploration artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: boundary-long-exploration-artifacts
+          path: boundary-artifacts
+          if-no-files-found: ignore
