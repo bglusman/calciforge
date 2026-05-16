@@ -28,7 +28,7 @@ potions than Howl would tolerate.
 | Command-line and optional MCP tools for agent-facing secret-name discovery, with no value readback | Working | [Agent-facing tools](https://calciforge.org/#agent-facing-tools-mcp-and-cli) |
 | Agent runtime contract for command-line guidance, optional MCP, artifacts, and future Calciforge APIs | Working draft | [Agent runtime contract](docs/agent-runtime-contract.md) |
 | Telegram, Matrix, WhatsApp, Signal, and text/iMessage routing | Working | [Multi-channel chat](https://calciforge.org/#multi-channel-chat) |
-| OpenAI-compatible model gateway, provider routing, model aliases, alloys, cascades, dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
+| OpenAI-compatible model gateway, provider routing, model aliases, Wardwright adapter support, legacy alloys/cascades/dispatchers, and local model switching | Working | [Model gateway](docs/model-gateway.md) |
 | Helicone-backed gateway observability with dashboard-visible doctor checks | Working | [Model gateway](docs/model-gateway.md#external-gateway-engines) |
 | Codex CLI and OpenClaw Codex subscription/OAuth integration paths | Working | [Codex integration](docs/codex-openclaw-integration.md) |
 | `calciforge doctor` config/state/endpoint diagnostics | Working | [Quick Start](#quick-start) |
@@ -124,8 +124,10 @@ tunnel with `CALCIFORGE_PASTE_PUBLIC_BASE_URL`.
 
 Keep Calciforge's own service traffic separate from agent traffic. Point
 agents at Calciforge's OpenAI-compatible model gateway for model calls;
-that path provides model aliases, alloys, cascades, dispatchers, provider
-routing, and observability. Route agent tool/web traffic through
+that path provides model aliases, provider routing, observability, and legacy
+in-process synthetic selectors. For new alloys, cascades, and dispatchers, use
+[Wardwright](https://wardwright.dev/) as an OpenAI-compatible provider adapter
+and let it own the route graph and receipts. Route agent tool/web traffic through
 `security-proxy` or a Calciforge fetch/tool integration when returned
 content needs scanning or `{{secret:NAME}}` substitution.
 

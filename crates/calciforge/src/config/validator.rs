@@ -71,6 +71,8 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     // Validate enabled channels before long-lived tasks start.
     validate_channels(config, &mut result);
 
+    warn_on_legacy_synthetic_selectors(config, &mut result);
+
     // Validate alloys have valid constituents
     validate_alloys(config, &mut result);
 
@@ -88,6 +90,17 @@ pub fn validate_config(config: &CalciforgeConfig) -> ValidationResult {
     }
 
     result
+}
+
+fn warn_on_legacy_synthetic_selectors(config: &CalciforgeConfig, result: &mut ValidationResult) {
+    let has_legacy_synthetic_selectors =
+        !config.alloys.is_empty() || !config.cascades.is_empty() || !config.dispatchers.is_empty();
+    if has_legacy_synthetic_selectors {
+        result.add_warning(
+            "Calciforge in-process synthetic selectors ([[alloys]], [[cascades]], [[dispatchers]]) are legacy compatibility features. Prefer Wardwright or another OpenAI-compatible provider adapter for new synthetic-model composition."
+                .to_string(),
+        );
+    }
 }
 
 /// Validate agent adapter kinds and required fields.
@@ -1044,3 +1057,7 @@ mod validator_tests_2;
 #[cfg(test)]
 #[path = "validator_tests_3.rs"]
 mod validator_tests_3;
+
+#[cfg(test)]
+#[path = "validator_wardwright_tests.rs"]
+mod validator_wardwright_tests;

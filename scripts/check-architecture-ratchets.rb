@@ -37,7 +37,6 @@ RUST_LINE_BUDGETS = {
   "crates/calciforge/src/install/wizard.rs" => 701,
   "crates/calciforge/src/providers/alloy.rs" => 1126,
   "crates/calciforge/src/proxy/gateway.rs" => 1001,
-  "crates/calciforge/src/proxy/gateway_tests.rs" => 718,
   "crates/calciforge/src/proxy/handlers.rs" => 2386,
   "crates/host-agent/src/main.rs" => 1288,
   "crates/paste-server/src/lib.rs" => 2623,

@@ -279,6 +279,7 @@ impl SecretsBackend for MockBackend {
                 total_tokens: 0,
             },
             system_fingerprint: None,
+            extra_body: serde_json::Map::new(),
         })
     }
 

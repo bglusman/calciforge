@@ -287,6 +287,7 @@ pub(super) fn parse_streaming_chat_completion(
         choices,
         usage,
         system_fingerprint: None,
+        extra_body: serde_json::Map::new(),
     })
 }
 

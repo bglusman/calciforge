@@ -493,6 +493,13 @@ while the operator maps that role to a local model, a hosted gateway route, or
 a synthetic selector. Roles share the shortcut resolver instead of creating a
 parallel routing system.
 
+The in-process synthetic selector vocabulary below is legacy compatibility now.
+It still works, but new synthetic-model composition belongs in
+[Wardwright](https://wardwright.dev/), which exposes an OpenAI-compatible API and
+keeps receipts for route decisions. Calciforge can treat Wardwright as one more
+provider adapter while keeping channel identity, secrets, and traffic policy at
+the outer boundary.
+
 The synthetic routing vocabulary is:
 
 - **Alloy** — blend among interchangeable models by weighted or

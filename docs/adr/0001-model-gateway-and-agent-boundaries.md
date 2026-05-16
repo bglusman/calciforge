@@ -47,10 +47,10 @@ flowchart TD
 ```
 
 The root model gateway has a small supported backend set. `http`, `helicone`,
-`litellm`, `portkey`, `tensorzero`, `future-agi`, and `openrouter` use the same
-OpenAI-compatible HTTP core. The engine name selects metadata, dashboard hints,
-and small policy overlays such as Helicone auth/retry headers. `mock` is
-deterministic local/test behavior.
+`litellm`, `portkey`, `tensorzero`, `future-agi`, `openrouter`, and
+`wardwright` use the same OpenAI-compatible HTTP core. The engine name selects
+metadata, dashboard hints, and small policy overlays such as Helicone auth/retry
+headers. `mock` is deterministic local/test behavior.
 
 Experimental or stale root backends such as `embedded`, `library`, and
 `traceloop` are not supported in production config. They can return later only
@@ -120,3 +120,8 @@ privileged runtime path. `http`, `helicone`, `litellm`, `portkey`,
 `tensorzero`, `future-agi`, and `openrouter` now share the same
 OpenAI-compatible HTTP core, with named engines supplying policy/metadata
 overlays.
+
+2026-05-15: Wardwright became the forward path for synthetic-model composition.
+Calciforge keeps in-process alloys, cascades, and dispatchers for compatibility,
+but new synthetic route graphs should run through Wardwright as an
+OpenAI-compatible provider adapter.

@@ -345,7 +345,7 @@ async fn try_provider(
     let duration = start.elapsed();
 
     let event = match &result {
-        Ok(response) => telemetry_attempt.success(duration, response.choices.len()),
+        Ok(response) => telemetry_attempt.success_response(duration, response),
         Err(error) => telemetry_attempt.failure(duration, error.failure_kind()),
     };
     state.telemetry.emit_gateway_attempt(event).await;
@@ -1197,6 +1197,7 @@ mod tests {
                     total_tokens: 2,
                 },
                 system_fingerprint: None,
+                extra_body: serde_json::Map::new(),
             })
         }
 

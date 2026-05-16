@@ -258,6 +258,28 @@ pub struct ChatCompletionResponse {
     /// System fingerprint (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
+
+    /// Provider/gateway-specific OpenAI-compatible response extensions.
+    ///
+    /// Wardwright, for example, returns `wardwright.receipt_id` so operators
+    /// can inspect why a synthetic route selected a concrete provider. Preserve
+    /// unknown response fields instead of silently dropping trace handles.
+    #[serde(default, flatten)]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ChatCompletionResponse {
+    pub fn wardwright_receipt_id(&self) -> Option<&str> {
+        self.extra_body
+            .get("wardwright")
+            .and_then(|value| value.get("receipt_id"))
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                self.extra_body
+                    .get("receipt_id")
+                    .and_then(serde_json::Value::as_str)
+            })
+    }
 }
 
 /// A completion choice
