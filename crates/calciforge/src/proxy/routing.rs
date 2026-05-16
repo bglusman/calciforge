@@ -580,6 +580,25 @@ mod tests {
         assert_eq!(entries[0].gateway.engine_info().id, "litellm");
     }
 
+    #[test]
+    fn wardwright_provider_uses_shared_http_core_with_wardwright_engine_metadata() {
+        let config = ProxyConfig {
+            providers: vec![provider(
+                "wardwright-local",
+                "wardwright",
+                "http://127.0.0.1:8791/v1",
+            )],
+            ..Default::default()
+        };
+
+        let entries = build_provider_entries(&config, 30).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].patterns, vec!["test-model"]);
+        assert_eq!(entries[0].gateway.gateway_type(), GatewayType::Wardwright);
+        assert_eq!(entries[0].gateway.engine_info().id, "wardwright");
+    }
+
     proptest! {
         #[test]
         fn prefix_slash_wildcard_only_matches_names_inside_namespace(

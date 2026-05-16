@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use axum::Json;
+use axum::body::to_bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
@@ -23,6 +24,7 @@ use crate::sync::Arc;
 struct RecordingGateway {
     config: GatewayConfig,
     requests: Mutex<Vec<ChatCompletionRequest>>,
+    response_extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 impl RecordingGateway {
@@ -39,7 +41,17 @@ impl RecordingGateway {
                 ui_url: None,
             },
             requests: Mutex::new(Vec::new()),
+            response_extra_body: serde_json::Map::new(),
         }
+    }
+
+    fn with_wardwright_receipt(receipt_id: &str) -> Self {
+        let mut gateway = Self::new();
+        gateway.response_extra_body.insert(
+            "wardwright".to_string(),
+            serde_json::json!({ "receipt_id": receipt_id }),
+        );
+        gateway
     }
 }
 
@@ -80,6 +92,7 @@ impl ProviderAdapter for RecordingGateway {
                 total_tokens: 2,
             },
             system_fingerprint: None,
+            extra_body: self.response_extra_body.clone(),
         })
     }
 
@@ -106,14 +119,17 @@ async fn provider_route_emits_gateway_attempt_telemetry_without_payloads() {
             "upstream_model": "kimi-k2.6",
             "provider_id": "opencode-go",
             "outcome": "success",
-            "message_count": 1
+            "message_count": 1,
+            "receipt_id": "rcpt_wardwright_test"
         })))
         .with_status(204)
         .create_async()
         .await;
 
     let default_gateway = Arc::new(RecordingGateway::new());
-    let provider_gateway = Arc::new(RecordingGateway::new());
+    let provider_gateway = Arc::new(RecordingGateway::with_wardwright_receipt(
+        "rcpt_wardwright_test",
+    ));
     let state = ProxyState {
         alloy_manager: Arc::new(AlloyManager::empty()),
         provider_registry: Arc::new(ProviderRegistry::new()),
@@ -156,6 +172,14 @@ async fn provider_route_emits_gateway_attempt_telemetry_without_payloads() {
         .into_response();
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body.pointer("/wardwright/receipt_id")
+            .and_then(serde_json::Value::as_str),
+        Some("rcpt_wardwright_test"),
+        "provider-specific response extensions should still reach the client"
+    );
     wait_for_mock(&telemetry_mock).await;
 }
 

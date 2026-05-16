@@ -28,11 +28,12 @@ Calciforge will use provider adapters as the primary model-call abstraction.
 - `ProviderAdapter` is the runtime trait for a configured model boundary.
 - `[[proxy.providers]]` is the preferred operational config surface.
 - A deployment may configure multiple adapters: Ollama, OpenRouter, LiteLLM,
-  Helicone, direct OpenAI-compatible HTTP, or future native/library adapters.
+  Helicone, Wardwright, direct OpenAI-compatible HTTP, or future native/library
+  adapters.
 - OpenAI-compatible engine adapters share one HTTP request/response core.
   Engine names such as `litellm`, `helicone`, `portkey`, `tensorzero`,
-  `future-agi`, and `openrouter` supply metadata, dashboard hints, and small
-  policy overlays; they are not separate copied gateways.
+  `future-agi`, `openrouter`, and `wardwright` supply metadata, dashboard
+  hints, and small policy overlays; they are not separate copied gateways.
 - Provider adapters expose observability capabilities as metadata separate from
   request routing. A provider may advertise a native dashboard, OTel export,
   OpenInference traces, Langfuse callbacks, or no trace sink at all.
@@ -82,6 +83,13 @@ model shortcut resolver and may point at concrete provider models, shortcuts,
 or synthetic selectors. Internal features such as adversary-detector classifier
 checks should ask for a role like `security.screening`; deployment config maps
 that role to the provider/model/synthetic selector that should serve it.
+
+Calciforge's in-process synthetic selectors (`[[alloys]]`, `[[cascades]]`, and
+`[[dispatchers]]`) are compatibility features. They stay available while
+existing installs migrate, but new synthetic-model composition should live in a
+provider adapter such as Wardwright. Calciforge should pass Wardwright model
+names through as opaque OpenAI-compatible model IDs and let Wardwright own route
+graphs, stream policy, and receipts.
 
 Generic Calciforge wrappers should not grow provider-specific logic except
 through explicit adapter configuration.

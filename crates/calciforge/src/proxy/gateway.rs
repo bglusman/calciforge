@@ -3,7 +3,7 @@
 //! Calciforge should not assume there is one installed "model gateway". It owns
 //! a policy/audit/auth boundary, then routes to one or more configured provider
 //! adapters such as builtin OpenAI-compatible HTTP, Helicone, LiteLLM,
-//! OpenRouter, Ollama, or mock test adapters.
+//! OpenRouter, Wardwright, Ollama, or mock test adapters.
 //!
 //! The older config field names still say `backend_type` for compatibility, but
 //! runtime code should treat these as adapter kinds.
@@ -136,6 +136,8 @@ pub enum GatewayType {
     FutureAgi,
     /// OpenRouter OpenAI-compatible provider boundary.
     OpenRouter,
+    /// Wardwright synthetic model gateway.
+    Wardwright,
     /// Mock adapter for tests only.
     Mock,
 }
@@ -152,6 +154,7 @@ impl std::str::FromStr for GatewayType {
             "tensorzero" | "tensor-zero" | "tensor_zero" => Ok(GatewayType::TensorZero),
             "future-agi" | "future_agi" | "futureagi" => Ok(GatewayType::FutureAgi),
             "openrouter" | "open-router" | "open_router" => Ok(GatewayType::OpenRouter),
+            "wardwright" | "ward-wright" | "ward_wright" => Ok(GatewayType::Wardwright),
             "mock" => Ok(GatewayType::Mock),
             _ => Err(format!("Unknown gateway type: {}", s)),
         }
@@ -168,6 +171,7 @@ impl std::fmt::Display for GatewayType {
             GatewayType::TensorZero => write!(f, "tensorzero"),
             GatewayType::FutureAgi => write!(f, "future-agi"),
             GatewayType::OpenRouter => write!(f, "openrouter"),
+            GatewayType::Wardwright => write!(f, "wardwright"),
             GatewayType::Mock => write!(f, "mock"),
         }
     }
@@ -182,6 +186,7 @@ impl GatewayType {
         "tensorzero",
         "future-agi",
         "openrouter",
+        "wardwright",
         "mock",
     ];
 
@@ -193,6 +198,7 @@ impl GatewayType {
         "tensorzero",
         "future-agi",
         "openrouter",
+        "wardwright",
     ];
 
     pub fn display_name(self) -> &'static str {
@@ -204,6 +210,7 @@ impl GatewayType {
             GatewayType::TensorZero => "TensorZero gateway",
             GatewayType::FutureAgi => "Future AGI gateway",
             GatewayType::OpenRouter => "OpenRouter",
+            GatewayType::Wardwright => "Wardwright synthetic model gateway",
             GatewayType::Mock => "Mock provider adapter",
         }
     }
@@ -264,6 +271,14 @@ impl GatewayType {
                 tool_call_transcripts: false,
                 config_validation: false,
                 observability: false,
+                operator_ui: true,
+            },
+            GatewayType::Wardwright => GatewayCapabilities {
+                openai_chat_completions: true,
+                model_listing: true,
+                tool_call_transcripts: false,
+                config_validation: false,
+                observability: true,
                 operator_ui: true,
             },
             GatewayType::Mock => GatewayCapabilities {
@@ -337,6 +352,11 @@ impl GatewayType {
                     true,
                 ),
             ],
+            GatewayType::Wardwright => vec![ProviderObservabilityCapability::new(
+                ProviderObservabilityKind::NativeDashboard,
+                "Wardwright receipt and route dashboard",
+                false,
+            )],
             GatewayType::BuiltinHttp | GatewayType::OpenRouter | GatewayType::Mock => Vec::new(),
         }
     }
@@ -351,6 +371,7 @@ impl GatewayType {
                 | GatewayType::TensorZero
                 | GatewayType::FutureAgi
                 | GatewayType::OpenRouter
+                | GatewayType::Wardwright
         )
     }
 
@@ -464,7 +485,8 @@ pub fn create_gateway(
         | GatewayType::Portkey
         | GatewayType::TensorZero
         | GatewayType::FutureAgi
-        | GatewayType::OpenRouter => {
+        | GatewayType::OpenRouter
+        | GatewayType::Wardwright => {
             // Builtin HTTP upstream calls
             // This requires a backend to be passed in
             let backend = backend.ok_or_else(|| {
@@ -785,6 +807,7 @@ impl ProviderAdapter for MockGateway {
                 total_tokens: 0,
             },
             system_fingerprint: None,
+            extra_body: serde_json::Map::new(),
         })
     }
 

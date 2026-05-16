@@ -17,9 +17,15 @@ The product boundary is not one magic gateway implementation. Calciforge owns
 the model access boundary: authentication, identity, per-agent model policy,
 auditing, aliases, synthetic selectors, and route selection. Concrete model
 traffic then exits through one or more configured `ProviderAdapter`s, such as
-Ollama, OpenRouter, LiteLLM, Helicone, or a direct OpenAI-compatible endpoint.
-Put another way: Calciforge decides which door opens; the provider adapter
-walks through it.
+Ollama, OpenRouter, LiteLLM, Helicone, Wardwright, or a direct
+OpenAI-compatible endpoint. Put another way: Calciforge decides which door
+opens; the provider adapter walks through it.
+
+Calciforge's built-in synthetic selectors (`[[alloys]]`, `[[cascades]]`, and
+`[[dispatchers]]`) are now legacy compatibility features. They still work for
+existing installs, but new synthetic-model composition is moving to
+[Wardwright](https://wardwright.dev/), which exposes the same OpenAI-compatible
+surface while owning route graphs, stream policy, and decision receipts.
 
 Operational installs should choose at least one explicit provider adapter.
 `mock` is test-only, and there is intentionally no built-in public-provider
@@ -110,14 +116,14 @@ warns because that path bypasses provider-specific prefixes, API keys, and
 | Explicit model routes | Working | `[[proxy.model_routes]]` overrides provider pattern matching. |
 | Model shortcuts | Working | `[[model_shortcuts]]` gives users short aliases such as `sonnet`. |
 | Local model switching | Working | `[local_models]` manages local `mlx_lm.server` targets. |
-| Alloys | Working | `[[alloys]]` samples among interchangeable constituents by `weighted` or `round_robin` strategy, with context-window safety checks. |
-| Fallback behavior | Working, implicit | Alloy execution produces an ordered attempt plan; later constituents are tried when earlier ones fail. |
-| Named cascades | Working | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. |
-| Dispatchers | Working | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. |
+| Alloys | Legacy compatibility | `[[alloys]]` samples among interchangeable constituents by `weighted` or `round_robin` strategy, with context-window safety checks. Prefer Wardwright for new configs. |
+| Fallback behavior | Legacy compatibility | Alloy/cascade/dispatcher execution produces ordered attempt plans; later constituents are tried when earlier ones fail. Prefer Wardwright for new configs. |
+| Named cascades | Legacy compatibility | `[[cascades]]` defines explicit ordered fallback chains and skips targets whose declared context window cannot fit the request. Prefer Wardwright for new configs. |
+| Dispatchers | Legacy compatibility | `[[dispatchers]]` picks the smallest configured context window that fits, then uses larger eligible models as fallbacks. Prefer Wardwright for new configs. |
 | Token estimators | Working | `char_ratio`, `byte_ratio`, and optional `tiktoken-rs` support for OpenAI-compatible BPE counts. BPE means byte-pair encoding, a common way model APIs count tokens. |
 | CLI-backed subscription agents | Working | Codex, Claude Code, Kimi Code, Dirac, and generic executable adapters are agent routes, not gateway model selectors. |
 | External gateway metadata | Working | `/gateway`, `/gateway/ui`, and `!gateway` expose the selected provider adapter and operator dashboard link after sender identity resolution. |
-| OpenAI-compatible provider adapter core | Working | `backend_type = "http"`, `"helicone"`, `"litellm"`, `"portkey"`, `"tensorzero"`, `"future-agi"`, and `"openrouter"` share the same `/v1/chat/completions` request path. Engine names select metadata, dashboard hints, and small policy overlays, not separate gateway implementations. |
+| OpenAI-compatible provider adapter core | Working | `backend_type = "http"`, `"helicone"`, `"litellm"`, `"portkey"`, `"tensorzero"`, `"future-agi"`, `"openrouter"`, and `"wardwright"` share the same `/v1/chat/completions` request path. Engine names select metadata, dashboard hints, and small policy overlays, not separate gateway implementations. |
 | Provider observability capability metadata | Started | Provider adapters now advertise known observability surfaces separately from request routing, including native dashboards and future OTel/OpenInference/Langfuse sink shapes. Event export configuration and emission remain roadmap work. |
 | Builtin HTTP upstream adapter | Compatibility path | `backend_type = "http"` is the plain OpenAI-compatible HTTP shape. It is useful for direct providers, tests, and local development. Prefer a named engine such as `litellm`, `helicone`, or `openrouter` when that boundary owns provider registry, keys, retries, or dashboard state. |
 
@@ -128,7 +134,7 @@ Calciforge's gateway layer is pluggable at the provider-adapter boundary. The
 OpenAI-compatible HTTP core, then applies a small engine policy for metadata,
 dashboard hints, and headers. `helicone` is no longer a privileged code path;
 it is one adapter kind beside `litellm`, `portkey`, `tensorzero`, `future-agi`,
-`openrouter`, and plain `http`.
+`openrouter`, `wardwright`, and plain `http`.
 
 That split matters. Request plumbing should be boring and shared. Provider
 engines can add operator dashboards, provider registries, virtual keys, retries,
@@ -137,9 +143,10 @@ channels and agents talk to Calciforge.
 
 Calciforge intentionally treats external provider-boundary model IDs as opaque
 when that boundary owns provider configuration. If LiteLLM, Helicone, Portkey,
-TensorZero, Future AGI, OpenRouter, or another gateway owns provider/key/model
-state, Calciforge should not duplicate that registry. In Calciforge config, set
-`model_credential_owner = "provider"` on the provider route. The provider's
+TensorZero, Future AGI, OpenRouter, Wardwright, or another gateway owns
+provider/key/model state, Calciforge should not duplicate that registry. In
+Calciforge config, set `model_credential_owner = "provider"` on the provider
+route. The provider's
 `api_key`/`api_key_file`, if present, then authenticates Calciforge to that
 provider boundary; it is not the upstream OpenAI, Anthropic, Ollama, or other
 final provider key.
@@ -291,8 +298,8 @@ Calciforge's installer can provision a local Helicone deployment when
 `CALCIFORGE_HELICONE_ENABLED=true`. That path is heavier because it includes a
 dashboard, Postgres, ClickHouse, Jawn, and S3-compatible object storage pieces.
 The adapter boundary is intentionally where LiteLLM, Helicone, Portkey,
-TensorZero, Future AGI, OpenRouter, and future PRs plug in without changing
-agent/channel behavior.
+TensorZero, Future AGI, OpenRouter, Wardwright, and future PRs plug in without
+changing agent/channel behavior.
 
 Configure Calciforge manually by setting `backend_type` to the adapter kind and
 pointing `backend_url` at that engine's OpenAI-compatible base URL.
@@ -325,6 +332,39 @@ backend_url = "http://127.0.0.1:4000/v1"
 backend_api_key_file = "/etc/calciforge/secrets/litellm-client-key"
 gateway_ui_url = "http://127.0.0.1:4000/ui"
 ```
+
+The same shape also works for Wardwright. Use this when you want Wardwright to
+own synthetic model names such as `coding-balanced` or
+`wardwright/coding-balanced` while Calciforge remains the outer channel,
+identity, secret, and traffic-policy boundary:
+
+```toml
+[proxy]
+enabled = true
+bind = "127.0.0.1:8080"
+api_key_file = "/etc/calciforge/secrets/model-gateway-client-key"
+backend_type = "wardwright"
+backend_url = "http://127.0.0.1:8791/v1"
+gateway_ui_url = "http://127.0.0.1:8791/admin/runtime"
+```
+
+For named providers, prefer a Wardwright namespace so the ownership boundary is
+obvious:
+
+```toml
+[[proxy.providers]]
+id = "wardwright"
+backend_type = "wardwright"
+url = "http://127.0.0.1:8791/v1"
+model_credential_owner = "provider"
+models = ["wardwright/*"]
+```
+
+Wardwright responses may include `X-Wardwright-Receipt-Id`,
+`X-Wardwright-Selected-Model`, and a `wardwright.receipt_id` body field. Those
+are Wardwright-owned trace handles. Calciforge forwards the OpenAI-compatible
+response body and copies `wardwright.receipt_id` into gateway telemetry when it
+is present.
 
 ### Retry and Fallback Policy
 
@@ -686,6 +726,12 @@ represents routing logic, not a single upstream model ID." There are three
 intended classes: alloys, cascades, and dispatchers. They may reference other
 synthetic routing selectors as long as the resulting graph is a DAG; cycles
 fail config initialization.
+
+This section documents the legacy in-process implementation. It is kept so old
+configs still make sense and existing installs keep working. New work should
+prefer Wardwright as an OpenAI-compatible provider adapter, because Wardwright
+was split out to own this route-graph problem directly and records a receipt for
+why each request took the path it did.
 
 ### Alloy
 

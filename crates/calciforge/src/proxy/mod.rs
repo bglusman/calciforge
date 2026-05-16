@@ -25,6 +25,8 @@ mod backend;
 mod control_auth;
 pub(crate) mod gateway;
 #[cfg(test)]
+mod gateway_engine_tests;
+#[cfg(test)]
 mod gateway_tests;
 mod handlers;
 pub(crate) mod model_resolver;
@@ -37,6 +39,8 @@ pub(crate) mod telemetry;
 mod telemetry_tests;
 mod token_estimator;
 mod voice_handlers;
+#[cfg(test)]
+mod wardwright_tests;
 
 pub use openai::ChatCompletionRequest;
 pub use routing::ProviderEntry;
@@ -191,7 +195,8 @@ pub async fn start_proxy_server(
         | gateway::GatewayType::Portkey
         | gateway::GatewayType::TensorZero
         | gateway::GatewayType::FutureAgi
-        | gateway::GatewayType::OpenRouter => {
+        | gateway::GatewayType::OpenRouter
+        | gateway::GatewayType::Wardwright => {
             let headers = gateway::openai_compatible_headers(
                 gateway_type,
                 default_api_key.as_deref(),
@@ -326,6 +331,10 @@ mod tests {
             Some(gateway::GatewayType::LiteLlm)
         );
         assert_eq!(
+            gateway_type_for_backend_type("wardwright"),
+            Some(gateway::GatewayType::Wardwright)
+        );
+        assert_eq!(
             gateway_type_for_backend_type("mock"),
             Some(gateway::GatewayType::Mock)
         );
@@ -338,6 +347,7 @@ mod tests {
         assert!(backend_accepts_unlisted_models("http"));
         assert!(backend_accepts_unlisted_models("litellm"));
         assert!(backend_accepts_unlisted_models("openrouter"));
+        assert!(backend_accepts_unlisted_models("wardwright"));
         assert!(!backend_accepts_unlisted_models("mock"));
     }
 
@@ -353,6 +363,7 @@ mod tests {
                 "tensorzero",
                 "future-agi",
                 "openrouter",
+                "wardwright",
                 "mock"
             ]
         );

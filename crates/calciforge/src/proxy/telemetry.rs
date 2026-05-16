@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::config::{GatewayFailureKind, ProxyObservabilityConfig};
+use crate::proxy::openai::ChatCompletionResponse;
 use crate::sync::Arc;
 
 pub(crate) const SUPPORTED_OBSERVABILITY_KINDS: &[&str] =
@@ -43,6 +44,7 @@ pub(crate) struct GatewayTelemetryEvent {
     pub outcome: GatewayTelemetryOutcome,
     pub failure_kind: Option<GatewayFailureKind>,
     pub choices: Option<usize>,
+    pub receipt_id: Option<String>,
 }
 
 pub(crate) struct GatewayTelemetryAttempt {
@@ -59,7 +61,12 @@ pub(crate) struct GatewayTelemetryAttempt {
 }
 
 impl GatewayTelemetryAttempt {
-    pub(crate) fn success(self, duration: Duration, choices: usize) -> GatewayTelemetryEvent {
+    pub(crate) fn success_with_receipt_id(
+        self,
+        duration: Duration,
+        choices: usize,
+        receipt_id: Option<&str>,
+    ) -> GatewayTelemetryEvent {
         GatewayTelemetryEvent {
             event_type: "model_gateway.attempt",
             timestamp_ms: timestamp_ms(),
@@ -77,7 +84,20 @@ impl GatewayTelemetryAttempt {
             outcome: GatewayTelemetryOutcome::Success,
             failure_kind: None,
             choices: Some(choices),
+            receipt_id: receipt_id.map(str::to_string),
         }
+    }
+
+    pub(crate) fn success_response(
+        self,
+        duration: Duration,
+        response: &ChatCompletionResponse,
+    ) -> GatewayTelemetryEvent {
+        self.success_with_receipt_id(
+            duration,
+            response.choices.len(),
+            response.wardwright_receipt_id(),
+        )
     }
 
     pub(crate) fn failure(
@@ -102,6 +122,7 @@ impl GatewayTelemetryAttempt {
             outcome: GatewayTelemetryOutcome::Failure,
             failure_kind: Some(failure_kind),
             choices: None,
+            receipt_id: None,
         }
     }
 }
@@ -182,6 +203,7 @@ impl TelemetrySink for LogTelemetrySink {
                 gateway_engine = %event.gateway_engine,
                 duration_ms = event.duration_ms,
                 choices = event.choices.unwrap_or_default(),
+                receipt_id = ?event.receipt_id,
                 "Model gateway attempt succeeded"
             ),
             GatewayTelemetryOutcome::Failure => warn!(
@@ -368,6 +390,9 @@ fn otlp_attributes(event: &GatewayTelemetryEvent) -> Vec<Value> {
     if let Some(choices) = event.choices {
         attrs.push(otlp_i64_attr("calciforge.choices", choices as i64));
     }
+    if let Some(receipt_id) = event.receipt_id.as_deref() {
+        attrs.push(otlp_attr("calciforge.receipt_id", receipt_id));
+    }
     attrs
 }
 
@@ -450,7 +475,7 @@ mod tests {
             tools: true,
             message_count: 2,
         }
-        .success(Duration::from_millis(42), 1)
+        .success_with_receipt_id(Duration::from_millis(42), 1, None)
     }
 
     #[test]

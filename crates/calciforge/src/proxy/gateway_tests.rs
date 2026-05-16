@@ -85,51 +85,6 @@ fn named_gateway_engines_share_openai_compatible_http_core() {
 }
 
 #[test]
-fn helicone_policy_headers_are_overlay_not_separate_gateway_core() {
-    let retry = GatewayRetryConfig {
-        enabled: true,
-        max_retries: 4,
-        min_timeout_ms: 250,
-        max_timeout_ms: 3_000,
-        factor: 3,
-        retry_on: vec![],
-    };
-
-    let headers = openai_compatible_headers(GatewayType::Helicone, Some("test-key"), &retry, None)
-        .expect("helicone overlay should add headers");
-
-    assert_eq!(
-        headers.get("helicone-auth"),
-        Some(&"Bearer test-key".to_string())
-    );
-    assert_eq!(
-        headers.get("helicone-retry-enabled"),
-        Some(&"true".to_string())
-    );
-    assert_eq!(headers.get("helicone-retry-num"), Some(&"4".to_string()));
-    assert_eq!(
-        headers.get("helicone-retry-min-timeout"),
-        Some(&"250".to_string())
-    );
-    assert_eq!(
-        headers.get("helicone-retry-max-timeout"),
-        Some(&"3000".to_string())
-    );
-    assert_eq!(headers.get("helicone-retry-factor"), Some(&"3".to_string()));
-
-    assert!(
-        openai_compatible_headers(
-            GatewayType::LiteLlm,
-            Some("test-key"),
-            &GatewayRetryConfig::default(),
-            None
-        )
-        .is_none(),
-        "LiteLLM should not inherit Helicone-specific headers"
-    );
-}
-
-#[test]
 fn test_mock_gateway() {
     let config = GatewayConfig {
         backend_type: GatewayType::Mock,
@@ -325,6 +280,7 @@ async fn builtin_http_gateway_forwards_complete_chat_request_options() {
             total_tokens: 2,
         },
         system_fingerprint: None,
+        extra_body: serde_json::Map::new(),
     };
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -413,6 +369,7 @@ async fn configured_authorization_header_cannot_override_backend_api_key() {
             total_tokens: 2,
         },
         system_fingerprint: None,
+        extra_body: serde_json::Map::new(),
     };
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -590,6 +547,7 @@ async fn helicone_engine_uses_shared_http_core_with_engine_headers() {
             total_tokens: 2,
         },
         system_fingerprint: None,
+        extra_body: serde_json::Map::new(),
     };
     let mock = server
         .mock("POST", "/v1/chat/completions")

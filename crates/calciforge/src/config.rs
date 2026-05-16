@@ -63,18 +63,18 @@ pub struct CalciforgeConfig {
     #[serde(default)]
     pub model_roles: Vec<ModelRoleConfig>,
 
-    /// `[[alloys]]` — model blending/mixing groups.
+    /// `[[alloys]]` — legacy in-process model blending/mixing groups.
     /// Use `!model <alloy-id>` to activate an alloy for an identity.
     #[serde(default)]
     pub alloys: Vec<AlloyConfig>,
 
-    /// `[[cascades]]` — explicit ordered model fallback chains.
+    /// `[[cascades]]` — legacy explicit ordered model fallback chains.
     /// The proxy tries the first model whose declared context window can hold
     /// the request, then falls through to later eligible models on failure.
     #[serde(default)]
     pub cascades: Vec<CascadeConfig>,
 
-    /// `[[dispatchers]]` — request-size aware model selectors.
+    /// `[[dispatchers]]` — legacy request-size aware model selectors.
     /// The proxy picks the smallest configured model that can hold the request,
     /// then uses larger eligible models as fallbacks.
     #[serde(default)]
@@ -149,7 +149,7 @@ impl CalciforgeConfig {
     }
 }
 
-/// Alloy definition (`[[alloys]]`).
+/// Legacy alloy definition (`[[alloys]]`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AlloyConfig {
     /// Alloy identifier used by commands (e.g. "free-alloy-1").
@@ -192,7 +192,7 @@ fn default_alloy_weight() -> u32 {
     1
 }
 
-/// Cascade definition (`[[cascades]]`).
+/// Legacy cascade definition (`[[cascades]]`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CascadeConfig {
     /// Synthetic model id requested by agents.
@@ -205,7 +205,7 @@ pub struct CascadeConfig {
     pub models: Vec<SyntheticModelConfig>,
 }
 
-/// Dispatcher definition (`[[dispatchers]]`).
+/// Legacy dispatcher definition (`[[dispatchers]]`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DispatcherConfig {
     /// Synthetic model id requested by agents.
@@ -1077,8 +1077,8 @@ pub struct ProxyProviderConfig {
 
     /// Provider adapter kind. Supported OpenAI-compatible engine overlays
     /// include "http", "helicone", "litellm", "portkey", "tensorzero",
-    /// "future-agi", and "openrouter". They share the same request core;
-    /// the kind chooses engine metadata, dashboard capability, and any
+    /// "future-agi", "openrouter", and "wardwright". They share the same
+    /// request core; the kind chooses engine metadata, dashboard capability, and any
     /// provider-specific headers. CLI-backed subscriptions are configured as
     /// `[[agents]]`, not gateway providers.
     #[serde(default = "default_proxy_provider_backend")]
