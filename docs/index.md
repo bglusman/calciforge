@@ -944,7 +944,10 @@ gateway providers, and synthetic routing selectors pass smoke tests.
 The status summary above is the site-facing snapshot of what works today and
 what is still in flight. Public roadmap ideas live in
 the [roadmap notes](roadmap/v3-ideas.html), with product-interface
-direction in the [UX roadmap](roadmap/product-ux.html).
+direction in the [UX roadmap](roadmap/product-ux.html). Maintainer-facing
+agent-work rules live in the
+[AI-assisted engineering discipline](roadmap/agent-engineering-discipline.html)
+note.
 
 <footer>
 <div class="name-origin">

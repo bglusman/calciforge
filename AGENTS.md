@@ -53,6 +53,9 @@ User-facing tour: `README.md` → [calciforge.org](https://calciforge.org/).
 13. **Large files are debt with budgets, not precedent.** `scripts/check-architecture-ratchets.rb` pins current oversized Rust modules to explicit line budgets and fails CI if they grow. New Rust modules should stay under the default budget unless the PR explains the boundary being created and adds a budget consciously.
 14. **Stringly data stays at the boundary.** It is acceptable for config, JSON, CLI args, and protocol payloads to enter as `String`, `Vec<String>`, or `HashMap<String, String>`, but core logic should convert them into typed structs/enums before making security, routing, lifecycle, or persistence decisions.
 15. **Detached work needs an owner.** New `tokio::spawn` or thread-spawned work must have an explicit lifecycle owner, cancellation/error path, and state handoff. Do not update shared mutable state from background tasks unless the owning module documents the ordering and failure behavior.
+16. **Work in reviewable story slices.** Before starting a broad change, write down the smallest user-visible story or contract being improved. Keep the first patch inside that slice unless the code proves the boundary is wrong. If the task expands, split it into follow-up PRs instead of letting one branch become a second architecture.
+17. **Contracts beat generated volume.** AI-generated tests, fixtures, and docs are not evidence by themselves. Every generated artifact must tie back to a precondition, postcondition, invariant, scenario, or operator-visible promise. Remove or rewrite tests that cannot fail for the intended reason.
+18. **Measure before performance fixes.** For latency, throughput, model cold starts, lock contention, retry storms, and async task behavior, capture the measurement first. A performance PR should name the baseline, the bottleneck hypothesis, the change, and the post-change measurement.
 
 ## Build / test
 
