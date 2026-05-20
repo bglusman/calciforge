@@ -18,10 +18,19 @@ Brief description of the changes in this PR.
 - [ ] `cargo fmt` is clean
 - [ ] New tests added for new functionality
 
+## Contract / Agent-Authored Work
+
+- [ ] PR names the user-visible story or boundary contract it changes
+- [ ] Bug fixes include a failing regression test, or explain why one is not practical
+- [ ] New/changed boundary tests assert operator-visible behavior, not private implementation details
+- [ ] Performance changes include baseline and post-change measurements
+- [ ] AI-generated tests/docs were reviewed for whether they can fail for the intended reason
+
 ## Checklist
 
 - [ ] Code follows the project style guidelines
 - [ ] Self-review completed
+- [ ] Adversarial review completed after commit
 - [ ] Comments added for complex logic
 - [ ] Documentation updated (if applicable)
 - [ ] No new warnings introduced

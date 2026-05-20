@@ -32,6 +32,9 @@ that should be reasonably stable:
   - `roadmap/architecture-laws-action-plan.md` — refactor plan for channel
     pipelines, command handling, security proxy policy, installer structure,
     and adapter lifecycle cleanup
+  - `roadmap/agent-engineering-discipline.md` — maintainer rules for
+    AI-assisted Calciforge changes: contracts first, story-sized slices,
+    adversarial review, measurable performance work, and test-quality gates
 
 ## Status labels
 

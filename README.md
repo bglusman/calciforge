@@ -245,10 +245,16 @@ Install hooks once:
 bash scripts/install-git-hooks.sh
 ```
 
+For AI-assisted changes, use the
+[engineering discipline checklist](docs/roadmap/agent-engineering-discipline.md):
+one user-visible story, explicit boundary contracts, tests that can fail for
+the intended reason, and adversarial review after commit.
+
 ## Docs
 
 - [Feature tour and install notes](https://calciforge.org/)
 - [Agent runtime contract](docs/agent-runtime-contract.md)
+- [AI-assisted engineering discipline](docs/roadmap/agent-engineering-discipline.md)
 - [Model gateway reference](docs/model-gateway.md)
 - [Codex/OpenClaw integration](docs/codex-openclaw-integration.md)
 - [Model gateway RFC](docs/rfcs/model-gateway-primitives.md)

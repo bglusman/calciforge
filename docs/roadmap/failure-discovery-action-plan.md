@@ -383,6 +383,10 @@ facts from a user's failed test message.
 7. Add a release-candidate checklist item: one manually observed failure must
    become either an automated regression test or a documented impossible-to-test
    gap before the PR merges.
+8. Tie new aggression tests back to an explicit contract, scenario, or
+   invariant from the
+   [AI-assisted engineering discipline](agent-engineering-discipline.html)
+   page, so test growth stays tied to the promises Calciforge actually makes.
 
 ## Test Quality Standard
 
@@ -395,3 +399,8 @@ A useful regression test should answer three questions:
 
 If the answer to the first question is "no," the test may still be useful, but
 it is not a regression test. Label it honestly.
+
+For AI-assisted changes, the same rule applies one level higher: a generated
+test only earns trust when a human can name the contract it protects and the
+failure it would catch. Count fewer, sharper tests before counting files or
+lines.
